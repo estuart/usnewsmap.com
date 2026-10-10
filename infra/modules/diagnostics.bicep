@@ -39,6 +39,8 @@ param tilesStorageName string
 param scratchStorageName string = ''
 @description('The on-prem OCR exchange account (ocr-exchange.bicep); empty if there is none.')
 param exchangeStorageName string = ''
+@description('The OCR nodes\' data collection rule (ocr-node-monitoring.bicep); empty if there is none.')
+param ocrNodeDcrName string = ''
 
 var name = 'to-log-analytics'
 
@@ -170,5 +172,21 @@ resource scratchLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' 
   properties: {
     workspaceId: workspaceId
     logs: [{ category: 'StorageDelete', enabled: true }]
+  }
+}
+
+// The OCR nodes' data collection rule: errors in collecting or transforming
+// what the Azure Monitor Agent sends (DCRLogErrors), its only category. Rows
+// only when something fails.
+resource ocrNodeDcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' existing = if (!empty(ocrNodeDcrName)) {
+  name: ocrNodeDcrName
+}
+
+resource ocrNodeDcrLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(ocrNodeDcrName)) {
+  scope: ocrNodeDcr
+  name: name
+  properties: {
+    workspaceId: workspaceId
+    logs: [{ category: 'LogErrors', enabled: true }]
   }
 }

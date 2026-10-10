@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Remove an on-prem OCR node (#296, ADR-0015) from the operator's machine:
-# take its identity out of the nodes' Entra group, stop and disconnect the
+# take its identity out of the nodes' Entra group, remove the Azure Monitor
+# Agent and its data collection rule association, stop and disconnect the
 # agent on the node, and delete its Arc machine. No provision needed.
 #
 #   scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 \
@@ -9,13 +10,20 @@
 # Steps:
 #   1. removes the Arc machine's system-assigned identity from
 #      USNM_OCR_NODE_GROUP, which takes away the node roles;
-#   2. with --host, over ssh with sudo: stops and disables
-#      usnm-ocr-worker.service and, if the agent is configured (connected
-#      or not), runs `azcmagent disconnect --force-local-only`, which
-#      clears the agent's local state without signing in to Azure (so no
-#      onboarding credential is needed); without
-#      --host (a node that's gone), prints those commands instead;
-#   3. deletes the Arc machine with your own az sign-in, which deletes its
+#   2. deletes the machine's data collection rule associations, so it
+#      sends no more logs or counters, and, with --host, deletes the Azure
+#      Monitor Linux Agent extension and waits while the node uninstalls
+#      it (without --host, deleting the machine in step 4 removes the
+#      extension's resource; the node is gone or unreachable);
+#   3. with --host, over ssh with sudo: stops and disables
+#      usnm-ocr-worker.service, stops the extension manager and removes any
+#      extension still installed (`azcmagent extension remove --all`) and,
+#      if the agent is configured (connected or not), runs
+#      `azcmagent disconnect --force-local-only`,
+#      which clears the agent's local state without signing in to Azure
+#      (so no onboarding credential is needed); without --host, prints
+#      those commands instead;
+#   4. deletes the Arc machine with your own az sign-in, which deletes its
 #      identity.
 # Tokens the node already holds stay valid until they expire: up to about
 # 24 hours for a managed identity (ADR-0015). Run again, it skips what's done.
@@ -25,9 +33,11 @@
 #
 # Needs az signed in to the environment's tenant with the right to remove
 # members from the nodes' group (an owner of it) and to delete resources in
-# the environment's group, and ssh for --host. Works with macOS's bash 3.2.
+# the environment's group (including the machine's extensions and data
+# collection rule associations), and ssh for --host. Works with macOS's
+# bash 3.2.
 set -euo pipefail
-usage() { sed -n '6,7s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '7,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
@@ -102,6 +112,79 @@ else
   echo "removed $principal from $NODE_GROUP"
 fi
 
+step "Monitoring"
+# Resource Manager calls through az rest, as in onboard.sh.
+ARM=https://management.azure.com
+HC_API=2025-01-13
+DCRA_API=2022-06-01
+EXT=AzureMonitorLinuxAgent
+# A GET; the query's result goes in ARM_OUT. Returns 1 only when the
+# resource doesn't exist, and stops on any other failure.
+ARM_OUT=""
+arm_get() {
+  local out err errf
+  ARM_OUT=""
+  errf=$(mktemp)
+  if out=$(az rest --method get --url "$1" --query "$2" -o tsv 2> "$errf"); then
+    rm -f "$errf"
+    ARM_OUT=$out
+    return 0
+  fi
+  err=$(cat "$errf")
+  rm -f "$errf"
+  if grep -qE '"code": ?"ResourceNotFound"' <<< "$err"; then return 1; fi
+  die "can't read ${1%%\?*}: $err"
+}
+if [ -z "$MACHINE_ID" ]; then
+  echo "no machine; nothing to remove"
+else
+  # Every association on the machine: its own rule's, and any other, since
+  # the machine is going.
+  dcras=""
+  if arm_get "$ARM$MACHINE_ID/providers/Microsoft.Insights/dataCollectionRuleAssociations?api-version=$DCRA_API" \
+    'value[].id'; then
+    dcras=$ARM_OUT
+  fi
+  [ -n "$dcras" ] || echo "no data collection rule associations"
+  for id in $dcras; do
+    if [ "$DRY_RUN" = true ]; then
+      echo "would delete ${id#"$MACHINE_ID"/providers/}"
+    else
+      az rest --method delete --url "$ARM$id?api-version=$DCRA_API" -o none ||
+        die "can't delete $id"
+      echo "deleted ${id#"$MACHINE_ID"/providers/}"
+    fi
+  done
+  ext_url="$ARM$MACHINE_ID/extensions/$EXT?api-version=$HC_API"
+  state=""
+  if arm_get "$ext_url" properties.provisioningState; then state=${ARM_OUT:-unknown}; fi
+  if [ -z "$state" ]; then
+    echo "$EXT isn't installed"
+  elif [ -z "$HOST" ]; then
+    echo "$EXT ($state) goes with the machine; on a node that still exists, the node commands below remove it"
+  elif [ "$DRY_RUN" = true ]; then
+    echo "would delete $EXT ($state) and wait while the node uninstalls it"
+  else
+    # The node's agent uninstalls it and reports back; then the resource
+    # is gone. Deletes are always allowed, whatever the allow list says.
+    az rest --method delete --url "$ext_url" -o none || die "can't delete $EXT on $NAME"
+    waited=0
+    while arm_get "$ext_url" properties.provisioningState; do
+      if [ "$ARM_OUT" = Failed ]; then
+        echo "warning: deleting $EXT failed on the node; the node step removes it locally"
+        break
+      fi
+      if [ "$waited" -ge 600 ]; then
+        echo "warning: $EXT is still ${ARM_OUT:-being deleted} after 10 minutes; the node step removes it locally"
+        break
+      fi
+      sleep 20
+      waited=$((waited + 20))
+    done
+    [ "$waited" -ge 600 ] || [ "$ARM_OUT" = Failed ] || echo "deleted $EXT"
+  fi
+fi
+
 step "Node"
 # --force-local-only: the agent forgets its connection without asking Azure,
 # so the node needs no credential; this script deletes the resource itself.
@@ -111,14 +194,21 @@ step "Node"
 REMOTE='systemctl disable --now usnm-ocr-worker.service 2> /dev/null || true
 if ! command -v azcmagent > /dev/null; then
   echo "no Connected Machine agent"
-elif azcmagent show 2> /dev/null | grep -Eqi "^ *resource name *: *[^ ]"; then
-  azcmagent disconnect --force-local-only
 else
-  echo "agent not configured"
+  # Microsoft: stop the extension manager before azcmagent extension.
+  systemctl stop extd 2> /dev/null || true
+  azcmagent extension remove --all || echo "warning: azcmagent extension remove --all failed"
+  if azcmagent show 2> /dev/null | grep -Eqi "^ *resource name *: *[^ ]"; then
+    azcmagent disconnect --force-local-only
+  else
+    echo "agent not configured"
+  fi
 fi'
 if [ -z "$HOST" ]; then
   echo "no --host; if the node still exists, run on it as root:"
   echo "  systemctl disable --now usnm-ocr-worker.service"
+  echo "  systemctl stop extd"
+  echo "  azcmagent extension remove --all"
   echo "  azcmagent disconnect --force-local-only"
 elif [ "$DRY_RUN" = true ]; then
   echo "would run on $HOST with sudo:"

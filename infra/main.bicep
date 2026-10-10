@@ -124,7 +124,7 @@ param ocrNodes bool = false
 @description('Public IPv4 addresses or CIDR ranges the OCR nodes connect from, comma separated (the operator\'s home IP). Only in the environment\'s settings, never in the repository.')
 param ocrNodeIps string = ''
 
-@description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account; onboard.sh adds each node\'s Arc identity to it.')
+@description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on Application Insights; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
 
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
@@ -298,6 +298,22 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
   }
 }
 
+// What the Azure Monitor Agent collects on the OCR nodes (ADR-0015), and an
+// alert on a node sending too much. onboard.sh installs the agent on each
+// node and associates it with the rule.
+module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
+  scope: rg
+  name: 'ocr-node-monitoring'
+  params: {
+    location: location
+    tags: tags
+    name: 'dcr-usnm-ocr-nodes-${env}'
+    workspaceId: monitoring.outputs.workspaceId
+    nameSuffix: env
+    actionGroupId: monitoring.outputs.actionGroupId
+  }
+}
+
 module cosmos 'modules/cosmos.bicep' = {
   scope: rg
   name: 'cosmos'
@@ -333,6 +349,8 @@ module rbac 'modules/rbac.bicep' = {
     appPrincipalId: identities.outputs.appPrincipalId
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     searchLogReaders: filter(map(split(searchLogReaders, ','), r => trim(r)), r => !empty(r))
+    // The OCR workers' telemetry (Monitoring Metrics Publisher), with the nodes on.
+    ocrNodeGroupId: ocrNodes ? trim(ocrNodeGroupId) : ''
   }
 }
 
@@ -377,6 +395,7 @@ module diagnostics 'modules/diagnostics.bicep' = {
     tilesStorageName: tiles.outputs.name
     scratchStorageName: ingestScratch ? scratch!.outputs.accountName : ''
     exchangeStorageName: ocrNodes ? ocrExchange!.outputs.name : ''
+    ocrNodeDcrName: ocrNodes ? ocrNodeMonitoring!.outputs.name : ''
   }
 }
 
@@ -649,3 +668,5 @@ output OCR_ENDPOINT string = ocr ? ocrService!.outputs.endpoint : ''
 output OCR_EXCHANGE_ACCOUNT string = ocrNodes ? ocrExchange!.outputs.name : ''
 output OCR_QUEUE_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
 output OCR_BLOB_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
+// The nodes' data collection rule; onboard.sh associates each node with it.
+output OCR_NODE_DCR_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.id : ''

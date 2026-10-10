@@ -2,8 +2,9 @@
 // Serving replicas can read reference data and the index, read the Cosmos
 // pipeline state (for the public status page), write the response cache and
 // add to the search log; the ingest identity writes the lake and Cosmos
-// state. Both send telemetry to Application Insights. Operators named in
-// searchLogReaders can read the search log.
+// state. Both send telemetry to Application Insights, as do the on-prem OCR
+// nodes, through their Entra group. Operators named in searchLogReaders can
+// read the search log.
 
 param storageName string
 param cosmosName string
@@ -12,6 +13,8 @@ param appPrincipalId string
 param ingestPrincipalId string
 @description('Entra object ids (people or groups) that may read the search log.')
 param searchLogReaders array = []
+@description('Object id of the on-prem OCR nodes\' Entra group (usnm-ocr-nodes-<env>, ADR-0015); empty grants it nothing.')
+param ocrNodeGroupId string = ''
 
 var blobReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var blobContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
@@ -131,6 +134,20 @@ resource telemetry 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
     }
   }
 ]
+
+// The on-prem OCR workers (#296) export their traces and metrics with each
+// node's Arc identity, a member of the nodes' group (ADR-0015). Nothing
+// else: the group's other roles are on the exchange account
+// (ocr-exchange.bicep).
+resource nodeTelemetry 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(ocrNodeGroupId)) {
+  scope: appInsights
+  name: guid(appInsights.id, ocrNodeGroupId, metricsPublisher)
+  properties: {
+    principalId: ocrNodeGroupId
+    principalType: 'Group'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', metricsPublisher)
+  }
+}
 
 resource ingestCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
   parent: cosmos
