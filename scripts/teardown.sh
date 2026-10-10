@@ -46,7 +46,10 @@ az account set --subscription "$SUBSCRIPTION" ||
 SUBSCRIPTION=$(az account show --query id -o tsv)
 # Another subscription than the recorded one: an old copy after a move.
 old_copy=false
-[ "${SUBSCRIPTION,,}" = "${recorded,,}" ] || old_copy=true
+# Subscription ids compare case-insensitively; tr rather than ${x,,}, which
+# macOS's bash 3.2 doesn't have.
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+[ "$(lower "$SUBSCRIPTION")" = "$(lower "$recorded")" ] || old_copy=true
 gh auth status > /dev/null 2>&1 || die "run: gh auth login"
 # The repository whose workflows deploy this environment: the one bootstrap
 # recorded. --repo, or the checkout's own, must be the same one.
@@ -116,14 +119,24 @@ if [ "$old_copy" = false ]; then
       die "can't read USNM_DEPLOY_ENVIRONMENTS in $REPO: $envs"
     envs=""
   fi
+  # Taking the environment off the list is recorded first, so a teardown
+  # interrupted during the wait below still waits when it's run again,
+  # although the list no longer names it.
+  waiting="$(dirname "$ENV_FILE")/teardown-$SUBSCRIPTION.wait"
+  was_listed=false
+  [ -e "$waiting" ] && was_listed=true
   if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
+    was_listed=true
+    mkdir -p "$(dirname "$waiting")"
+    : > "$waiting"
     names=$(tr -d '[]" ' <<< "$envs" | tr ',' '\n' | grep -vx "$ENV_NAME" | grep -v '^$' || true)
     envs="[$(sed 's/.*/"&"/' <<< "$names" | paste -sd, -)]"
     [ "$envs" = '[""]' ] && envs='[]'
     gh variable set USNM_DEPLOY_ENVIRONMENTS -R "$REPO" --body "$envs"
   fi
   # A run that already started, or was queued, still holds the old list; wait
-  # until none is left.
+  # until none is left. An environment that wasn't on the list can't be
+  # deployed by any run, so there's nothing to wait for (dev, #275).
   # total_count covers every matching run, however many there are.
   unfinished() {
     local s n total=0
@@ -133,12 +146,25 @@ if [ "$old_copy" = false ]; then
     done
     echo "$total"
   }
-  while :; do
-    runs=$(unfinished) || die "can't list workflow runs in $REPO"
-    [ "$runs" -gt 0 ] || break
-    echo "waiting for queued and running workflows in $REPO to finish"
-    sleep 30
-  done
+  if $was_listed; then
+    failures=0
+    while :; do
+      if ! runs=$(unfinished); then
+        # A transient GitHub error (a TLS timeout) shouldn't end the wait.
+        failures=$((failures + 1))
+        [ "$failures" -lt 10 ] || die "can't list workflow runs in $REPO"
+        sleep 30
+        continue
+      fi
+      failures=0
+      [ "$runs" -gt 0 ] || break
+      echo "waiting for queued and running workflows in $REPO to finish"
+      sleep 30
+    done
+    rm -f "$waiting"
+  else
+    echo "$ENV_NAME isn't on USNM_DEPLOY_ENVIRONMENTS, so no workflow run can deploy it; not waiting"
+  fi
 
   # Last check before anything is deleted: stop if a bootstrap put the
   # environment back on the deploy list while this waited.
@@ -158,7 +184,8 @@ if [ "$stack" = true ]; then
   az stack sub delete -n "$STACK" --action-on-unmanage detachAll --yes --only-show-errors
 fi
 # Each step skips what an earlier, interrupted run already deleted.
-# A lookup that fails for any other reason than "not found" stops here.
+# A lookup that fails for any other reason than "not found" stops here. A
+# role scoped to a deleted group answers RoleDefinitionDoesNotExist.
 for g in $groups; do
   exists=$(az group exists -n "$g") || die "can't check resource group $g"
   [ "$exists" = true ] || continue
@@ -167,7 +194,7 @@ for g in $groups; do
 done
 for id in $roles; do
   if ! out=$(az resource show --ids "$id" -o none 2>&1); then
-    grep -qiE 'NotFound|could not be found' <<< "$out" || die "can't check $id: $out"
+    grep -qiE 'NotFound|could not be found|RoleDefinitionDoesNotExist' <<< "$out" || die "can't check $id: $out"
     continue
   fi
   az resource delete --ids "$id" -o none
