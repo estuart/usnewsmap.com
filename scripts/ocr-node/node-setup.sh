@@ -202,7 +202,9 @@ fi
 # would refuse the flags or never upgrade itself. The install script added
 # Microsoft's package repository, so dnf can bring it up to date.
 MIN_AGENT=1.68
-agent_version() { azcmagent version 2> /dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1; }
+# Empty output, not a failure, when the agent is missing or prints something
+# unexpected, so the fallback below decides (set -e and pipefail are on).
+agent_version() { { azcmagent version 2> /dev/null || true; } | grep -oE '[0-9]+\.[0-9]+' | head -1 || true; }
 version_ok() { [ "$(printf '%s\n%s\n' "$MIN_AGENT" "$1" | sort -t. -k1,1n -k2,2n | head -1)" = "$MIN_AGENT" ]; }
 v=$(agent_version)
 if [ -z "$v" ] || ! version_ok "$v"; then
