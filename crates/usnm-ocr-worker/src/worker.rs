@@ -161,7 +161,12 @@ impl Worker {
             if *stop.borrow() {
                 break;
             }
-            match self.next_message().await {
+            let next = tokio::select! {
+                r = self.next_message() => r,
+                // A message received as this is dropped comes back when its lease ends.
+                _ = stop.changed() => break,
+            };
+            match next {
                 Ok(Some(msg)) => {
                     idle = Duration::from_secs(1);
                     let me = self.clone();
@@ -310,8 +315,10 @@ impl Worker {
         drop(scan.jpeg);
         let out = match self.engine.ocr(&image, &m.language, work.path()).await {
             Ok(o) => o,
+            // Another node may have the model: try again later, and let
+            // the dequeue count dead-letter it if no node does.
             Err(EngineError::Unsupported(l)) => {
-                return Err(Failure::Permanent(format!(
+                return Err(Failure::Transient(format!(
                     "no model for `{l}` on node {}",
                     self.cfg.node_id
                 )))
@@ -506,7 +513,8 @@ mod tests {
             Some("Die Nebraska Staats-Zeitung\nerscheint jeden Sonnabend.")
         );
 
-        // Nothing left; the three bad ones are dead-lettered.
+        // Nothing visible: the bad ones are dead-lettered, and the page in
+        // a language this node has no model for waits for another node.
         assert_eq!(
             queue.receive(BULK, Duration::from_secs(1)).await.unwrap(),
             None
@@ -527,9 +535,8 @@ mod tests {
             dead.push(body["error"].as_str().unwrap().to_owned());
         }
         dead.sort();
-        assert_eq!(dead.len(), 3, "{dead:?}");
+        assert_eq!(dead.len(), 2, "{dead:?}");
         assert!(dead.iter().any(|e| e.contains("no image")));
-        assert!(dead.iter().any(|e| e.contains("no model for `zzz`")));
         assert!(dead.iter().any(|e| e.contains("base64")));
     }
 

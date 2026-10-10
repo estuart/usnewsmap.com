@@ -41,6 +41,8 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
 pub struct Pacer {
     gap: Duration,
     next: Mutex<Option<Instant>>,
+    /// Set by [`Pacer::hold`]: no request before this.
+    held: Mutex<Option<Instant>>,
 }
 
 impl Pacer {
@@ -48,25 +50,36 @@ impl Pacer {
         Self {
             gap,
             next: Mutex::new(None),
+            held: Mutex::new(None),
         }
     }
 
-    /// Wait for this caller's slot.
+    fn reserve(&self) -> Instant {
+        let mut next = self.next.lock().expect("pacer lock");
+        let now = Instant::now();
+        let at = next.map_or(now, |n| n.max(now));
+        *next = Some(at + self.gap);
+        at
+    }
+
+    /// Wait for this caller's slot. A caller already waiting when a hold
+    /// is set checks it on waking and takes a new slot after it.
     pub async fn wait(&self) {
-        let at = {
-            let mut next = self.next.lock().expect("pacer lock");
-            let now = Instant::now();
-            let at = next.map_or(now, |n| n.max(now));
-            *next = Some(at + self.gap);
-            at
-        };
-        tokio::time::sleep_until(at).await;
+        loop {
+            tokio::time::sleep_until(self.reserve()).await;
+            let held = *self.held.lock().expect("pacer lock");
+            if held.is_none_or(|h| h <= Instant::now()) {
+                return;
+            }
+        }
     }
 
     /// Hold every caller for at least `d` from now (the server said to wait).
     pub fn hold(&self, d: Duration) {
-        let mut next = self.next.lock().expect("pacer lock");
         let until = Instant::now() + d;
+        let mut held = self.held.lock().expect("pacer lock");
+        *held = Some(held.map_or(until, |h| h.max(until)));
+        let mut next = self.next.lock().expect("pacer lock");
         *next = Some(next.map_or(until, |n| n.max(until)));
     }
 }
@@ -350,6 +363,16 @@ mod tests {
             at,
             [0, 3500, 7000, 10500].map(Duration::from_millis).to_vec()
         );
+        // A caller already waiting when a hold is set waits it out too.
+        let p = pacer.clone();
+        let t2 = Instant::now();
+        let waiting = tokio::spawn(async move {
+            p.wait().await;
+            Instant::now()
+        });
+        tokio::task::yield_now().await;
+        pacer.hold(Duration::from_secs(30));
+        assert!(waiting.await.unwrap() - t2 >= Duration::from_secs(30));
         // Told to hold: the next caller waits it out.
         pacer.hold(Duration::from_secs(60));
         let t1 = Instant::now();

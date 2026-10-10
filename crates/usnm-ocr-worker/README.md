@@ -29,8 +29,8 @@ usnm-ocr-worker ocr-file --image page.jpg --language deu --out /tmp/ocr
 There are three Azure Storage Queues: `ocr-priority`, `ocr-bulk` and `ocr-deadletter`. The worker polls `ocr-priority` first. When both are empty it waits before polling again, doubling the wait from 1 s up to 60 s.
 
 - A received message is hidden for 600 s and renewed every 180 s while its page is worked on. Each renewal (Update Message) returns a new pop receipt, and the final delete uses the latest one.
-- A message received more than 5 times goes to `ocr-deadletter` and is deleted from its queue. So does a message that can never succeed: bad JSON, a page loc.gov lists no image for, or a language with no model on the node.
-- A temporary failure (LoC or storage errors, a Tesseract crash or timeout) hides the message for 300 s and lets it come back.
+- A message received more than 5 times goes to `ocr-deadletter` and is deleted from its queue. So does a message that can never succeed: bad JSON, or a page loc.gov lists no image for.
+- A temporary failure (LoC or storage errors, a Tesseract crash or timeout, or a language with no model on this node, which another node may have) hides the message for 300 s and lets it come back.
 - On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are made visible again (visibility 0).
 
 The REST calls use API version 2023-11-03 and an Entra bearer token for `https://storage.azure.com/`. No keys or SAS tokens are used.
