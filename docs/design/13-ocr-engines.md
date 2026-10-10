@@ -140,9 +140,9 @@ The first line on stdout, sent once the adapter is ready for a page. This excerp
   ],
   "models_loaded": "per_page",
   "profiles": [
-    {"id": "deu", "languages": ["deu"], "models": ["tessdata/deu.traineddata"], "tunable": ["psm", "scale"]},
-    {"id": "deu_latf+deu", "languages": ["deu"], "models": ["tessdata/deu_latf.traineddata", "tessdata/deu.traineddata"], "tunable": ["psm", "scale"]},
-    {"id": "frak2021", "languages": ["deu"], "models": ["tessdata/frak2021.traineddata"], "tunable": ["psm", "scale"]}
+    {"id": "deu", "languages": ["deu"], "models": ["tessdata/deu.traineddata"], "tunable": ["psm"]},
+    {"id": "deu_latf+deu", "languages": ["deu"], "models": ["tessdata/deu_latf.traineddata", "tessdata/deu.traineddata"], "tunable": ["psm"]},
+    {"id": "frak2021", "languages": ["deu"], "models": ["tessdata/frak2021.traineddata"], "tunable": ["psm"]}
   ],
   "type": "hello"
 }
@@ -155,12 +155,12 @@ The first line on stdout, sent once the adapter is ready for a page. This excerp
 - `layout` is `alto` or `boxes`. `granularity` is the finest level with real geometry: `word`, `line`, `block` or `page`.
 - `engine` may also carry `components` (name and version of libraries such as Leptonica).
 - hello carries no timing. The worker times the start to hello itself (`model_load_seconds` in the runs record).
-- The worker refuses the instance, and counts it toward the engine's breaker (§13.6.5), unless all of these match `engines.lock.json` for this image digest:
-  - `engine.id`, and the adapter's name and version;
-  - hello's set of (name, sha256) model pairs;
+- The worker refuses the instance, and counts it toward the engine's breaker (§13.6.5), unless the whole `hello` matches the lock's entry for this image digest (§13.7.3):
+  - `adapter` (name, language, version), `contract`, `engine` (`family`, `id`, `version`, and `components` when present), `cancel`, `deterministic`, `granularity`, `layout` and `models_loaded`;
+  - the set of (name, sha256) model pairs;
   - the profiles in full: the same ids, and for each id the same `languages`, `models` and `tunable`, compared as sets.
 
-  A profile id alone isn't enough. An image could keep its ids while a profile drops a language, loads another model or stops accepting an option. Routing would then send requests the adapter refuses as `unsupported`, and a swapped model would make the runs record's `models_digest` wrong. CI writes the lock's profiles from the image's `hello` and fails the build when they differ from `engines.toml` (§13.7.3).
+  Each of these changes behaviour or provenance. A different `engine.version` would write an unreviewed version into `ocr_engine`, and a different `cancel` changes how the worker handles a timeout. A profile id alone isn't enough either: an image could keep its ids while a profile drops a language, loads another model or stops accepting an option, so routing would send requests the adapter refuses as `unsupported`, and a swapped model would make the runs record's `models_digest` wrong. CI writes the lock entry from the image's `hello` and fails the build when its profiles differ from `engines.toml`.
 
 ### 13.4.3 page (worker to adapter)
 
@@ -180,9 +180,9 @@ The first line on stdout, sent once the adapter is ready for a page. This excerp
 
 - `run_id` is `<node>.<UTC stamp>`, minted when the worker starts the page and before the engine call. It names the page's ALTO, runs record and overlay part, so one id ties the protocol, the logs and the outputs together. On main, `output_paths` mints its stamp at upload time; it changes to take the `run_id`, and a name collision adds `-1`, `-2` to the stamp instead of taking a new time.
 - The request carries no `doc_id`, URL, batch or credential, only what the engine needs to read the image. The worker logs the mapping from `run_id` to page.
-- **Options.** `options` is the profile's `defaults` from `engines.toml`, overlaid by the route candidate's `options`. The worker sends the merged set, and the runs record and the stored ALTO record it. A route may set only keys the profile lists as `tunable`.
+- **Options.** `options` is the profile's `defaults` from `engines.toml`, overlaid by the route candidate's `options`. The worker sends the merged set, and the runs record and the stored ALTO record it. A route may set only keys the profile lists as `tunable`. Options are for the adapter only; the worker's preprocessing (`scale`, `tile`) has its own keys.
 - **Image and dpi.** The worker decodes the whole scan (Rust `image` crate) before it sends the page to an instance. `image` describes the file the adapter reads: its pixel size, sha256 and dpi. `image.dpi` is the scan's dpi times `scale`: 300 for a full IIIF scan, 150 at half scale. Adapters take the dpi from `image.dpi`; it isn't an option. The Tesseract adapter passes it as `--dpi`, so every route reads full scans at 300 dpi, as main does: main passes `--dpi 300` on every call, because IIIF JPEGs carry no resolution and Tesseract would guess 70.
-- **Scale.** `scale` is applied by the worker before it writes the image (Lanczos3), and a scaled image is written as PNG so it isn't JPEG-encoded twice. The path's extension gives the format. Boxes are scaled back afterwards, so every engine gets the same resize.
+- **Scale.** `scale` is the worker's preprocessing, like `tile`, and never an adapter option: it isn't in `options`, in any `tunable` list or in `hello`. A profile may set it beside `tile`, and a route candidate may override it with its own `scale` key (default 1). The worker applies it before it writes the image (Lanczos3), and a scaled image is written as PNG so it isn't JPEG-encoded twice. The path's extension gives the format, and `image.width`, `image.height` and `image.dpi` describe the scaled file. Boxes are scaled back afterwards, so every engine gets the same resize. The runs record keeps it in its own `scale` column.
 - **Tiles.** A profile may set `tile = { size = 1280, overlap = 256 }`, as the survey runs docTR and Surya on full pages. The worker cuts the tiles with the same code it uses for `scale` and sends each tile to one instance in turn, as its own page request with `run_id` `<run_id>.t<n>`, its own `out` directory and a `deadline_ms` of the time left in the page's deadline. `usnm-alto` moves each tile's boxes to page pixels and keeps a box only when its centre falls in the tile's core (the tile less half the overlap on each inner edge), as the survey's `inside()` does. The page is `ok` only when every tile is. Adapters never tile or merge tiles.
 - `script` is ISO 15924 and optional. `dpi_source` is `assumed` (IIIF JPEGs carry no resolution) or `loc_alto`, once a dpi is read from LoC's ALTO.
 
@@ -258,13 +258,13 @@ For engines without ALTO: docTR and OnnxTR, American Stories regions, Surya bloc
 
 ### 13.4.7 What the worker does with a result
 
-1. **Checks the files.** Every path must resolve inside the instance's `out/<run_id>/` with no `..` and no symlinks (`symlink_metadata`, `O_NOFOLLOW`), and must be a regular file. Size caps: the result line 1 MiB, ALTO or boxes 64 MiB, text 8 MiB, the whole job directory 256 MiB.
+1. **Checks the files.** Every path must resolve inside the instance's `out/<run_id>/` with no `..` and no symlinks (`symlink_metadata`, `O_NOFOLLOW`), and must be a regular file. Size caps on the engine's files: the result line 1 MiB, ALTO or boxes 64 MiB, text 8 MiB, the whole job directory 256 MiB. Engine ALTO is more verbose than the stored ALTO, so these are larger than the output limits in step 7.
 2. **Parses.** `usnm-alto` reads ALTO v2, v3 and v4 in `pixel`, `inch1200` or `mm10` with quick-xml. It refuses any `DOCTYPE`, expands no entities, and caps depth, element count, `CONTENT` length (1 KiB) and strings per page (500,000). It handles Kraken's v4 with `SP` as a sibling element and polygons. JSON is parsed with a depth limit and checked UTF-8.
 3. **Writes the stored ALTO** from the parsed values. Nothing from the engine's XML is copied except escaped `CONTENT` strings. The profile is in §13.8.2.
 4. **Derives the text** from the stored ALTO in reading order (a port of the survey's `altotext.py`), for every granularity, so text and boxes always agree. The declared `markup` was stripped from the block, line and word text before the ALTO was written. Then `usnm_core::text::normalize_ocr`, as on main. This is the text the overlay stores and the survey scores.
 5. **Scores damage after OCR** with `usnm_core::damage` (12 Step 5) in forced-language mode: against the page's language only, as the survey's `score.py` scores with `quality.py`'s `damage()`. v2's language detection needs the title's catalog languages, which the worker doesn't have. `usnm_core::lang` maps the message's ISO 639-3 code to the metric's tables, which `quality.py` keys by MARC code (`ger` to `de`, `hrv` and `srp` to `sh`). `damage_after` is null for `jpn` (`quality.py` doesn't score Japanese titles), for `und` and for any language without a word list.
 6. **Measures** wall time, CPU time, peak memory and OOM kills from the instance's cgroup (§13.6.6).
-7. **Writes** the ALTO, then the runs record, then the overlay part, create-only with the same `run_id` (§13.8).
+7. **Checks the output limits, then writes** the ALTO, then the runs record, then the overlay part, create-only with the same `run_id` (§13.8). The limits are `ocr-sync`'s (12 Step 8 checks 1 and 4): stored ALTO at most 32 MiB, part and runs record at most 1 MiB each, text at most 512 KiB with no control characters other than newline and tab. They are one set of constants in `usnm-ocr-contract`, which both the worker and `ocr-sync` use, so a page the worker uploads can't be quarantined for its size. A reading over a limit uploads nothing and fails as transient `convert` with kind `too_large`, so the page can move to the route's next candidate by dequeue count.
 
 ### 13.4.8 Versioning and conformance
 
@@ -386,7 +386,7 @@ The worker refuses a production engine at startup, and `routes check` refuses it
 - **Startup:** the worker removes stale containers (`podman --remote rm -f --filter label=usnm.node=<node>`), empties scratch, and loads the routing bundle (§13.7.8). For each engine the node may start, it checks the image digest is present. With `podman --remote info` it checks that the memory, cpu and pids cgroup controllers are delegated; without them it refuses to start engines.
 - **First instance of each engine:** the worker checks `memory.max` and `pids.max` in two parts. cgroup v2 limits are hierarchical, but each file shows only the value set on that cgroup, so one file can't show the limit that applies.
   - **The limit is set.** The smallest value over the container's `CgroupPath` and its ancestors up to its `libpod-<id>.scope` must equal the configured limit. `CgroupPath` can point at an inner `container` cgroup whose own limit is `max`, so the scope is included.
-  - **Nothing above it is tighter.** Every ancestor above the scope, below the cgroup root (`usnmeng`'s `user@<uid>.service`, `user-<uid>.slice` and `user.slice`; the root has no limit files), must allow at least what the node may run there at once: `memory.max` and `memory.high` at least the node's `engine_memory`, and `pids.max` at least the sum of `pids` times `max_instances` over the engines the node may start. Otherwise a systemd slice above the scope could leave an engine less memory or fewer pids than the scheduler assumes.
+  - **Nothing above it is tighter.** Every ancestor above the scope, below the cgroup root (`usnmeng`'s `user@<uid>.service`, `user-<uid>.slice` and `user.slice`; the root has no limit files), must be `max` or leave room for what the node may run there at once plus the runtime around it. Those ancestors also hold `usnmeng`'s user manager, the Podman API service, conmon and the other runtime helpers. So `memory.max` and `memory.high` must be at least the node's `engine_memory` plus `runtime_memory_headroom`, and `pids.max` at least the sum of `pids` times `max_instances` over the engines the node may start plus `runtime_pids_headroom`. Both headrooms are in `node.toml` (defaults 512 MiB and 256), and `node-setup.sh` sets any limit it puts on `usnmeng`'s slice from the same file. Otherwise a systemd slice above the scope could leave an engine less memory or fewer pids than the scheduler assumes.
 
   If either part fails, the worker refuses the engine and raises an error naming the cgroup and its value. Limits that don't apply fail closed instead of letting an engine use the whole node.
 
@@ -401,9 +401,14 @@ The worker refuses a production engine at startup, and `routes check` refuses it
   - After any `timeout` result, the worker compares `cgroup.procs` with the set it recorded after `hello`, and recycles the instance if extra processes remain.
 - **Worker deadline.** At `deadline_ms` + 15 s the worker runs `podman --remote kill --signal KILL` and removes the instance.
 - **Crash.** EOF on stdout, a line that isn't contract JSON, or a container exit. The page fails as transient. The instance restarts lazily with backoff: 1 s, 5 s, 30 s, 2 min.
-- **Breaker.** 3 crashes or refused `hello`s in 10 minutes disable an engine on the node for 15 minutes. Routes then use their next candidate. While no engine the node may start is usable, the worker takes no messages (§13.7.6).
+- **Breaker.** An engine's breaker opens on either of these, and disables the engine on the node for 15 minutes:
+  - 3 crashes or refused `hello`s in 10 minutes;
+  - 5 pages in a row, each a different `doc_id`, that end in an engine-level failure: `failed`, `timeout` from the adapter, the worker's `engine_timeout`, `engine_oom`, `engine_protocol` or `convert`, with no `ok` between them. Counting distinct pages keeps one bad page from opening it: a page that fails on every receive counts once. `unsupported`, `bad_input`, LoC errors and `too_large` don't count.
+
+  Routes then use their next candidate. While no engine the node may start is usable, the worker takes no messages (§13.7.6). After the 15 minutes the breaker is half open: one page goes to the engine, and its failure opens the breaker again for twice as long, up to 2 hours. So an engine release that hangs or fails on every page costs 5 pages one receive each, then one page's receive per open period, instead of draining the queue.
+
 - **Recycling.** An instance restarts between pages after `max_jobs_per_instance` pages, or when `memory.current` after a page is above 90% of its limit (a leak).
-- A page that always times out costs a kill and a restart on each of its 5 receives before it is dead-lettered.
+- A page that always times out, while other pages succeed, costs a kill and a restart on each of its 5 receives before it is dead-lettered.
 
 ### 13.6.6 Metering
 
@@ -498,21 +503,21 @@ id = "deu_latf+deu"
 models = ["tessdata/deu_latf.traineddata", "tessdata/deu.traineddata"]
 languages = ["deu"]
 defaults = { psm = 3 }           # sent unless a route overrides them
-tunable = ["psm", "scale"]
+tunable = ["psm"]
 
 [[engine.profile]]
 id = "frak2021"                  # survey only: its model's licence isn't cleared
 models = ["tessdata/frak2021.traineddata"]
 languages = ["deu"]
 defaults = { psm = 3 }
-tunable = ["psm", "scale"]
+tunable = ["psm"]
 
 [[engine.profile]]
 id = "deu"
 models = ["tessdata/deu.traineddata"]
 languages = ["deu"]
 defaults = { psm = 3 }
-tunable = ["psm", "scale"]
+tunable = ["psm"]
 ```
 
 `production = false` keeps an engine out of production routes. A production route may use a profile only if every model the profile uses has a `license` in `production_licenses`. Anything else, such as `unknown` or the Qwen Research License, can be surveyed but not routed in production. The worker and `routes check` both refuse it.
@@ -528,23 +533,30 @@ The same excerpt as the `hello` in §13.4.2 (registry name and image digest made
 ```json
 {
   "tesseract-5.5": {
-    "adapter": "usnm-ocr-adapter-tesseract 0.1.0",
+    "adapter": {"lang": "rust", "name": "usnm-ocr-adapter-tesseract", "version": "0.1.0"},
+    "cancel": "adapter",
+    "contract": 1,
+    "deterministic": true,
+    "engine": {"family": "tesseract", "id": "tesseract-5.5", "version": "5.5.3"},
+    "granularity": "word",
     "image": "crusnmprodk3x9.azurecr.io/usnm-ocr/tesseract@sha256:3f9a0c1d2e4b507737dc5d6760843358ae18fa807b684b6ce2370cd979c90dc4",
+    "layout": "alto",
     "models": {
       "tessdata/deu.traineddata": "8407331d6aa0229dc927685c01a7938fc5a641d1a9524f74838cdac599f0d06e",
       "tessdata/deu_latf.traineddata": "429b8c33d37e1a4823a2bb082a644ff13e252f735b7945e08a518d22ddcc459e",
       "tessdata/frak2021.traineddata": "1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a"
     },
+    "models_loaded": "per_page",
     "profiles": {
-      "deu": {"languages": ["deu"], "models": ["tessdata/deu.traineddata"], "tunable": ["psm", "scale"]},
-      "deu_latf+deu": {"languages": ["deu"], "models": ["tessdata/deu_latf.traineddata", "tessdata/deu.traineddata"], "tunable": ["psm", "scale"]},
-      "frak2021": {"languages": ["deu"], "models": ["tessdata/frak2021.traineddata"], "tunable": ["psm", "scale"]}
+      "deu": {"languages": ["deu"], "models": ["tessdata/deu.traineddata"], "tunable": ["psm"]},
+      "deu_latf+deu": {"languages": ["deu"], "models": ["tessdata/deu_latf.traineddata", "tessdata/deu.traineddata"], "tunable": ["psm"]},
+      "frak2021": {"languages": ["deu"], "models": ["tessdata/frak2021.traineddata"], "tunable": ["psm"]}
     }
   }
 }
 ```
 
-- CI writes `profiles` from the image's `hello` after conformance, and fails if any profile's `languages`, `models` or `tunable` differ from its entry in `engines.toml`. The worker compares each `hello` with these entries (§13.4.2).
+- CI writes the entry from the image's `hello` after conformance: every field of `hello` except `type`, with `models` as a map and `profiles` keyed by id. It fails if any profile's `languages`, `models` or `tunable` differ from its entry in `engines.toml`. The worker compares each `hello` with the whole entry (§13.4.2), so a new engine version or `cancel` mode needs a lock change in a reviewed PR.
 - `models` within a profile keeps the profile's load order; the comparisons treat it as a set.
 
 ### 13.7.4 routes.toml
@@ -609,7 +621,7 @@ So a worker that kept receiving through an engine outage would spend every visib
 3. **Some engines down: bounded receive-and-defer.** The worker peeks first and routes each peeked message as it would on receive (with its dequeue count plus 1). A message is _blocked_ when no candidate from its starting rank is usable on this node.
    - If the first peeked message isn't blocked, the worker receives as usual.
    - Otherwise it makes a defer receive: Get Messages for the leading blocked messages plus one (at most 32), with the usual 1,800 s visibility. It reads any routable message the call returns, since the order can change between the peek and the receive. It leaves the blocked ones without deleting them, so they stay hidden for 1,800 s and the messages behind them reach the front.
-   - **Defer budget.** A message is deferred at most twice. A blocked message whose peeked dequeue count is already 2 is moved instead: the worker receives it (its 3rd receive), adds it to `ocr-deadletter` with cause `unroutable` and the ids of the engines that were down, and deletes it from the work queue. 12 Step 10's seeder queues `unroutable` dead letters again as it does `dequeue_count` ones, at most 3 times, so a page isn't lost to an outage. A message queued again starts with dequeue count 0.
+   - **Defer budget.** A message is deferred at most twice. A blocked message whose peeked dequeue count is already 2 is moved instead: the worker receives it (its 3rd receive), adds it to `ocr-deadletter` with cause `unroutable` and the ids of the engines that were down, and deletes it from the work queue. 12 Step 10's seeder queues `unroutable` dead letters again outside the limit of 3 attempts that `dequeue_count` ones get, so a long outage can't use up a page's attempts. It waits before each requeue, 6 hours doubling to 48 hours per `unroutable` cycle of the same page, so a page doesn't churn through the work queue while the engine stays down. The page stays outstanding in the ledger meanwhile, and the status file reports pages that are `unroutable` for more than 7 days. A message queued again starts with dequeue count 0.
    - **Rate.** At most 10 defer receives a minute, and only while a page slot is free.
    - A deferred receive counts toward the candidate rank too (`fallback_after`). That is the intended effect when the first candidate's engine is the one down.
 
@@ -617,7 +629,7 @@ So a worker that kept receiving through an engine outage would spend every visib
 
 **Cost.** For `B` blocked messages ahead of routable work, reaching that work takes about `B / 32` defer receives (at most 10 a minute, so 1,000 blocked messages take about 3 minutes) and uses one of each blocked message's receives. After about an hour of outage, blocked messages that come round a third time are moved to `ocr-deadletter`: 3 receives, a dead-letter put and a delete each, and a later put by the seeder. Storage transactions are billed per 10,000, so the queue cost is small; the real cost is the page's receives and up to an hour's delay, plus the seeder's delay, before a deferred page is read. Main's 5-receive limit is unchanged.
 
-**Tests.** With every breaker open, 100 queued messages still have dequeue count 0 after 10 minutes. With engine A's breaker open and 100 messages for A queued ahead of 10 for engine B, the 10 B pages finish, no A message on the work queue passes dequeue count 2, and the A messages past their budget are in `ocr-deadletter` with cause `unroutable`.
+**Tests.** With every breaker open, 100 queued messages still have dequeue count 0 after 10 minutes. With engine A's breaker open and 100 messages for A queued ahead of 10 for engine B, the 10 B pages finish, no A message on the work queue passes dequeue count 2, and the A messages past their budget are in `ocr-deadletter` with cause `unroutable`. With an engine that hangs on every page and is the node's only engine, its breaker opens after 5 pages and those 5 messages have dequeue count 1; while it stays down, at most one more receive is spent per open period.
 
 **Queues per capability.** Defers keep a mixed queue moving through a short outage of one engine. They don't suit an engine that a node can never run. When node 2 runs engines node 1 can't, routes for those engines get a capability queue (`ocr-bulk-gpu`, with its Bicep queue and a grant to the node group), and the seeder picks the queue with the same `usnm-ocr-route` crate. A node receives only from queues whose engines it may start, so an outage there costs nothing on the other queues. The limit is that a route's candidates must all be in one capability group, since a node can't move a message between queues; `routes check` enforces it. If outages of one CPU engine start sending many pages to `ocr-deadletter` as `unroutable`, that engine moves to a queue of its own the same way.
 
@@ -792,7 +804,7 @@ flowchart TB
     - For `block` and `page` runs, whose Strings carry their block's box, the crop's transcription is aligned against the text of the blocks that overlap the crop (best local alignment, edit distance over the aligned span), reported in its own column, `cer_block_aligned`.
   - `usnm-ocr-survey replay --work <dir> --cascade-threshold 0.25` computes best-of and cascade gains from existing runs with no new OCR.
   - `usnm-ocr-survey repro`, as in §13.8.5.
-- **Plan file.** `ocr/survey/plan.toml` replaces the `PLAN` table in the survey's `run.py`. Its runs are the same `{ engine, profile, options, scale }` as a route's candidates, so a winner is copied into `routes.toml` unchanged. Profiles' defaults apply as in production, and every run gets the `image.dpi` the worker would send (300 at scale 1).
+- **Plan file.** `ocr/survey/plan.toml` replaces the `PLAN` table in the survey's `run.py`. Its runs are the same `{ engine, profile, options, scale }` as a route's candidates (`scale` beside `options`, not in them), so a winner is copied into `routes.toml` unchanged. Profiles' defaults apply as in production, and every run gets the `image.dpi` the worker would send (300 at scale 1).
 - **What it fixes.** Pages are keyed by `doc_id`; languages are ISO 639-3; the scored text is the normalized text the overlay would store; resources come from the cgroup outside the container. Partial output stays marked partial and out of the `ok` counts, as the Python survey has it.
 - The survey shares node 1 with the worker, so it runs with the worker stopped, or with instances of its own, so that timings don't compete.
 - **Moving off round 1:**
