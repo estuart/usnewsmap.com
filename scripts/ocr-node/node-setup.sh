@@ -11,7 +11,7 @@
 # while `azcmagent connect --config` reads it, and is deleted straight after.
 # On a node that's already connected the token isn't used.
 #
-# Installs python3, podman and chrony;
+# Keeps the journal on disk; installs python3, podman and chrony;
 # creates the `usnm` system user; installs the Azure Connected Machine
 # agent, turns off extensions, guest configuration and incoming connections
 # BEFORE it connects; connects; installs the worker's systemd unit, disabled
@@ -75,6 +75,20 @@ step "Installing packages"
 dnf -y -q install python3 podman chrony curl
 systemctl enable --now chronyd > /dev/null
 podman --version
+
+step "Persistent journal"
+# The AlmaLinux cloud image keeps the journal in memory only, so a reboot
+# loses the logs. Keep it on disk, at most 1 GB.
+mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+want=$'[Journal]\nStorage=persistent\nSystemMaxUse=1G'
+if [ "$(cat /etc/systemd/journald.conf.d/50-usnm.conf 2> /dev/null)" = "$want" ]; then
+  echo "already persistent"
+else
+  printf '%s\n' "$want" > /etc/systemd/journald.conf.d/50-usnm.conf
+  systemd-tmpfiles --create --prefix /var/log/journal > /dev/null 2>&1 || true
+  systemctl restart systemd-journald
+  echo "journal kept in /var/log/journal (at most 1 GB)"
+fi
 
 step "SSH key exchange"
 # AlmaLinux 9.8's OpenSSH 9.9 supports post-quantum key exchange, but the

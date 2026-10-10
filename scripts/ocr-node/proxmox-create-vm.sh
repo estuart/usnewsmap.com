@@ -35,6 +35,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$VMID" ] && [ -n "$NAME" ] && [ -n "$SSH_KEY" ] || usage
+# The name becomes a file name, the hostname and part of the cloud-init
+# document, so it must be a plain DNS label (as Proxmox and onboard.sh want).
+[[ $NAME =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,52}[A-Za-z0-9])?$ ]] ||
+  { echo "--name: 1 to 54 letters, digits or hyphens, not starting or ending with a hyphen" >&2; exit 1; }
+[[ $VMID =~ ^[1-9][0-9]{2,8}$ ]] || { echo "--vmid: a number from 100" >&2; exit 1; }
+[[ $SSH_KEY != *$'\n'* ]] || { echo "--ssh-key: one line" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || { echo "run as root on the Proxmox host" >&2; exit 1; }
 command -v qm >/dev/null || { echo "qm not found: not a Proxmox host?" >&2; exit 1; }
 qm status "$VMID" >/dev/null 2>&1 && { echo "VM $VMID already exists" >&2; exit 1; }
