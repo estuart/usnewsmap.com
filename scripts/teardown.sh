@@ -119,9 +119,16 @@ if [ "$old_copy" = false ]; then
       die "can't read USNM_DEPLOY_ENVIRONMENTS in $REPO: $envs"
     envs=""
   fi
+  # Taking the environment off the list is recorded first, so a teardown
+  # interrupted during the wait below still waits when it's run again,
+  # although the list no longer names it.
+  waiting="$(dirname "$ENV_FILE")/teardown-$SUBSCRIPTION.wait"
   was_listed=false
+  [ -e "$waiting" ] && was_listed=true
   if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
     was_listed=true
+    mkdir -p "$(dirname "$waiting")"
+    : > "$waiting"
     names=$(tr -d '[]" ' <<< "$envs" | tr ',' '\n' | grep -vx "$ENV_NAME" | grep -v '^$' || true)
     envs="[$(sed 's/.*/"&"/' <<< "$names" | paste -sd, -)]"
     [ "$envs" = '[""]' ] && envs='[]'
@@ -154,6 +161,7 @@ if [ "$old_copy" = false ]; then
       echo "waiting for queued and running workflows in $REPO to finish"
       sleep 30
     done
+    rm -f "$waiting"
   else
     echo "$ENV_NAME isn't on USNM_DEPLOY_ENVIRONMENTS, so no workflow run can deploy it; not waiting"
   fi
