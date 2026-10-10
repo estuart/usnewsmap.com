@@ -12,7 +12,11 @@
 //   the route or endpoint with the most of it. Route names are templates
 //   ("GET /v1/aggregate"), never paths or query strings, so no search text.
 //   Every combination is its own alert, so a second route overtaking the
-//   first during an incident sends one more email.
+//   first during an incident sends one more email. Every query reads only
+//   rows from the API's own component (its _ResourceId, appInsightsId):
+//   anyone with Monitoring Metrics Publisher on a component can write rows
+//   under any role name, so a row naming usnm-api from any other component
+//   that sends to the workspace can't trip these alerts.
 // - Availability: an Application Insights standard test of the site's home
 //   page from three US locations, with a metric alert when two of the three
 //   fail. The site and the API are one container app, so the home page
@@ -56,7 +60,7 @@ param availabilityFrequency string = '900'
 // kind), so each fires and clears on its own.
 var serverErrors = '''
 let requests = AppRequests
-    | where AppRoleName == "usnm-api"
+    | where _ResourceId =~ "__COMPONENT_ID__" and AppRoleName == "usnm-api"
     | extend Problem = tostring(Properties["usnm.problem"])
     | extend Slow = Problem in ("/errors/backend-timeout", "/errors/busy"), Error = toint(ResultCode) >= 500;
 let top = (slow: bool) {
@@ -86,7 +90,7 @@ union
 // the other alerts. Split by the endpoint and outcome with the most.
 var slowSearches = '''
 let slow = AppMetrics
-    | where AppRoleName == "usnm-api" and Name == "api.slow_searches";
+    | where _ResourceId =~ "__COMPONENT_ID__" and AppRoleName == "usnm-api" and Name == "api.slow_searches";
 let top = slow
     | summarize n = sum(Sum) by Endpoint = tostring(Properties["endpoint"]), Outcome = tostring(Properties["outcome"])
     | top 1 by n desc;
@@ -107,7 +111,7 @@ slow
 // split: the route is fixed and the numbers change at every check.
 var slowAggregate = '''
 AppRequests
-| where AppRoleName == "usnm-api"
+| where _ResourceId =~ "__COMPONENT_ID__" and AppRoleName == "usnm-api"
 | where Name in ("GET /v1/aggregate", "GET /api/v1/aggregate")
 | where toint(ResultCode) < 500
 | summarize Requests = sum(ItemCount), Slow = sumif(ItemCount, DurationMs > 3000),
@@ -168,7 +172,8 @@ resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
       criteria: {
         allOf: [
           {
-            query: r.query
+            // The placeholder becomes the API's component.
+            query: replace(r.query, '__COMPONENT_ID__', appInsightsId)
             timeAggregation: 'Count'
             operator: 'GreaterThan'
             threshold: 0

@@ -21,8 +21,9 @@
 # configuration, no incoming connections;
 # connects; installs the worker's systemd unit and its settings in
 # /etc/usnm/ocr-worker.env (the exchange account's URLs, the node id and
-# the Application Insights connection string, which isn't a secret: with
-# local auth off, ingestion needs an Entra token too); and checks that
+# the connection string of the nodes' own Application Insights component,
+# usnm-ocr-appi-<env>, which isn't a secret: with local auth off, ingestion
+# needs an Entra token too); and checks that
 # `usnm` can get a token from the agent. The unit starts only once the
 # worker binary is in /usr/local/bin. onboard.sh installs the monitoring
 # agent itself, from Azure, after this. Safe to run again, on a connected
@@ -376,8 +377,9 @@ usermod -aG himds usnm
 step "The worker's settings and unit"
 # /etc/usnm/ocr-worker.env holds what this script knows: the exchange
 # account's URLs, the node id, the pages in flight (one per CPU; the worker
-# gives Tesseract one thread per page) and the Application Insights
-# connection string. It is rewritten on every run. Local changes go in
+# gives Tesseract one thread per page) and the nodes' Application Insights
+# connection string (--app-insights; onboard.sh passes
+# OCR_NODE_APPINSIGHTS). It is rewritten on every run. Local changes go in
 # /etc/usnm/ocr-worker.local.env, read after it and never touched here:
 # USNM_OCR_ARGS (all the extra flags, e.g. "--concurrency 2 --api-gap-ms
 # 7000" with two nodes sharing loc.gov's rate) or RUST_LOG. Both are

@@ -1,10 +1,12 @@
-// The on-prem OCR nodes' problems, newest first (#296). Worker: its WARN
-// and ERROR lines by message and kind, and any line that isn't JSON (a
-// panic, a bad flag), from Syslog local0. System: everything at err and
-// above, systemd's lines about usnm-ocr-worker.service and the kernel's OOM
-// kills, by process and message with digits masked. Each group shows its
-// count, first and last time and one example, cut to 300 characters. No
-// Syslog table yet (a new workspace) gives no rows, not an error.
+// The on-prem OCR nodes' problems, newest first (#296), from the nodes'
+// workspace usnm-ocr-log-<env> (scripts/logs.sh runs ocr-node-* queries
+// there). Worker: its WARN and ERROR lines by message and kind, and any
+// line that isn't JSON (a panic, a bad flag), from Syslog local0. System:
+// everything at err and above, systemd's lines about
+// usnm-ocr-worker.service and the kernel's OOM kills, by process and
+// message with digits masked. Each group shows its count, first and last
+// time and one example, cut to 300 characters. No Syslog table yet (a new
+// workspace) gives no rows, not an error.
 let machines = "/providers/microsoft.hybridcompute/machines/";
 let node_of = (id: string) { extract(@"(?i)/machines/([^/]+)$", 1, id) };
 let syslog = union isfuzzy=true

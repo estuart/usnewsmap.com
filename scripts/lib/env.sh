@@ -146,9 +146,10 @@ save_outputs() {
   done < <(awk -F'\t' 'NR == 1 { n = split($0, k, "\t") }
       NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) print k[i] "\t" toupper(k[i]) "\t" v[i] }' <<< "$out")
 }
-# With USNM_OCR_NODES off, the stack deletes the nodes' data collection rule,
-# and Azure won't delete a rule that still has associations, so every try
-# below would fail. Stops first, naming them; offboard.sh deletes them.
+# With USNM_OCR_NODES off, the stack deletes the nodes' monitoring (their
+# workspace, Application Insights component and data collection rule), and
+# Azure won't delete a rule that still has associations, so every try below
+# would fail. Stops first, naming them; offboard.sh deletes them.
 # Returns 0 when there's nothing to check or the rule is already gone.
 ocr_nodes_off_check() {
   local nodes dcr out err errf

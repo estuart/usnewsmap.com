@@ -2,10 +2,11 @@
 # Onboard an on-prem OCR node (#296, ADR-0015) from the operator's machine:
 # connect it to Azure Arc in the environment's resource group, add its
 # identity to the nodes' Entra group, which the provision has already
-# granted the exchange account's queues and output container (and
-# Application Insights, for the worker's telemetry), and install the Azure
-# Monitor Agent with the nodes' data collection rule. No provision is
-# needed afterwards.
+# granted the exchange account's queues and output container (and the
+# nodes' own Application Insights component, usnm-ocr-appi-<env>, for the
+# worker's telemetry), and install the Azure Monitor Agent with the nodes'
+# data collection rule, which sends to the nodes' own workspace. No
+# provision is needed afterwards.
 #
 #   scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org \
 #     --name usnm-ocr-node1 [--ssh-key ~/.ssh/id_ed25519] [--dry-run]
@@ -22,8 +23,9 @@
 #   3. copies scripts/ocr-node/node-setup.sh to the node and runs it with
 #      sudo, sending the tenant, app id and secret on its stdin (never on a
 #      command line, never on the node's disk), and the exchange account
-#      and the Application Insights connection string as arguments (not
-#      secrets) for the worker's unit;
+#      and the nodes' Application Insights connection string
+#      (OCR_NODE_APPINSIGHTS) as arguments (not secrets) for the worker's
+#      unit;
 #   4. deletes the role assignment, the service principal and the app
 #      registration, and purges them from Entra's deleted items, as soon as
 #      node-setup.sh has finished (the connect was their only use), or when
@@ -90,7 +92,9 @@ EXCHANGE=$(aget OCR_EXCHANGE_ACCOUNT)
 NODES=$(aget USNM_OCR_NODES)
 NODE_IPS=$(aget USNM_OCR_NODE_IPS)
 NODE_GROUP=$(aget USNM_OCR_NODE_GROUP)
-CONN=$(aget APPLICATIONINSIGHTS_CONNECTION_STRING)
+# The nodes' own component, never the environment's (ADR-0015 decision 8).
+CONN=$(aget OCR_NODE_APPINSIGHTS)
+APPI_ID=$(aget OCR_NODE_APPINSIGHTS_ID)
 DCR_ID=$(aget OCR_NODE_DCR_ID)
 [ -n "$SUBSCRIPTION" ] && [ -n "$TENANT" ] && [ -n "$GROUP" ] ||
   die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/provision.sh $ENV_NAME"
@@ -103,7 +107,7 @@ DCR_ID=$(aget OCR_NODE_DCR_ID)
 [ -n "$DCR_ID" ] ||
   die "no OCR_NODE_DCR_ID for $ENV_NAME (the nodes' data collection rule): run scripts/provision.sh $ENV_NAME first"
 [ -n "$CONN" ] ||
-  echo "warning: APPLICATIONINSIGHTS_CONNECTION_STRING is empty, so the worker will send no telemetry; run scripts/provision.sh $ENV_NAME"
+  echo "warning: OCR_NODE_APPINSIGHTS (the nodes' Application Insights) is empty, so the worker will send no telemetry; run scripts/provision.sh $ENV_NAME"
 [ -n "$NODE_IPS" ] ||
   echo "warning: USNM_OCR_NODE_IPS is empty, so the exchange account's firewall lets no node in; set it to the node's public IP and provision"
 
@@ -123,7 +127,8 @@ NODE_GROUP_NAME=$(az ad group show --group "$NODE_GROUP" --query displayName -o 
   die "can't read group $NODE_GROUP (USNM_OCR_NODE_GROUP); run scripts/ocr-node/group.sh --env $ENV_NAME"
 echo "environment $ENV_NAME: subscription $SUBSCRIPTION, $GROUP, $LOCATION, exchange account $EXCHANGE"
 echo "node group $NODE_GROUP_NAME ($NODE_GROUP)"
-echo "data collection rule ${DCR_ID##*/}"
+appi=${APPI_ID##*/}
+echo "data collection rule ${DCR_ID##*/}; worker telemetry to ${appi:-none}"
 echo "node $HOST, Arc resource $NAME"
 [ "$DRY_RUN" = false ] || echo "dry run: nothing is changed"
 
@@ -598,7 +603,7 @@ step "Next"
 echo "$NAME has the node roles on $EXCHANGE through $NODE_GROUP_NAME; no provision needed."
 echo "A token the node fetched for storage before it joined the group lacks the membership"
 echo "until it expires (up to about 24 hours for a managed identity; ADR-0015)."
-echo "Its heartbeat and counters reach the workspace within about 10 minutes:"
+echo "Its heartbeat and counters reach the nodes' workspace within about 10 minutes:"
 echo "  scripts/logs.sh $ENV_NAME ocr-node-health"
 echo "The worker starts once its binary is installed on the node, as root:"
 echo "  install -m 0755 usnm-ocr-worker /usr/local/bin/ && systemctl enable --now usnm-ocr-worker"
