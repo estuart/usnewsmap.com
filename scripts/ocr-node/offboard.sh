@@ -68,12 +68,19 @@ echo "environment $ENV_NAME: subscription $SUBSCRIPTION, $GROUP; Arc resource $N
 [ "$DRY_RUN" = false ] || echo "dry run: nothing is changed"
 
 MACHINE_ID="" principal=""
+# stderr apart, so a warning can't end up in the result.
+errf=$(mktemp)
 if machine=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
-  --subscription "$SUBSCRIPTION" --query '[id, identity.principalId]' -o tsv 2> /dev/null); then
+  --subscription "$SUBSCRIPTION" --query '[id, identity.principalId]' -o tsv 2> "$errf"); then
+  rm -f "$errf"
   MACHINE_ID=$(echo "$machine" | sed -n 1p)
   principal=$(echo "$machine" | sed -n 2p)
   echo "$NAME: $MACHINE_ID, identity ${principal:-none}"
 else
+  # Only a machine that isn't there counts as gone; any other failure stops.
+  err=$(cat "$errf")
+  rm -f "$errf"
+  grep -qE '\((ResourceNotFound|ResourceGroupNotFound)\)' <<< "$err" || die "can't look up $NAME in $GROUP: $err"
   echo "$NAME isn't in $GROUP"
 fi
 
@@ -82,7 +89,10 @@ if [ -z "$NODE_GROUP" ]; then
   echo "no USNM_OCR_NODE_GROUP for $ENV_NAME; nothing to remove"
 elif [ -z "$principal" ]; then
   echo "no identity to remove (a deleted identity leaves its groups by itself)"
-elif [ "$(az ad group member check --group "$NODE_GROUP" --member-id "$principal" --query value -o tsv)" != true ]; then
+elif ! member=$(az ad group member check --group "$NODE_GROUP" --member-id "$principal" --query value -o tsv) ||
+  { [ "$member" != true ] && [ "$member" != false ]; }; then
+  die "can't check whether $principal is in $NODE_GROUP"
+elif [ "$member" = false ]; then
   echo "$principal isn't in $NODE_GROUP"
 elif [ "$DRY_RUN" = true ]; then
   echo "would remove $principal from $NODE_GROUP"

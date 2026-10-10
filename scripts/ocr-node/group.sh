@@ -67,8 +67,9 @@ if [ -n "$SAVED" ]; then
   echo "USNM_OCR_NODE_GROUP is $GROUP_ID ($name, $members members)"
   # Owners can add members, and every member gets the node roles.
   echo "owners:"
-  az ad group owner list --group "$GROUP_ID" --query '[].[id, userPrincipalName || displayName]' -o tsv |
-    while IFS="$(printf '\t')" read -r oid oname; do echo "  $oid $oname"; done
+  owners=$(az ad group owner list --group "$GROUP_ID" --query '[].[id, userPrincipalName || displayName]' -o tsv) ||
+    die "can't list the owners of $GROUP_ID"
+  printf '%s\n' "$owners" | while IFS="$(printf '\t')" read -r oid oname; do [ -z "$oid" ] || echo "  $oid $oname"; done
 else
   ids=$(az ad group list --filter "displayName eq '$GROUP_NAME'" --query '[].id' -o tsv)
   [ -z "$ids" ] ||
@@ -91,7 +92,9 @@ if [ -z "$me" ]; then
   echo "warning: not signed in as a user, so not checking group ownership" >&2
 elif [ -z "$GROUP_ID" ]; then
   echo "would make you ($me) an owner of $GROUP_NAME"
-elif [ -n "$(az ad group owner list --group "$GROUP_ID" --query "[?id=='$me'].id" -o tsv)" ]; then
+elif ! own=$(az ad group owner list --group "$GROUP_ID" --query "[?id=='$me'].id" -o tsv); then
+  die "can't list the owners of $GROUP_ID"
+elif [ -n "$own" ]; then
   echo "you ($me) own $GROUP_NAME"
 elif [ "$DRY_RUN" = true ]; then
   echo "would make you ($me) an owner of $GROUP_NAME"

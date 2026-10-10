@@ -214,9 +214,32 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
+# Looks up the Arc machine and puts the query's result in MACHINE_OUT.
+# Returns 1 only when the machine doesn't exist, and stops the script on any
+# other failure (sign-in, throttling, network), so an API error is never
+# taken for "not connected". Called in this shell, not in $(...), so its
+# die ends the script.
+MACHINE_OUT=""
+machine_get() {
+  local out err errf
+  MACHINE_OUT=""
+  # stderr apart, so a warning can't end up in the result.
+  errf=$(mktemp)
+  if out=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
+    --subscription "$SUBSCRIPTION" --query "$1" -o tsv 2> "$errf"); then
+    rm -f "$errf"
+    MACHINE_OUT=$out
+    return 0
+  fi
+  err=$(cat "$errf")
+  rm -f "$errf"
+  if grep -qE '\((ResourceNotFound|ResourceGroupNotFound)\)' <<< "$err"; then return 1; fi
+  die "can't look up $NAME in $GROUP: $err"
+}
+
 step "Node setup"
-connected=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
-  --subscription "$SUBSCRIPTION" --query properties.status -o tsv 2> /dev/null || true)
+connected=""
+if machine_get properties.status; then connected=$MACHINE_OUT; fi
 if [ "$connected" = Connected ]; then
   echo "$NAME is already connected; no onboarding credential needed"
 elif [ "$DRY_RUN" = true ]; then
@@ -282,12 +305,20 @@ fi
 step "Machine"
 # The provision grants the nodes' group the node roles
 # (infra/modules/ocr-exchange.bicep); a node gets them by being a member.
+# 0 if a member, 1 if not; stops if Graph can't say.
 is_member() {
-  [ "$(az ad group member check --group "$NODE_GROUP" --member-id "$1" --query value -o tsv 2> /dev/null)" = true ]
+  local out
+  out=$(az ad group member check --group "$NODE_GROUP" --member-id "$1" --query value -o tsv 2>&1) ||
+    die "can't check whether $1 is in $NODE_GROUP_NAME: $out"
+  case "$out" in
+    true) return 0 ;;
+    false) return 1 ;;
+    *) die "can't check whether $1 is in $NODE_GROUP_NAME: $out" ;;
+  esac
 }
 if [ "$DRY_RUN" = true ]; then
-  principal=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
-    --subscription "$SUBSCRIPTION" --query identity.principalId -o tsv 2> /dev/null || true)
+  principal=""
+  if machine_get identity.principalId; then principal=$MACHINE_OUT; fi
   if [ -z "$principal" ]; then
     echo "$NAME isn't connected yet, or has no identity yet"
     echo "would add its identity to $NODE_GROUP_NAME"
@@ -300,8 +331,7 @@ if [ "$DRY_RUN" = true ]; then
 fi
 principal=""
 for attempt in 1 2 3 4 5 6; do
-  principal=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
-    --subscription "$SUBSCRIPTION" --query identity.principalId -o tsv 2> /dev/null || true)
+  if machine_get identity.principalId; then principal=$MACHINE_OUT; fi
   [ -z "$principal" ] || break
   sleep 10
 done
