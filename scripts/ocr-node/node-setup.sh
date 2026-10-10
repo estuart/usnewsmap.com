@@ -2,14 +2,16 @@
 # Set up an on-prem OCR node (#296, ADR-0015). Runs on the node as root;
 # scripts/ocr-node/onboard.sh copies it there and runs it with sudo.
 #
-#   node-setup.sh --tenant ID --subscription ID --resource-group NAME \
-#     --location REGION --name ARC_NAME [--tags K=V,K=V] [--force-unsupported] \
-#     < token
+#   node-setup.sh --subscription ID --resource-group NAME --location REGION \
+#     --name ARC_NAME [--tags K=V,K=V] [--force-unsupported] \
+#     < credentials
 #
-# Reads a short-lived ARM access token from stdin (one line). It never goes
-# on a command line or to disk: it waits in a 0600 file under /run (tmpfs)
-# while `azcmagent connect --config` reads it, and is deleted straight after.
-# On a node that's already connected the token isn't used.
+# Reads the onboarding service principal from stdin, three lines: tenant id,
+# app id, secret. onboard.sh makes that principal for the run, with only
+# Azure Connected Machine Onboarding on the group, and deletes it after. The
+# secret never goes on a command line or to persistent disk: it waits in a 0600
+# file under /run (tmpfs) while `azcmagent connect --config` reads it, and
+# is deleted straight after. A node that's already connected needs none.
 #
 # Keeps the journal on disk; installs python3, podman and chrony;
 # creates the `usnm` system user; installs the Azure Connected Machine
@@ -25,10 +27,9 @@ usage() { sed -n '5,7s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
-TENANT="" SUBSCRIPTION="" GROUP="" LOCATION="" NAME="" TAGS="" FORCE=false
+SUBSCRIPTION="" GROUP="" LOCATION="" NAME="" TAGS="" FORCE=false
 while [ $# -gt 0 ]; do
   case "$1" in
-    --tenant) TENANT=${2:-}; shift 2 ;;
     --subscription) SUBSCRIPTION=${2:-}; shift 2 ;;
     --resource-group) GROUP=${2:-}; shift 2 ;;
     --location) LOCATION=${2:-}; shift 2 ;;
@@ -39,18 +40,27 @@ while [ $# -gt 0 ]; do
     *) echo "error: unknown option $1" >&2; usage ;;
   esac
 done
-for pair in TENANT:tenant SUBSCRIPTION:subscription GROUP:resource-group LOCATION:location NAME:name; do
+for pair in SUBSCRIPTION:subscription GROUP:resource-group LOCATION:location NAME:name; do
   var=${pair%%:*}
   [ -n "${!var}" ] || { echo "error: missing --${pair#*:}" >&2; usage; }
 done
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
 
-# The token first, before anything else can read stdin.
-TOKEN=""
+# The credentials first, before anything else can read stdin.
+TENANT="" SP_ID="" SP_SECRET=""
 if [ ! -t 0 ]; then
-  IFS= read -r TOKEN || true
+  IFS= read -r TENANT || true
+  IFS= read -r SP_ID || true
+  IFS= read -r SP_SECRET || true
 fi
-[ -z "$TOKEN" ] || [[ $TOKEN =~ ^[A-Za-z0-9._-]+$ ]] || die "the token on stdin isn't a JWT"
+if [ -n "$TENANT$SP_ID$SP_SECRET" ]; then
+  uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+  [[ $TENANT =~ $uuid ]] || die "the first line on stdin isn't a tenant id"
+  [[ $SP_ID =~ $uuid ]] || die "the second line on stdin isn't an app id"
+  # It goes into JSON as is, so no quotes, backslashes or control characters.
+  [[ -n $SP_SECRET && $SP_SECRET =~ ^[[:graph:]]+$ && $SP_SECRET != *[\\\"]* ]] ||
+    die "the third line on stdin isn't a client secret"
+fi
 
 step "Checking the OS"
 # shellcheck source=/dev/null
@@ -140,7 +150,7 @@ for f in /etc/subuid /etc/subgid; do
   fi
 done
 
-# A directory on tmpfs for the installer and the token; removed on exit.
+# A directory on tmpfs for the installer and the secret; removed on exit.
 WORK=$(mktemp -d /run/usnm-onboard.XXXXXX)
 chmod 700 "$WORK"
 trap 'rm -rf "$WORK"' EXIT
@@ -169,22 +179,33 @@ step "Connecting to Azure Arc"
 if azcmagent show 2> /dev/null | grep -Eq '^[[:space:]]*Agent Status[[:space:]]*:[[:space:]]*Connected'; then
   echo "already connected; skipping"
 else
-  [ -n "$TOKEN" ] || die "not connected and no access token on stdin"
-  # --config reads flags from a file, so the token stays out of the process
-  # list. The file is on tmpfs, readable by root only, and deleted at once.
+  [ -n "$SP_SECRET" ] || die "not connected and no service principal on stdin"
+  # --config reads flags from a file, so the secret stays out of the process
+  # list (Microsoft's advice for service principal secrets). The file is on
+  # tmpfs, readable by root only, and deleted as soon as the connect ends.
   conf="$WORK/connect.json"
-  (umask 077; printf '{"access-token": "%s"}\n' "$TOKEN" > "$conf")
+  (umask 077; printf '{"service-principal-id": "%s", "service-principal-secret": "%s"}\n' \
+    "$SP_ID" "$SP_SECRET" > "$conf")
   connect_args=(
     --resource-group "$GROUP" --tenant-id "$TENANT" --subscription-id "$SUBSCRIPTION"
     --location "$LOCATION" --resource-name "$NAME" --cloud AzureCloud
   )
   [ -z "$TAGS" ] || connect_args+=(--tags "$TAGS")
+  # A new secret and role assignment can take a few minutes to reach Entra
+  # and Azure everywhere, so a refused connect is tried again.
   status=0
-  azcmagent connect "${connect_args[@]}" --config "$conf" || status=$?
+  for attempt in 1 2 3 4 5 6; do
+    status=0
+    azcmagent connect "${connect_args[@]}" --config "$conf" || status=$?
+    [ "$status" -ne 0 ] || break
+    [ "$attempt" -lt 6 ] || break
+    echo "azcmagent connect failed ($status), attempt $attempt; trying again in 30 s"
+    sleep 30
+  done
   rm -f "$conf"
-  [ "$status" -eq 0 ] || die "azcmagent connect failed ($status)"
+  [ "$status" -eq 0 ] || die "azcmagent connect failed ($status) after $attempt attempts"
 fi
-TOKEN=""
+SP_SECRET=""
 
 step "Giving usnm the agent's token access"
 # The agent's identity endpoint hands a token only to callers that can read
