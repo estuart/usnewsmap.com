@@ -18,3 +18,4 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0012](0012-anonymous-search-log.md)            | Keep an anonymous search log indefinitely: day buckets, shuffled day files, no identifiers                             | Accepted                                |
 | [0013](0013-quickwit-from-our-fork.md)          | We build Quickwit from our fork: v0.9.1 plus a pooled Azure Blob client                                                | Accepted                                |
 | [0015](0015-onprem-ocr-workers.md)              | On-prem OCR workers: Azure Arc identities, an exchange account with a firewall, Storage queues                         | Proposed                                |
+| [0016](0016-pluggable-ocr-engines.md)           | Pluggable OCR engines: a versioned contract, one pinned container per engine, Rust around it                           | Proposed                                |
