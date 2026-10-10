@@ -16,9 +16,9 @@ Search can't find a page whose words were misread. Re-reading these pages on clo
 
 ## Decision
 
-1. **The nodes are Azure Arc-enabled servers running AlmaLinux 9.**
+1. **The nodes are Azure Arc-enabled servers running AlmaLinux 9 (or RHEL 10).**
    - The Connected Machine agent gives each node a system-assigned managed identity. The worker gets Entra tokens from the agent at `localhost:40342`, so no key, secret or certificate is stored on the node (ADR-0009).
-   - Arc [supports](https://learn.microsoft.com/en-us/azure/azure-arc/servers/prerequisites) AlmaLinux 9 on x86-64 and not Fedora, which the first node ran.
+   - Arc [supports](https://learn.microsoft.com/en-us/azure/azure-arc/servers/prerequisites) AlmaLinux 9 and RHEL 10 on x86-64 and not Fedora, which the first node ran. Node setup installs no OCR engine: EL9's AppStream has only Tesseract 4.1.1 and EPEL 9 has none, so the engines come as pinned container images (podman) or a source build.
    - The machines are resources in the environment's group, `rg-usnm-<env>`, outside the deployment stack. The no-IaaS policy denies VMs, scale sets, AKS and Batch; `Microsoft.HybridCompute/machines` isn't on its list, and the machines are on-prem hardware.
    - `scripts/ocr-node/onboard.sh` connects a node with a short-lived ARM token from the operator's `az` sign-in, sent on ssh's stdin and read by `azcmagent connect --config` from a root-only file on tmpfs that is deleted straight after.
 2. **The agent is locked down before it connects.** `extensions.enabled false` and `guestconfiguration.enabled false`, so nobody in Azure can install an extension, run a command or apply a machine configuration on the node; `incomingconnections.enabled false`, so there's no SSH through Arc. The worker runs as the unprivileged `usnm` user in the `himds` group (needed to read the agent's token challenge), from a hardened systemd unit.
@@ -48,9 +48,10 @@ Search can't find a page whose words were misread. Re-reading these pages on clo
 
 ## Consequences
 
-- **The nodes run a supported OS**, at the cost of rebuilding Node 1 from Fedora as AlmaLinux 9. AlmaLinux 10 isn't on Arc's list yet.
+- **The nodes run a supported OS**, at the cost of rebuilding Node 1 from Fedora as AlmaLinux 9. AlmaLinux 10 isn't on Arc's list yet; RHEL 10 is.
 - **A home IP change cuts the nodes off** until `USNM_OCR_NODE_IPS` is updated and the environment provisioned ([operations](../../operations.md#on-prem-ocr-nodes)). The queues hold the work meanwhile, and hidden messages come back.
 - **The service endpoint changes the subnet's storage traffic.** Requests from `snet-cae` to storage public endpoints leave from private addresses. The data lake and archive accounts are reached through private endpoints, so nothing they do changes; turning the endpoint on or off closes open connections to storage public endpoints ([Microsoft](https://learn.microsoft.com/en-us/azure/virtual-network/virtual-network-service-endpoints-overview)), so it's provisioned between jobs.
+- **The onboarding token is the operator's.** `azcmagent connect` needs a token that can create the machine resource, and the operator's carries their Owner rights for about an hour. Root on the node during onboarding could copy it. We accept this for a node the operator has just built and that nobody else has had root on. The alternative, a service principal with only Azure Connected Machine Onboarding on the group, needs a credential and an Entra app registration, a tenant-level object the project otherwise avoids.
 - **Root on a node can undo the lockdown.** Anyone who can run commands as root can change the agent's configuration ([Microsoft](https://learn.microsoft.com/en-us/azure/azure-arc/servers/security-extensions)). Its local settings protect the node from Azure, not from its own administrators. Losing a node exposes only what its identity can do: take pages, add dead letters and write to `ocr-out`.
 - **No new charge for Arc.** The Arc control plane for servers has no charge; Storage queue operations, the account's storage and its logs are the new costs. `StorageQueueLogs` has a row per queue request, empty polls included, so the worker backs off while the queues are empty.
 - **Arc machines aren't in the stack.** Teardown deletes them with the resource group; a node that leaves is removed with `azcmagent disconnect` and its id taken out of `USNM_OCR_NODE_PRINCIPALS`.

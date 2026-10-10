@@ -7,7 +7,7 @@
 #   scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org \
 #     --name usnm-ocr-node1 [--ssh-key ~/.ssh/id_ed25519] [--dry-run]
 #
-# The node runs AlmaLinux 9 and takes key-based SSH with passwordless sudo
+# The node runs AlmaLinux 9 or RHEL 10 and takes key-based SSH with passwordless sudo
 # for --host. Run with USNM_OCR_NODES=true already provisioned (the exchange
 # account exists). Steps:
 #   1. registers Microsoft.HybridCompute, Microsoft.GuestConfiguration and
@@ -113,7 +113,11 @@ else
   # shellcheck disable=SC2029 # $remote is meant to expand here
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/node-setup.sh" < scripts/ocr-node/node-setup.sh
   # The token lives in this shell's memory and goes to the node on ssh's
-  # stdin; node-setup.sh reads it there. It's valid for about an hour.
+  # stdin; node-setup.sh reads it there. It's valid for about an hour and
+  # carries your rights (Owner), so root on the node could copy it while
+  # it's there: onboard only a node you have just built (ADR-0015). A
+  # service principal with only Azure Connected Machine Onboarding would
+  # avoid that, at the price of a credential and an app registration.
   token=$(az account get-access-token --resource https://management.azure.com --tenant "$TENANT" \
     --query accessToken -o tsv) || die "can't get an access token"
   status=0

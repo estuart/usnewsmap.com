@@ -442,7 +442,7 @@ Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.ta
 
 ## On-prem OCR nodes
 
-Local machines re-read badly OCR'd pages (#296, [ADR-0015](design/adr/0015-onprem-ocr-workers.md)). Each node is an Azure Arc-enabled server running AlmaLinux 9, with a managed identity and no stored secret. It takes pages from Storage queues in the exchange account `stusnmo<suffix>` and writes its output to that account's `ocr-out` container, which a cloud job copies into `curated`. This section sets up the account and connects a node; the worker itself comes in a later change.
+Local machines re-read badly OCR'd pages (#296, [ADR-0015](design/adr/0015-onprem-ocr-workers.md)). Each node is an Azure Arc-enabled server running AlmaLinux 9 (RHEL 10 is also accepted), with a managed identity and no stored secret. It takes pages from Storage queues in the exchange account `stusnmo<suffix>` and writes its output to that account's `ocr-out` container, which a cloud job copies into `curated`. This section sets up the account and connects a node; the worker itself comes in a later change.
 
 **The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP lives only in the environment's settings, never in the repository. The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
 
@@ -452,7 +452,21 @@ scripts/settings.sh prod USNM_OCR_NODES true
 scripts/provision.sh prod                                 # writes OCR_EXCHANGE_ACCOUNT
 ```
 
-**Connect a node.** The node needs AlmaLinux 9 (on Proxmox, CPU type `host`, so Tesseract can use AVX2) and an admin account with key-based SSH and passwordless sudo. From your machine, signed in with `az` as an Owner of the environment's subscription:
+**Create the VM.** On a Proxmox host, `scripts/ocr-node/proxmox-create-vm.sh` (copy it to the host, run it as root) creates an AlmaLinux 9 VM from AlmaLinux's GenericCloud image, checking its published sha256. The VM has CPU type `host` (so the OCR engines can use AVX2), the QEMU guest agent, DHCP and start at boot. cloud-init creates an admin user `claude` with key-only SSH and passwordless sudo. On the first try cloud-init left the hostname as `localhost`; the script now sets `fqdn` and runs `hostnamectl set-hostname`. It prints the VM's address once the guest agent reports one.
+
+```sh
+bash proxmox-create-vm.sh --vmid 120 --name usnm-ocr-node1 --ssh-key "$(cat ~/.ssh/id_ed25519.pub)"
+# optional: --cores 4 --memory-mib 8192 --disk-gib 64 --storage local-lvm --bridge vmbr0 --snippets-storage local
+```
+
+**The Proxmox host's network card.** The NUC's Intel e1000e NIC logs `Detected Hardware Unit Hang` and drops off the network under load. Turning off its segmentation and receive offloads fixes it; make it permanent with a `post-up` line on the interface in `/etc/network/interfaces` (the NIC is `nic0` on this host):
+
+```text
+iface nic0 inet manual
+        post-up /sbin/ethtool -K nic0 tso off gso off gro off
+```
+
+**Connect a node.** The node needs AlmaLinux 9 or RHEL 10 and an admin account with key-based SSH and passwordless sudo. From your machine, signed in with `az` as an Owner of the environment's subscription:
 
 ```sh
 scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1 --dry-run
@@ -460,7 +474,7 @@ scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name us
 scripts/provision.sh prod                                 # grants the new node its roles
 ```
 
-`onboard.sh` registers the `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` providers, then runs `scripts/ocr-node/node-setup.sh` on the node with sudo. That script installs Tesseract 4.1.1 with its language packs from AppStream, python3, podman and chrony; creates the `usnm` user; installs the Connected Machine agent; turns off extensions, guest configuration and incoming connections; connects with a short-lived token from your sign-in (sent over ssh's stdin, never on a command line or the node's disk); and installs `usnm-ocr-worker.service`, disabled. It ends by checking that `usnm` can get a storage token, and prints `azcmagent show` and `azcmagent config list`. Run again, it skips what's done. `onboard.sh` then adds the machine's identity to `USNM_OCR_NODE_PRINCIPALS`; the provision grants it Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter` and Blob Data Contributor on `ocr-out`, and nothing else.
+`onboard.sh` registers the `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` providers, then runs `scripts/ocr-node/node-setup.sh` on the node with sudo. That script installs python3, podman and chrony (no OCR engine: EL9 has only Tesseract 4.1.1 and EPEL 9 none, so the engines come later as pinned container images or a source build); creates the `usnm` user; installs the Connected Machine agent; turns off extensions, guest configuration and incoming connections; connects with a short-lived token from your sign-in (sent over ssh's stdin, never on a command line or the node's disk; the token carries your Owner rights for about an hour, so onboard only a freshly built node that nobody else has had root on); and installs `usnm-ocr-worker.service`, disabled. It ends by checking that `usnm` can get a storage token, and prints `azcmagent show` and `azcmagent config list`. Run again, it skips what's done. `onboard.sh` then adds the machine's identity to `USNM_OCR_NODE_PRINCIPALS`; the provision grants it Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter` and Blob Data Contributor on `ocr-out`, and nothing else.
 
 **When the home IP changes,** the nodes lose the exchange account until the firewall has the new address. Hidden messages come back on their own once their time runs out.
 

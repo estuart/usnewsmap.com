@@ -11,15 +11,15 @@
 # while `azcmagent connect --config` reads it, and is deleted straight after.
 # On a node that's already connected the token isn't used.
 #
-# Installs Tesseract and its language data, python3, podman and chrony;
+# Installs python3, podman and chrony;
 # creates the `usnm` system user; installs the Azure Connected Machine
 # agent, turns off extensions, guest configuration and incoming connections
 # BEFORE it connects; connects; installs the worker's systemd unit, disabled
 # (the worker arrives in a later change); and checks that `usnm` can get a
 # storage token from the agent. Safe to run again.
 #
-# AlmaLinux 9 only (Arc supports it; Fedora isn't supported), unless
-# --force-unsupported.
+# AlmaLinux 9 or RHEL 10 (Arc supports both; it doesn't support Fedora),
+# unless --force-unsupported.
 set -euo pipefail
 usage() { sed -n '5,7s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -56,10 +56,10 @@ step "Checking the OS"
 # shellcheck source=/dev/null
 . /etc/os-release
 supported=false
-case "${ID:-}/${VERSION_ID:-}" in almalinux/9|almalinux/9.*) supported=true ;; esac
+case "${ID:-}/${VERSION_ID:-}" in almalinux/9|almalinux/9.*|rhel/10|rhel/10.*) supported=true ;; esac
 if [ "$supported" != true ]; then
-  [ "$FORCE" = true ] || die "${PRETTY_NAME:-this OS} isn't AlmaLinux 9; Azure Arc supports AlmaLinux 9 (pass --force-unsupported to try anyway)"
-  echo "warning: ${PRETTY_NAME:-unknown OS} is not AlmaLinux 9; continuing (--force-unsupported)"
+  [ "$FORCE" = true ] || die "${PRETTY_NAME:-this OS} is neither AlmaLinux 9 nor RHEL 10 (pass --force-unsupported to try anyway)"
+  echo "warning: ${PRETTY_NAME:-unknown OS} is neither AlmaLinux 9 nor RHEL 10; continuing (--force-unsupported)"
 fi
 echo "${PRETTY_NAME:-unknown}, $(uname -m), $(nproc) CPUs"
 # Tesseract and the neural engines have AVX2 code paths; a VM with a generic
@@ -67,21 +67,14 @@ echo "${PRETTY_NAME:-unknown}, $(uname -m), $(nproc) CPUs"
 grep -qw avx2 /proc/cpuinfo || echo "warning: no AVX2: on Proxmox, set the VM's CPU type to host"
 
 step "Installing packages"
-# All from AlmaLinux 9 BaseOS and AppStream: Tesseract 4.1.1 and its
-# tessdata 4.1.0 language packs are in AppStream, so neither EPEL nor CRB
-# is needed. The packs cover the survey's groups (German roman and Fraktur
-# (`frk`), Serbian Cyrillic and Latin, Russian, Czech, Polish, English) and
-# the other languages the language report found badly read. The Fraktur
-# German model `deu_latf` and the tessdata_best models aren't packaged: the
-# survey downloads them from tesseract-ocr/tessdata_best at a pinned commit
-# and checks each file's sha256.
-langs="eng deu frk srp srp_latn rus ces pol slk slv hrv dan fin lit yid"
-pkgs="tesseract tesseract-osd python3 podman chrony curl"
-for l in $langs; do pkgs="$pkgs tesseract-langpack-$l"; done
-# shellcheck disable=SC2086 # a list of package names
-dnf -y -q install $pkgs
+# No OCR engine here. EL9's AppStream has only Tesseract 4.1.1 (with 4.1.0
+# language data) and EPEL 9 has no Tesseract at all; the engines the survey
+# compares arrive as pinned container images run with podman, or a source
+# build, in a later change. This installs what the agent, the worker and
+# the containers need, all from the distribution's own repositories.
+dnf -y -q install python3 podman chrony curl
 systemctl enable --now chronyd > /dev/null
-tesseract --version 2>&1 | head -1
+podman --version
 
 step "Creating the usnm user"
 if id usnm > /dev/null 2>&1; then
