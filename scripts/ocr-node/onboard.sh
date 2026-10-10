@@ -32,7 +32,10 @@
 # and adds no group member.
 #
 # Needs az signed in with the right to register applications in the tenant,
-# to assign roles on the environment's group and to add members to the
+# to assign roles on the environment's group and to write its Arc machines
+# (Owner; or User Access Administrator plus Azure Connected Machine Resource
+# Administrator or Contributor, for the automatic-upgrade setting), and to
+# add members to the
 # nodes' group (an owner of it, as group.sh makes you), and ssh. Registering the
 # three providers is a subscription-level action
 # (Microsoft.<namespace>/register/action, in Contributor or Owner on the
@@ -127,8 +130,23 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=20)
 [ -z "$SSH_KEY" ] || SSH_OPTS+=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
 # Quoted for the node's shell, which ssh hands the command line to. No
 # credential here: the tenant, app id and secret go on ssh's stdin.
+# The TPM-backed identity (the key in the node's TPM) is in preview: Azure
+# refuses it unless the subscription's Microsoft.HybridCompute/
+# HybridComputePreview feature is Registered, and that feature needs
+# Microsoft's approval (az feature register leaves it Pending until then).
+# Ask for the TPM only when it's registered; otherwise the key stays in the
+# agent's default store, and the node moves to the TPM later by offboarding
+# and onboarding again.
+tpm_feature=$(az feature show --namespace Microsoft.HybridCompute --name HybridComputePreview \
+  --subscription "$SUBSCRIPTION" --query properties.state -o tsv 2> /dev/null || echo unknown)
+if [ "$tpm_feature" = Registered ]; then
+  KEY_STORE=tpm
+else
+  KEY_STORE=default
+fi
 SETUP_ARGS=$(printf '%q ' --subscription "$SUBSCRIPTION" --resource-group "$GROUP" \
-  --location "$LOCATION" --name "$NAME" --tags "$TAGS")
+  --location "$LOCATION" --name "$NAME" --tags "$TAGS" --identity-key-store "$KEY_STORE")
+echo "identity key store: $KEY_STORE (HybridComputePreview feature: ${tpm_feature:-unknown})"
 
 # The onboarding credential is a throwaway service principal with only Azure
 # Connected Machine Onboarding on the group, made for this run and deleted
@@ -327,6 +345,11 @@ if [ "$DRY_RUN" = true ]; then
   else
     echo "would add $NAME (identity $principal) to $NODE_GROUP_NAME"
   fi
+  if machine_get properties.agentUpgrade.enableAutomaticUpgrade && [ "$MACHINE_OUT" = true ]; then
+    echo "automatic agent upgrade is on"
+  else
+    echo "would turn on automatic agent upgrade"
+  fi
   exit 0
 fi
 principal=""
@@ -352,6 +375,21 @@ else
   done
   [ "$added" = true ] || die "can't add $principal to $NODE_GROUP_NAME (you need to own the group); run this again"
   echo "added $NAME to $NODE_GROUP_NAME"
+fi
+
+# Microsoft's automatic agent upgrade (in preview; agent 1.57 or later, and
+# cron on Linux, which node-setup.sh installs): the agent upgrades itself to
+# within one version of the latest, in batches at off-peak hours. A machine
+# connected before node-setup.sh passed --enable-automatic-upgrade gets it
+# here, by setting the machine's agentUpgrade property.
+if machine_get properties.agentUpgrade.enableAutomaticUpgrade && [ "$MACHINE_OUT" = true ]; then
+  echo "automatic agent upgrade is already on"
+else
+  az rest --method patch --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$GROUP/providers/Microsoft.HybridCompute/machines/$NAME?api-version=2024-05-20-preview" \
+    --headers "Content-Type=application/json" \
+    --body '{"properties":{"agentUpgrade":{"enableAutomaticUpgrade":true}}}' -o none ||
+    die "can't turn on automatic agent upgrade for $NAME; run this again"
+  echo "turned on automatic agent upgrade"
 fi
 
 step "Next"

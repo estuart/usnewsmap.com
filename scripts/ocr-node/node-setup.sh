@@ -3,7 +3,8 @@
 # scripts/ocr-node/onboard.sh copies it there and runs it with sudo.
 #
 #   node-setup.sh --subscription ID --resource-group NAME --location REGION \
-#     --name ARC_NAME [--tags K=V,K=V] [--force-unsupported] \
+#     --name ARC_NAME [--tags K=V,K=V] [--identity-key-store default|tpm] \
+#     [--force-unsupported] \
 #     < credentials
 #
 # Reads the onboarding service principal from stdin, three lines: tenant id,
@@ -13,7 +14,8 @@
 # file under /run (tmpfs) while `azcmagent connect --config` reads it, and
 # is deleted straight after. A node that's already connected needs none.
 #
-# Keeps the journal on disk; installs python3, podman and chrony;
+# Keeps the journal on disk; installs python3, podman, chrony and cron, and
+# htop, iftop and screen from EPEL;
 # creates the `usnm` system user; installs the Azure Connected Machine
 # agent, turns off extensions, guest configuration and incoming connections
 # BEFORE it connects; connects; installs the worker's systemd unit, disabled
@@ -27,7 +29,7 @@ usage() { sed -n '5,7s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
-SUBSCRIPTION="" GROUP="" LOCATION="" NAME="" TAGS="" FORCE=false
+SUBSCRIPTION="" GROUP="" LOCATION="" NAME="" TAGS="" FORCE=false KEY_STORE=default
 while [ $# -gt 0 ]; do
   case "$1" in
     --subscription) SUBSCRIPTION=${2:-}; shift 2 ;;
@@ -35,11 +37,13 @@ while [ $# -gt 0 ]; do
     --location) LOCATION=${2:-}; shift 2 ;;
     --name) NAME=${2:-}; shift 2 ;;
     --tags) TAGS=${2:-}; shift 2 ;;
+    --identity-key-store) KEY_STORE=${2:-}; shift 2 ;;
     --force-unsupported) FORCE=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
   esac
 done
+case "$KEY_STORE" in default|tpm) ;; *) echo "error: --identity-key-store is default or tpm" >&2; usage ;; esac
 for pair in SUBSCRIPTION:subscription GROUP:resource-group LOCATION:location NAME:name; do
   var=${pair%%:*}
   [ -n "${!var}" ] || { echo "error: missing --${pair#*:}" >&2; usage; }
@@ -88,8 +92,32 @@ step "Installing packages"
 # compares arrive as pinned container images run with podman, or a source
 # build, in a later change. This installs what the agent, the worker and
 # the containers need, all from the distribution's own repositories.
-dnf -y -q install python3 podman chrony curl
+dnf -y -q install python3 podman chrony curl cronie
+
+# Tools for whoever logs in to watch the node: htop (processes), iftop
+# (traffic per connection) and screen. On EL9 and EL10 they come from EPEL,
+# set up the way Fedora's EPEL guide says: AlmaLinux ships epel-release in
+# its extras repository and turns on CRB; RHEL takes the release package
+# from Fedora and turns on CodeReady Builder.
+if [ "$supported" != true ]; then
+  echo "warning: htop, iftop and screen come from EPEL, set up only for AlmaLinux 9 and RHEL 10; skipping them on $PRETTY_NAME"
+elif ! rpm -q epel-release > /dev/null 2>&1; then
+  case "$OS_ID" in
+    almalinux)
+      dnf config-manager --set-enabled crb
+      dnf -y -q install epel-release ;;
+    rhel)
+      subscription-manager repos --enable "codeready-builder-for-rhel-10-$(uname -m)-rpms"
+      dnf -y -q install https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm ;;
+    *) echo "warning: don't know how to add EPEL on $OS_ID; skipping htop, iftop and screen" ;;
+  esac
+fi
+if [ "$supported" = true ] && rpm -q epel-release > /dev/null 2>&1; then
+  dnf -y -q install htop iftop screen
+fi
 systemctl enable --now chronyd > /dev/null
+# The agent schedules its automatic upgrades with cron.
+systemctl enable --now crond > /dev/null
 podman --version
 
 step "Persistent journal"
@@ -169,6 +197,25 @@ else
   curl -fsSL -o "$WORK/install_linux_azcmagent.sh" https://aka.ms/azcmagent
   bash "$WORK/install_linux_azcmagent.sh"
 fi
+# Connect asks for automatic upgrade (agent 1.57 or later) and the
+# TPM-backed key store (seen in 1.68's azcmagent connect); an older agent
+# would refuse the flags or never upgrade itself. The install script added
+# Microsoft's package repository, so dnf can bring it up to date.
+MIN_AGENT=1.68
+# Empty output, not a failure, when the agent is missing or prints something
+# unexpected, so the fallback below decides (set -e and pipefail are on).
+agent_version() { { azcmagent version 2> /dev/null || true; } | grep -oE '[0-9]+\.[0-9]+' | head -1 || true; }
+version_ok() { [ "$(printf '%s\n%s\n' "$MIN_AGENT" "$1" | sort -t. -k1,1n -k2,2n | head -1)" = "$MIN_AGENT" ]; }
+v=$(agent_version)
+if [ -z "$v" ] || ! version_ok "$v"; then
+  echo "agent ${v:-of unknown version} is older than $MIN_AGENT; upgrading"
+  dnf -y -q upgrade azcmagent
+  v=$(agent_version)
+  if [ -z "$v" ] || ! version_ok "$v"; then
+    die "azcmagent is ${v:-of unknown version}, older than $MIN_AGENT, after dnf upgrade"
+  fi
+fi
+echo "agent $v"
 
 step "Locking the agent down"
 # Before connecting, so Azure never gets a moment to install an extension or
@@ -195,16 +242,36 @@ else
   connect_args=(
     --resource-group "$GROUP" --tenant-id "$TENANT" --subscription-id "$SUBSCRIPTION"
     --location "$LOCATION" --resource-name "$NAME" --cloud AzureCloud
+    --enable-automatic-upgrade
   )
   [ -z "$TAGS" ] || connect_args+=(--tags "$TAGS")
+  # --identity-key-store tpm keeps the machine identity's private key in the
+  # TPM (the agent's TPM-backed identity, in preview), so it can't be copied
+  # off the disk. Azure accepts it only once the subscription's
+  # Microsoft.HybridCompute/HybridComputePreview feature is registered, which
+  # needs Microsoft's approval; onboard.sh asks for tpm only then. The key
+  # store is chosen at connect; changing it later means reconnecting, which
+  # makes a new machine and identity. proxmox-create-vm.sh gives VMs a vTPM 2.0.
+  if [ "$KEY_STORE" = tpm ]; then
+    [ -c /dev/tpmrm0 ] || die "--identity-key-store tpm, but this node has no TPM (/dev/tpmrm0)"
+    connect_args+=(--identity-key-store tpm)
+    echo "the identity's key goes in the TPM"
+  else
+    echo "the identity's key stays in the agent's default store on disk"
+  fi
   # A new secret and role assignment can take a few minutes to reach Entra
   # and Azure everywhere, so a refused connect is tried again.
   status=0
   for attempt in 1 2 3 4 5 6; do
     status=0
-    azcmagent connect "${connect_args[@]}" --config "$conf" || status=$?
+    # PIPESTATUS is read in the || branch, before any other command replaces it.
+    azcmagent connect "${connect_args[@]}" --config "$conf" 2>&1 | tee "$WORK/connect.log" ||
+      status=${PIPESTATUS[0]}
     [ "$status" -ne 0 ] || break
     [ "$attempt" -lt 6 ] || break
+    # A 400 from the Hybrid Compute service (HCRP400) is a refusal, such as an
+    # unregistered preview feature; waiting won't change it.
+    if grep -q HCRP400 "$WORK/connect.log"; then break; fi
     echo "azcmagent connect failed ($status), attempt $attempt; trying again in 30 s"
     sleep 30
   done
