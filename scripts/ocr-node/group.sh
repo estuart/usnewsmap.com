@@ -65,10 +65,14 @@ if [ -n "$SAVED" ]; then
   GROUP_ID=$SAVED
   members=$(az ad group member list --group "$GROUP_ID" --query 'length(@)' -o tsv)
   echo "USNM_OCR_NODE_GROUP is $GROUP_ID ($name, $members members)"
+  # Owners can add members, and every member gets the node roles.
+  echo "owners:"
+  az ad group owner list --group "$GROUP_ID" --query '[].[id, userPrincipalName || displayName]' -o tsv |
+    while IFS="$(printf '\t')" read -r oid oname; do echo "  $oid $oname"; done
 else
   ids=$(az ad group list --filter "displayName eq '$GROUP_NAME'" --query '[].id' -o tsv)
   [ -z "$ids" ] ||
-    die "a group named $GROUP_NAME already exists ($(echo "$ids" | tr '\n' ' ')) and USNM_OCR_NODE_GROUP is empty. Check its members and owners (az ad group member list --group <id>); if it's this environment's, scripts/settings.sh $ENV_NAME USNM_OCR_NODE_GROUP <id>, otherwise delete or rename it"
+    die "a group named $GROUP_NAME already exists ($(echo "$ids" | tr '\n' ' ')) and USNM_OCR_NODE_GROUP is empty. Check its members and its owners, who can add members (az ad group member list --group <id>; az ad group owner list --group <id>); if it's this environment's, scripts/settings.sh $ENV_NAME USNM_OCR_NODE_GROUP <id>, otherwise delete or rename it"
   if [ "$DRY_RUN" = true ]; then
     echo "would create security group $GROUP_NAME and set USNM_OCR_NODE_GROUP to its id"
   else
