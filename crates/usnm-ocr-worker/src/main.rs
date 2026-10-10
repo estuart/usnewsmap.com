@@ -99,7 +99,13 @@ enum Command {
         /// Gap between image requests to LoC's IIIF server.
         #[arg(long, default_value_t = 1000)]
         tile_gap_ms: u64,
-        /// How long in-flight pages may take after SIGTERM before they are released.
+        /// How long a taken message stays hidden. It isn't renewed, so it
+        /// must cover the slowest page; a page not done by 80% of it is
+        /// abandoned without output.
+        #[arg(long, default_value_t = 1800, value_parser = clap::value_parser!(u64).range(60..=604_800))]
+        visibility_secs: u64,
+        /// How long in-flight pages may take after SIGTERM before they are
+        /// abandoned (they reappear when their visibility runs out).
         #[arg(long, default_value_t = 60)]
         shutdown_grace_secs: u64,
         #[command(flatten)]
@@ -187,10 +193,26 @@ async fn main() -> anyhow::Result<()> {
             once,
             api_gap_ms,
             tile_gap_ms,
+            visibility_secs,
             shutdown_grace_secs,
             engine,
         } => {
             check_node_id(&node_id)?;
+            let cfg = Config {
+                node_id,
+                concurrency: concurrency.max(1),
+                once,
+                visibility: Duration::from_secs(visibility_secs),
+                shutdown_grace: Duration::from_secs(shutdown_grace_secs),
+                ..Config::default()
+            };
+            if Duration::from_secs(engine.page_timeout_secs) >= cfg.budget() {
+                tracing::warn!(
+                    page_timeout_secs = engine.page_timeout_secs,
+                    budget_secs = cfg.budget().as_secs(),
+                    "--page-timeout-secs is over 80% of --visibility-secs; slow pages will be abandoned"
+                );
+            }
             let worker = Arc::new(Worker {
                 queue: queue::open(&queue_url)?,
                 out: usnm_store::open(&out_url)?,
@@ -200,13 +222,7 @@ async fn main() -> anyhow::Result<()> {
                     ..LocConfig::default()
                 })?),
                 engine: engine.engine().await?,
-                cfg: Config {
-                    node_id,
-                    concurrency: concurrency.max(1),
-                    once,
-                    shutdown_grace: Duration::from_secs(shutdown_grace_secs),
-                    ..Config::default()
-                },
+                cfg,
             });
             worker.run(stop_signal()).await
         }

@@ -1,5 +1,6 @@
 //! The worker loop: take a page, fetch its scan, read it, write ALTO and an
-//! overlay part, delete the message.
+//! overlay part, delete the message. Messages are hidden for a fixed time
+//! when taken and never renewed (ADR-0015).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,7 +14,6 @@ use usnm_overlay::OverlayRow;
 use usnm_store::{ObjectStore, StoreError};
 
 use crate::engine::{set_alto_file_name, Engine, EngineError};
-use crate::lease::Lease;
 use crate::loc::{FetchError, LocClient, Scan};
 use crate::message::{self, OcrMessage, MAX_MESSAGE_BYTES};
 use crate::queue::{random_token, LeaseLost, Queue, Received, BULK, DEADLETTER, PRIORITY};
@@ -33,23 +33,23 @@ impl ScanSource for LocClient {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Names this node in part names and logs: `[A-Za-z0-9-]`, 1 to 32.
+    /// Names this node in output names and logs: `[A-Za-z0-9-]`, 1 to 32.
     pub node_id: String,
     pub concurrency: usize,
-    /// How long a received message stays hidden.
+    /// How long a received message stays hidden. It isn't renewed (the
+    /// nodes can't update messages, ADR-0015), so it must cover the slowest page.
     pub visibility: Duration,
-    /// How often a held message's visibility is renewed.
-    pub renew_every: Duration,
+    /// A page not done by this share of `visibility` after it was received
+    /// is abandoned without output, so it reappears cleanly for another node.
+    pub abandon_at: f64,
     /// A message received more often than this goes to `ocr-deadletter`.
     pub max_dequeue: u32,
-    /// How long a message that failed for a passing reason stays hidden.
-    pub retry_delay: Duration,
     /// The longest wait between polls when both queues are empty.
     pub idle_max: Duration,
     /// Stop once both queues are empty and nothing is in flight.
     pub once: bool,
     /// After SIGTERM, how long in-flight pages may take before they are
-    /// released to the queue.
+    /// abandoned (they reappear when their visibility runs out).
     pub shutdown_grace: Duration,
 }
 
@@ -58,14 +58,20 @@ impl Default for Config {
         Self {
             node_id: "local".into(),
             concurrency: 1,
-            visibility: Duration::from_secs(600),
-            renew_every: Duration::from_secs(180),
+            visibility: Duration::from_secs(1800),
+            abandon_at: 0.8,
             max_dequeue: 5,
-            retry_delay: Duration::from_secs(300),
             idle_max: Duration::from_secs(60),
             once: false,
             shutdown_grace: Duration::from_secs(60),
         }
+    }
+}
+
+impl Config {
+    /// How long after receiving a message its page may still write output.
+    pub fn budget(&self) -> Duration {
+        self.visibility.mul_f64(self.abandon_at.clamp(0.0, 1.0))
     }
 }
 
@@ -84,8 +90,10 @@ pub fn check_node_id(id: &str) -> anyhow::Result<()> {
 enum Failure {
     /// Retrying won't help: dead-letter it.
     Permanent(String),
-    /// Try again later.
+    /// Leave the message; it reappears when its visibility runs out.
     Transient(String),
+    /// Out of time: no output written; the message reappears.
+    Abandoned,
 }
 
 impl From<FetchError> for Failure {
@@ -106,14 +114,18 @@ impl From<StoreError> for Failure {
 /// What was written for a page.
 #[derive(Debug)]
 pub struct Done {
+    pub alto: String,
     pub part: String,
     pub chars: usize,
     pub status: &'static str,
     pub engine: String,
 }
 
-/// The overlay part path for a page: `pages/<issue>.<node>.<stamp>.parquet`.
-pub fn part_path(key: &PageKey, node: &str) -> String {
+/// A page's output names, unique per node and moment (the nodes can create
+/// blobs in `ocr-out` but not replace or delete them, ADR-0015):
+/// `alto/<doc_id>.<node>.<stamp>.xml` and
+/// `pages/<issue>.<node>.<stamp>.parquet`, with the same stamp.
+pub fn output_paths(key: &PageKey, node: &str) -> (String, String) {
     let issue = format!(
         "{}_{}_ed-{}",
         key.lccn,
@@ -121,7 +133,10 @@ pub fn part_path(key: &PageKey, node: &str) -> String {
         key.edition
     );
     let stamp = Utc::now().format("%Y%m%dT%H%M%S%6fZ");
-    format!("pages/{issue}.{node}.{stamp}.parquet")
+    (
+        format!("alto/{}.{node}.{stamp}.xml", key.doc_id()),
+        format!("pages/{issue}.{node}.{stamp}.parquet"),
+    )
 }
 
 #[derive(Debug)]
@@ -145,13 +160,18 @@ impl Worker {
     }
 
     /// Run until `stop` turns true (or, with `once`, the queues are empty).
-    /// In-flight pages get `shutdown_grace` to finish; then they're released.
+    /// In-flight pages get `shutdown_grace` to finish; then they're
+    /// abandoned, and reappear when their visibility runs out.
     pub async fn run(self: Arc<Self>, mut stop: watch::Receiver<bool>) -> anyhow::Result<()> {
         let slots = Arc::new(Semaphore::new(self.cfg.concurrency.max(1)));
-        let (hard_tx, hard_rx) = watch::channel(false);
         let mut tasks = JoinSet::new();
         let mut idle = Duration::from_secs(1);
-        tracing::info!(node = %self.cfg.node_id, concurrency = self.cfg.concurrency, "worker started");
+        tracing::info!(
+            node = %self.cfg.node_id,
+            concurrency = self.cfg.concurrency,
+            visibility_secs = self.cfg.visibility.as_secs(),
+            "worker started"
+        );
         loop {
             while tasks.try_join_next().is_some() {}
             let permit = tokio::select! {
@@ -163,16 +183,16 @@ impl Worker {
             }
             let next = tokio::select! {
                 r = self.next_message() => r,
-                // A message received as this is dropped comes back when its lease ends.
+                // A message received as this is dropped reappears when its visibility runs out.
                 _ = stop.changed() => break,
             };
             match next {
                 Ok(Some(msg)) => {
                     idle = Duration::from_secs(1);
                     let me = self.clone();
-                    let hard = hard_rx.clone();
+                    let received = Instant::now();
                     tasks.spawn(async move {
-                        me.handle(msg, hard).await;
+                        me.handle(msg, received).await;
                         drop(permit);
                     });
                     continue;
@@ -208,10 +228,9 @@ impl Worker {
             if drained.is_err() {
                 tracing::info!(
                     in_flight = tasks.len(),
-                    "grace over; releasing in-flight pages"
+                    "grace over; abandoning in-flight pages, which reappear when their visibility runs out"
                 );
-                hard_tx.send_replace(true);
-                while tasks.join_next().await.is_some() {}
+                tasks.shutdown().await;
             }
         }
         tracing::info!("worker stopped");
@@ -244,8 +263,9 @@ impl Worker {
         }
     }
 
-    /// Do one message, start to finish; never fails (the outcome is in the queue).
-    pub async fn handle(&self, msg: Received, mut hard_stop: watch::Receiver<bool>) {
+    /// Do one message, received at `received`, start to finish; never
+    /// fails (the outcome is in the queue).
+    pub async fn handle(&self, msg: Received, received: Instant) {
         if msg.dequeue_count > self.cfg.max_dequeue {
             let why = format!("received {} times", msg.dequeue_count);
             self.dead_letter(&msg, &why).await;
@@ -258,24 +278,17 @@ impl Worker {
                 return;
             }
         };
-        let lease = Lease::new(self.queue.clone(), msg.clone());
-        let renewer = lease.keep_alive(self.cfg.renew_every, self.cfg.visibility);
-        let t0 = Instant::now();
-        let outcome = tokio::select! {
-            r = self.process(&m, &key) => Some(r),
-            _ = hard_stop.wait_for(|v| *v) => None,
-        };
-        drop(renewer);
+        let deadline = received + self.cfg.budget();
         let page = key.to_string();
-        let current = lease.message().await;
-        match outcome {
-            Some(Ok(done)) => {
+        match self.process(&m, &key, deadline).await {
+            Ok(done) => {
                 tracing::info!(
                     page, queue = %msg.queue, reason = m.reason.as_str(), language = %m.language,
                     engine = %done.engine, status = done.status, chars = done.chars,
-                    part = %done.part, secs = t0.elapsed().as_secs_f64(), "page done"
+                    alto = %done.alto, part = %done.part,
+                    secs = received.elapsed().as_secs_f64(), "page done"
                 );
-                if let Err(e) = lease.delete().await {
+                if let Err(e) = self.queue.delete(&msg).await {
                     if e.downcast_ref::<LeaseLost>().is_some() {
                         tracing::warn!(
                             page,
@@ -286,49 +299,58 @@ impl Worker {
                     }
                 }
             }
-            Some(Err(Failure::Permanent(e))) => {
-                self.dead_letter(&current, &e).await;
+            Err(Failure::Permanent(e)) => self.dead_letter(&msg, &e).await,
+            Err(Failure::Transient(e)) => {
+                tracing::warn!(
+                    page, error = %e, dequeue_count = msg.dequeue_count,
+                    "page failed; it reappears when its visibility runs out"
+                );
             }
-            Some(Err(Failure::Transient(e))) => {
-                tracing::warn!(page, error = %e, dequeue_count = msg.dequeue_count, retry_secs = self.cfg.retry_delay.as_secs(), "page failed; will retry");
-                if let Err(e) = lease.renew(self.cfg.retry_delay).await {
-                    tracing::warn!(page, error = %e, "couldn't set the retry delay");
-                }
-            }
-            None => {
-                tracing::info!(page, "released unfinished");
-                if let Err(e) = lease.renew(Duration::ZERO).await {
-                    tracing::warn!(page, error = %e, "release failed; it comes back when its lease ends");
-                }
+            Err(Failure::Abandoned) => {
+                tracing::warn!(
+                    page,
+                    budget_secs = self.cfg.budget().as_secs(),
+                    "page abandoned: out of time, nothing written; it reappears for another node"
+                );
             }
         }
     }
 
-    async fn process(&self, m: &OcrMessage, key: &PageKey) -> Result<Done, Failure> {
-        let scan = self.scans.scan(key).await?;
+    async fn process(
+        &self,
+        m: &OcrMessage,
+        key: &PageKey,
+        deadline: Instant,
+    ) -> Result<Done, Failure> {
         let work =
             tempfile::tempdir().map_err(|e| Failure::Transient(format!("scratch dir: {e}")))?;
-        let image = work.path().join("page.jpg");
-        tokio::fs::write(&image, &scan.jpeg)
-            .await
-            .map_err(|e| Failure::Transient(format!("scratch image: {e}")))?;
-        drop(scan.jpeg);
-        let out = match self.engine.ocr(&image, &m.language, work.path()).await {
-            Ok(o) => o,
-            // Another node may have the model: try again later, and let
-            // the dequeue count dead-letter it if no node does.
-            Err(EngineError::Unsupported(l)) => {
-                return Err(Failure::Transient(format!(
-                    "no model for `{l}` on node {}",
-                    self.cfg.node_id
-                )))
-            }
-            Err(EngineError::Failed(e)) => return Err(Failure::Transient(format!("{e:#}"))),
+        let read = async {
+            let scan = self.scans.scan(key).await?;
+            let image = work.path().join("page.jpg");
+            tokio::fs::write(&image, &scan.jpeg)
+                .await
+                .map_err(|e| Failure::Transient(format!("scratch image: {e}")))?;
+            let out = match self.engine.ocr(&image, &m.language, work.path()).await {
+                Ok(o) => o,
+                // Another node may have the model: leave it, and let the
+                // dequeue count dead-letter it if no node does.
+                Err(EngineError::Unsupported(l)) => {
+                    return Err(Failure::Transient(format!(
+                        "no model for `{l}` on node {}",
+                        self.cfg.node_id
+                    )))
+                }
+                Err(EngineError::Failed(e)) => return Err(Failure::Transient(format!("{e:#}"))),
+            };
+            Ok((scan.iiif_base, out))
         };
+        let (iiif_base, out) = tokio::time::timeout_at(deadline.into(), read)
+            .await
+            .map_err(|_| Failure::Abandoned)??;
         let text = usnm_core::text::normalize_ocr(&out.text);
         let alto = set_alto_file_name(
             &String::from_utf8_lossy(&out.alto),
-            &format!("{}/full/full/0/default.jpg", scan.iiif_base),
+            &format!("{iiif_base}/full/full/0/default.jpg"),
         );
         let row = OverlayRow {
             key: key.clone(),
@@ -339,31 +361,36 @@ impl Worker {
             // the queue's reason (`bulk` or `user`).
             loc_text: m.reason.as_str().to_owned(),
             text,
-            image_url: scan.iiif_base,
+            image_url: iiif_base,
             ocred_at: Utc::now(),
         };
         let status = usnm_overlay::status_str(row.status());
         let chars = row.text.chars().count();
         let part = usnm_overlay::write_part(std::slice::from_ref(&row))
             .map_err(|e| Failure::Transient(format!("overlay part: {e:#}")))?;
-        // ALTO first, as the Japanese job does: a part is only written once
-        // its page's ALTO is there. A newer OCR of the page replaces the ALTO.
-        self.out
-            .put(
-                &format!("alto/{}.xml", key.doc_id()),
-                alto.into_bytes(),
-                "application/xml",
-            )
-            .await?;
         for _ in 0..3 {
-            let path = part_path(key, &self.cfg.node_id);
+            // Past the budget the message may be with another node already.
+            if Instant::now() >= deadline {
+                return Err(Failure::Abandoned);
+            }
+            let (alto_path, part_path) = output_paths(key, &self.cfg.node_id);
+            // ALTO first, as the Japanese job does: a part is only written
+            // once its page's ALTO is there. Both are create-only.
+            if !self
+                .out
+                .put_new(&alto_path, alto.clone().into_bytes(), "application/xml")
+                .await?
+            {
+                continue;
+            }
             if self
                 .out
-                .put_new(&path, part.clone(), "application/vnd.apache.parquet")
+                .put_new(&part_path, part.clone(), "application/vnd.apache.parquet")
                 .await?
             {
                 return Ok(Done {
-                    part: path,
+                    alto: alto_path,
+                    part: part_path,
                     chars,
                     status,
                     engine: out.engine,
@@ -371,7 +398,7 @@ impl Worker {
             }
         }
         Err(Failure::Transient(format!(
-            "no free part name for {key} ({})",
+            "no free output name for {key} ({})",
             random_token()
         )))
     }
@@ -485,18 +512,25 @@ mod tests {
         let (_tx, rx) = watch::channel(false);
         w.clone().run(rx).await.unwrap();
 
-        let alto = out
-            .get("alto/sn83045462_1890-05-03_ed-1_seq-7.xml")
-            .await
+        let altos = out.list("alto").await.unwrap();
+        assert_eq!(altos.len(), 1, "{altos:?}");
+        let prefix = "alto/sn83045462_1890-05-03_ed-1_seq-7.node1.";
+        let stamp = altos[0]
+            .strip_prefix(prefix)
             .unwrap()
+            .strip_suffix(".xml")
             .unwrap();
+        let alto = out.get(&altos[0]).await.unwrap().unwrap();
         assert_eq!(
             String::from_utf8(alto).unwrap(),
             "<alto><fileName>https://tile.loc.gov/image-services/iiif/service:ndnp:x:7/full/full/0/default.jpg</fileName></alto>"
         );
         let parts = out.list("pages").await.unwrap();
         assert_eq!(parts.len(), 1, "{parts:?}");
-        assert!(parts[0].starts_with("pages/sn83045462_1890-05-03_ed-1.node1."));
+        assert_eq!(
+            parts[0],
+            format!("pages/sn83045462_1890-05-03_ed-1.node1.{stamp}.parquet")
+        );
         let bytes = out.get(&parts[0]).await.unwrap().unwrap();
         let pages = usnm_ingest::ocr_ja::read_part(bytes::Bytes::from(bytes), &parts[0]).unwrap();
         assert_eq!(pages.len(), 1);
@@ -544,29 +578,19 @@ mod tests {
     async fn transient_failures_retry_then_dead_letter() {
         let dir = tempfile::tempdir().unwrap();
         let (w, queue, out) = worker(dir.path());
-        let w = Arc::new(Worker {
-            cfg: Config {
-                retry_delay: Duration::ZERO,
-                ..w.cfg.clone()
-            },
-            queue: w.queue.clone(),
-            out: w.out.clone(),
-            scans: w.scans.clone(),
-            engine: w.engine.clone(),
-        });
         queue
             .send(PRIORITY, &msg("sn83045462/1890-05-03/ed-1/seq-98", "deu"))
             .await
             .unwrap();
-        let (_tx, rx) = watch::channel(false);
         for n in 1..=5 {
+            // Visible again at once, as if its time had run out.
             let m = queue
-                .receive(PRIORITY, Duration::from_secs(600))
+                .receive(PRIORITY, Duration::ZERO)
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(m.dequeue_count, n);
-            w.handle(m, rx.clone()).await;
+            w.handle(m, Instant::now()).await;
         }
         // The sixth time it goes to the dead-letter queue.
         let m = queue
@@ -574,7 +598,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        w.handle(m, rx.clone()).await;
+        w.handle(m, Instant::now()).await;
         assert_eq!(
             queue
                 .receive(PRIORITY, Duration::from_secs(1))
@@ -591,15 +615,20 @@ mod tests {
     }
 
     #[test]
-    fn part_names() {
+    fn output_names() {
         let key: PageKey = "sn83045462/1890-05-03/ed-2/seq-7".parse().unwrap();
-        let p = part_path(&key, "nuc1");
+        let (a, p) = output_paths(&key, "nuc1");
+        assert!(a.starts_with("alto/sn83045462_1890-05-03_ed-2_seq-7.nuc1."));
+        assert!(a.ends_with("Z.xml"));
         assert!(p.starts_with("pages/sn83045462_1890-05-03_ed-2.nuc1."));
         assert!(p.ends_with("Z.parquet"));
+        assert!(usnm_store::validate_path(&a).is_ok());
         assert!(usnm_store::validate_path(&p).is_ok());
         assert!(check_node_id("nuc-1").is_ok());
         assert!(check_node_id("a.b").is_err());
         assert!(check_node_id("").is_err());
+        let cfg = Config::default();
+        assert_eq!(cfg.budget(), Duration::from_secs(1440));
     }
 
     #[derive(Debug)]
@@ -616,14 +645,16 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_stop_releases_unfinished_pages_after_the_grace() {
-        let dir = tempfile::tempdir().unwrap();
-        let (w, queue, out) = worker(dir.path());
+    fn slow_worker(
+        dir: &Path,
+        visibility: Duration,
+    ) -> (Arc<Worker>, Arc<LocalQueue>, Arc<dyn ObjectStore>) {
+        let (w, queue, out) = worker(dir);
         let w = Arc::new(Worker {
             engine: Arc::new(SlowEngine),
             cfg: Config {
                 once: false,
+                visibility,
                 shutdown_grace: Duration::from_millis(50),
                 ..w.cfg.clone()
             },
@@ -631,11 +662,53 @@ mod tests {
             out: w.out.clone(),
             scans: w.scans.clone(),
         });
+        (w, queue, out)
+    }
+
+    #[tokio::test]
+    async fn a_page_over_its_budget_is_abandoned_without_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out) = slow_worker(dir.path(), Duration::from_secs(2));
+        queue
+            .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-7", "deu"))
+            .await
+            .unwrap();
+        let m = queue
+            .receive(BULK, w.cfg.visibility)
+            .await
+            .unwrap()
+            .unwrap();
+        let t0 = Instant::now();
+        tokio::time::timeout(Duration::from_secs(10), w.handle(m, t0))
+            .await
+            .unwrap();
+        assert!(t0.elapsed() >= Duration::from_millis(1600));
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "gave up before its visibility ended"
+        );
+        assert!(out.list("pages").await.unwrap().is_empty());
+        assert!(out.list("alto").await.unwrap().is_empty());
+        // Not deleted: it reappears once its visibility runs out.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let again = queue
+            .receive(BULK, w.cfg.visibility)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.dequeue_count, 2);
+    }
+
+    #[tokio::test]
+    async fn a_stop_abandons_unfinished_pages_after_the_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out) = slow_worker(dir.path(), Duration::from_secs(2));
         queue
             .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-7", "deu"))
             .await
             .unwrap();
         let (tx, rx) = watch::channel(false);
+        let t0 = Instant::now();
         let run = tokio::spawn(w.run(rx));
         tokio::time::sleep(Duration::from_millis(300)).await;
         tx.send_replace(true);
@@ -644,13 +717,22 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        // Visible again at once, for another node.
+        assert!(
+            t0.elapsed() < Duration::from_secs(1),
+            "stopped after the grace"
+        );
+        assert!(out.list("pages").await.unwrap().is_empty());
+        // Hidden until its visibility runs out, then back for another node.
+        assert_eq!(
+            queue.receive(BULK, Duration::from_secs(600)).await.unwrap(),
+            None
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let m = queue
             .receive(BULK, Duration::from_secs(600))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(m.dequeue_count, 2);
-        assert!(out.list("pages").await.unwrap().is_empty());
     }
 }

@@ -4,8 +4,10 @@
 //! Three queues: `ocr-priority` (pages someone was shown), `ocr-bulk` (the
 //! damage-ranked backlog) and `ocr-deadletter` (messages that failed too
 //! often or can't be done). A received message is hidden for a visibility
-//! timeout; the worker renews it while it works (Update Message, which
-//! returns a new pop receipt) and deletes it when the page is written.
+//! timeout fixed when it is taken. The nodes can take, peek and delete
+//! messages but not update them (ADR-0015), so the hide isn't renewed; the
+//! worker deletes the message when the page is written, and a page not
+//! written reappears when the timeout runs out.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,9 +53,6 @@ pub struct LeaseLost(pub String);
 pub trait Queue: Send + Sync + std::fmt::Debug {
     /// Take one message, hiding it for `visibility`.
     async fn receive(&self, queue: &str, visibility: Duration) -> anyhow::Result<Option<Received>>;
-    /// Hide a held message for `visibility` from now (zero makes it visible
-    /// again); the new pop receipt. Fails with [`LeaseLost`] if it isn't held.
-    async fn update(&self, msg: &Received, visibility: Duration) -> anyhow::Result<String>;
     /// Delete a held message. Fails with [`LeaseLost`] if it isn't held.
     async fn delete(&self, msg: &Received) -> anyhow::Result<()>;
     /// Add a message that never expires.
@@ -249,30 +248,6 @@ impl Queue for AzureQueue {
         parse_received(queue, &xml)
     }
 
-    async fn update(&self, msg: &Received, visibility: Duration) -> anyhow::Result<String> {
-        check_queue_name(&msg.queue)?;
-        check_id(&msg.id)?;
-        let resp = self
-            .request(Method::PUT, &format!("{}/messages/{}", msg.queue, msg.id))
-            .await?
-            .query(&[
-                ("popreceipt", msg.pop_receipt.clone()),
-                ("visibilitytimeout", secs(visibility)),
-            ])
-            .header(reqwest::header::CONTENT_LENGTH, 0)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("update message: {}", e.without_url()))?;
-        if resp.status() != StatusCode::NO_CONTENT {
-            return Err(lease_error(resp.status(), msg, "update message"));
-        }
-        resp.headers()
-            .get("x-ms-popreceipt")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned)
-            .context("update message returned no pop receipt")
-    }
-
     async fn delete(&self, msg: &Received) -> anyhow::Result<()> {
         check_queue_name(&msg.queue)?;
         check_id(&msg.id)?;
@@ -324,7 +299,7 @@ impl Queue for AzureQueue {
 /// message, `<root>/<queue>/leased/<id>.<receipt>.<visible_at_ms>` a held
 /// one, named with the moment it becomes visible again. Receiving renames a
 /// message from `ready` to `leased` (atomic, so two workers never take the
-/// same one); renewing renames it to a new receipt and time; an expired
+/// same one); an expired
 /// lease is renamed back before each receive. Each file is JSON
 /// `{"dequeue_count": n, "text": "..."}`.
 #[derive(Debug, Clone)]
@@ -451,23 +426,6 @@ impl Queue for LocalQueue {
         Ok(None)
     }
 
-    async fn update(&self, msg: &Received, visibility: Duration) -> anyhow::Result<String> {
-        let from = self.leased_path(msg)?;
-        let receipt = random_token();
-        let to = if visibility.is_zero() {
-            // Visible again now.
-            self.dir(&msg.queue, "ready")?.join(&msg.id)
-        } else {
-            from.with_file_name(format!(
-                "{}.{receipt}.{}",
-                msg.id,
-                visible_at_ms(visibility)
-            ))
-        };
-        std::fs::rename(&from, &to).map_err(|e| lost_if_missing(e, msg))?;
-        Ok(receipt)
-    }
-
     async fn delete(&self, msg: &Received) -> anyhow::Result<()> {
         let path = self.leased_path(msg)?;
         std::fs::remove_file(&path).map_err(|e| lost_if_missing(e, msg))
@@ -498,7 +456,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn local_queue_leases_renews_and_deletes() {
+    async fn local_queue_leases_and_deletes() {
         let dir = tempfile::tempdir().unwrap();
         let q = LocalQueue::new(dir.path());
         assert_eq!(
@@ -524,24 +482,22 @@ mod tests {
             q.receive(BULK, Duration::from_secs(600)).await.unwrap(),
             None
         );
-        // Renewing gives a new receipt; the old one no longer works.
-        let receipt = q.update(&a, Duration::from_secs(600)).await.unwrap();
-        assert_ne!(receipt, a.pop_receipt);
-        let err = q.delete(&a).await.unwrap_err();
-        assert!(err.downcast_ref::<LeaseLost>().is_some());
-        let a2 = Received {
-            pop_receipt: receipt,
-            ..a.clone()
-        };
-        q.delete(&a2).await.unwrap();
-        // Released (visibility 0): back at once, seen a second time.
-        q.update(&b, Duration::ZERO).await.unwrap();
-        let b2 = q
-            .receive(BULK, Duration::from_secs(600))
+        q.delete(&a).await.unwrap();
+        // Deleted: a second delete has nothing to delete.
+        assert!(q
+            .delete(&a)
             .await
-            .unwrap()
-            .unwrap();
-        assert_eq!((b2.text.as_str(), b2.dequeue_count), ("second", 2));
+            .unwrap_err()
+            .downcast_ref::<LeaseLost>()
+            .is_some());
+        let stale = Received {
+            pop_receipt: "0123".into(),
+            ..b.clone()
+        };
+        assert!(q.delete(&stale).await.is_err());
+        drop(b);
+        let b2 = q.receive(BULK, Duration::from_secs(600)).await.unwrap();
+        assert_eq!(b2, None, "still hidden");
     }
 
     #[tokio::test]
@@ -611,14 +567,13 @@ mod tests {
     async fn fake_service() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
         use axum::extract::{Path, Query};
         use axum::http::{HeaderMap, StatusCode as S};
-        use axum::response::IntoResponse;
         use std::collections::HashMap;
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
         let check = |h: &HeaderMap| {
             assert_eq!(h["authorization"], "Bearer t");
             assert_eq!(h["x-ms-version"], API_VERSION);
         };
-        let (l1, l2, l3, l4) = (log.clone(), log.clone(), log.clone(), log.clone());
+        let (l1, l2, l4) = (log.clone(), log.clone(), log.clone());
         let app = axum::Router::new()
             .route(
                 "/{queue}/messages",
@@ -656,24 +611,7 @@ mod tests {
             )
             .route(
                 "/{queue}/messages/{id}",
-                axum::routing::put(
-                    move |h: HeaderMap,
-                          Path((q, id)): Path<(String, String)>,
-                          Query(p): Query<HashMap<String, String>>| {
-                        check(&h);
-                        l3.lock().unwrap().push(format!(
-                            "update {q} {id} {} {}",
-                            p["popreceipt"], p["visibilitytimeout"]
-                        ));
-                        async move {
-                            if p["popreceipt"] == "stale" {
-                                return S::NOT_FOUND.into_response();
-                            }
-                            (S::NO_CONTENT, [("x-ms-popreceipt", "p2")]).into_response()
-                        }
-                    },
-                )
-                .delete(
+                axum::routing::delete(
                     move |h: HeaderMap,
                           Path((q, id)): Path<(String, String)>,
                           Query(p): Query<HashMap<String, String>>| {
@@ -681,7 +619,13 @@ mod tests {
                         l4.lock()
                             .unwrap()
                             .push(format!("delete {q} {id} {}", p["popreceipt"]));
-                        async { S::NO_CONTENT }
+                        async move {
+                            if p["popreceipt"] == "stale" {
+                                S::NOT_FOUND
+                            } else {
+                                S::NO_CONTENT
+                            }
+                        }
                     },
                 ),
             );
@@ -714,13 +658,12 @@ mod tests {
             (m.id.as_str(), m.pop_receipt.as_str(), m.text.as_str()),
             ("m1", "p/1+=", "a&b")
         );
-        assert_eq!(q.update(&m, Duration::from_secs(600)).await.unwrap(), "p2");
         let stale = Received {
             pop_receipt: "stale".into(),
             ..m.clone()
         };
         assert!(q
-            .update(&stale, Duration::ZERO)
+            .delete(&stale)
             .await
             .unwrap_err()
             .downcast_ref::<LeaseLost>()
@@ -732,8 +675,7 @@ mod tests {
             [
                 "get ocr-priority 600",
                 "get ocr-bulk 600",
-                "update ocr-bulk m1 p/1+= 600",
-                "update ocr-bulk m1 stale 0",
+                "delete ocr-bulk m1 stale",
                 "delete ocr-bulk m1 p/1+=",
                 "put ocr-deadletter -1 <QueueMessage><MessageText>x&lt;y</MessageText></QueueMessage>",
             ]

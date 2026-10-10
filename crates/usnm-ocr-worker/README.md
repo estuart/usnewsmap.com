@@ -22,16 +22,16 @@ usnm-ocr-worker enqueue --queue-url <url|dir> \
 usnm-ocr-worker ocr-file --image page.jpg --language deu --out /tmp/ocr
 ```
 
-`--queue-url` and `--out-url` also take a directory, so the whole loop runs locally with no Azure at all. Other `run` flags: `--api-gap-ms` (3500) and `--tile-gap-ms` (1000) set the gaps between loc.gov API and image requests, and `--shutdown-grace-secs` (60) sets how long in-flight pages get after SIGTERM. The Tesseract flags are `--tesseract-bin`, `--psm` (3), `--dpi` (300), `--threads-per-page` (1) and `--page-timeout-secs` (600).
+`--queue-url` and `--out-url` also take a directory, so the whole loop runs locally with no Azure at all. Other `run` flags: `--api-gap-ms` (3500) and `--tile-gap-ms` (1000) set the gaps between loc.gov API and image requests, `--visibility-secs` (1800) sets how long a taken message stays hidden, and `--shutdown-grace-secs` (60) sets how long in-flight pages get after SIGTERM. The Tesseract flags are `--tesseract-bin`, `--psm` (3), `--dpi` (300), `--threads-per-page` (1) and `--page-timeout-secs` (600).
 
 ## Queues
 
 There are three Azure Storage Queues: `ocr-priority`, `ocr-bulk` and `ocr-deadletter`. The worker polls `ocr-priority` first. When both are empty it waits before polling again, doubling the wait from 1 s up to 60 s.
 
-- A received message is hidden for 600 s and renewed every 180 s while its page is worked on. Each renewal (Update Message) returns a new pop receipt, and the final delete uses the latest one.
+- A received message is hidden for `--visibility-secs` (1800 s), set when it is taken. The nodes can take, peek and delete messages but not update them ([ADR-0015](../../docs/design/adr/0015-onprem-ocr-workers.md)), so the hide is never renewed. A page not done by 80% of that time is abandoned with nothing written, so it reappears cleanly for another node. Keep `--page-timeout-secs` under that share; the worker warns at startup if it isn't.
 - A message received more than 5 times goes to `ocr-deadletter` and is deleted from its queue. So does a message that can never succeed: bad JSON, or a page loc.gov lists no image for.
-- A temporary failure (LoC or storage errors, a Tesseract crash or timeout, or a language with no model on this node, which another node may have) hides the message for 300 s and lets it come back.
-- On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are made visible again (visibility 0).
+- A temporary failure (LoC or storage errors, a Tesseract crash or timeout, or a language with no model on this node, which another node may have) leaves the message, which reappears when its time runs out.
+- On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are abandoned and reappear when their time runs out. The systemd unit's `TimeoutStopSec` should be longer than the grace period.
 
 The REST calls use API version 2023-11-03 and an Entra bearer token for `https://storage.azure.com/`. No keys or SAS tokens are used.
 
@@ -71,8 +71,8 @@ Tesseract runs as a subprocess with `--psm 3 --dpi 300` and the `txt` and `alto`
 
 Each page writes two objects to `--out-url`:
 
-1. `alto/<doc_id>.xml`: Tesseract's ALTO, with `fileName` set to the scan's URL. It is written first and replaced if the page is read again.
-2. `pages/<lccn>_<date>_ed-<n>.<node>.<UTC stamp>.parquet`: a create-only overlay part with one row. Its columns and types are the ones `ja-ocr/jaocr.py write_part` writes (`usnm_overlay::schema`), zstd-compressed, and the release's overlay reader (`usnm_ingest::ocr_ja::read_part`) reads it.
+1. `alto/<doc_id>.<node>.<UTC stamp>.xml`: Tesseract's ALTO, with `fileName` set to the scan's URL. It is written first.
+2. `pages/<lccn>_<date>_ed-<n>.<node>.<UTC stamp>.parquet`: an overlay part with one row, with the same stamp as its ALTO. Its columns and types are the ones `ja-ocr/jaocr.py write_part` writes (`usnm_overlay::schema`), zstd-compressed, and the release's overlay reader (`usnm_ingest::ocr_ja::read_part`) reads it.
 
 Values specific to this worker:
 
@@ -81,7 +81,7 @@ Values specific to this worker:
 - `text` is normalized with `usnm_core::text::normalize_ocr`, as LoC's text is at curation (04 §4.5). `text_status`, `text_chars` and `text_sha256` are computed from the normalized text.
 - `image_url` is the IIIF service base, as in the Japanese overlay.
 
-Each page gets its own part, so a node writes many small files. The cloud copy-in job should merge them into larger parts as it copies them to `curated/ocr-local/pages/`.
+Both writes are create-only, and the names are unique per node and moment: the nodes' role on `ocr-out` can create blobs but not replace or delete them. Each page gets its own part, so a node writes many small files. The cloud copy-in job should merge them into larger parts as it copies them to `curated/ocr-local/pages/`.
 
 ## Logs
 
@@ -101,8 +101,8 @@ podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
 cross build --release --locked --target x86_64-unknown-linux-gnu -p usnm-ocr-worker
 ```
 
-The node also needs Tesseract and its language models (`dnf install tesseract tesseract-langpack-deu …`, or `.traineddata` files copied into the tessdata directory). EL9's packaged Tesseract may be older than 5. `ocr_engine` records whichever version runs.
+The node also needs Tesseract and its language models. EL9's AppStream has only Tesseract 4.1.1 and EPEL 9 has none, so ADR-0015 has the engines come from pinned container images or a source build; `--tesseract-bin` can name a wrapper that runs one. `ocr_engine` records whichever version runs.
 
 ## Tests
 
-`cargo test -p usnm-ocr-worker` covers message parsing, the local queue, the Azure REST calls against a stand-in server, lease renewal, pacing and Retry-After, an end-to-end page whose part the ingest reader reads, dead-lettering, and shutdown. One test runs the real Tesseract on a rendered line when Tesseract and `eng` are installed, and skips otherwise. The Arc challenge is tested in `usnm-store` against a stand-in agent.
+`cargo test -p usnm-ocr-worker` covers message parsing, the local queue, the Azure REST calls against a stand-in server, pacing and Retry-After, an end-to-end page whose part the ingest reader reads, dead-lettering, abandoning a page over its time, and shutdown. One test runs the real Tesseract on a rendered line when Tesseract and `eng` are installed, and skips otherwise. The Arc challenge is tested in `usnm-store` against a stand-in agent.

@@ -5,7 +5,6 @@
 //! parts and the release decides.
 
 pub mod engine;
-pub mod lease;
 pub mod loc;
 pub mod message;
 pub mod queue;
