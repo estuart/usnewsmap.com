@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 usnm-core.workspace = true
+usnm-overlay.workspace = true
 usnm-store.workspace = true
 usnm-state.workspace = true
 usnm-telemetry.workspace = true

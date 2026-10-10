@@ -2535,11 +2535,54 @@ dependencies = [
  "unicode-normalization",
  "usnm-api",
  "usnm-core",
+ "usnm-overlay",
  "usnm-search",
  "usnm-state",
  "usnm-store",
  "usnm-telemetry",
  "zstd",
+]
+
+[[package]]
+name = "usnm-ocr-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "clap",
+ "httpdate",
+ "moka",
+ "opentelemetry",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "usnm-core",
+ "usnm-ingest",
+ "usnm-overlay",
+ "usnm-store",
+ "usnm-telemetry",
+]
+
+[[package]]
+name = "usnm-overlay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "arrow-schema",
+ "bytes",
+ "chrono",
+ "parquet",
+ "sha2",
+ "usnm-core",
 ]
 
 [[package]]
@@ -2588,6 +2631,7 @@ dependencies = [
  "httpdate",
  "reqwest",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

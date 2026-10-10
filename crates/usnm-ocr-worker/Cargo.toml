@@ -1,0 +1,37 @@
+[package]
+name = "usnm-ocr-worker"
+version = "0.1.0"
+description = "US News Map on-prem OCR worker: re-OCR damaged pages from a queue (#296)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+usnm-core.workspace = true
+usnm-overlay.workspace = true
+usnm-store.workspace = true
+usnm-telemetry.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clap.workspace = true
+httpdate.workspace = true
+moka.workspace = true
+opentelemetry.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+usnm-ingest = { path = "../usnm-ingest" }
+axum.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net", "test-util"] }
+
+[lints]
+workspace = true
