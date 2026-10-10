@@ -1,0 +1,20 @@
+[package]
+name = "usnm-overlay"
+version = "0.1.0"
+description = "US News Map OCR overlay parts: the Parquet schema our own OCR writes and the release reads"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+usnm-core.workspace = true
+anyhow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+parquet.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

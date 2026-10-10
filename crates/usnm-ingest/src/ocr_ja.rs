@@ -18,13 +18,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{bail, Context};
-use arrow_array::{
-    Array, Date32Array, FixedSizeBinaryArray, Int16Array, LargeStringArray, StringArray,
-    TimestampMicrosecondArray,
-};
+use anyhow::Context;
 use bytes::Bytes;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -35,7 +30,6 @@ use usnm_core::time::{day_number, ym_number};
 use usnm_store::ObjectStore;
 
 use crate::catalog::{Catalog, Place, Title};
-use crate::curated::from_unix_days;
 use crate::source::hex;
 
 /// Where the OCR job writes its parts in the curated store (a directory:
@@ -167,66 +161,23 @@ pub async fn load(
     })
 }
 
-/// The rows of one overlay part (the schema `jaocr.py write_part` writes).
+/// The rows of one overlay part (the schema `jaocr.py write_part` writes,
+/// [`usnm_overlay::schema`]).
 pub fn read_part(bytes: Bytes, path: &str) -> anyhow::Result<Vec<JaPage>> {
-    let reader = ParquetRecordBatchReaderBuilder::try_new(bytes)?.build()?;
-    let mut out = Vec::new();
-    for batch in reader {
-        let batch = batch?;
-        let col = |name: &str| {
-            batch
-                .column_by_name(name)
-                .with_context(|| format!("overlay part has no `{name}` column"))
-        };
-        macro_rules! typed {
-            ($name:expr, $t:ty) => {
-                col($name)?
-                    .as_any()
-                    .downcast_ref::<$t>()
-                    .with_context(|| format!("column `{}` has an unexpected type", $name))?
-            };
-        }
-        let doc_id = typed!("doc_id", StringArray);
-        let lccn = typed!("lccn", StringArray);
-        let date = typed!("date", Date32Array);
-        let edition = typed!("edition", Int16Array);
-        let seq = typed!("seq", Int16Array);
-        let batch_name = typed!("batch", StringArray);
-        let loc_text = typed!("loc_text", StringArray);
-        let status = typed!("text_status", StringArray);
-        let text = typed!("text", LargeStringArray);
-        let source = typed!("ocr_source", StringArray);
-        let engine = typed!("ocr_engine", StringArray);
-        let at = typed!("ocred_at", TimestampMicrosecondArray);
-        let _sha = typed!("text_sha256", FixedSizeBinaryArray);
-        let unsigned = |v: i16| u16::try_from(v).context("negative edition or seq");
-        for i in 0..batch.num_rows() {
-            let key = PageKey::new(
-                lccn.value(i),
-                from_unix_days(date.value(i)),
-                unsigned(edition.value(i))?,
-                unsigned(seq.value(i))?,
-            )?;
-            if key.doc_id() != doc_id.value(i) {
-                bail!(
-                    "row {i}: doc_id `{}` doesn't match its page `{key}`",
-                    doc_id.value(i)
-                );
-            }
-            out.push(JaPage {
-                key,
-                batch: batch_name.value(i).to_owned(),
-                loc_text: loc_text.value(i).to_owned(),
-                ok: status.value(i) == "ok",
-                printed: (!text.is_null(i)).then(|| text.value(i).to_owned()),
-                ocr_source: source.value(i).to_owned(),
-                ocr_engine: engine.value(i).to_owned(),
-                ocred_at: at.value(i),
-                part: path.to_owned(),
-            });
-        }
-    }
-    Ok(out)
+    Ok(usnm_overlay::read_part(bytes)?
+        .into_iter()
+        .map(|p| JaPage {
+            key: p.key,
+            batch: p.batch,
+            loc_text: p.loc_text,
+            ok: p.text_status == "ok",
+            printed: p.text,
+            ocr_source: p.ocr_source,
+            ocr_engine: p.ocr_engine,
+            ocred_at: p.ocred_at,
+            part: path.to_owned(),
+        })
+        .collect())
 }
 
 /// The engine document for a Japanese page: the fields of the main index's
