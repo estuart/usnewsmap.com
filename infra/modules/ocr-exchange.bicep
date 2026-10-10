@@ -132,8 +132,31 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
 }
 
 // The nodes: take and delete messages on the two work queues, add to the
-// dead-letter queue, and create, read and overwrite blobs in ocr-out. They
-// get nothing else in this account or anywhere in the lake.
+// dead-letter queue, and read and create blobs in ocr-out, without delete,
+// so one node can't remove another's output. Azure RBAC can't make blobs
+// write-once, so "write" still allows an overwrite; the worker writes
+// create-only (If-None-Match: *), and the copy-in job checks every part.
+// They get nothing else in this account or anywhere in the lake.
+resource nodeWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: guid(resourceGroup().id, 'usnm-ocr-node-writer')
+  properties: {
+    // Role names are unique per tenant: include the subscription and group.
+    roleName: 'usnm OCR node writer (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
+    description: 'An on-prem OCR node: list, read and create blobs. No delete.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: []
+        dataActions: [
+          'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'
+          'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write'
+        ]
+      }
+    ]
+    assignableScopes: [resourceGroup().id]
+  }
+}
+
 resource nodeProcess 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for pair in flatten(map(nodePrincipalIds, p => map(range(0, length(workQueues)), i => { principal: p, queue: i }))): {
     scope: queues[pair.queue]
@@ -161,11 +184,12 @@ resource nodeDeadLetter 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for p in nodePrincipalIds: {
     scope: output
-    name: guid(output.id, p, blobContributor)
+    name: guid(output.id, p, 'usnm-ocr-node-writer')
     properties: {
       principalId: p
       principalType: 'ServicePrincipal'
-      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobContributor)
+      // Custom roles are addressed at subscription level wherever they're defined.
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
     }
   }
 ]

@@ -112,6 +112,19 @@ else
   useradd --system --home-dir /var/lib/usnm --create-home --shell /sbin/nologin usnm
   echo "created usnm"
 fi
+# Rootless podman maps a container's users onto subordinate ids; a system
+# user gets none, so give usnm 65,536 after the highest range in use.
+for f in /etc/subuid /etc/subgid; do
+  if ! grep -q '^usnm:' "$f" 2> /dev/null; then
+    start=$(awk -F: 'BEGIN { m = 100000 } { e = $2 + $3; if (e > m) m = e } END { print m }' "$f" 2> /dev/null || echo 100000)
+    if [ "$f" = /etc/subuid ]; then
+      usermod --add-subuids "$start-$((start + 65535))" usnm
+    else
+      usermod --add-subgids "$start-$((start + 65535))" usnm
+    fi
+    echo "usnm: ${f#/etc/} $start-$((start + 65535))"
+  fi
+done
 
 # A directory on tmpfs for the installer and the token; removed on exit.
 WORK=$(mktemp -d /run/usnm-onboard.XXXXXX)
@@ -183,13 +196,19 @@ SupplementaryGroups=himds
 Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
 Environment=IMDS_ENDPOINT=http://localhost:40342
 ExecStart=/usr/local/bin/usnm-ocr-worker
+# Placeholders until the worker lands: it will run its OCR engines as
+# rootless podman containers, which need user namespaces and newuidmap
+# (setuid / file capabilities), so the unit sets no NoNewPrivileges,
+# RestrictNamespaces or empty CapabilityBoundingSet, and lets usnm write its
+# home, where podman keeps its storage. The worker's change settles the
+# container model (lingering, cgroup manager) and tightens this again.
 Restart=on-failure
 RestartSec=30
 StateDirectory=usnm-ocr
 CacheDirectory=usnm-ocr
-NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
+ReadWritePaths=/var/lib/usnm
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
@@ -199,11 +218,9 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 RestrictSUIDSGID=yes
-RestrictNamespaces=yes
 RestrictRealtime=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target
