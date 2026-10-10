@@ -118,6 +118,15 @@ param jaOcrJob bool = false
 @maxValue(8)
 param jaOcrReplicas int = 2
 
+@description('Deploy the on-prem OCR exchange account (stusnmo<suffix>, #296, ADR-0015): work queues and an output container for OCR nodes outside Azure, behind a firewall that allows nodeIps and the Container Apps subnet.')
+param ocrNodes bool = false
+
+@description('Public IPv4 addresses or CIDR ranges the OCR nodes connect from, comma separated (the operator\'s home IP). Only in the environment\'s settings, never in the repository.')
+param ocrNodeIps string = ''
+
+@description('Object ids of the OCR nodes\' Arc system-assigned identities, comma separated (scripts/ocr-node/onboard.sh adds each node\'s).')
+param ocrNodePrincipals string = ''
+
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
@@ -226,6 +235,7 @@ module network 'modules/network.bicep' = {
     location: location
     tags: tags
     name: 'vnet-usnm-${env}'
+    storageServiceEndpoint: ocrNodes
   }
 }
 
@@ -264,6 +274,27 @@ module tiles 'modules/tiles.bicep' = {
     tags: union(tags, { 'usnm-public': 'true' })
     name: tilesName
     allowedOrigins: siteOrigins
+  }
+}
+
+// The on-prem OCR exchange account (#296, ADR-0015) allows public network
+// access behind a firewall, so the public-network policy exempts it by
+// resource id like the tiles account, and its assignment goes first.
+var exchangeName = 'stusnmo${suffix}'
+var exchangeId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.Storage/storageAccounts', exchangeName)
+
+module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
+  scope: rg
+  name: 'ocr-exchange'
+  dependsOn: [policies]
+  params: {
+    location: location
+    tags: tags
+    name: exchangeName
+    nodeIps: filter(map(split(ocrNodeIps, ','), ip => trim(ip)), ip => !empty(ip))
+    subnetId: network.outputs.caeSubnetId
+    nodePrincipalIds: filter(map(split(ocrNodePrincipals, ','), p => trim(p)), p => !empty(p))
+    ingestPrincipalId: identities.outputs.ingestPrincipalId
   }
 }
 
@@ -345,6 +376,7 @@ module diagnostics 'modules/diagnostics.bicep' = {
     dataStorageName: storage.outputs.name
     tilesStorageName: tiles.outputs.name
     scratchStorageName: ingestScratch ? scratch!.outputs.accountName : ''
+    exchangeStorageName: ocrNodes ? ocrExchange!.outputs.name : ''
   }
 }
 
@@ -549,7 +581,10 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
     definitionIds: guardrailPolicyIds
     definitionParameters: {
       // Deny and the exemption arrive together, in the same assignment update.
-      '${guardrailPolicyNames.auditPublicAccess}': { effect: { value: 'deny' }, publicAccountIds: { value: [tilesId] } }
+      '${guardrailPolicyNames.auditPublicAccess}': {
+        effect: { value: 'deny' }
+        publicAccountIds: { value: ocrNodes ? [tilesId, exchangeId] : [tilesId] }
+      }
     }
   }
 }
@@ -610,3 +645,7 @@ output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsi
 // The workspace's customer id, for the Log Analytics query API (scripts/logs.sh).
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceCustomerId
 output OCR_ENDPOINT string = ocr ? ocrService!.outputs.endpoint : ''
+// The on-prem OCR exchange account (#296); scripts/ocr-node/onboard.sh checks it exists.
+output OCR_EXCHANGE_ACCOUNT string = ocrNodes ? ocrExchange!.outputs.name : ''
+output OCR_QUEUE_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
+output OCR_BLOB_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''

@@ -17,3 +17,4 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0011](0011-deployment-stacks.md)               | One deployment stack per environment (delete on removal, deny deletes), without azd                                    | Accepted                                |
 | [0012](0012-anonymous-search-log.md)            | Keep an anonymous search log indefinitely: day buckets, shuffled day files, no identifiers                             | Accepted                                |
 | [0013](0013-quickwit-from-our-fork.md)          | We build Quickwit from our fork: v0.9.1 plus a pooled Azure Blob client                                                | Accepted                                |
+| [0015](0015-onprem-ocr-workers.md)              | On-prem OCR workers: Azure Arc identities, an exchange account with a firewall, Storage queues                         | Proposed                                |

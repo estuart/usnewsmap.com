@@ -85,7 +85,7 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
   name: guardrailPolicyNames.auditPublicAccess
   properties: {
     displayName: 'US News Map: data services should have public network access disabled'
-    description: 'Public network access on storage and Cosmos accounts, except the accounts the assignment lists by resource id (the public tiles account). Audit by default; each environment assignment sets deny together with its own ids. A Spot backfill window would need a policy exemption.'
+    description: 'Public network access on storage and Cosmos accounts, except the accounts the assignment lists by resource id (the public tiles account, and the on-prem OCR exchange account, which allows only its firewall\'s IPs and subnet). Audit by default; each environment assignment sets deny together with its own ids. A Spot backfill window would need a policy exemption.'
     policyType: 'Custom'
     mode: 'Indexed'
     parameters: {

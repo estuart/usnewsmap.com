@@ -7,6 +7,8 @@ param name string
 param addressPrefix string = '10.40.0.0/24'
 param caeSubnetPrefix string = '10.40.0.0/27'
 param peSubnetPrefix string = '10.40.0.32/28'
+@description('A Microsoft.Storage service endpoint on snet-cae, for the OCR exchange account\'s firewall rule (ocr-exchange.bicep).')
+param storageServiceEndpoint bool = false
 
 var dnsZones = [
   'privatelink.blob.${environment().suffixes.storage}'
@@ -24,6 +26,16 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
         name: 'snet-cae'
         properties: {
           addressPrefix: caeSubnetPrefix
+          // With the OCR nodes on (#296), the subnet's traffic to storage
+          // accounts' public endpoints leaves from its private addresses,
+          // which the exchange account's virtual network rule allows. The
+          // data lake and archive accounts are reached through private
+          // endpoints, whose private DNS names resolve to the endpoints'
+          // addresses, so their traffic doesn't change. No account here
+          // allows the environment's public outbound IP, so no IP rule stops
+          // matching. Turning it on or off closes open connections to storage
+          // public endpoints from the subnet, so provision between jobs.
+          serviceEndpoints: storageServiceEndpoint ? [{ service: 'Microsoft.Storage', locations: [location] }] : []
           delegations: [
             {
               name: 'containerapps'
