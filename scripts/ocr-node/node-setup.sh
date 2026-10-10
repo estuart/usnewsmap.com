@@ -96,7 +96,9 @@ dnf -y -q install python3 podman chrony curl cronie
 # set up the way Fedora's EPEL guide says: AlmaLinux ships epel-release in
 # its extras repository and turns on CRB; RHEL takes the release package
 # from Fedora and turns on CodeReady Builder.
-if ! rpm -q epel-release > /dev/null 2>&1; then
+if [ "$supported" != true ]; then
+  echo "warning: htop, iftop and screen come from EPEL, set up only for AlmaLinux 9 and RHEL 10; skipping them on $PRETTY_NAME"
+elif ! rpm -q epel-release > /dev/null 2>&1; then
   case "$OS_ID" in
     almalinux)
       dnf config-manager --set-enabled crb
@@ -107,7 +109,7 @@ if ! rpm -q epel-release > /dev/null 2>&1; then
     *) echo "warning: don't know how to add EPEL on $OS_ID; skipping htop, iftop and screen" ;;
   esac
 fi
-if rpm -q epel-release > /dev/null 2>&1; then
+if [ "$supported" = true ] && rpm -q epel-release > /dev/null 2>&1; then
   dnf -y -q install htop iftop screen
 fi
 systemctl enable --now chronyd > /dev/null
@@ -192,6 +194,23 @@ else
   curl -fsSL -o "$WORK/install_linux_azcmagent.sh" https://aka.ms/azcmagent
   bash "$WORK/install_linux_azcmagent.sh"
 fi
+# Connect asks for automatic upgrade (agent 1.57 or later) and the
+# TPM-backed key store (seen in 1.68's azcmagent connect); an older agent
+# would refuse the flags or never upgrade itself. The install script added
+# Microsoft's package repository, so dnf can bring it up to date.
+MIN_AGENT=1.68
+agent_version() { azcmagent version 2> /dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1; }
+version_ok() { [ "$(printf '%s\n%s\n' "$MIN_AGENT" "$1" | sort -t. -k1,1n -k2,2n | head -1)" = "$MIN_AGENT" ]; }
+v=$(agent_version)
+if [ -z "$v" ] || ! version_ok "$v"; then
+  echo "agent ${v:-of unknown version} is older than $MIN_AGENT; upgrading"
+  dnf -y -q upgrade azcmagent
+  v=$(agent_version)
+  if [ -z "$v" ] || ! version_ok "$v"; then
+    die "azcmagent is ${v:-of unknown version}, older than $MIN_AGENT, after dnf upgrade"
+  fi
+fi
+echo "agent $v"
 
 step "Locking the agent down"
 # Before connecting, so Azure never gets a moment to install an extension or

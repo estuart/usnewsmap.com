@@ -32,7 +32,10 @@
 # and adds no group member.
 #
 # Needs az signed in with the right to register applications in the tenant,
-# to assign roles on the environment's group and to add members to the
+# to assign roles on the environment's group and to write its Arc machines
+# (Owner; or User Access Administrator plus Azure Connected Machine Resource
+# Administrator or Contributor, for the automatic-upgrade setting), and to
+# add members to the
 # nodes' group (an owner of it, as group.sh makes you), and ssh. Registering the
 # three providers is a subscription-level action
 # (Microsoft.<namespace>/register/action, in Contributor or Owner on the
