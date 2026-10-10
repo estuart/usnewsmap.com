@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.f.outputs.rust }}
+      quickwit: ${{ steps.f.outputs.quickwit }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
       fixtures: ${{ steps.f.outputs.fixtures }}
@@ -66,7 +67,7 @@ jobs:
   quickwit:
     name: quickwit (parity, ingest release)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.quickwit == 'true'
     runs-on: ubuntu-latest
     # Upstream's v0.9.1 release binary, not our build (ADR-0013): our one
     # commit changes only the Azure Blob client, which these tests don't

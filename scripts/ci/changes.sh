@@ -21,7 +21,7 @@ out=${GITHUB_OUTPUT:-/dev/stdout}
 provision=false
 ops=false
 all() {
-  printf 'rust=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -59,13 +59,19 @@ matches '^\.github/' && all "workflow changed"
 # (index config, place overrides, the example searches the API warms, the
 # reconstructed index history) and the fixtures the tests read.
 rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|scripts/(ci/|quickwit-fixtures\.sh))'
+# The Quickwit job (parity against a real searcher, a release into a real
+# writer): the code those tests run and what they load. Not catalog/,
+# web/src/examples.json, ops/index-history.json or other CI scripts, which
+# the rust job's own tests cover; editing them doesn't change what Quickwit
+# is asked to do.
+quickwit='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$)'
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|fixtures/|scripts/ci/|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
 image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$)"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
-for part in rust web image fixtures; do
+for part in rust quickwit web image fixtures; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"
