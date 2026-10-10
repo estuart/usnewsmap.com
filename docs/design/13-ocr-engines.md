@@ -155,7 +155,12 @@ The first line on stdout, sent once the adapter is ready for a page. This excerp
 - `layout` is `alto` or `boxes`. `granularity` is the finest level with real geometry: `word`, `line`, `block` or `page`.
 - `engine` may also carry `components` (name and version of libraries such as Leptonica).
 - hello carries no timing. The worker times the start to hello itself (`model_load_seconds` in the runs record).
-- The worker refuses the instance, and counts it toward the engine's breaker (§13.6.5), unless `engine.id` and the adapter's name and version match `engines.lock.json` for this image digest, hello's set of (name, sha256) pairs equals the lock's, and the two sets of profile ids are equal.
+- The worker refuses the instance, and counts it toward the engine's breaker (§13.6.5), unless all of these match `engines.lock.json` for this image digest:
+  - `engine.id`, and the adapter's name and version;
+  - hello's set of (name, sha256) model pairs;
+  - the profiles in full: the same ids, and for each id the same `languages`, `models` and `tunable`, compared as sets.
+
+  A profile id alone isn't enough. An image could keep its ids while a profile drops a language, loads another model or stops accepting an option. Routing would then send requests the adapter refuses as `unsupported`, and a swapped model would make the runs record's `models_digest` wrong. CI writes the lock's profiles from the image's `hello` and fails the build when they differ from `engines.toml` (§13.7.3).
 
 ### 13.4.3 page (worker to adapter)
 
@@ -379,7 +384,12 @@ The worker refuses a production engine at startup, and `routes check` refuses it
 ### 13.6.4 Startup and shutdown
 
 - **Startup:** the worker removes stale containers (`podman --remote rm -f --filter label=usnm.node=<node>`), empties scratch, and loads the routing bundle (§13.7.8). For each engine the node may start, it checks the image digest is present. With `podman --remote info` it checks that the memory, cpu and pids cgroup controllers are delegated; without them it refuses to start engines.
-- **First instance of each engine:** the worker reads the effective `memory.max` and `pids.max`, the smallest value over the container's `CgroupPath` and its ancestors up to its `libpod-<id>.scope`, since `CgroupPath` can point at an inner `container` cgroup whose own limit is `max`. If either isn't the configured limit, it refuses the engine and raises an error. Limits that don't apply fail closed instead of letting an engine use the whole node.
+- **First instance of each engine:** the worker checks `memory.max` and `pids.max` in two parts. cgroup v2 limits are hierarchical, but each file shows only the value set on that cgroup, so one file can't show the limit that applies.
+  - **The limit is set.** The smallest value over the container's `CgroupPath` and its ancestors up to its `libpod-<id>.scope` must equal the configured limit. `CgroupPath` can point at an inner `container` cgroup whose own limit is `max`, so the scope is included.
+  - **Nothing above it is tighter.** Every ancestor above the scope, below the cgroup root (`usnmeng`'s `user@<uid>.service`, `user-<uid>.slice` and `user.slice`; the root has no limit files), must allow at least what the node may run there at once: `memory.max` and `memory.high` at least the node's `engine_memory`, and `pids.max` at least the sum of `pids` times `max_instances` over the engines the node may start. Otherwise a systemd slice above the scope could leave an engine less memory or fewer pids than the scheduler assumes.
+
+  If either part fails, the worker refuses the engine and raises an error naming the cgroup and its value. Limits that don't apply fail closed instead of letting an engine use the whole node.
+
 - **Every instance:** after `hello`, the worker records the container's `cgroup.procs`, for the check after a timeout (§13.6.5).
 - **SIGTERM:** the worker stops taking messages and gives in-flight pages `--shutdown-grace-secs`, as on main. Then it closes every instance's stdin, waits up to 10 s, and removes what is left.
 
@@ -420,13 +430,13 @@ Cgroup files are world-readable, and `ProtectControlGroups=yes` leaves them read
 
 ### 13.7.1 Files
 
-| File                             | Written by     | Contents                                                                              |
-| -------------------------------- | -------------- | ------------------------------------------------------------------------------------- |
-| `ocr/engines/engines.toml`       | Hand, reviewed | Engines, their models and licences, profiles, limits, production flag                 |
-| `ocr/routing/routes.toml`        | Hand, reviewed | `version`, ordered routes, title-level script facts                                   |
-| `ocr/engines/engines.lock.json`  | CI, in a PR    | Per engine id: image reference and digest, adapter version, model hashes, profile ids |
-| `ocr/engines/models.lock`        | Hand, reviewed | Model files: name, source URL, sha256 (moved from the survey, same format)            |
-| `ocr/routing/routes.golden.toml` | Hand, reviewed | Page attributes and the route each must hit; `cargo test` checks them                 |
+| File                             | Written by     | Contents                                                                           |
+| -------------------------------- | -------------- | ---------------------------------------------------------------------------------- |
+| `ocr/engines/engines.toml`       | Hand, reviewed | Engines, their models and licences, profiles, limits, production flag              |
+| `ocr/routing/routes.toml`        | Hand, reviewed | `version`, ordered routes, title-level script facts                                |
+| `ocr/engines/engines.lock.json`  | CI, in a PR    | Per engine id: image reference and digest, adapter version, model hashes, profiles |
+| `ocr/engines/models.lock`        | Hand, reviewed | Model files: name, source URL, sha256 (moved from the survey, same format)         |
+| `ocr/routing/routes.golden.toml` | Hand, reviewed | Page attributes and the route each must hit; `cargo test` checks them              |
 
 The routing bundle is `engines.toml`, `routes.toml` and `engines.lock.json`. Its digest is the sha256 of the lines `<file name> <sha256 of its bytes>`, sorted.
 
@@ -503,22 +513,29 @@ tunable = ["psm", "scale"]
 
 ### 13.7.3 engines.lock.json
 
-The same excerpt as the `hello` in §13.4.2:
+The same excerpt as the `hello` in §13.4.2 (registry name and image digest made up):
 
 ```json
 {
   "tesseract-5.5": {
     "adapter": "usnm-ocr-adapter-tesseract 0.1.0",
-    "image": "<registry>.azurecr.io/usnm-ocr/tesseract@sha256:<64 hex>",
+    "image": "crusnmprodk3x9.azurecr.io/usnm-ocr/tesseract@sha256:3f9a0c1d2e4b507737dc5d6760843358ae18fa807b684b6ce2370cd979c90dc4",
     "models": {
       "tessdata/deu.traineddata": "8407331d6aa0229dc927685c01a7938fc5a641d1a9524f74838cdac599f0d06e",
       "tessdata/deu_latf.traineddata": "429b8c33d37e1a4823a2bb082a644ff13e252f735b7945e08a518d22ddcc459e",
       "tessdata/frak2021.traineddata": "1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a"
     },
-    "profiles": ["deu", "deu_latf+deu", "frak2021"]
+    "profiles": {
+      "deu": {"languages": ["deu"], "models": ["tessdata/deu.traineddata"], "tunable": ["psm", "scale"]},
+      "deu_latf+deu": {"languages": ["deu"], "models": ["tessdata/deu_latf.traineddata", "tessdata/deu.traineddata"], "tunable": ["psm", "scale"]},
+      "frak2021": {"languages": ["deu"], "models": ["tessdata/frak2021.traineddata"], "tunable": ["psm", "scale"]}
+    }
   }
 }
 ```
+
+- CI writes `profiles` from the image's `hello` after conformance, and fails if any profile's `languages`, `models` or `tunable` differ from its entry in `engines.toml`. The worker compares each `hello` with these entries (§13.4.2).
+- `models` within a profile keeps the profile's load order; the comparisons treat it as a set.
 
 ### 13.7.4 routes.toml
 
@@ -536,7 +553,7 @@ candidates = [                   # a candidate's options override the profile's 
   { engine = "tesseract-5.5", profile = "deu_latf+deu" },
   { engine = "tesseract-5.5", profile = "deu" },
 ]
-fallback_after = 2               # receives per candidate before the next
+fallback_after = 2               # receives per candidate before the next; 2 if absent, at least 1
 timeout_secs = 1200
 
 [[route]]
@@ -567,16 +584,32 @@ candidates = [{ engine = "tesseract-5.5", profile = "auto" }]
 
 A candidate is usable on this node when its engine is in the node's list, its breaker is closed, its image is pulled, its profile covers the language (`auto` takes the first profile that does), and in production it passes the licence gate.
 
-The worker starts at candidate `min((dequeue_count - 1) / fallback_after, n - 1)` and takes the first usable one from there. A page that failed twice on its first candidate moves to the second on its third receive, whatever the cause. This needs no state shared between nodes, which can't update messages (ADR-0015). Within one receive, `unsupported` and `bad_input` move straight to the next candidate. If nothing is usable, the page fails as transient `no_route_here`, since another node may have the engine. Each runs record keeps `candidate_rank`, so pages read by a fallback are visible.
+Each route has at least one candidate, and `fallback_after` is a whole number of at least 1, defaulting to 2 when the route leaves it out (as all but the first example do). `routes check` and the worker's loader reject an empty `candidates` list and `fallback_after = 0`. With `n` candidates, the worker starts at candidate `min((dequeue_count - 1) / fallback_after, n - 1)`, in integer division counting from 0, and takes the first usable one from there. A page that failed twice on its first candidate moves to the second on its third receive, whatever the cause. This needs no state shared between nodes, which can't update messages (ADR-0015). Within one receive, `unsupported` and `bad_input` move straight to the next candidate. If nothing is usable, the page fails as transient `no_route_here`, since another node may have the engine. Each runs record keeps `candidate_rank`, so pages read by a fallback are visible.
 
-**Receives while engines are down.** A message is dead-lettered after 5 receives, and a page that fails in milliseconds frees its slot at once, so a worker that kept receiving through an engine outage would spend every visible message's receives in a few hours. Node 1 is the only node, so "another node may have the engine" doesn't help. The worker therefore guards its receives, as 12 Step 7 does for LoC holds:
+**Receives while engines are down.** Three facts about Azure Storage Queues and ADR-0015's roles shape this:
 
-- Before each receive it checks that at least one engine the node may start is usable: image present, breaker closed, cgroup self-check passed, and an idle instance or memory to start one. If none is, it doesn't receive, and backs off as it does on empty queues (1 s doubling to 60 s) until a breaker closes or an image arrives.
-- A page that fails as `no_route_here` or `no_model` sets a node-wide receive backoff of 60 s, doubling to 15 minutes, which the next success clears.
-- When only some engines are down, the worker peeks first (Message Processor allows peek, ADR-0015 §5) and skips the receive while the messages at the front all route to an unavailable engine.
-- A test: with the breaker open, 100 queued messages still have `dequeue_count` 0 after 10 minutes.
+- Get Messages hides each message it returns for the visibility timeout given in that call, and raises each one's dequeue count by 1. The worker dead-letters a message on its 6th receive.
+- A node can't change a message's visibility after the receive (no Update Message) and can't put a message back on a work queue (no Put Message). It can peek, which returns up to 32 messages with their dequeue counts and changes neither, and it can add messages to `ocr-deadletter`.
+- In a mixed queue the worker can't reach a message without receiving the ones ahead of it.
 
-When node 2 runs engines node 1 can't, routes for those engines get a capability queue (`ocr-bulk-gpu`, with its Bicep queue and a grant to the node group), and the seeder picks the queue with the same `usnm-ocr-route` crate.
+So a worker that kept receiving through an engine outage would spend every visible message's receives in a few hours, and node 1 is the only node, so "another node may have the engine" doesn't help. The worker guards its receives, as 12 Step 7 does for LoC holds:
+
+1. **No engine usable.** Before each receive the worker checks that at least one engine the node may start is usable: image present, breaker closed, cgroup self-check passed, and an idle instance or memory to start one. If none is, it doesn't receive, and backs off as it does on empty queues (1 s doubling to 60 s) until a breaker closes or an image arrives.
+2. **Routing failures.** A page that fails as `no_route_here` or `no_model` sets a node-wide receive backoff of 60 s, doubling to 15 minutes, which the next success clears.
+3. **Some engines down: bounded receive-and-defer.** The worker peeks first and routes each peeked message as it would on receive (with its dequeue count plus 1). A message is _blocked_ when no candidate from its starting rank is usable on this node.
+   - If the first peeked message isn't blocked, the worker receives as usual.
+   - Otherwise it makes a defer receive: Get Messages for the leading blocked messages plus one (at most 32), with the usual 1,800 s visibility. It reads any routable message the call returns, since the order can change between the peek and the receive. It leaves the blocked ones without deleting them, so they stay hidden for 1,800 s and the messages behind them reach the front.
+   - **Defer budget.** A message is deferred at most twice. A blocked message whose peeked dequeue count is already 2 is moved instead: the worker receives it (its 3rd receive), adds it to `ocr-deadletter` with cause `unroutable` and the ids of the engines that were down, and deletes it from the work queue. 12 Step 10's seeder queues `unroutable` dead letters again as it does `dequeue_count` ones, at most 3 times, so a page isn't lost to an outage. A message queued again starts with dequeue count 0.
+   - **Rate.** At most 10 defer receives a minute, and only while a page slot is free.
+   - A deferred receive counts toward the candidate rank too (`fallback_after`). That is the intended effect when the first candidate's engine is the one down.
+
+**Why the hide isn't short.** The visibility timeout is set per Get Messages call and can't be changed afterwards. A short hide on the blocked messages would bring them back to the front within minutes, and every return would cost another receive. With 1,800 s, an outage costs each blocked message one receive per 30 minutes, at most 3 receives, then a dead letter and a requeue. A routable message received in the same call keeps its full page budget.
+
+**Cost.** For `B` blocked messages ahead of routable work, reaching that work takes about `B / 32` defer receives (at most 10 a minute, so 1,000 blocked messages take about 3 minutes) and uses one of each blocked message's receives. After about an hour of outage, blocked messages that come round a third time are moved to `ocr-deadletter`: 3 receives, a dead-letter put and a delete each, and a later put by the seeder. Storage transactions are billed per 10,000, so the queue cost is small; the real cost is the page's receives and up to an hour's delay, plus the seeder's delay, before a deferred page is read. Main's 5-receive limit is unchanged.
+
+**Tests.** With every breaker open, 100 queued messages still have dequeue count 0 after 10 minutes. With engine A's breaker open and 100 messages for A queued ahead of 10 for engine B, the 10 B pages finish, no A message on the work queue passes dequeue count 2, and the A messages past their budget are in `ocr-deadletter` with cause `unroutable`.
+
+**Queues per capability.** Defers keep a mixed queue moving through a short outage of one engine. They don't suit an engine that a node can never run. When node 2 runs engines node 1 can't, routes for those engines get a capability queue (`ocr-bulk-gpu`, with its Bicep queue and a grant to the node group), and the seeder picks the queue with the same `usnm-ocr-route` crate. A node receives only from queues whose engines it may start, so an outage there costs nothing on the other queues. The limit is that a route's candidates must all be in one capability group, since a node can't move a message between queues; `routes check` enforces it. If outages of one CPU engine start sending many pages to `ocr-deadletter` as `unroutable`, that engine moves to a queue of its own the same way.
 
 ### 13.7.7 Cascade (optional, per route)
 
@@ -598,7 +631,7 @@ min_word_overlap = 0.6           # share of the first reading's dictionary words
 
 ### 13.7.8 Validation, tools and distribution
 
-- `usnm-ocr-worker routes check --routing ocr/routing/routes.toml --engines ocr/engines/engines.toml --engines-lock ocr/engines/engines.lock.json [--survey-results <dir>]` fails on: an unknown engine or profile; options not in a profile's `tunable`; an unreachable route; no catch-all; a production route to a `production = false` engine, or to a profile that uses a model whose licence isn't in `production_licenses`; a `batch` pattern ending in `_verNN`; `score_*` keys or a cascade on a route that matches `jpn` or `und`; timeouts over the page budget; a changed file without a new `version`. `routes.golden.toml` includes a page on the default route and checks its resolved request: profile, merged options and `image.dpi` 300. With `--survey-results` it warns when a production route's locked image and model digests have no survey result. CI runs it.
+- `usnm-ocr-worker routes check --routing ocr/routing/routes.toml --engines ocr/engines/engines.toml --engines-lock ocr/engines/engines.lock.json [--survey-results <dir>]` fails on: an unknown engine or profile; an empty `candidates` list or `fallback_after = 0`; candidates of one route in different capability queues; options not in a profile's `tunable`; an unreachable route; no catch-all; a production route to a `production = false` engine, or to a profile that uses a model whose licence isn't in `production_licenses`; a `batch` pattern ending in `_verNN`; `score_*` keys or a cascade on a route that matches `jpn` or `und`; timeouts over the page budget; a changed file without a new `version`. `routes.golden.toml` includes a page on the default route and checks its resolved request: profile, merged options and `image.dpi` 300. With `--survey-results` it warns when a production route's locked image and model digests have no survey result. CI runs it.
 - `routes explain --page sn83045462/1890-05-03/ed-1/seq-7 --language deu --batch nbu_gage` prints the route, the candidates and why any were dropped.
 - `routes diff --from-version 1 --to-version 2 --manifest <sample.jsonl>` counts pages whose engine or profile changes.
 - **Distribution, first release:** the bundle files are installed on the node with the worker and passed by named flags (`--routing-file`, `--engines-file`, `--engines-lock`).
@@ -638,7 +671,7 @@ tesseract/5.5.3 profile=deu_latf+deu image=sha256:3f9a0c1d2e4b models=sha256:8c2
 - `LANG` on each TextBlock is the page's ISO 639-3 code, or the block's `lang` from `boxes.json`. LANG attributes in engine ALTO are ignored: NDNP Open OCR writes `eng` on every block, whatever the page's language.
 - CI checks the writer's output against `alto-3-1.xsd` with `xmllint --schema` on golden pages.
 
-The description carries the provenance:
+The description carries the provenance. The registry name, digests and commit below are made up; the example is well-formed XML:
 
 ```xml
 <Description>
@@ -649,17 +682,17 @@ The description carries the provenance:
   <OCRProcessing ID="OCR_0">
     <ocrProcessingStep>
       <processingDateTime>2026-10-20T14:04:31Z</processingDateTime>
-      <processingStepSettings>image=<registry>.azurecr.io/usnm-ocr/tesseract@sha256:<64 hex>
-models=tessdata/deu.traineddata:sha256:8407331d...,tessdata/deu_latf.traineddata:sha256:429b8c33...
+      <processingStepSettings>image=crusnmprodk3x9.azurecr.io/usnm-ocr/tesseract@sha256:3f9a0c1d2e4b507737dc5d6760843358ae18fa807b684b6ce2370cd979c90dc4
+models=tessdata/deu.traineddata:sha256:8407331d6aa0229dc927685c01a7938fc5a641d1a9524f74838cdac599f0d06e,tessdata/deu_latf.traineddata:sha256:429b8c33d37e1a4823a2bb082a644ff13e252f735b7945e08a518d22ddcc459e
 profile=deu_latf+deu
 options=psm=3
 route=german-pre1920
-routing=r1 sha256:<bundle digest>
+routing=r1 sha256:062fcec2a5ff4521ad8e1c0b93189b8dd5fa06017dbbd96fc11660ab648a89f0
 contract=1
 adapter=usnm-ocr-adapter-tesseract 0.1.0 (rust)
 granularity=word
 run_id=nuc1.20261020T140312123456Z
-input_sha256=<sha256 of the fetched JPEG>
+input_sha256=0207a56216a746f2d137d019ff44c49c83d4f403efde9b1eddba67ab6ebe326b
 dpi=300 (assumed)
 damage_before=0.62</processingStepSettings>
       <processingSoftware>
@@ -673,7 +706,7 @@ damage_before=0.62</processingStepSettings>
       <processingSoftware>
         <softwareCreator>usnewsmap.com</softwareCreator>
         <softwareName>usnm-ocr-worker</softwareName>
-        <softwareVersion><version>+<git sha></softwareVersion>
+        <softwareVersion>0.1.0+1dcc5c3</softwareVersion>
       </processingSoftware>
     </postProcessingStep>
   </OCRProcessing>
@@ -684,11 +717,11 @@ damage_before=0.62</processingStepSettings>
 
 ### 13.8.3 Runs record
 
-A new create-only object, `runs/<lccn>_<date>_ed-<n>.<run_id>.parquet`, with one row per engine read and Parquet key-value metadata `usnm.runs.schema=1`. It is written after the ALTO and before the overlay part. `usnm-ingest ocr-sync` (12 Step 8) picks it up with the page's part, checks it with `usnm-ocr-contract`'s strict reader and writes it to `curated/ocr-local/runs/`. 12 Step 8 lists this object in its pickup; without that, it would sit in `ocr-out` until the 30-day lifecycle rule deleted it. The survey writes the same `RunRecord` as JSON lines with `"schema": 1`.
+A new create-only object, `runs/<lccn>_<date>_ed-<n>.<run_id>.parquet`, with Parquet key-value metadata `usnm.runs.schema=1`. It is written after the ALTO and before the overlay part, so it exists only for a receive that writes a page. It has one row per engine read in that receive: the read that was kept (`selected` true), a cascade's other read, and any candidate that answered `unsupported` or `bad_input` before the kept one (`status` and `error_kind` set). `usnm-ingest ocr-sync` (12 Step 8) picks it up with the page's part, checks it with `usnm-ocr-contract`'s strict reader and writes it to `curated/ocr-local/runs/`. 12 Step 8 lists this object in its pickup; without that, it would sit in `ocr-out` until the 30-day lifecycle rule deleted it. The survey writes the same `RunRecord` as JSON lines with `"schema": 1`.
 
 | Group         | Columns                                                                                                                                                                  |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Identity      | `run_id`, `doc_id`, `node`, `worker_version`, `contract`                                                                                                                 |
+| Identity      | `run_id`, `doc_id`, `node`, `worker_version`, `contract`, `ocr_engine` (the full tag of §13.8.1, the same string as the overlay row's for the kept read)                 |
 | Engine        | `engine_id`, `family`, `engine_version`, `adapter`                                                                                                                       |
 | Artifacts     | `image_ref`, `image_digest`, `models_digest`, `models_json`                                                                                                              |
 | Configuration | `profile`, `options_json` (defaults merged with the route's options), `scale`, `tiles`                                                                                   |
@@ -699,6 +732,9 @@ A new create-only object, `runs/<lccn>_<date>_ed-<n>.<run_id>.parquet`, with one
 | Layout        | `granularity`, `reading_order`, `markup`, `blocks`, `lines`, `words`, `mean_conf`, `text_chars`, `text_sha256`                                                           |
 | Damage        | `damage_before` (the message's `score`, which main drops), `damage_after` (null for `jpn` and `und`)                                                                     |
 | Page          | `language`, `script`, `reason`, `queued_at`, `ocred_at`                                                                                                                  |
+
+- **Reads that write nothing.** A receive that ends in a timeout, crash, OOM kill, `convert` failure or abandoned page writes no ALTO, runs record or part (§13.5), so its reads aren't in `runs/`. The worker sends each such read to telemetry as an `ocr_engine_run` event with the Identity, Engine, Routing, Outcome and Resources fields above and no page text. `ocr.engine_errors` and `ocr.pages_failed` count them as before. The survey writes a `RunRecord` for every read, failed or not.
+- **ocr-sync's check.** 12 Step 8 check 7 takes `ocr_engine` from the selected row, requires it to equal the part's `ocr_engine`, and refuses it when it carries `image=local`.
 
 ### 13.8.4 What stays the same
 

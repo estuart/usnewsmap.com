@@ -443,7 +443,7 @@ Rust, in `usnm-store` and the worker.
 - **Engine.** The worker asks the engine whether it can read the page's language before it fetches the scan, through the contract client from ADR-0016: today a page with no model downloads the full-size scan on each of up to 5 attempts before failing as `no_model`.
 - **LoC.** A 403 is treated like a 429: it holds that server, and the page isn't dead-lettered. A 4xx on an issue's item JSON is no longer cached as an issue with no pages. `Retry-After` keeps its one-hour cap, but a capped hold is counted in `loc_slowdowns` (attribute `capped`), and a rule on the nodes' workspace alerts on it.
 - **Holds.** The worker stops receiving while a LoC hold extends past a new page's budget (`Pacer` exposes its held-until time), so a long hold no longer spends pages' receives.
-- **Dead letters.** The body becomes `v: 2` with `cause` (`dequeue_count`, `invalid` or `permanent`) and, for `invalid`, `kind` (`MessageError::kind()`). A `dequeue_count` dead letter still can't say why the earlier attempts failed; that is only in `ocr.pages_failed` by `error` and in the `ocr_page` requests by message id.
+- **Dead letters.** The body becomes `v: 2` with `cause` (`dequeue_count`, `invalid`, `permanent` or `unroutable`) and, for `invalid`, `kind` (`MessageError::kind()`). `unroutable` is a page moved off a work queue after its defer budget while its engines were down, with the ids of those engines (13 §13.7.6). A `dequeue_count` dead letter still can't say why the earlier attempts failed; that is only in `ocr.pages_failed` by `error` and in the `ocr_page` requests by message id.
 - **Verify.** The worker's tests pass unchanged; new tests: `ger` is refused at enqueue; a page with no model fails without an image request (the stand-in server counts them); a 1-hour `Retry-After` takes no messages; a 403 holds without a dead letter; each dead-letter cause has its field.
 
 ### Step 8: `ocr-sync`: pickup, checks, dead letters, ledger, scheduled job (L)
@@ -458,7 +458,7 @@ Rust in `usnm-ingest`, Bicep for the job.
   4. `text_sha256` and `text_chars` match the text; the text is at most 512 KiB, with no control characters other than newline and tab.
   5. `ocr_source` is on the engine list from 13; `loc_text` is `bulk` or `user`; the batch is in the published version; the title is catalogued and not Japanese; `image_url` is on `tile.loc.gov`.
   6. The ALTO is well-formed XML with no DOCTYPE, within depth and element limits, in an ALTO namespace, with a `Page` that has `WIDTH` and `HEIGHT`, read with `usnm-alto`'s bounded reader (13 §13.2).
-  7. Once the worker writes them (13 §13.8.3), the page's runs record, `runs/<lccn>_<date>_ed-<n>.<run_id>.parquet`, exists and passes `usnm-ocr-contract`'s strict reader, with the same `run_id` and `doc_id`, and an `ocr_engine` without `image=local`.
+  7. Once the worker writes them (13 §13.8.3), the page's runs record, `runs/<lccn>_<date>_ed-<n>.<run_id>.parquet`, exists and passes `usnm-ocr-contract`'s strict reader, with the same `run_id` and `doc_id`, and its selected row's `ocr_engine` equals the part's and has no `image=local`.
 
   `ocred_at` comes from the blob's creation time on the server, not the node's clock.
 
@@ -495,7 +495,7 @@ Rust, as a `seed` step of `ocr-sync`; no new job.
 - **Order.** (batch, lccn) units ranked by summed max(0, damage_rate − 0.1) from Step 6's tables for the published version (its `versions/<index_version>.json` list), only in languages the deployed engines route (13). Whole units go in issue order (lccn, date, edition, seq), so the worker's issue cache (256 issues for an hour) hits.
 - **Skips.** Titles that list Japanese; pages in the `ocr-ja` overlay or in `ja_latin.json`; pages in `ocr-local` or outstanding in the ledger; duplicate copies the version hides; pages under the minimum damage.
 - **Messages.** The base batch name (the audit's tables and CSV carry `_verNN`, which is stripped); the page's detected language in ISO 639-3, or the title's first language for `und`; `score` = LoC's damage rate; reason `bulk`.
-- **Ledger.** The seeder writes the ledger as `ocr-enqueue` does (Step 8). A page outstanding for 14 days with no result is queued again, at most 3 times. A dead-lettered page is queued again only when its cause was `dequeue_count`, within the same limit.
+- **Ledger.** The seeder writes the ledger as `ocr-enqueue` does (Step 8). A page outstanding for 14 days with no result is queued again, at most 3 times. A dead-lettered page is queued again only when its cause was `dequeue_count` or `unroutable`, within the same limit.
 - **Verify.** `--dry-run` counts per unit; a dev run into a directory queue; the ledger matches the queue count; the worker accepts every message.
 
 ### Step 11: Pilot on node 1 (ops and a draft report, S)
