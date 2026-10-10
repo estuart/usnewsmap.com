@@ -130,8 +130,23 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=20)
 [ -z "$SSH_KEY" ] || SSH_OPTS+=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
 # Quoted for the node's shell, which ssh hands the command line to. No
 # credential here: the tenant, app id and secret go on ssh's stdin.
+# The TPM-backed identity (the key in the node's TPM) is in preview: Azure
+# refuses it unless the subscription's Microsoft.HybridCompute/
+# HybridComputePreview feature is Registered, and that feature needs
+# Microsoft's approval (az feature register leaves it Pending until then).
+# Ask for the TPM only when it's registered; otherwise the key stays in the
+# agent's default store, and the node moves to the TPM later by offboarding
+# and onboarding again.
+tpm_feature=$(az feature show --namespace Microsoft.HybridCompute --name HybridComputePreview \
+  --subscription "$SUBSCRIPTION" --query properties.state -o tsv 2> /dev/null || echo unknown)
+if [ "$tpm_feature" = Registered ]; then
+  KEY_STORE=tpm
+else
+  KEY_STORE=default
+fi
 SETUP_ARGS=$(printf '%q ' --subscription "$SUBSCRIPTION" --resource-group "$GROUP" \
-  --location "$LOCATION" --name "$NAME" --tags "$TAGS")
+  --location "$LOCATION" --name "$NAME" --tags "$TAGS" --identity-key-store "$KEY_STORE")
+echo "identity key store: $KEY_STORE (HybridComputePreview feature: ${tpm_feature:-unknown})"
 
 # The onboarding credential is a throwaway service principal with only Azure
 # Connected Machine Onboarding on the group, made for this run and deleted

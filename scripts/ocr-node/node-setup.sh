@@ -3,7 +3,8 @@
 # scripts/ocr-node/onboard.sh copies it there and runs it with sudo.
 #
 #   node-setup.sh --subscription ID --resource-group NAME --location REGION \
-#     --name ARC_NAME [--tags K=V,K=V] [--force-unsupported] \
+#     --name ARC_NAME [--tags K=V,K=V] [--identity-key-store default|tpm] \
+#     [--force-unsupported] \
 #     < credentials
 #
 # Reads the onboarding service principal from stdin, three lines: tenant id,
@@ -28,7 +29,7 @@ usage() { sed -n '5,7s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
-SUBSCRIPTION="" GROUP="" LOCATION="" NAME="" TAGS="" FORCE=false
+SUBSCRIPTION="" GROUP="" LOCATION="" NAME="" TAGS="" FORCE=false KEY_STORE=default
 while [ $# -gt 0 ]; do
   case "$1" in
     --subscription) SUBSCRIPTION=${2:-}; shift 2 ;;
@@ -36,11 +37,13 @@ while [ $# -gt 0 ]; do
     --location) LOCATION=${2:-}; shift 2 ;;
     --name) NAME=${2:-}; shift 2 ;;
     --tags) TAGS=${2:-}; shift 2 ;;
+    --identity-key-store) KEY_STORE=${2:-}; shift 2 ;;
     --force-unsupported) FORCE=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
   esac
 done
+case "$KEY_STORE" in default|tpm) ;; *) echo "error: --identity-key-store is default or tpm" >&2; usage ;; esac
 for pair in SUBSCRIPTION:subscription GROUP:resource-group LOCATION:location NAME:name; do
   var=${pair%%:*}
   [ -n "${!var}" ] || { echo "error: missing --${pair#*:}" >&2; usage; }
@@ -240,24 +243,32 @@ else
     --enable-automatic-upgrade
   )
   [ -z "$TAGS" ] || connect_args+=(--tags "$TAGS")
-  # Keep the machine identity's private key in the TPM (the agent's TPM-backed
-  # identity, in preview), so it can't be copied off the disk. The key store
-  # is chosen at connect; changing it later means reconnecting, which makes a
-  # new machine and identity. proxmox-create-vm.sh gives VMs a vTPM 2.0.
-  if [ -c /dev/tpmrm0 ]; then
+  # --identity-key-store tpm keeps the machine identity's private key in the
+  # TPM (the agent's TPM-backed identity, in preview), so it can't be copied
+  # off the disk. Azure accepts it only once the subscription's
+  # Microsoft.HybridCompute/HybridComputePreview feature is registered, which
+  # needs Microsoft's approval; onboard.sh asks for tpm only then. The key
+  # store is chosen at connect; changing it later means reconnecting, which
+  # makes a new machine and identity. proxmox-create-vm.sh gives VMs a vTPM 2.0.
+  if [ "$KEY_STORE" = tpm ]; then
+    [ -c /dev/tpmrm0 ] || die "--identity-key-store tpm, but this node has no TPM (/dev/tpmrm0)"
     connect_args+=(--identity-key-store tpm)
-    echo "TPM found: the identity's key goes in the TPM"
+    echo "the identity's key goes in the TPM"
   else
-    echo "warning: no TPM (/dev/tpmrm0); the identity's key stays on disk"
+    echo "the identity's key stays in the agent's default store on disk"
   fi
   # A new secret and role assignment can take a few minutes to reach Entra
   # and Azure everywhere, so a refused connect is tried again.
   status=0
   for attempt in 1 2 3 4 5 6; do
     status=0
-    azcmagent connect "${connect_args[@]}" --config "$conf" || status=$?
+    azcmagent connect "${connect_args[@]}" --config "$conf" 2>&1 | tee "$WORK/connect.log" || true
+    status=${PIPESTATUS[0]}
     [ "$status" -ne 0 ] || break
     [ "$attempt" -lt 6 ] || break
+    # A 400 from the Hybrid Compute service (HCRP400) is a refusal, such as an
+    # unregistered preview feature; waiting won't change it.
+    if grep -q HCRP400 "$WORK/connect.log"; then break; fi
     echo "azcmagent connect failed ($status), attempt $attempt; trying again in 30 s"
     sleep 30
   done
