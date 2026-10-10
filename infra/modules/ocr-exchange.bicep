@@ -17,8 +17,8 @@ param name string
 param nodeIps array = []
 @description('The Container Apps subnet, allowed through its service endpoint.')
 param subnetId string
-@description('Object ids of the nodes\' Arc system-assigned identities.')
-param nodePrincipalIds array = []
+@description('Names of the nodes\' Arc machines (Microsoft.HybridCompute/machines) in this resource group. Each one\'s system-assigned identity gets the node roles.')
+param nodeNames array = []
 @description('The ingest identity: the cloud jobs that fill the queues and copy the output into curated.')
 param ingestPrincipalId string
 
@@ -157,12 +157,23 @@ resource nodeWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   }
 }
 
+// The Arc machines, by name. The Connected Machine agent creates each one
+// when the node connects (scripts/ocr-node/onboard.sh), so they aren't
+// declared here (ADR-0015); a name that isn't connected yet fails the
+// deployment. Each grant follows the machine's current identity, and its
+// name comes from the scope, the machine's resource id and the role.
+resource machines 'Microsoft.HybridCompute/machines@2024-07-10' existing = [
+  for n in nodeNames: {
+    name: n
+  }
+]
+
 resource nodeProcess 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for pair in flatten(map(nodePrincipalIds, p => map(range(0, length(workQueues)), i => { principal: p, queue: i }))): {
+  for pair in flatten(map(range(0, length(nodeNames)), m => map(range(0, length(workQueues)), q => { machine: m, queue: q }))): {
     scope: queues[pair.queue]
-    name: guid(queues[pair.queue].id, pair.principal, queueMessageProcessor)
+    name: guid(queues[pair.queue].id, machines[pair.machine].id, queueMessageProcessor)
     properties: {
-      principalId: pair.principal
+      principalId: machines[pair.machine].identity.principalId
       principalType: 'ServicePrincipal'
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageProcessor)
     }
@@ -170,11 +181,11 @@ resource nodeProcess 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 ]
 
 resource nodeDeadLetter 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for p in nodePrincipalIds: {
+  for (n, i) in nodeNames: {
     scope: deadLetter
-    name: guid(deadLetter.id, p, queueMessageSender)
+    name: guid(deadLetter.id, machines[i].id, queueMessageSender)
     properties: {
-      principalId: p
+      principalId: machines[i].identity.principalId
       principalType: 'ServicePrincipal'
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender)
     }
@@ -182,11 +193,11 @@ resource nodeDeadLetter 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 ]
 
 resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for p in nodePrincipalIds: {
+  for (n, i) in nodeNames: {
     scope: output
-    name: guid(output.id, p, 'usnm-ocr-node-writer')
+    name: guid(output.id, machines[i].id, 'usnm-ocr-node-writer')
     properties: {
-      principalId: p
+      principalId: machines[i].identity.principalId
       principalType: 'ServicePrincipal'
       // Custom roles are addressed at subscription level wherever they're defined.
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)

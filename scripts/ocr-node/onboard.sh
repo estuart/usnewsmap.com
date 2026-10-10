@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Onboard an on-prem OCR node (#296, ADR-0015) from the operator's machine:
 # connect it to Azure Arc in the environment's resource group and record its
-# identity, so the next provision grants it the exchange account's queues
-# and output container.
+# machine name, so the next provision grants its identity the exchange
+# account's queues and output container.
 #
 #   scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org \
 #     --name usnm-ocr-node1 [--ssh-key ~/.ssh/id_ed25519] [--dry-run]
@@ -21,8 +21,8 @@
 #   4. deletes the role assignment, the service principal and the app
 #      registration, and purges them from Entra's deleted items, when the
 #      script exits, on failure or Ctrl-C too;
-#   5. reads the machine's system-assigned identity and adds it to
-#      USNM_OCR_NODE_PRINCIPALS.
+#   5. checks that the Arc machine has a system-assigned identity and adds
+#      its name to USNM_OCR_NODE_NAMES.
 # It doesn't provision: it prints the command for that.
 #
 # --dry-run checks the settings and your sign-in and prints the plan; it
@@ -71,7 +71,7 @@ LOCATION=$(stack_location)
 EXCHANGE=$(aget OCR_EXCHANGE_ACCOUNT)
 NODES=$(aget USNM_OCR_NODES)
 NODE_IPS=$(aget USNM_OCR_NODE_IPS)
-PRINCIPALS=$(aget USNM_OCR_NODE_PRINCIPALS)
+NODE_NAMES=$(aget USNM_OCR_NODE_NAMES)
 [ -n "$SUBSCRIPTION" ] && [ -n "$TENANT" ] && [ -n "$GROUP" ] ||
   die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/provision.sh $ENV_NAME"
 [ "$NODES" = true ] ||
@@ -252,17 +252,29 @@ else
   [ "$status" -eq 0 ] || die "node-setup.sh failed on $HOST ($status)"
 fi
 
-step "Machine identity"
+step "Machine"
+# The provision looks each machine up by name in the group and grants its
+# system-assigned identity the node roles (infra/modules/ocr-exchange.bicep).
+case ",$(printf '%s' "$NODE_NAMES" | tr -d ' ')," in
+  *",$NAME,"*) listed=true ;;
+  *) listed=false ;;
+esac
 if [ "$DRY_RUN" = true ]; then
   if principal=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
     --subscription "$SUBSCRIPTION" --query identity.principalId -o tsv 2> /dev/null); then
-    echo "$NAME exists, identity $principal"
+    echo "$NAME exists, identity ${principal:-none yet}"
   else
     echo "$NAME isn't connected yet"
   fi
-  echo "would add its principal id to USNM_OCR_NODE_PRINCIPALS (now: ${PRINCIPALS:-empty})"
+  if [ "$listed" = true ]; then
+    echo "$NAME is already in USNM_OCR_NODE_NAMES"
+  else
+    echo "would add $NAME to USNM_OCR_NODE_NAMES (now: ${NODE_NAMES:-empty})"
+  fi
+  echo "then you'd run: scripts/provision.sh $ENV_NAME"
   exit 0
 fi
+# A machine without an identity would fail the provision; wait for it here.
 principal=""
 for attempt in 1 2 3 4 5 6; do
   principal=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
@@ -270,17 +282,16 @@ for attempt in 1 2 3 4 5 6; do
   [ -z "$principal" ] || break
   sleep 10
 done
-[ -n "$principal" ] || die "can't read $NAME's identity in $GROUP (tried $attempt times)"
+[ -n "$principal" ] || die "$NAME in $GROUP has no system-assigned identity yet (tried $attempt times); run this again"
 echo "$NAME: identity $principal"
 
 # Add it once; keep the others.
-case ",$PRINCIPALS," in
-  *",$principal,"*)
-    echo "already in USNM_OCR_NODE_PRINCIPALS" ;;
-  *)
-    scripts/settings.sh "$ENV_NAME" USNM_OCR_NODE_PRINCIPALS "${PRINCIPALS:+$PRINCIPALS,}$principal"
-    echo "added to USNM_OCR_NODE_PRINCIPALS" ;;
-esac
+if [ "$listed" = true ]; then
+  echo "already in USNM_OCR_NODE_NAMES"
+else
+  scripts/settings.sh "$ENV_NAME" USNM_OCR_NODE_NAMES "${NODE_NAMES:+$NODE_NAMES,}$NAME"
+  echo "added $NAME to USNM_OCR_NODE_NAMES"
+fi
 
 step "Next"
 echo "Grant the node its roles on $EXCHANGE by provisioning (needs Owner on the subscription):"
