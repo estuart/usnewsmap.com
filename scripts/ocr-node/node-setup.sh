@@ -13,7 +13,8 @@
 # file under /run (tmpfs) while `azcmagent connect --config` reads it, and
 # is deleted straight after. A node that's already connected needs none.
 #
-# Keeps the journal on disk; installs python3, podman and chrony;
+# Keeps the journal on disk; installs python3, podman and chrony, and
+# htop, iftop and screen from EPEL;
 # creates the `usnm` system user; installs the Azure Connected Machine
 # agent, turns off extensions, guest configuration and incoming connections
 # BEFORE it connects; connects; installs the worker's systemd unit, disabled
@@ -89,6 +90,26 @@ step "Installing packages"
 # build, in a later change. This installs what the agent, the worker and
 # the containers need, all from the distribution's own repositories.
 dnf -y -q install python3 podman chrony curl
+
+# Tools for whoever logs in to watch the node: htop (processes), iftop
+# (traffic per connection) and screen. On EL9 and EL10 they come from EPEL,
+# set up the way Fedora's EPEL guide says: AlmaLinux ships epel-release in
+# its extras repository and turns on CRB; RHEL takes the release package
+# from Fedora and turns on CodeReady Builder.
+if ! rpm -q epel-release > /dev/null 2>&1; then
+  case "$OS_ID" in
+    almalinux)
+      dnf config-manager --set-enabled crb
+      dnf -y -q install epel-release ;;
+    rhel)
+      subscription-manager repos --enable "codeready-builder-for-rhel-10-$(uname -m)-rpms"
+      dnf -y -q install https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm ;;
+    *) echo "warning: don't know how to add EPEL on $OS_ID; skipping htop, iftop and screen" ;;
+  esac
+fi
+if rpm -q epel-release > /dev/null 2>&1; then
+  dnf -y -q install htop iftop screen
+fi
 systemctl enable --now chronyd > /dev/null
 podman --version
 
