@@ -10,9 +10,10 @@
 #   1. removes the Arc machine's system-assigned identity from
 #      USNM_OCR_NODE_GROUP, which takes away the node roles;
 #   2. with --host, over ssh with sudo: stops and disables
-#      usnm-ocr-worker.service and runs `azcmagent disconnect
-#      --force-local-only`, which clears the agent's local state without
-#      signing in to Azure (so no onboarding credential is needed); without
+#      usnm-ocr-worker.service and, if the agent is configured (connected
+#      or not), runs `azcmagent disconnect --force-local-only`, which
+#      clears the agent's local state without signing in to Azure (so no
+#      onboarding credential is needed); without
 #      --host (a node that's gone), prints those commands instead;
 #   3. deletes the Arc machine with your own az sign-in, which deletes its
 #      identity.
@@ -94,11 +95,16 @@ fi
 step "Node"
 # --force-local-only: the agent forgets its connection without asking Azure,
 # so the node needs no credential; this script deletes the resource itself.
+# The agent is cleared whenever it's configured (it has a resource name),
+# whether it shows Connected or not: one that can't reach Azure shows
+# Disconnected but still holds the machine's settings.
 REMOTE='systemctl disable --now usnm-ocr-worker.service 2> /dev/null || true
-if azcmagent show 2> /dev/null | grep -qi "agent status *: *connected"; then
+if ! command -v azcmagent > /dev/null; then
+  echo "no Connected Machine agent"
+elif azcmagent show 2> /dev/null | grep -Eqi "^ *resource name *: *[^ ]"; then
   azcmagent disconnect --force-local-only
 else
-  echo "agent not connected"
+  echo "agent not configured"
 fi'
 if [ -z "$HOST" ]; then
   echo "no --host; if the node still exists, run on it as root:"

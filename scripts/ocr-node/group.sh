@@ -9,9 +9,11 @@
 # mail-enabled, not role-assignable) whose members are the nodes' Arc
 # machine identities. onboard.sh adds each node, offboard.sh removes it.
 # Deployment stacks can't hold Microsoft Graph resources, so the Bicep
-# doesn't create it. Run once per environment; run again, it finds the group
-# by name, makes you an owner if you aren't one (owners can add and remove
-# members) and saves its id. It never deletes the group.
+# doesn't create it. Run once per environment. Run again, it uses the group
+# whose id is saved and makes you an owner if you aren't one (owners can
+# add and remove members). It never adopts a group by name: display names
+# aren't unique, and an existing group could hold other principals, which
+# the provision would then grant the node roles. It never deletes a group.
 #
 # --dry-run checks your sign-in and prints the plan; it creates nothing and
 # changes no setting.
@@ -52,21 +54,32 @@ current_tenant=$(az account show --query tenantId -o tsv 2> /dev/null || true)
 GROUP_NAME="usnm-ocr-nodes-$ENV_NAME"
 [ "$DRY_RUN" = false ] || echo "dry run: nothing is changed"
 
-# Display names aren't unique in Entra; more than one match is left to a
-# person to sort out.
-ids=$(az ad group list --filter "displayName eq '$GROUP_NAME'" --query '[].id' -o tsv)
-count=$(printf '%s' "$ids" | grep -c . || true)
-[ "$count" -le 1 ] || die "$count groups are named $GROUP_NAME ($(echo "$ids" | tr '\n' ' ')); delete the extras"
-GROUP_ID=$ids
-if [ -n "$GROUP_ID" ]; then
-  echo "$GROUP_NAME exists: $GROUP_ID"
-elif [ "$DRY_RUN" = true ]; then
-  echo "would create security group $GROUP_NAME"
+# The saved id is the group's identity. Without one, a group is created,
+# and only if none has the name yet: one that does was made by someone or
+# something else, or by a run that stopped before saving its id, and a
+# person checks its members and saves its id by hand.
+GROUP_ID=""
+if [ -n "$SAVED" ]; then
+  name=$(az ad group show --group "$SAVED" --query displayName -o tsv 2> /dev/null) ||
+    die "can't read group $SAVED (USNM_OCR_NODE_GROUP); if it was deleted, clear the setting and run this again"
+  GROUP_ID=$SAVED
+  members=$(az ad group member list --group "$GROUP_ID" --query 'length(@)' -o tsv)
+  echo "USNM_OCR_NODE_GROUP is $GROUP_ID ($name, $members members)"
 else
-  GROUP_ID=$(az ad group create --display-name "$GROUP_NAME" --mail-nickname "$GROUP_NAME" \
-    --description "usnewsmap $ENV_NAME on-prem OCR nodes' Arc identities (ADR-0015); roles on the exchange account come from the provision" \
-    --query id -o tsv) || die "can't create $GROUP_NAME (you need the right to create security groups)"
-  echo "created $GROUP_NAME: $GROUP_ID"
+  ids=$(az ad group list --filter "displayName eq '$GROUP_NAME'" --query '[].id' -o tsv)
+  [ -z "$ids" ] ||
+    die "a group named $GROUP_NAME already exists ($(echo "$ids" | tr '\n' ' ')) and USNM_OCR_NODE_GROUP is empty. Check its members and owners (az ad group member list --group <id>); if it's this environment's, scripts/settings.sh $ENV_NAME USNM_OCR_NODE_GROUP <id>, otherwise delete or rename it"
+  if [ "$DRY_RUN" = true ]; then
+    echo "would create security group $GROUP_NAME and set USNM_OCR_NODE_GROUP to its id"
+  else
+    GROUP_ID=$(az ad group create --display-name "$GROUP_NAME" --mail-nickname "$GROUP_NAME" \
+      --description "usnewsmap $ENV_NAME on-prem OCR nodes' Arc identities (ADR-0015); roles on the exchange account come from the provision" \
+      --query id -o tsv) || die "can't create $GROUP_NAME (you need the right to create security groups)"
+    echo "created $GROUP_NAME: $GROUP_ID"
+    # Saved straight away, so a run that stops after this picks the group up.
+    scripts/settings.sh "$ENV_NAME" USNM_OCR_NODE_GROUP "$GROUP_ID"
+    echo "set USNM_OCR_NODE_GROUP to $GROUP_ID"
+  fi
 fi
 
 me=$(az ad signed-in-user show --query id -o tsv 2> /dev/null || true)
@@ -84,15 +97,5 @@ else
   echo "made you ($me) an owner of $GROUP_NAME"
 fi
 
-if [ -z "$GROUP_ID" ]; then
-  echo "would save its id in USNM_OCR_NODE_GROUP (now: ${SAVED:-empty})"
-elif [ "$SAVED" = "$GROUP_ID" ]; then
-  echo "USNM_OCR_NODE_GROUP is already $GROUP_ID"
-elif [ "$DRY_RUN" = true ]; then
-  echo "would set USNM_OCR_NODE_GROUP to $GROUP_ID (now: ${SAVED:-empty})"
-else
-  scripts/settings.sh "$ENV_NAME" USNM_OCR_NODE_GROUP "$GROUP_ID"
-  echo "set USNM_OCR_NODE_GROUP to $GROUP_ID${SAVED:+ (was $SAVED)}"
-fi
 echo "Grant the group the node roles by provisioning (needs Owner on the subscription):"
 echo "  scripts/provision.sh $ENV_NAME"
