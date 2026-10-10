@@ -439,3 +439,34 @@ for f in chunk-*; do curl -sf -XPOST "$QW/api/v1/$INDEX/ingest" --data-binary @"
 ```
 
 Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.tar` gives `{batch}/{archive}` and `{batch}/manifest.json`, the layout of `raw/`.
+
+## On-prem OCR nodes
+
+Local machines re-read badly OCR'd pages (#296, [ADR-0015](design/adr/0015-onprem-ocr-workers.md)). Each node is an Azure Arc-enabled server running AlmaLinux 9, with a managed identity and no stored secret. It takes pages from Storage queues in the exchange account `stusnmo<suffix>` and writes its output to that account's `ocr-out` container, which a cloud job copies into `curated`. This section sets up the account and connects a node; the worker itself comes in a later change.
+
+**The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP lives only in the environment's settings, never in the repository. The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
+
+```sh
+scripts/settings.sh prod USNM_OCR_NODE_IPS 203.0.113.7    # the home IP
+scripts/settings.sh prod USNM_OCR_NODES true
+scripts/provision.sh prod                                 # writes OCR_EXCHANGE_ACCOUNT
+```
+
+**Connect a node.** The node needs AlmaLinux 9 (on Proxmox, CPU type `host`, so Tesseract can use AVX2) and an admin account with key-based SSH and passwordless sudo. From your machine, signed in with `az` as an Owner of the environment's subscription:
+
+```sh
+scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1 --dry-run
+scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1
+scripts/provision.sh prod                                 # grants the new node its roles
+```
+
+`onboard.sh` registers the `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` providers, then runs `scripts/ocr-node/node-setup.sh` on the node with sudo. That script installs Tesseract 4.1.1 with its language packs from AppStream, python3, podman and chrony; creates the `usnm` user; installs the Connected Machine agent; turns off extensions, guest configuration and incoming connections; connects with a short-lived token from your sign-in (sent over ssh's stdin, never on a command line or the node's disk); and installs `usnm-ocr-worker.service`, disabled. It ends by checking that `usnm` can get a storage token, and prints `azcmagent show` and `azcmagent config list`. Run again, it skips what's done. `onboard.sh` then adds the machine's identity to `USNM_OCR_NODE_PRINCIPALS`; the provision grants it Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter` and Blob Data Contributor on `ocr-out`, and nothing else.
+
+**When the home IP changes,** the nodes lose the exchange account until the firewall has the new address. Hidden messages come back on their own once their time runs out.
+
+```sh
+scripts/settings.sh prod USNM_OCR_NODE_IPS <new IP>
+scripts/provision.sh prod
+```
+
+**Remove a node:** on the node, `sudo azcmagent disconnect` (it deletes the Arc resource and asks for a sign-in to do so); then take its id out of `USNM_OCR_NODE_PRINCIPALS` and provision, which removes its roles. Turning `USNM_OCR_NODES` off deletes the exchange account with its queues and `ocr-out`; the Arc machines stay in the group until disconnected.

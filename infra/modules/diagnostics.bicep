@@ -37,6 +37,8 @@ param dataStorageName string
 param tilesStorageName string
 @description('The ingest scratch share\'s account (ingest-scratch.bicep); empty if there is none.')
 param scratchStorageName string = ''
+@description('The on-prem OCR exchange account (ocr-exchange.bicep); empty if there is none.')
+param exchangeStorageName string = ''
 
 var name = 'to-log-analytics'
 
@@ -119,8 +121,11 @@ resource cosmosLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' =
   }
 }
 
-// Both storage accounts: blob writes and deletes; the unused queue, table
-// and file services log everything (nothing, until something uses them).
+// The data and tiles accounts, and the OCR exchange account when there is
+// one: blob writes and deletes; the queue, table and file services log
+// everything. Only the exchange account uses queues: each node's take,
+// delete and empty poll is a StorageQueueLogs row, so the worker backs off
+// while the queues are empty.
 module dataStorageLogs 'storage-diagnostics.bicep' = {
   name: 'diagnostics-${dataStorageName}'
   params: {
@@ -134,6 +139,15 @@ module tilesStorageLogs 'storage-diagnostics.bicep' = {
   name: 'diagnostics-${tilesStorageName}'
   params: {
     storageName: tilesStorageName
+    workspaceId: workspaceId
+    settingName: name
+  }
+}
+
+module exchangeStorageLogs 'storage-diagnostics.bicep' = if (!empty(exchangeStorageName)) {
+  name: 'diagnostics-${exchangeStorageName}'
+  params: {
+    storageName: exchangeStorageName
     workspaceId: workspaceId
     settingName: name
   }
