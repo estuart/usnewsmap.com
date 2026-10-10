@@ -124,8 +124,8 @@ param ocrNodes bool = false
 @description('Public IPv4 addresses or CIDR ranges the OCR nodes connect from, comma separated (the operator\'s home IP). Only in the environment\'s settings, never in the repository.')
 param ocrNodeIps string = ''
 
-@description('Names of the OCR nodes\' Arc machines in the resource group, comma separated (scripts/ocr-node/onboard.sh adds each node\'s after it connects). Their system-assigned identities get the node roles on the exchange account.')
-param ocrNodeNames string = ''
+@description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account; onboard.sh adds each node\'s Arc identity to it.')
+param ocrNodeGroupId string = ''
 
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
@@ -293,7 +293,7 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
     name: exchangeName
     nodeIps: filter(map(split(ocrNodeIps, ','), ip => trim(ip)), ip => !empty(ip))
     subnetId: network.outputs.caeSubnetId
-    nodeNames: filter(map(split(ocrNodeNames, ','), n => trim(n)), n => !empty(n))
+    nodeGroupId: trim(ocrNodeGroupId)
     ingestPrincipalId: identities.outputs.ingestPrincipalId
   }
 }

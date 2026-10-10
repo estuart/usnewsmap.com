@@ -18,7 +18,7 @@
 # agent, turns off extensions, guest configuration and incoming connections
 # BEFORE it connects; connects; installs the worker's systemd unit, disabled
 # (the worker arrives in a later change); and checks that `usnm` can get a
-# storage token from the agent. Safe to run again.
+# token from the agent. Safe to run again.
 #
 # AlmaLinux 9 or RHEL 10 (Arc supports both; it doesn't support Fedora),
 # unless --force-unsupported.
@@ -269,17 +269,21 @@ UNIT
 systemctl daemon-reload
 echo "usnm-ocr-worker.service: $(systemctl is-enabled usnm-ocr-worker.service 2> /dev/null || true)"
 
-step "Checking that usnm can get a storage token"
+step "Checking that usnm can get a token"
 # The agent's challenge flow, as usnm: the first request is refused with a
 # path to a key file only himds members can read; the second sends its
 # contents. Only whether a token came back is printed, never the token.
+# The token is for Resource Manager, not storage: managed identity tokens
+# are cached per resource for up to about 24 hours, and a storage token
+# fetched now, before onboard.sh adds the node to its group, would lack the
+# group and keep the node out of the exchange account until it expired.
 # A machine's identity can take a minute to be ready after it connects.
 ok=false
 for attempt in 1 2 3 4 5 6; do
   # shellcheck disable=SC2016 # expanded by the inner shell
   if runuser -u usnm -- bash -c '
       set -eu
-      url="http://localhost:40342/metadata/identity/oauth2/token?api-version=2020-06-01&resource=https%3A%2F%2Fstorage.azure.com%2F"
+      url="http://localhost:40342/metadata/identity/oauth2/token?api-version=2020-06-01&resource=https%3A%2F%2Fmanagement.azure.com%2F"
       realm=$(curl -s -o /dev/null -D - -H Metadata:true "$url" | tr -d "\r" |
         sed -n "s/^[Ww][Ww][Ww]-[Aa]uthenticate: *Basic realm=//p")
       [ -n "$realm" ]
@@ -292,9 +296,9 @@ for attempt in 1 2 3 4 5 6; do
   sleep 10
 done
 if [ "$ok" = true ]; then
-  echo "usnm got a token for https://storage.azure.com/"
+  echo "usnm got a token for https://management.azure.com/"
 else
-  echo "warning: usnm got no storage token (attempt $attempt); check \`azcmagent show\` and the himds group"
+  echo "warning: usnm got no token (attempt $attempt); check \`azcmagent show\` and the himds group"
 fi
 
 step "azcmagent show"
