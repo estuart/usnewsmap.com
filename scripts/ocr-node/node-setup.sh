@@ -76,6 +76,35 @@ dnf -y -q install python3 podman chrony curl
 systemctl enable --now chronyd > /dev/null
 podman --version
 
+step "SSH key exchange"
+# AlmaLinux 9.8's OpenSSH 9.9 supports post-quantum key exchange, but the
+# DEFAULT crypto policy leaves it out for sshd, so clients warn. Put the
+# hybrid algorithms this sshd supports first, in a drop-in that loads before
+# 50-redhat.conf; sshd only, the system crypto policy is unchanged. Skipped
+# when sshd already offers them first (RHEL 10's default may).
+current=$(sshd -T 2> /dev/null | awk '$1 == "kexalgorithms" { print $2 }')
+pq=""
+for alg in mlkem768x25519-sha256 sntrup761x25519-sha512 sntrup761x25519-sha512@openssh.com; do
+  ! ssh -Q kex | grep -xF "$alg" > /dev/null || pq="${pq:+$pq,}$alg"
+done
+if [ -z "$current" ] || [ -z "$pq" ]; then
+  echo "sshd offers no post-quantum key exchange to add; leaving it"
+elif [ "${current#"$pq"}" != "$current" ]; then
+  echo "sshd already offers $pq first"
+else
+  rest=$(tr ',' '\n' <<< "$current" | grep -vxF -e mlkem768x25519-sha256 -e sntrup761x25519-sha512 \
+    -e sntrup761x25519-sha512@openssh.com | paste -sd, -)
+  conf=/etc/ssh/sshd_config.d/40-pq-kex.conf
+  (umask 077; printf 'KexAlgorithms %s\n' "$pq${rest:+,$rest}" > "$conf")
+  if sshd -t; then
+    systemctl reload sshd
+    echo "sshd now offers $pq first ($conf)"
+  else
+    rm -f "$conf"
+    echo "warning: sshd rejected the post-quantum key exchange list; left unchanged"
+  fi
+fi
+
 step "Creating the usnm user"
 if id usnm > /dev/null 2>&1; then
   echo "usnm exists"

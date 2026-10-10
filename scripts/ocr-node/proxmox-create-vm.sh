@@ -11,13 +11,15 @@
 #           --bridge vmbr0 --snippets-storage local
 #
 # Uses AlmaLinux's GenericCloud image (checksum verified) and cloud-init:
-# CPU type host (AVX2 for OCR), qemu guest agent, an admin user "claude"
-# with key-only login and passwordless sudo, DHCP, start at boot.
+# UEFI with Secure Boot (Microsoft keys pre-enrolled; AlmaLinux's shim is
+# signed) and a vTPM, CPU type host (AVX2 for OCR), qemu guest agent, an
+# admin user "claude" with key-only login and passwordless sudo, DHCP,
+# start at boot.
 set -euo pipefail
 
 VMID="" NAME="" SSH_KEY=""
 CORES=4 MEMORY_MIB=8192 DISK_GIB=64 STORAGE=local-lvm BRIDGE=vmbr0 SNIPPETS=local
-usage() { sed -n '2,15s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,18s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --vmid) VMID=$2; shift 2 ;;
@@ -89,8 +91,11 @@ runcmd:
   - [systemctl, enable, --now, qemu-guest-agent]
 EOF
 
-# 3. VM: host CPU, virtio disk and NIC, serial console, guest agent.
-qm create "$VMID" --name "$NAME" --ostype l26 --machine q35 --bios seabios \
+# 3. VM: UEFI + Secure Boot + vTPM, host CPU, virtio disk and NIC, serial
+# console, guest agent.
+qm create "$VMID" --name "$NAME" --ostype l26 --machine q35 --bios ovmf \
+  --efidisk0 "$STORAGE:1,efitype=4m,pre-enrolled-keys=1" \
+  --tpmstate0 "$STORAGE:1,version=v2.0" \
   --cpu host --cores "$CORES" --sockets 1 --memory "$MEMORY_MIB" --balloon 0 \
   --net0 "virtio,bridge=$BRIDGE" --scsihw virtio-scsi-single \
   --serial0 socket --vga serial0 --agent enabled=1 --onboot 1 \
