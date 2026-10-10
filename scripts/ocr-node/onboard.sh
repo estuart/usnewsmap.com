@@ -86,6 +86,12 @@ NODE_NAMES=$(aget USNM_OCR_NODE_NAMES)
 # Every az call names the subscription, so a dry run doesn't change your
 # default subscription either.
 az account show -o none 2> /dev/null || die "run: az login --tenant $TENANT"
+# The az ad commands work in the current account's tenant, whatever
+# --subscription says, so the app registration would land in the wrong
+# tenant otherwise.
+current_tenant=$(az account show --query tenantId -o tsv 2> /dev/null || true)
+[ "$current_tenant" = "$TENANT" ] ||
+  die "az's current account is in tenant ${current_tenant:-unknown}, not $TENANT: az login --tenant $TENANT, then az account set --subscription $SUBSCRIPTION"
 az group show -n "$GROUP" --subscription "$SUBSCRIPTION" -o none 2> /dev/null ||
   die "can't read $GROUP in subscription $SUBSCRIPTION; sign in to tenant $TENANT with access to it"
 echo "environment $ENV_NAME: subscription $SUBSCRIPTION, $GROUP, $LOCATION, exchange account $EXCHANGE"
@@ -267,8 +273,10 @@ fi
 step "Machine"
 # The provision looks each machine up by name in the group and grants its
 # system-assigned identity the node roles (infra/modules/ocr-exchange.bicep).
-case ",$(printf '%s' "$NODE_NAMES" | tr -d ' ')," in
-  *",$NAME,"*) listed=true ;;
+# Arc resource names are case-insensitive.
+lower() { printf '%s' "$1" | tr -d ' ' | tr '[:upper:]' '[:lower:]'; }
+case ",$(lower "$NODE_NAMES")," in
+  *",$(lower "$NAME"),"*) listed=true ;;
   *) listed=false ;;
 esac
 if [ "$DRY_RUN" = true ]; then
