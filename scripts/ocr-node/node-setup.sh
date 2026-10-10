@@ -63,10 +63,16 @@ if [ -n "$TENANT$SP_ID$SP_SECRET" ]; then
 fi
 
 step "Checking the OS"
+# Read os-release in a subshell: sourcing it here would overwrite NAME (the
+# Arc machine name) with the distro's NAME, as happened on node 1 (#296).
 # shellcheck source=/dev/null
-. /etc/os-release
+OS_ID=$(. /etc/os-release && printf '%s' "${ID:-}")
+# shellcheck source=/dev/null
+OS_VERSION=$(. /etc/os-release && printf '%s' "${VERSION_ID:-}")
+# shellcheck source=/dev/null
+PRETTY_NAME=$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-}")
 supported=false
-case "${ID:-}/${VERSION_ID:-}" in almalinux/9|almalinux/9.*|rhel/10|rhel/10.*) supported=true ;; esac
+case "$OS_ID/$OS_VERSION" in almalinux/9|almalinux/9.*|rhel/10|rhel/10.*) supported=true ;; esac
 if [ "$supported" != true ]; then
   [ "$FORCE" = true ] || die "${PRETTY_NAME:-this OS} is neither AlmaLinux 9 nor RHEL 10 (pass --force-unsupported to try anyway)"
   echo "warning: ${PRETTY_NAME:-unknown OS} is neither AlmaLinux 9 nor RHEL 10; continuing (--force-unsupported)"
