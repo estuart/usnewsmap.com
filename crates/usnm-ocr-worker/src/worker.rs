@@ -7,16 +7,20 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::Utc;
+use opentelemetry::KeyValue;
 use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
+use tracing::field::Empty;
+use tracing::Instrument;
 use usnm_core::ids::PageKey;
 use usnm_overlay::OverlayRow;
 use usnm_store::{ObjectStore, StoreError};
 
 use crate::engine::{set_alto_file_name, Engine, EngineError};
 use crate::loc::{FetchError, LocClient, Scan};
-use crate::message::{self, OcrMessage, MAX_MESSAGE_BYTES};
+use crate::message::{self, OcrMessage};
 use crate::queue::{random_token, LeaseLost, Queue, Received, BULK, DEADLETTER, PRIORITY};
+use crate::telemetry::{page_attrs, Metrics};
 
 /// Where a page's scan comes from (loc.gov, or a stand-in in tests).
 #[async_trait]
@@ -90,8 +94,10 @@ pub fn check_node_id(id: &str) -> anyhow::Result<()> {
 enum Failure {
     /// Retrying won't help: dead-letter it.
     Permanent(String),
-    /// Leave the message; it reappears when its visibility runs out.
-    Transient(String),
+    /// Leave the message; it reappears when its visibility runs out. The
+    /// first field is the kind, for metrics: fetch, engine, no_model,
+    /// output or scratch.
+    Transient(&'static str, String),
     /// Out of time: no output written; the message reappears.
     Abandoned,
 }
@@ -100,14 +106,14 @@ impl From<FetchError> for Failure {
     fn from(e: FetchError) -> Self {
         match e {
             FetchError::Permanent(m) => Failure::Permanent(m),
-            FetchError::Transient(m) => Failure::Transient(m),
+            FetchError::Transient(m) => Failure::Transient("fetch", m),
         }
     }
 }
 
 impl From<StoreError> for Failure {
     fn from(e: StoreError) -> Self {
-        Failure::Transient(format!("output store: {e}"))
+        Failure::Transient("output", format!("output store: {e}"))
     }
 }
 
@@ -146,6 +152,7 @@ pub struct Worker {
     pub scans: Arc<dyn ScanSource>,
     pub engine: Arc<dyn Engine>,
     pub cfg: Config,
+    pub metrics: Metrics,
 }
 
 impl Worker {
@@ -199,6 +206,7 @@ impl Worker {
                 }
                 Ok(None) => {
                     drop(permit);
+                    self.metrics.empty_polls.add(1, &[]);
                     if self.cfg.once && tasks.is_empty() {
                         tracing::info!("queues empty; stopping (--once)");
                         break;
@@ -206,7 +214,10 @@ impl Worker {
                 }
                 Err(e) => {
                     drop(permit);
-                    tracing::warn!(error = %e, "receive failed");
+                    // In a span of its own, so the warning reaches
+                    // Application Insights too.
+                    tracing::info_span!("ocr_receive")
+                        .in_scope(|| tracing::warn!(error = format!("{e:#}"), "receive failed"));
                 }
             }
             tokio::select! {
@@ -226,10 +237,16 @@ impl Worker {
             })
             .await;
             if drained.is_err() {
-                tracing::info!(
-                    in_flight = tasks.len(),
-                    "grace over; abandoning in-flight pages, which reappear when their visibility runs out"
-                );
+                let n = tasks.len();
+                self.metrics
+                    .pages_abandoned
+                    .add(n as u64, &[KeyValue::new("cause", "shutdown")]);
+                tracing::info_span!("ocr_shutdown").in_scope(|| {
+                    tracing::warn!(
+                        in_flight = n,
+                        "grace over; abandoning in-flight pages, which reappear when their visibility runs out"
+                    )
+                });
                 tasks.shutdown().await;
             }
         }
@@ -237,12 +254,22 @@ impl Worker {
         Ok(())
     }
 
-    async fn dead_letter(&self, msg: &Received, error: &str) {
-        let original: String = msg.text.chars().take(MAX_MESSAGE_BYTES).collect();
+    /// Move `msg` to `ocr-deadletter`. The dead letter keeps the message
+    /// only if it was valid (`valid`, re-encoded from its checked fields):
+    /// a message that failed its checks might carry anything, search text
+    /// included, so only its id and what was wrong with it are kept.
+    async fn dead_letter(
+        &self,
+        msg: &Received,
+        cause: &'static str,
+        error: &str,
+        valid: Option<&OcrMessage>,
+    ) {
         let body = serde_json::json!({
             "v": 1,
             "from": msg.queue,
-            "message": original,
+            "message_id": msg.id,
+            "message": valid,
             "error": error,
             "dequeue_count": msg.dequeue_count,
             "node": self.cfg.node_id,
@@ -252,36 +279,84 @@ impl Worker {
         let text = base64::engine::general_purpose::STANDARD.encode(body.to_string());
         if let Err(e) = self.queue.send(DEADLETTER, &text).await {
             // Leave the message: it comes back and is dead-lettered again.
-            tracing::error!(error = %e, "dead-letter send failed");
+            tracing::error!(error = format!("{e:#}"), "dead-letter send failed");
             return;
         }
         match self.queue.delete(msg).await {
             Ok(()) => {
-                tracing::warn!(queue = %msg.queue, message_id = %msg.id, error, "dead-lettered")
+                self.metrics.dead_lettered.add(
+                    1,
+                    &[
+                        KeyValue::new("queue", msg.queue.clone()),
+                        KeyValue::new("cause", cause),
+                    ],
+                );
+                tracing::warn!(queue = %msg.queue, message_id = %msg.id, cause, error, "dead-lettered")
             }
-            Err(e) => tracing::error!(error = %e, "delete after dead-letter failed"),
+            Err(e) => tracing::error!(error = format!("{e:#}"), "delete after dead-letter failed"),
         }
     }
 
     /// Do one message, received at `received`, start to finish; never
-    /// fails (the outcome is in the queue).
+    /// fails (the outcome is in the queue). One span per message (a request
+    /// in Application Insights), named by its page id only.
     pub async fn handle(&self, msg: Received, received: Instant) {
+        let span = tracing::info_span!(
+            "ocr_page",
+            otel.kind = "consumer",
+            queue = %msg.queue,
+            message_id = %msg.id,
+            dequeue_count = msg.dequeue_count,
+            page = Empty,
+            language = Empty,
+            reason = Empty,
+            outcome = Empty,
+            otel.status_code = Empty,
+        );
+        self.handle_in(msg, received, &span)
+            .instrument(span.clone())
+            .await;
+    }
+
+    async fn handle_in(&self, msg: Received, received: Instant, span: &tracing::Span) {
+        let decoded = message::decode(&msg.text);
+        if let Ok((m, key)) = &decoded {
+            span.record("page", tracing::field::display(key));
+            span.record("language", m.language.as_str());
+            span.record("reason", m.reason.as_str());
+        }
+        let outcome = |o: &'static str| {
+            span.record("outcome", o);
+            span.record("otel.status_code", if o == "done" { "ok" } else { "error" });
+        };
         if msg.dequeue_count > self.cfg.max_dequeue {
             let why = format!("received {} times", msg.dequeue_count);
-            self.dead_letter(&msg, &why).await;
+            let valid = decoded.as_ref().ok().map(|(m, _)| m);
+            self.dead_letter(&msg, "dequeue_count", &why, valid).await;
+            outcome("dead_lettered");
             return;
         }
-        let (m, key) = match message::decode(&msg.text) {
+        let (m, key) = match decoded {
             Ok(v) => v,
             Err(e) => {
-                self.dead_letter(&msg, &e.to_string()).await;
+                let why = format!("invalid message: {}", e.kind());
+                self.dead_letter(&msg, "invalid", &why, None).await;
+                outcome("dead_lettered");
                 return;
             }
         };
         let deadline = received + self.cfg.budget();
         let page = key.to_string();
+        let attrs = page_attrs(
+            self.engine.source(),
+            &m.language,
+            m.reason.as_str(),
+            &msg.queue,
+        );
         match self.process(&m, &key, deadline).await {
             Ok(done) => {
+                self.metrics.pages_done.add(1, &attrs);
+                outcome("done");
                 tracing::info!(
                     page, queue = %msg.queue, reason = m.reason.as_str(), language = %m.language,
                     engine = %done.engine, status = done.status, chars = done.chars,
@@ -295,18 +370,33 @@ impl Worker {
                             "message was gone at delete; another node may redo it"
                         );
                     } else {
-                        tracing::error!(page, error = %e, "delete failed; the page will be redone");
+                        tracing::error!(
+                            page,
+                            error = format!("{e:#}"),
+                            "delete failed; the page will be redone"
+                        );
                     }
                 }
             }
-            Err(Failure::Permanent(e)) => self.dead_letter(&msg, &e).await,
-            Err(Failure::Transient(e)) => {
+            Err(Failure::Permanent(e)) => {
+                self.dead_letter(&msg, "permanent", &e, Some(&m)).await;
+                outcome("dead_lettered");
+            }
+            Err(Failure::Transient(kind, e)) => {
+                let mut attrs = attrs;
+                attrs.push(KeyValue::new("error", kind));
+                self.metrics.pages_failed.add(1, &attrs);
+                outcome("failed");
                 tracing::warn!(
-                    page, error = %e, dequeue_count = msg.dequeue_count,
+                    page, error = %e, kind, dequeue_count = msg.dequeue_count,
                     "page failed; it reappears when its visibility runs out"
                 );
             }
             Err(Failure::Abandoned) => {
+                let mut attrs = attrs;
+                attrs.push(KeyValue::new("cause", "budget"));
+                self.metrics.pages_abandoned.add(1, &attrs);
+                outcome("abandoned");
                 tracing::warn!(
                     page,
                     budget_secs = self.cfg.budget().as_secs(),
@@ -322,26 +412,46 @@ impl Worker {
         key: &PageKey,
         deadline: Instant,
     ) -> Result<Done, Failure> {
-        let work =
-            tempfile::tempdir().map_err(|e| Failure::Transient(format!("scratch dir: {e}")))?;
+        let work = tempfile::tempdir()
+            .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
         let read = async {
-            let scan = self.scans.scan(key).await?;
+            let t = Instant::now();
+            let scan = self.scans.scan(key).await;
+            self.metrics.image_fetch_seconds.record(
+                t.elapsed().as_secs_f64(),
+                &[KeyValue::new(
+                    "outcome",
+                    if scan.is_ok() { "ok" } else { "error" },
+                )],
+            );
+            let scan = scan?;
             let image = work.path().join("page.jpg");
             tokio::fs::write(&image, &scan.jpeg)
                 .await
-                .map_err(|e| Failure::Transient(format!("scratch image: {e}")))?;
+                .map_err(|e| Failure::Transient("scratch", format!("scratch image: {e}")))?;
+            let t = Instant::now();
             let out = match self.engine.ocr(&image, &m.language, work.path()).await {
                 Ok(o) => o,
                 // Another node may have the model: leave it, and let the
                 // dequeue count dead-letter it if no node does.
                 Err(EngineError::Unsupported(l)) => {
-                    return Err(Failure::Transient(format!(
-                        "no model for `{l}` on node {}",
-                        self.cfg.node_id
-                    )))
+                    return Err(Failure::Transient(
+                        "no_model",
+                        format!("no model for `{l}` on node {}", self.cfg.node_id),
+                    ))
                 }
-                Err(EngineError::Failed(e)) => return Err(Failure::Transient(format!("{e:#}"))),
+                Err(EngineError::Failed(e)) => {
+                    return Err(Failure::Transient("engine", format!("{e:#}")))
+                }
             };
+            self.metrics.ocr_seconds.record(
+                t.elapsed().as_secs_f64(),
+                &[
+                    KeyValue::new("engine", self.engine.source().to_owned()),
+                    KeyValue::new("models", out.engine.clone()),
+                    KeyValue::new("language", m.language.clone()),
+                ],
+            );
             Ok((scan.iiif_base, out))
         };
         let (iiif_base, out) = tokio::time::timeout_at(deadline.into(), read)
@@ -367,12 +477,31 @@ impl Worker {
         let status = usnm_overlay::status_str(row.status());
         let chars = row.text.chars().count();
         let part = usnm_overlay::write_part(std::slice::from_ref(&row))
-            .map_err(|e| Failure::Transient(format!("overlay part: {e:#}")))?;
+            .map_err(|e| Failure::Transient("output", format!("overlay part: {e:#}")))?;
+        // The uploads are cut off at the deadline too: past it the message
+        // may be with another node already. An ALTO without its part is
+        // harmless; parts are only read with their ALTO.
+        let (alto_path, part_path) =
+            tokio::time::timeout_at(deadline.into(), self.write_output(key, alto, part))
+                .await
+                .map_err(|_| Failure::Abandoned)??;
+        Ok(Done {
+            alto: alto_path,
+            part: part_path,
+            chars,
+            status,
+            engine: out.engine,
+        })
+    }
+
+    /// Write a page's ALTO, then its part, create-only under fresh names.
+    async fn write_output(
+        &self,
+        key: &PageKey,
+        alto: String,
+        part: Vec<u8>,
+    ) -> Result<(String, String), Failure> {
         for _ in 0..3 {
-            // Past the budget the message may be with another node already.
-            if Instant::now() >= deadline {
-                return Err(Failure::Abandoned);
-            }
             let (alto_path, part_path) = output_paths(key, &self.cfg.node_id);
             // ALTO first, as the Japanese job does: a part is only written
             // once its page's ALTO is there. Both are create-only.
@@ -388,19 +517,13 @@ impl Worker {
                 .put_new(&part_path, part.clone(), "application/vnd.apache.parquet")
                 .await?
             {
-                return Ok(Done {
-                    alto: alto_path,
-                    part: part_path,
-                    chars,
-                    status,
-                    engine: out.engine,
-                });
+                return Ok((alto_path, part_path));
             }
         }
-        Err(Failure::Transient(format!(
-            "no free output name for {key} ({})",
-            random_token()
-        )))
+        Err(Failure::Transient(
+            "output",
+            format!("no free output name for {key} ({})", random_token()),
+        ))
     }
 }
 
@@ -488,6 +611,7 @@ mod tests {
                 once: true,
                 ..Config::default()
             },
+            metrics: Metrics::global(),
         });
         (w, queue, out)
     }
@@ -509,6 +633,14 @@ mod tests {
             .await
             .unwrap();
         queue.send(BULK, "not a message").await.unwrap();
+        // Refused for its extra field; the search text mustn't be kept.
+        queue
+            .send(
+                BULK,
+                r#"{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-9","batch":"b","language":"deu","reason":"user","queued_at":"2026-10-10T12:00:00Z","q":"secret search"}"#,
+            )
+            .await
+            .unwrap();
         let (_tx, rx) = watch::channel(false);
         w.clone().run(rx).await.unwrap();
 
@@ -554,6 +686,7 @@ mod tests {
             None
         );
         let mut dead = Vec::new();
+        let mut kept = Vec::new();
         while let Some(d) = queue
             .receive(DEADLETTER, Duration::from_secs(600))
             .await
@@ -566,12 +699,25 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
+            assert!(!body.to_string().contains("secret"), "{body}");
+            assert!(body["message_id"].is_string());
+            kept.push(body["message"]["page"].as_str().map(str::to_owned));
             dead.push(body["error"].as_str().unwrap().to_owned());
         }
         dead.sort();
-        assert_eq!(dead.len(), 2, "{dead:?}");
+        assert_eq!(dead.len(), 3, "{dead:?}");
+        // Only the valid message is kept, re-encoded from its checked fields.
+        kept.sort();
+        assert_eq!(
+            kept,
+            [
+                None,
+                None,
+                Some("sn83045462/1890-05-03/ed-1/seq-99".to_owned())
+            ]
+        );
         assert!(dead.iter().any(|e| e.contains("no image")));
-        assert!(dead.iter().any(|e| e.contains("base64")));
+        assert!(dead.iter().any(|e| e == "invalid message: bad_json"));
     }
 
     #[tokio::test]
@@ -661,6 +807,7 @@ mod tests {
             queue: w.queue.clone(),
             out: w.out.clone(),
             scans: w.scans.clone(),
+            metrics: w.metrics.clone(),
         });
         (w, queue, out)
     }

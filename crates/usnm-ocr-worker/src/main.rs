@@ -11,6 +11,7 @@ use usnm_ocr_worker::engine::{Engine, Tesseract, TesseractOptions};
 use usnm_ocr_worker::loc::{LocClient, LocConfig};
 use usnm_ocr_worker::message::{OcrMessage, Reason};
 use usnm_ocr_worker::queue::{self, BULK, PRIORITY};
+use usnm_ocr_worker::telemetry::{self, Metrics};
 use usnm_ocr_worker::worker::{check_node_id, Config, Worker};
 
 #[derive(Parser)]
@@ -175,16 +176,30 @@ fn stop_signal() -> watch::Receiver<bool> {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stdout)
-        .init();
-    match Cli::parse().command {
+async fn main() -> std::process::ExitCode {
+    let cli = Cli::parse();
+    // `run` reports as its node; with no connection string, logs only.
+    let node = match &cli.command {
+        Command::Run { node_id, .. } if check_node_id(node_id).is_ok() => Some(node_id.as_str()),
+        _ => None,
+    };
+    let telemetry = telemetry::init(node);
+    let result = command(cli).await;
+    let code = match &result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::info_span!("ocr_worker_exit")
+                .in_scope(|| tracing::error!(error = format!("{e:#}"), "usnm-ocr-worker failed"));
+            std::process::ExitCode::FAILURE
+        }
+    };
+    // Flush what's buffered before exit, on every path.
+    telemetry.shutdown().await;
+    code
+}
+
+async fn command(cli: Cli) -> anyhow::Result<()> {
+    match cli.command {
         Command::Run {
             queue_url,
             out_url,
@@ -207,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
                 ..Config::default()
             };
             if Duration::from_secs(engine.page_timeout_secs) >= cfg.budget() {
+                let _span = tracing::info_span!("ocr_worker_start").entered();
                 tracing::warn!(
                     page_timeout_secs = engine.page_timeout_secs,
                     budget_secs = cfg.budget().as_secs(),
@@ -223,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
                 })?),
                 engine: engine.engine().await?,
                 cfg,
+                metrics: Metrics::global(),
             });
             worker.run(stop_signal()).await
         }

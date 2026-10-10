@@ -1,12 +1,13 @@
-//! Logs, traces and metrics for `usnm-api` and `usnm-ingest` (08 §8.1.2,
-//! 09 §9.2).
+//! Logs, traces and metrics for `usnm-api`, `usnm-ingest` (08 §8.1.2,
+//! 09 §9.2) and the on-prem OCR worker (ADR-0015).
 //!
 //! Logs are JSON lines on stdout, which Container Apps sends to Log Analytics
 //! (`ContainerAppConsoleLogs`). When `APPLICATIONINSIGHTS_CONNECTION_STRING`
 //! is set, spans and metrics also go to Application Insights through
 //! OpenTelemetry. The resource has local auth disabled (ADR-0009), so every
 //! upload carries an Entra token for the service's managed identity
-//! (Monitoring Metrics Publisher on the component); the connection string
+//! (Monitoring Metrics Publisher on the component; on an Arc-enabled node,
+//! the machine's identity through HIMDS); the connection string
 //! only names the ingestion endpoint and the instrumentation key. Without it
 //! (local runs, CI) nothing is exported.
 //!
@@ -115,11 +116,36 @@ impl Telemetry {
     }
 }
 
+/// Choices beyond the service name, for [`init_with`].
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// The cloud role instance (`service.instance.id`), e.g. a node's name.
+    /// Unset, Container Apps' replica name is used if there is one.
+    pub instance: Option<String>,
+    /// Start the uploader for the web app's page views (the API's).
+    pub page_views: bool,
+}
+
+/// The resource Entra tokens for ingestion are requested for (scope
+/// `https://monitor.azure.com//.default`).
+pub const TOKEN_RESOURCE: &str = credential::MONITOR_RESOURCE;
+
 /// Install the log subscriber (JSON on stdout, `RUST_LOG`, default `info`)
 /// and, if the connection string is set, the Application Insights exporters,
 /// with the meter provider as the global one. Must be called from inside the
 /// Tokio runtime, before anything records a metric.
 pub fn init(service: Service) -> Telemetry {
+    init_with(
+        service,
+        Options {
+            page_views: true,
+            ..Options::default()
+        },
+    )
+}
+
+/// [`init`], with [`Options`].
+pub fn init_with(service: Service, options: Options) -> Telemetry {
     let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let json = || tracing_subscriber::fmt::layer().json();
     let conn = std::env::var(CONNECTION_STRING_VAR)
@@ -133,10 +159,10 @@ pub fn init(service: Service) -> Telemetry {
         return Telemetry::default();
     };
     let client = EntraClient::new(
-        credential::from_env_for(credential::MONITOR_RESOURCE),
+        credential::from_env_for(TOKEN_RESOURCE),
         tokio::runtime::Handle::current(),
     );
-    match providers(&conn, client.clone(), service) {
+    match providers_for(&conn, client.clone(), service, options.instance.as_deref()) {
         Ok((tracer, meter)) => {
             opentelemetry::global::set_meter_provider(meter.clone());
             tracing_subscriber::registry()
@@ -146,11 +172,14 @@ pub fn init(service: Service) -> Telemetry {
                 .init();
             tracing::info!(target: "telemetry", "exporting traces and metrics to Application Insights");
             let sdk = format!("{}:{}", service.name, service.version);
-            let page_views = PageViews::start(&conn, client, WEB_ROLE, &sdk)
-                .inspect_err(
-                    |e| tracing::warn!(target: "telemetry", error = %e, "page views are off"),
-                )
-                .ok();
+            let page_views = options
+                .page_views
+                .then(|| {
+                    PageViews::start(&conn, client, WEB_ROLE, &sdk)
+                        .inspect_err(|e| tracing::warn!(target: "telemetry", error = %e, "page views are off"))
+                        .ok()
+                })
+                .flatten();
             Telemetry {
                 tracer: Some(tracer),
                 meter: Some(meter),
@@ -191,6 +220,19 @@ pub fn providers<C>(
 where
     C: HttpClient + Clone + 'static,
 {
+    providers_for(connection_string, client, service, None)
+}
+
+/// [`providers`], reporting as cloud role instance `instance` if given.
+pub fn providers_for<C>(
+    connection_string: &str,
+    client: C,
+    service: Service,
+    instance: Option<&str>,
+) -> anyhow::Result<(SdkTracerProvider, SdkMeterProvider)>
+where
+    C: HttpClient + Clone + 'static,
+{
     let exporter = opentelemetry_application_insights::Exporter::new_from_connection_string(
         connection_string,
         client,
@@ -199,7 +241,7 @@ where
     .with_retry_notify(|e, wait| {
         tracing::warn!(target: "telemetry", error = %e, wait_ms = wait.as_millis() as u64, "Application Insights upload failed; retrying");
     });
-    let resource = resource(service);
+    let resource = resource(service, instance);
     let tracer = SdkTracerProvider::builder()
         .with_batch_exporter(exporter.clone())
         .with_resource(resource.clone())
@@ -214,16 +256,23 @@ where
     Ok((tracer, meter))
 }
 
-/// `service.name` becomes the cloud role; the replica, revision and job
-/// execution (set by Container Apps) tell instances and runs apart.
-fn resource(service: Service) -> Resource {
+/// `service.name` becomes the cloud role; `instance` (or the replica, set
+/// by Container Apps), the revision and the job execution tell instances
+/// and runs apart.
+fn resource(service: Service, instance: Option<&str>) -> Resource {
     let mut attrs = vec![KeyValue::new("service.version", service.version)];
+    if let Some(i) = instance {
+        attrs.push(KeyValue::new("service.instance.id", i.to_owned()));
+    }
     for (var, key) in [
         ("CONTAINER_APP_REPLICA_NAME", "service.instance.id"),
         ("CONTAINER_APP_REVISION", "usnm.revision"),
         ("CONTAINER_APP_JOB_NAME", "usnm.job"),
         ("CONTAINER_APP_JOB_EXECUTION_NAME", "usnm.job_execution"),
     ] {
+        if instance.is_some() && key == "service.instance.id" {
+            continue;
+        }
         if let Some(v) = std::env::var(var).ok().filter(|v| !v.is_empty()) {
             attrs.push(KeyValue::new(key, v));
         }
@@ -320,6 +369,25 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use usnm_store::credential::StaticToken;
+
+    #[test]
+    fn tokens_are_for_azure_monitor() {
+        assert_eq!(TOKEN_RESOURCE, "https://monitor.azure.com/");
+    }
+
+    #[test]
+    fn the_instance_names_the_role_instance() {
+        let r = resource(
+            Service {
+                name: "usnm-ocr-worker",
+                version: "0",
+            },
+            Some("nuc1"),
+        );
+        let get = |k: &'static str| r.get(&opentelemetry::Key::from_static_str(k));
+        assert_eq!(get("service.name").unwrap().as_str(), "usnm-ocr-worker");
+        assert_eq!(get("service.instance.id").unwrap().as_str(), "nuc1");
+    }
 
     #[test]
     fn entra_uploads_go_to_v2_1() {

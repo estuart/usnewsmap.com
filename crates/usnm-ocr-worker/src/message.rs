@@ -74,6 +74,24 @@ pub enum MessageError {
     QueuedAt(String),
 }
 
+impl MessageError {
+    /// What was wrong, without any of the message's content: safe to keep
+    /// in the dead-letter queue and in logs, since a bad message might carry
+    /// anything.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            MessageError::TooLarge(_) => "too_large",
+            MessageError::Json(_) => "bad_json",
+            MessageError::Version(_) => "version",
+            MessageError::Page(_) => "page",
+            MessageError::Batch(_) => "batch",
+            MessageError::Language(_) => "language",
+            MessageError::Score(_) => "score",
+            MessageError::QueuedAt(_) => "queued_at",
+        }
+    }
+}
+
 impl OcrMessage {
     /// The page, checked: it must be the canonical form of a valid key.
     pub fn key(&self) -> Result<PageKey, MessageError> {

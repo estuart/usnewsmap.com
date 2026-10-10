@@ -478,8 +478,13 @@ mod tests {
     }
 
     /// A stand-in for the Arc agent: a challenge naming `key`, then a token
-    /// for the secret in it.
+    /// for the secret in it, for `STORAGE_RESOURCE`.
     async fn arc_agent(key: std::path::PathBuf) -> String {
+        arc_agent_for(key, STORAGE_RESOURCE).await
+    }
+
+    /// [`arc_agent`], checking the token is asked for `resource`.
+    async fn arc_agent_for(key: std::path::PathBuf, resource: &'static str) -> String {
         use axum::extract::Query;
         use axum::http::{HeaderMap, StatusCode};
         use axum::response::IntoResponse;
@@ -492,7 +497,7 @@ mod tests {
                     async move {
                         assert_eq!(headers["metadata"], "true");
                         assert_eq!(q["api-version"], "2020-06-01");
-                        assert_eq!(q["resource"], STORAGE_RESOURCE);
+                        assert_eq!(q["resource"], resource);
                         match headers.get("authorization").and_then(|v| v.to_str().ok()) {
                             None => (
                                 StatusCode::UNAUTHORIZED,
@@ -523,6 +528,21 @@ mod tests {
         std::fs::write(&key, "s3cret\n").unwrap();
         let endpoint = arc_agent(key).await;
         let cred = Credential::new(ArcIdentity::new(endpoint).with_token_dir(dir.path()));
+        assert_eq!(cred.token().await.unwrap(), "arc-token");
+    }
+
+    /// The OCR nodes' telemetry: an Arc token for Azure Monitor ingestion.
+    #[tokio::test]
+    async fn arc_tokens_for_azure_monitor() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("abc.key");
+        std::fs::write(&key, "s3cret").unwrap();
+        let endpoint = arc_agent_for(key, MONITOR_RESOURCE).await;
+        let cred = Credential::new(
+            ArcIdentity::new(endpoint)
+                .with_token_dir(dir.path())
+                .with_resource(MONITOR_RESOURCE),
+        );
         assert_eq!(cred.token().await.unwrap(), "arc-token");
     }
 

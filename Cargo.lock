@@ -2556,6 +2556,7 @@ dependencies = [
  "clap",
  "httpdate",
  "moka",
+ "opentelemetry",
  "reqwest",
  "serde",
  "serde_json",
@@ -2563,11 +2564,11 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "usnm-core",
  "usnm-ingest",
  "usnm-overlay",
  "usnm-store",
+ "usnm-telemetry",
 ]
 
 [[package]]

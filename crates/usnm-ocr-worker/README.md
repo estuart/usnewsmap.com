@@ -29,8 +29,9 @@ usnm-ocr-worker ocr-file --image page.jpg --language deu --out /tmp/ocr
 There are three Azure Storage Queues: `ocr-priority`, `ocr-bulk` and `ocr-deadletter`. The worker polls `ocr-priority` first. When both are empty it waits before polling again, doubling the wait from 1 s up to 60 s.
 
 - A received message is hidden for `--visibility-secs` (1800 s), set when it is taken. The nodes can take, peek and delete messages but not update them ([ADR-0015](../../docs/design/adr/0015-onprem-ocr-workers.md)), so the hide is never renewed. A page not done by 80% of that time is abandoned with nothing written, so it reappears cleanly for another node. Keep `--page-timeout-secs` under that share; the worker warns at startup if it isn't.
-- A message received more than 5 times goes to `ocr-deadletter` and is deleted from its queue. So does a message that can never succeed: bad JSON, or a page loc.gov lists no image for.
+- A message received more than 5 times goes to `ocr-deadletter` and is deleted from its queue. So does a message that can never succeed: one that fails its checks (bad JSON, say), or a page loc.gov lists no image for. The dead letter keeps the original queue, the message id, the error, the dequeue count, the node and the time. It keeps the message itself only if the message passed its checks, re-encoded from the checked fields. A message that failed them might carry anything, so the dead letter records only what kind of check failed.
 - A temporary failure (LoC or storage errors, a Tesseract crash or timeout, or a language with no model on this node, which another node may have) leaves the message, which reappears when its time runs out.
+- The output uploads are cut off at the same 80% mark, so a node never writes a page after its message may have gone to another node. A cut between the two uploads leaves an ALTO without its part, which does no harm because parts are only read with their ALTO.
 - On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are abandoned and reappear when their time runs out. The systemd unit's `TimeoutStopSec` should be longer than the grace period.
 
 The REST calls use API version 2023-11-03 and an Entra bearer token for `https://storage.azure.com/`. No keys or SAS tokens are used.
@@ -51,7 +52,7 @@ In directory mode, each queue is a directory with `ready/` and `leased/` subdire
 
 ## Fetching scans
 
-The worker fetches scans the way `ja-ocr/jaocr.py` does. It makes one request per issue to `https://www.loc.gov/item/{lccn}/{date}/ed-{n}/?fo=json` and caches the result (256 issues, one hour). The page's JP2 URL gives its IIIF service on `tile.loc.gov`, and the scan is `<service>/full/full/0/default.jpg`. The API and image gaps are shared by every page in flight on the node. With two nodes, double both so the pair stays at the Japanese job's rate. A 429 or 503 holds every request for its `Retry-After` (at most an hour). The User-Agent is `usnewsmap-ocr-worker/<version> (+https://usnewsmap.com)`. The scan is held in memory and in a temporary directory that is removed after the page is done.
+The worker fetches scans the way `ja-ocr/jaocr.py` does. It makes one request per issue to `https://www.loc.gov/item/{lccn}/{date}/ed-{n}/?fo=json` and caches the result (256 issues, one hour). The page's JP2 URL gives its IIIF service on `tile.loc.gov`, and the scan is `<service>/full/full/0/default.jpg`. The API and image gaps are shared by every page in flight on the node. With two nodes, double both so the pair stays at the Japanese job's rate. A 429 or 503 holds every request for its `Retry-After` (at most an hour). A 408 is retried like a 5xx; other 4xx answers are permanent. The User-Agent is `usnewsmap-ocr-worker/<version> (+https://usnewsmap.com)`. The scan is held in memory and in a temporary directory that is removed after the page is done.
 
 ## Tesseract
 
@@ -83,9 +84,26 @@ Values specific to this worker:
 
 Both writes are create-only, and the names are unique per node and moment: the nodes' role on `ocr-out` can create blobs but not replace or delete them. Each page gets its own part, so a node writes many small files. The cloud copy-in job should merge them into larger parts as it copies them to `curated/ocr-local/pages/`.
 
-## Logs
+## Logs and telemetry
 
-Logs are JSON lines on stdout (journald under systemd), with the level set by `RUST_LOG` (default `info`). Each finished page logs one line with the page, queue, reason, engine, status, characters and seconds taken.
+Logs are JSON lines on stdout (journald under systemd), with the level set by `RUST_LOG` (default `info`). Each finished page logs one line with the page, queue, reason, language, engine, status, characters, the ALTO and part names, and seconds taken.
+
+When `APPLICATIONINSIGHTS_CONNECTION_STRING` is set, the worker also sends telemetry to Application Insights through `usnm-telemetry`, as `usnm-api` does. Unset or empty, it runs with stdout logs only. The cloud role is `usnm-ocr-worker` and the role instance is `--node-id`. Application Insights has local auth disabled, so every upload carries an Entra token for `https://monitor.azure.com/.default` from the node's Arc identity through HIMDS, as the queue and blob calls get theirs. The node's identity needs Monitoring Metrics Publisher on the Application Insights component. That grant goes in the infra templates, in its own change.
+
+Each message is a request (`ocr_page`) carrying its page id, queue, reason and language, with an `outcome` of `done`, `failed`, `abandoned` or `dead_lettered`. The lines logged while it runs, at the `RUST_LOG` level, go with it as traces. Message bodies, search text and tokens are never recorded. A page abandoned at shutdown is counted, and its request has no `outcome`. The metrics:
+
+| Metric                    | Attributes                                                       |
+| ------------------------- | ---------------------------------------------------------------- |
+| `ocr.pages_done`          | `engine`, `language`, `reason`, `queue`                          |
+| `ocr.pages_failed`        | the same, and `error` (fetch, engine, no_model, output, scratch) |
+| `ocr.pages_abandoned`     | `cause`: `budget` (with the page's attributes) or `shutdown`     |
+| `ocr.dead_lettered`       | `queue`, `cause` (dequeue_count, invalid, permanent)             |
+| `ocr.empty_polls`         | none: a poll that found both queues empty                        |
+| `ocr.loc_slowdowns`       | `status` (429, 503), `server` (api, tile), `retry_after` (bool)  |
+| `ocr.ocr_seconds`         | histogram: `engine`, `models`, `language`                        |
+| `ocr.image_fetch_seconds` | histogram: `outcome` (ok, error)                                 |
+
+Metrics are sent every 30 s and once more at shutdown.
 
 ## Building for AlmaLinux 9
 
@@ -105,4 +123,4 @@ The node also needs Tesseract and its language models. EL9's AppStream has only 
 
 ## Tests
 
-`cargo test -p usnm-ocr-worker` covers message parsing, the local queue, the Azure REST calls against a stand-in server, pacing and Retry-After, an end-to-end page whose part the ingest reader reads, dead-lettering, abandoning a page over its time, and shutdown. One test runs the real Tesseract on a rendered line when Tesseract and `eng` are installed, and skips otherwise. The Arc challenge is tested in `usnm-store` against a stand-in agent.
+`cargo test -p usnm-ocr-worker` covers message parsing, the local queue, the Azure REST calls against a stand-in server, pacing, Retry-After and 408 retries, an end-to-end page whose part the ingest reader reads, dead-lettering (and that a refused message's content isn't kept), abandoning a page over its time, and shutdown. One test runs the real Tesseract on a rendered line when Tesseract and `eng` are installed, and skips otherwise. With no connection string, telemetry stays off. The Arc challenge, and its token for Azure Monitor, are tested in `usnm-store` against a stand-in agent.

@@ -8,6 +8,7 @@ pub mod engine;
 pub mod loc;
 pub mod message;
 pub mod queue;
+pub mod telemetry;
 pub mod worker;
 
 #[cfg(test)]

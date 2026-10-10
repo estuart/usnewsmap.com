@@ -16,10 +16,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
+use opentelemetry::KeyValue;
 use reqwest::StatusCode;
 use serde_json::Value;
 use tokio::time::Instant;
 use usnm_core::ids::PageKey;
+
+use crate::telemetry::Metrics;
 
 pub const USER_AGENT: &str = concat!(
     "usnewsmap-ocr-worker/",
@@ -135,6 +138,7 @@ pub struct LocClient {
     api: Pacer,
     tile: Pacer,
     items: moka::future::Cache<String, Pages>,
+    metrics: Metrics,
 }
 
 impl std::fmt::Debug for LocClient {
@@ -219,6 +223,7 @@ impl LocClient {
                 .build(),
             cfg,
             http,
+            metrics: Metrics::global(),
         })
     }
 
@@ -239,9 +244,23 @@ impl LocClient {
                         status,
                         StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
                     ) {
-                        let d = retry_after(&resp).map_or(wait, |r| r.max(wait));
+                        let asked = retry_after(&resp);
+                        let d = asked.map_or(wait, |r| r.max(wait));
                         // Everyone waits, not just this request.
                         pacer.hold(d);
+                        let server = if std::ptr::eq(pacer, &self.api) {
+                            "api"
+                        } else {
+                            "tile"
+                        };
+                        self.metrics.loc_slowdowns.add(
+                            1,
+                            &[
+                                KeyValue::new("status", i64::from(status.as_u16())),
+                                KeyValue::new("server", server),
+                                KeyValue::new("retry_after", asked.is_some()),
+                            ],
+                        );
                         tracing::warn!(
                             status = status.as_u16(),
                             wait_secs = d.as_secs(),
@@ -250,7 +269,8 @@ impl LocClient {
                         last = format!("HTTP {}", status.as_u16());
                         continue;
                     }
-                    if status.is_client_error() {
+                    // 408 is a timeout, worth retrying like a 5xx.
+                    if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
                         return Err(FetchError::Permanent(format!(
                             "{url} returned HTTP {}",
                             status.as_u16()
@@ -406,7 +426,8 @@ mod tests {
     }
 
     /// A stand-in loc.gov: one issue (two pages), counting item requests;
-    /// the first image request is answered 429 with Retry-After.
+    /// the first image request is answered 429 with Retry-After, the
+    /// second 408.
     async fn fake_loc(items: Arc<AtomicU32>, images: Arc<AtomicU32>) -> String {
         use axum::http::StatusCode as S;
         use axum::response::IntoResponse;
@@ -440,10 +461,10 @@ mod tests {
                 axum::routing::get(move || {
                     let images = images.clone();
                     async move {
-                        if images.fetch_add(1, Ordering::SeqCst) == 0 {
-                            (S::TOO_MANY_REQUESTS, [("retry-after", "2")]).into_response()
-                        } else {
-                            b"jpeg".to_vec().into_response()
+                        match images.fetch_add(1, Ordering::SeqCst) {
+                            0 => (S::TOO_MANY_REQUESTS, [("retry-after", "2")]).into_response(),
+                            1 => S::REQUEST_TIMEOUT.into_response(),
+                            _ => b"jpeg".to_vec().into_response(),
                         }
                     }
                 }),
@@ -473,7 +494,9 @@ mod tests {
             t0.elapsed() >= Duration::from_secs(2),
             "waited out Retry-After"
         );
+        // The 408 was retried, not taken as permanent.
         assert_eq!(&s1.jpeg[..], b"jpeg");
+        assert_eq!(images.load(Ordering::SeqCst), 3);
         assert!(s1
             .iiif_base
             .ends_with("service:ndnp:x:batch_x:data:sn1:1:1890050301:0001"));
