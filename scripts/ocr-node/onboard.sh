@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Onboard an on-prem OCR node (#296, ADR-0015) from the operator's machine:
-# connect it to Azure Arc in the environment's resource group and record its
-# machine name, so the next provision grants its identity the exchange
-# account's queues and output container.
+# connect it to Azure Arc in the environment's resource group and add its
+# identity to the nodes' Entra group, which the provision has already
+# granted the exchange account's queues and output container. No provision
+# is needed afterwards.
 #
 #   scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org \
 #     --name usnm-ocr-node1 [--ssh-key ~/.ssh/id_ed25519] [--dry-run]
 #
 # The node runs AlmaLinux 9 or RHEL 10 and takes key-based SSH with passwordless sudo
 # for --host. Run with USNM_OCR_NODES=true already provisioned (the exchange
-# account exists). Steps:
+# account exists) and the group made (scripts/ocr-node/group.sh, which saves
+# USNM_OCR_NODE_GROUP; provision after it). Steps:
 #   1. registers Microsoft.HybridCompute, Microsoft.GuestConfiguration and
 #      Microsoft.HybridConnectivity in the subscription;
 #   2. unless the node is already connected, creates a throwaway app
@@ -21,16 +23,17 @@
 #   4. deletes the role assignment, the service principal and the app
 #      registration, and purges them from Entra's deleted items, when the
 #      script exits, on failure or Ctrl-C too;
-#   5. checks that the Arc machine has a system-assigned identity and adds
-#      its name to USNM_OCR_NODE_NAMES.
-# It doesn't provision: it prints the command for that.
+#   5. waits for the Arc machine's system-assigned identity and adds it to
+#      the group (once).
+# Remove a node with scripts/ocr-node/offboard.sh.
 #
 # --dry-run checks the settings and your sign-in and prints the plan; it
 # registers nothing, creates nothing in Entra, doesn't connect to the node
-# and changes no setting.
+# and adds no group member.
 #
-# Needs az signed in with the right to register applications in the tenant
-# and to assign roles on the environment's group, and ssh. Registering the
+# Needs az signed in with the right to register applications in the tenant,
+# to assign roles on the environment's group and to add members to the
+# nodes' group (an owner of it, as group.sh makes you), and ssh. Registering the
 # three providers is a subscription-level action
 # (Microsoft.<namespace>/register/action, in Contributor or Owner on the
 # subscription); without it they have to be registered already.
@@ -73,13 +76,15 @@ LOCATION=$(stack_location)
 EXCHANGE=$(aget OCR_EXCHANGE_ACCOUNT)
 NODES=$(aget USNM_OCR_NODES)
 NODE_IPS=$(aget USNM_OCR_NODE_IPS)
-NODE_NAMES=$(aget USNM_OCR_NODE_NAMES)
+NODE_GROUP=$(aget USNM_OCR_NODE_GROUP)
 [ -n "$SUBSCRIPTION" ] && [ -n "$TENANT" ] && [ -n "$GROUP" ] ||
   die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/provision.sh $ENV_NAME"
 [ "$NODES" = true ] ||
   die "USNM_OCR_NODES isn't true for $ENV_NAME: scripts/settings.sh $ENV_NAME USNM_OCR_NODES true, then scripts/provision.sh $ENV_NAME"
 [ -n "$EXCHANGE" ] ||
   die "no OCR_EXCHANGE_ACCOUNT for $ENV_NAME yet: run scripts/provision.sh $ENV_NAME first"
+[ -n "$NODE_GROUP" ] ||
+  die "no USNM_OCR_NODE_GROUP for $ENV_NAME: scripts/ocr-node/group.sh --env $ENV_NAME, then scripts/provision.sh $ENV_NAME"
 [ -n "$NODE_IPS" ] ||
   echo "warning: USNM_OCR_NODE_IPS is empty, so the exchange account's firewall lets no node in; set it to the node's public IP and provision"
 
@@ -94,7 +99,11 @@ current_tenant=$(az account show --query tenantId -o tsv 2> /dev/null || true)
   die "az's current account is in tenant ${current_tenant:-unknown}, not $TENANT: az login --tenant $TENANT, then az account set --subscription $SUBSCRIPTION"
 az group show -n "$GROUP" --subscription "$SUBSCRIPTION" -o none 2> /dev/null ||
   die "can't read $GROUP in subscription $SUBSCRIPTION; sign in to tenant $TENANT with access to it"
+# The nodes' Entra group; the provision grants it the node roles.
+NODE_GROUP_NAME=$(az ad group show --group "$NODE_GROUP" --query displayName -o tsv 2> /dev/null) ||
+  die "can't read group $NODE_GROUP (USNM_OCR_NODE_GROUP); run scripts/ocr-node/group.sh --env $ENV_NAME"
 echo "environment $ENV_NAME: subscription $SUBSCRIPTION, $GROUP, $LOCATION, exchange account $EXCHANGE"
+echo "node group $NODE_GROUP_NAME ($NODE_GROUP)"
 echo "node $HOST, Arc resource $NAME"
 [ "$DRY_RUN" = false ] || echo "dry run: nothing is changed"
 
@@ -271,30 +280,24 @@ else
 fi
 
 step "Machine"
-# The provision looks each machine up by name in the group and grants its
-# system-assigned identity the node roles (infra/modules/ocr-exchange.bicep).
-# Arc resource names are case-insensitive.
-lower() { printf '%s' "$1" | tr -d ' ' | tr '[:upper:]' '[:lower:]'; }
-case ",$(lower "$NODE_NAMES")," in
-  *",$(lower "$NAME"),"*) listed=true ;;
-  *) listed=false ;;
-esac
+# The provision grants the nodes' group the node roles
+# (infra/modules/ocr-exchange.bicep); a node gets them by being a member.
+is_member() {
+  [ "$(az ad group member check --group "$NODE_GROUP" --member-id "$1" --query value -o tsv 2> /dev/null)" = true ]
+}
 if [ "$DRY_RUN" = true ]; then
-  if principal=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
-    --subscription "$SUBSCRIPTION" --query identity.principalId -o tsv 2> /dev/null); then
-    echo "$NAME exists, identity ${principal:-none yet}"
+  principal=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
+    --subscription "$SUBSCRIPTION" --query identity.principalId -o tsv 2> /dev/null || true)
+  if [ -z "$principal" ]; then
+    echo "$NAME isn't connected yet, or has no identity yet"
+    echo "would add its identity to $NODE_GROUP_NAME"
+  elif is_member "$principal"; then
+    echo "$NAME (identity $principal) is already in $NODE_GROUP_NAME"
   else
-    echo "$NAME isn't connected yet"
+    echo "would add $NAME (identity $principal) to $NODE_GROUP_NAME"
   fi
-  if [ "$listed" = true ]; then
-    echo "$NAME is already in USNM_OCR_NODE_NAMES"
-  else
-    echo "would add $NAME to USNM_OCR_NODE_NAMES (now: ${NODE_NAMES:-empty})"
-  fi
-  echo "then you'd run: scripts/provision.sh $ENV_NAME"
   exit 0
 fi
-# A machine without an identity would fail the provision; wait for it here.
 principal=""
 for attempt in 1 2 3 4 5 6; do
   principal=$(az resource show -g "$GROUP" -n "$NAME" --resource-type Microsoft.HybridCompute/machines \
@@ -305,14 +308,23 @@ done
 [ -n "$principal" ] || die "$NAME in $GROUP has no system-assigned identity yet (tried $attempt times); run this again"
 echo "$NAME: identity $principal"
 
-# Add it once; keep the others.
-if [ "$listed" = true ]; then
-  echo "already in USNM_OCR_NODE_NAMES"
+# A new identity's service principal can take a moment to reach Graph.
+if is_member "$principal"; then
+  echo "already in $NODE_GROUP_NAME"
 else
-  scripts/settings.sh "$ENV_NAME" USNM_OCR_NODE_NAMES "${NODE_NAMES:+$NODE_NAMES,}$NAME"
-  echo "added $NAME to USNM_OCR_NODE_NAMES"
+  added=false
+  for attempt in 1 2 3 4 5 6; do
+    if az ad group member add --group "$NODE_GROUP" --member-id "$principal" -o none 2> /dev/null || is_member "$principal"; then
+      added=true
+      break
+    fi
+    sleep 10
+  done
+  [ "$added" = true ] || die "can't add $principal to $NODE_GROUP_NAME (you need to own the group); run this again"
+  echo "added $NAME to $NODE_GROUP_NAME"
 fi
 
 step "Next"
-echo "Grant the node its roles on $EXCHANGE by provisioning (needs Owner on the subscription):"
-echo "  scripts/provision.sh $ENV_NAME"
+echo "$NAME has the node roles on $EXCHANGE through $NODE_GROUP_NAME; no provision needed."
+echo "A token the node fetched for storage before it joined the group lacks the membership"
+echo "until it expires (up to about 24 hours for a managed identity; ADR-0015)."

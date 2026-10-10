@@ -17,8 +17,8 @@ param name string
 param nodeIps array = []
 @description('The Container Apps subnet, allowed through its service endpoint.')
 param subnetId string
-@description('Names of the nodes\' Arc machines (Microsoft.HybridCompute/machines) in this resource group. Each one\'s system-assigned identity gets the node roles.')
-param nodeNames array = []
+@description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
+param nodeGroupId string = ''
 @description('The ingest identity: the cloud jobs that fill the queues and copy the output into curated.')
 param ingestPrincipalId string
 
@@ -157,53 +157,46 @@ resource nodeWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   }
 }
 
-// The Arc machines, by name. The Connected Machine agent creates each one
-// when the node connects (scripts/ocr-node/onboard.sh), so they aren't
-// declared here (ADR-0015); a name that isn't connected yet fails the
-// deployment. Each grant follows the machine's current identity, and its
-// name comes from the scope, the machine's resource id and the role.
-resource machines 'Microsoft.HybridCompute/machines@2024-07-10' existing = [
-  for n in nodeNames: {
-    name: n
-  }
-]
+// The nodes' grants go to one Entra security group, usnm-ocr-nodes-<env>
+// (ADR-0015). scripts/ocr-node/group.sh creates it, since deployment stacks
+// can't hold Microsoft Graph resources; onboard.sh adds each node's
+// system-assigned identity to it and offboard.sh takes it out, so adding or
+// removing a node needs no provision. Each assignment's name comes from its
+// scope, the group and the role.
+var nodeGrants = !empty(nodeGroupId)
 
 resource nodeProcess 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for pair in flatten(map(range(0, length(nodeNames)), m => map(range(0, length(workQueues)), q => { machine: m, queue: q }))): {
-    scope: queues[pair.queue]
-    name: guid(queues[pair.queue].id, machines[pair.machine].id, queueMessageProcessor)
+  for (q, i) in workQueues: if (nodeGrants) {
+    scope: queues[i]
+    name: guid(queues[i].id, nodeGroupId, queueMessageProcessor)
     properties: {
-      principalId: machines[pair.machine].identity.principalId
-      principalType: 'ServicePrincipal'
+      principalId: nodeGroupId
+      principalType: 'Group'
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageProcessor)
     }
   }
 ]
 
-resource nodeDeadLetter 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for (n, i) in nodeNames: {
-    scope: deadLetter
-    name: guid(deadLetter.id, machines[i].id, queueMessageSender)
-    properties: {
-      principalId: machines[i].identity.principalId
-      principalType: 'ServicePrincipal'
-      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender)
-    }
+resource nodeDeadLetter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (nodeGrants) {
+  scope: deadLetter
+  name: guid(deadLetter.id, nodeGroupId, queueMessageSender)
+  properties: {
+    principalId: nodeGroupId
+    principalType: 'Group'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender)
   }
-]
+}
 
-resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for (n, i) in nodeNames: {
-    scope: output
-    name: guid(output.id, machines[i].id, 'usnm-ocr-node-writer')
-    properties: {
-      principalId: machines[i].identity.principalId
-      principalType: 'ServicePrincipal'
-      // Custom roles are addressed at subscription level wherever they're defined.
-      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
-    }
+resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (nodeGrants) {
+  scope: output
+  name: guid(output.id, nodeGroupId, 'usnm-ocr-node-writer')
+  properties: {
+    principalId: nodeGroupId
+    principalType: 'Group'
+    // Custom roles are addressed at subscription level wherever they're defined.
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
   }
-]
+}
 
 // The ingest identity: the seeder adds pages to the queues, and someone
 // inspecting or replaying dead letters needs to read and delete them, so
