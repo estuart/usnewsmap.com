@@ -221,6 +221,16 @@ else
     --enable-automatic-upgrade
   )
   [ -z "$TAGS" ] || connect_args+=(--tags "$TAGS")
+  # Keep the machine identity's private key in the TPM (the agent's TPM-backed
+  # identity, in preview), so it can't be copied off the disk. The key store
+  # is chosen at connect; changing it later means reconnecting, which makes a
+  # new machine and identity. proxmox-create-vm.sh gives VMs a vTPM 2.0.
+  if [ -c /dev/tpmrm0 ]; then
+    connect_args+=(--identity-key-store tpm)
+    echo "TPM found: the identity's key goes in the TPM"
+  else
+    echo "warning: no TPM (/dev/tpmrm0); the identity's key stays on disk"
+  fi
   # A new secret and role assignment can take a few minutes to reach Entra
   # and Azure everywhere, so a refused connect is tried again.
   status=0
