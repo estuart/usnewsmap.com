@@ -347,24 +347,24 @@ Rust wherever practical (ADR-0004 and the maintainer's request of 10 October 202
 
 Each step below is one pull request unless it says ops. Sizes: S is a small change in one place, M touches a few files in one or two layers, L spans several crates or adds a subsystem.
 
-| Step | Change                                                          | Size | Language                     | After                  |
-| ---- | --------------------------------------------------------------- | ---- | ---------------------------- | ---------------------- |
-| 0    | Merge #303; node 1 to the TPM key store once Azure allows it    | S    | Bash (existing scripts)      |                        |
-| 1    | Docs catch-up                                                   | S    | Markdown                     |                        |
-| 2    | Worker build, install script and unit                           | M    | Rust, YAML, Bash             | 0                      |
-| 3    | Node monitoring                                                 | M    | Bicep, Bash, KQL             | 0                      |
-| 4    | Language codes and word lists                                   | M    | Rust; one-off Python export  |                        |
-| 5    | Damage metric v2 in Rust                                        | L    | Rust; one-off Python fixture | 4                      |
-| 6    | Full damage pass and parity gate                                | M    | Rust                         | 5                      |
-| 7    | Shared queue client, contract checks, worker fixes              | M    | Rust                         | 3, 4                   |
-| 8    | `ocr-sync`: pickup, checks, dead letters, ledger, scheduled job | L    | Rust, Bicep                  | 6, 7                   |
-| 9    | Release reads `ocr-local`; provenance file                      | L    | Rust, Bicep                  | 8                      |
-| 10   | Seeder                                                          | M    | Rust, Bicep                  | 6, 8                   |
-| 11   | Pilot on node 1                                                 | S    | Ops and a draft report       | 2, 3, 9, 10, an engine |
-| 12   | Pages users find                                                | M    | Rust, Bicep                  | 11                     |
-| 13   | Node 2                                                          | S    | Ops                          | 11                     |
-| 14   | Optional: replacement delta for published batches               | L    | Rust                         | 11 and a benchmark     |
-| 15   | Follow-up issues                                                |      |                              |                        |
+| Step | Change                                                          | Size | Language                     | After                     |
+| ---- | --------------------------------------------------------------- | ---- | ---------------------------- | ------------------------- |
+| 0    | Merge #303; node 1 to the TPM key store once Azure allows it    | S    | Bash (existing scripts)      |                           |
+| 1    | Docs catch-up                                                   | S    | Markdown                     |                           |
+| 2    | Worker build, install script and unit                           | M    | Rust, YAML, Bash             | 0                         |
+| 3    | Node monitoring                                                 | M    | Bicep, Bash, KQL             | 0                         |
+| 4    | Language codes and word lists                                   | M    | Rust; one-off Python export  |                           |
+| 5    | Damage metric v2 in Rust                                        | L    | Rust; one-off Python fixture | 4                         |
+| 6    | Full damage pass and parity gate                                | M    | Rust                         | 5                         |
+| 7    | Shared queue client, contract checks, worker fixes              | M    | Rust                         | 3, 4                      |
+| 8    | `ocr-sync`: pickup, checks, dead letters, ledger, scheduled job | L    | Rust, Bicep                  | 6, 7                      |
+| 9    | Release reads `ocr-local`; provenance file                      | L    | Rust, Bicep                  | 8                         |
+| 10   | Seeder                                                          | M    | Rust, Bicep                  | 6, 8                      |
+| 11   | Pilot on node 1                                                 | S    | Ops and a draft report       | 2, 3, 8, 9, 10, an engine |
+| 12   | Pages users find                                                | M    | Rust, Bicep                  | 11                        |
+| 13   | Node 2                                                          | S    | Ops                          | 11                        |
+| 14   | Optional: replacement delta for published batches               | L    | Rust                         | 11 and a benchmark        |
+| 15   | Follow-up issues                                                |      |                              |                           |
 
 ### Step 0: Merge #303; node 1 to the TPM key store once Azure allows it (ops, S)
 
