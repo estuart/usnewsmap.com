@@ -264,8 +264,9 @@ else
   status=0
   for attempt in 1 2 3 4 5 6; do
     status=0
-    azcmagent connect "${connect_args[@]}" --config "$conf" 2>&1 | tee "$WORK/connect.log" || true
-    status=${PIPESTATUS[0]}
+    # PIPESTATUS is read in the || branch, before any other command replaces it.
+    azcmagent connect "${connect_args[@]}" --config "$conf" 2>&1 | tee "$WORK/connect.log" ||
+      status=${PIPESTATUS[0]}
     [ "$status" -ne 0 ] || break
     [ "$attempt" -lt 6 ] || break
     # A 400 from the Hybrid Compute service (HCRP400) is a refusal, such as an
