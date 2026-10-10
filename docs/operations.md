@@ -466,7 +466,7 @@ iface nic0 inet manual
         post-up /sbin/ethtool -K nic0 tso off gso off gro off
 ```
 
-**Connect a node.** The node needs AlmaLinux 9 or RHEL 10 and an admin account with key-based SSH and passwordless sudo. From your machine, signed in with `az` with the right to create app registrations in the tenant (the Application Developer role, or the default user setting that lets users register applications) and to assign roles on the environment's group (Owner or User Access Administrator; Owner of the subscription also does for the provision):
+**Connect a node.** The node needs AlmaLinux 9 or RHEL 10 and an admin account with key-based SSH and passwordless sudo. From your machine, signed in with `az` with the right to create app registrations in the tenant (the Application Developer role, or the default user setting that lets users register applications) and to assign roles on the environment's group (Owner or User Access Administrator; Owner of the subscription also does for the provision). The first onboarding in a subscription also registers three resource providers, a subscription-level action (Contributor or Owner on the subscription); with only group-level rights, have them registered first:
 
 ```sh
 scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1 --dry-run

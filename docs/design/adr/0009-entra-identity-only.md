@@ -34,6 +34,8 @@ The maintainer made the rule foundational: **every authentication is by an Entra
 
    Short-lived tokens that Entra issues for a principal count as Entra authentication, because they carry that principal's RBAC. These are OAuth access tokens, and the registry refresh token that `az acr login` exchanges for an Entra token.
 
+   One exception ([ADR-0015](0015-onprem-ocr-workers.md)): onboarding an on-prem OCR node to Azure Arc uses a client secret. It belongs to a service principal that `scripts/ocr-node/onboard.sh` creates for one run, with only Azure Connected Machine Onboarding on the environment's group; it expires after 2 hours, is written nowhere but a root-only file on tmpfs during the connect, and the principal is deleted when the script exits.
+
 3. **Enforced, not just configured.**
    - Azure Policy **denies** each "local auth on" setting above on the project resource groups (`infra/guardrails.bicep`).
    - CI fails any change that reintroduces a key pattern (`scripts/ci/no-shared-keys.sh`, in the `infra` job).

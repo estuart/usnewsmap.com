@@ -29,9 +29,11 @@
 # registers nothing, creates nothing in Entra, doesn't connect to the node
 # and changes no setting.
 #
-# Needs az signed in with Owner on the environment's subscription (or the
-# right to assign roles on its group) and the right to register applications
-# in the tenant, and ssh.
+# Needs az signed in with the right to register applications in the tenant
+# and to assign roles on the environment's group, and ssh. Registering the
+# three providers is a subscription-level action
+# (Microsoft.<namespace>/register/action, in Contributor or Owner on the
+# subscription); without it they have to be registered already.
 # Works with macOS's bash 3.2.
 set -euo pipefail
 usage() { sed -n '7,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
@@ -120,7 +122,7 @@ SETUP_ARGS=$(printf '%q ' --subscription "$SUBSCRIPTION" --resource-group "$GROU
 ONBOARD_ROLE=b64e21ea-ac4e-4cdf-9dc9-5b892992bee7 # Azure Connected Machine Onboarding
 SCOPE="/subscriptions/$SUBSCRIPTION/resourceGroups/$GROUP"
 SP_NAME="usnm-arc-onboard-$NAME-$(date -u +%Y%m%dT%H%M%SZ)"
-APP_OBJ="" APP_ID="" SP_OBJ="" SECRET="" SP_CREATED=false
+APP_OBJ="" APP_ID="" SP_OBJ="" SECRET="" RA_ID="" SP_CREATED=false
 
 # Deletes the role assignment, the service principal and the app
 # registration, then purges both from Entra's deleted items. Looks each one
@@ -131,6 +133,15 @@ cleanup() {
   [ "$SP_CREATED" = true ] || return "$status"
   set +e
   step "Deleting the onboarding service principal"
+  # The assignment this run made, by the id its create returned; the list
+  # below, which can lag behind a new assignment, catches any other.
+  if [ -n "$RA_ID" ]; then
+    if az role assignment delete --ids "$RA_ID" --subscription "$SUBSCRIPTION" -o none; then
+      echo "deleted role assignment $RA_ID"
+    else
+      echo "warning: couldn't delete role assignment $RA_ID; delete it by hand" >&2
+    fi
+  fi
   [ -n "$APP_OBJ" ] || APP_OBJ=$(az ad app list --display-name "$SP_NAME" --query '[0].id' -o tsv 2> /dev/null)
   [ -n "$APP_ID" ] || [ -z "$APP_OBJ" ] || APP_ID=$(az ad app show --id "$APP_OBJ" --query appId -o tsv 2> /dev/null)
   [ -n "$SP_OBJ" ] || [ -z "$APP_ID" ] ||
@@ -139,6 +150,7 @@ cleanup() {
     ids=$(az role assignment list --assignee "$SP_OBJ" --scope "$SCOPE" --subscription "$SUBSCRIPTION" \
       --query '[].id' -o tsv 2> /dev/null)
     for id in $ids; do
+      [ "$id" != "$RA_ID" ] || continue
       if az role assignment delete --ids "$id" --subscription "$SUBSCRIPTION" -o none; then
         echo "deleted role assignment $id"
       else
@@ -214,8 +226,8 @@ else
     # shell's memory and is never printed.
     SECRET=$(az ad app credential reset --id "$APP_OBJ" --end-date "$end" --display-name onboard \
       --query password -o tsv 2> /dev/null) || die "can't add a secret to $SP_NAME"
-    az role assignment create --assignee-object-id "$SP_OBJ" --assignee-principal-type ServicePrincipal \
-      --role "$ONBOARD_ROLE" --scope "$SCOPE" --subscription "$SUBSCRIPTION" -o none ||
+    RA_ID=$(az role assignment create --assignee-object-id "$SP_OBJ" --assignee-principal-type ServicePrincipal \
+      --role "$ONBOARD_ROLE" --scope "$SCOPE" --subscription "$SUBSCRIPTION" --query id -o tsv) ||
       die "can't assign Azure Connected Machine Onboarding on $SCOPE"
     echo "assigned Azure Connected Machine Onboarding on $SCOPE"
     # The assignment and the secret take a little while to reach every

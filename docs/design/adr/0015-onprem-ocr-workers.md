@@ -3,6 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-10
 - **Extends:** ADR-0008 (private networking) and ADR-0009 (Entra identity only)
+- **Amends:** ADR-0009 §2, with one exception: a client secret for Arc onboarding, on a service principal made for one run (decision 1)
 
 ## Context
 
