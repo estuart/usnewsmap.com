@@ -327,6 +327,11 @@ if [ "$DRY_RUN" = true ]; then
   else
     echo "would add $NAME (identity $principal) to $NODE_GROUP_NAME"
   fi
+  if machine_get properties.agentUpgrade.enableAutomaticUpgrade && [ "$MACHINE_OUT" = true ]; then
+    echo "automatic agent upgrade is on"
+  else
+    echo "would turn on automatic agent upgrade"
+  fi
   exit 0
 fi
 principal=""
@@ -352,6 +357,21 @@ else
   done
   [ "$added" = true ] || die "can't add $principal to $NODE_GROUP_NAME (you need to own the group); run this again"
   echo "added $NAME to $NODE_GROUP_NAME"
+fi
+
+# Microsoft's automatic agent upgrade (in preview; agent 1.57 or later, and
+# cron on Linux, which node-setup.sh installs): the agent upgrades itself to
+# within one version of the latest, in batches at off-peak hours. A machine
+# connected before node-setup.sh passed --enable-automatic-upgrade gets it
+# here, by setting the machine's agentUpgrade property.
+if machine_get properties.agentUpgrade.enableAutomaticUpgrade && [ "$MACHINE_OUT" = true ]; then
+  echo "automatic agent upgrade is already on"
+else
+  az rest --method patch --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$GROUP/providers/Microsoft.HybridCompute/machines/$NAME?api-version=2024-05-20-preview" \
+    --headers "Content-Type=application/json" \
+    --body '{"properties":{"agentUpgrade":{"enableAutomaticUpgrade":true}}}' -o none ||
+    die "can't turn on automatic agent upgrade for $NAME; run this again"
+  echo "turned on automatic agent upgrade"
 fi
 
 step "Next"

@@ -13,7 +13,7 @@
 # file under /run (tmpfs) while `azcmagent connect --config` reads it, and
 # is deleted straight after. A node that's already connected needs none.
 #
-# Keeps the journal on disk; installs python3, podman and chrony, and
+# Keeps the journal on disk; installs python3, podman, chrony and cron, and
 # htop, iftop and screen from EPEL;
 # creates the `usnm` system user; installs the Azure Connected Machine
 # agent, turns off extensions, guest configuration and incoming connections
@@ -89,7 +89,7 @@ step "Installing packages"
 # compares arrive as pinned container images run with podman, or a source
 # build, in a later change. This installs what the agent, the worker and
 # the containers need, all from the distribution's own repositories.
-dnf -y -q install python3 podman chrony curl
+dnf -y -q install python3 podman chrony curl cronie
 
 # Tools for whoever logs in to watch the node: htop (processes), iftop
 # (traffic per connection) and screen. On EL9 and EL10 they come from EPEL,
@@ -111,6 +111,8 @@ if rpm -q epel-release > /dev/null 2>&1; then
   dnf -y -q install htop iftop screen
 fi
 systemctl enable --now chronyd > /dev/null
+# The agent schedules its automatic upgrades with cron.
+systemctl enable --now crond > /dev/null
 podman --version
 
 step "Persistent journal"
@@ -216,6 +218,7 @@ else
   connect_args=(
     --resource-group "$GROUP" --tenant-id "$TENANT" --subscription-id "$SUBSCRIPTION"
     --location "$LOCATION" --resource-name "$NAME" --cloud AzureCloud
+    --enable-automatic-upgrade
   )
   [ -z "$TAGS" ] || connect_args+=(--tags "$TAGS")
   # A new secret and role assignment can take a few minutes to reach Entra
