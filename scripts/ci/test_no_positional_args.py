@@ -64,9 +64,11 @@ class Python(unittest.TestCase):
 
 
 class Rust(unittest.TestCase):
-    def test_nth_is_found(self):
+    def test_any_read_of_the_arguments_is_found(self):
+        # A CLI uses clap; a hand-written parser is reviewed into HAND_PARSED.
         self.assertEqual(check.findings("x.rs", "let p = std::env::args().nth(1);\n// env::args().nth(1)\n"), [1])
-        self.assertEqual(check.findings("x.rs", "let mut a = std::env::args().skip(1).peekable();\n"), [])
+        self.assertEqual(check.findings("x.rs", "let mut a = std::env::args().skip(1).peekable();\n"), [1])
+        self.assertEqual(check.findings("x.rs", "for a in std::env::args_os() {}\n"), [1])
 
     def test_a_clap_field_without_long_is_positional(self):
         src = """#[derive(Parser)]

@@ -14,12 +14,15 @@ Checks every tracked shell script, Python file and Rust file:
 - Python: `sys.argv[...]`, and an argparse `add_argument` whose name isn't a
   flag. A positional with `choices` names a subcommand (as `jaocr.py run`),
   like `add_subparsers`, and is allowed.
-- Rust: `std::env::args().nth(...)`, and a field of a clap derive
+- Rust: any read of `std::env::args()` (or `args_os()`): a CLI parses with
+  clap, so a hand-written parser has to be listed in HAND_PARSED after its
+  flags-only parsing was checked by eye. And a field of a clap derive
   (`Parser`, `Args`, `Subcommand`) that isn't `#[arg(long ...)]` (or
   short), a subcommand or a flattened group: clap makes it positional.
 
-ALLOWED lists the deprecated positional forms kept for one release; the
-count must match exactly, so an entry goes when its fallback does. Standard
+ALLOWED lists the deprecated positional forms kept for one release, and
+HAND_PARSED the reviewed hand-written Rust parsers; the count must match
+exactly, so an entry goes when its code does. Standard
 library only. Exits 1 listing every finding.
 """
 
@@ -158,7 +161,7 @@ def python_findings(text: str) -> list[int]:
     return sorted(found)
 
 
-RUST = re.compile(r"\benv::args(?:_os)?\(\)\s*\.nth\(")
+RUST = re.compile(r"\benv::args(?:_os)?\(\)")
 CLAP_DERIVE = re.compile(r"#\[derive\([^)]*\b(?:Parser|Args|Subcommand)\b")
 FIELD = re.compile(r"^\s*(?:pub\s+)?[a-z_]\w*\s*:\s*\S")
 
@@ -226,9 +229,21 @@ def check(files: dict[str, str], allowed: dict[str, int]) -> list[str]:
     return problems
 
 
+# Dev examples that parse their own flags by hand (named flags only, and
+# an error for anything else), checked by eye: reads of `env::args()` per
+# file. A new one is reviewed and added here, or uses clap.
+HAND_PARSED = {
+    "crates/usnm-core/examples/add_text_cg.rs": 1,
+    "crates/usnm-core/examples/term_skew.rs": 1,
+    "crates/usnm-ingest/examples/decade_fixture.rs": 1,
+    "crates/usnm-ingest/examples/place-report.rs": 1,
+    "crates/usnm-ingest/examples/single_field_fixture.rs": 1,
+}
+
+
 def main() -> int:
     files = {p: (ROOT / p).read_text(encoding="utf-8") for p in tracked()}
-    problems = check(files, ALLOWED)
+    problems = check(files, {**ALLOWED, **HAND_PARSED})
     for p in problems:
         print(p, file=sys.stderr)
     if not problems:

@@ -185,7 +185,7 @@ var rules = [
   {
     name: 'api-searches-slow'
     displayName: 'Searches longer than a visitor waits'
-    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Endpoint and Outcome are the ones with the most. Errors other than timeouts and busy refusals count toward the API server errors alert. Next: the slow-search tiles in the API workbook (by endpoint and outcome), and scripts/logs.sh --env <env> --query-name api-requests 1h.'
+    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Endpoint and Outcome are the ones with the most. Errors other than timeouts and busy refusals count toward the API server errors alert. Next: the slow-search tiles in the API workbook (by endpoint and outcome), and scripts/logs.sh --env <env> --query-name api-requests --span 1h.'
     severity: 3
     frequency: 'PT15M'
     window: 'PT1H'
