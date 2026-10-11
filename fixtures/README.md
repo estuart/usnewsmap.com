@@ -6,7 +6,7 @@ It mimics the shapes the real pipeline will produce ([04](../docs/design/04-data
 
 - `current.json`: the published version, naming its sealed index set and reference snapshot
 - `indexes/{index_id}.jsonl`: one engine document per page (a base index and one delta index)
-- `fixture-v1/`: the reference snapshot (`places.json`, `titles.json`, `baselines.json`, `language_baselines.json`, `title_pages.json`, and the `manifest.json` that checksums them)
+- `fixture-v1/`: the reference snapshot (`places.json`, `titles.json`, `baselines.json`, `language_baselines.json`, `title_pages.json`, `title_dates.json`, and the `manifest.json` that checksums them)
 
 Regenerate with `python3 fixtures/generate.py` (deterministic).
 

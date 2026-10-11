@@ -79,6 +79,8 @@ const titles: TitlesResponse = {
       first_year: 1849,
       last_year: 1871,
       pages: 2000,
+      first_page_date: "1860-01-04",
+      last_page_date: "1871-12-28",
       languages: ["eng"],
     },
     {

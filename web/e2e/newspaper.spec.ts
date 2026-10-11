@@ -52,6 +52,9 @@ test("choose newspapers by title or place, search within them, and reach their i
   await expect(options).toHaveCount(1);
   await expect(options.first()).toContainText("The Fixture Gazette 2");
   await expect(options.first()).toContainText("New York area");
+  // Its years of publication, and the years of its pages on the site.
+  await expect(options.first()).toContainText("published 1892–1897");
+  await expect(options.first()).toContainText("312 pages from 1895 to 1897");
   await expectAccessible(page);
   await box.press("ArrowDown");
   await box.press("Enter");

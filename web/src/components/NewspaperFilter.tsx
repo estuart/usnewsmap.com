@@ -55,21 +55,40 @@ export function matchTitles(
   return { shown: ranked.slice(0, limit).map((r) => r.t), total: ranked.length };
 }
 
-/** "1883–1922", "1896–" (still published when catalogued), or "" when unknown. */
-export function years(t: Pick<TitleEntry, "first_year" | "last_year">): string {
-  if (t.first_year === null) return t.last_year === null ? "" : `–${t.last_year}`;
-  if (t.last_year === null) return `${t.first_year}–`;
-  return t.first_year === t.last_year ? `${t.first_year}` : `${t.first_year}–${t.last_year}`;
+/**
+ * The years of publication in LoC's record (the paper's whole run): "published 1883–1922",
+ * "published from 1896" (still published when catalogued), "published until 1922",
+ * "published 1898", or "" when unknown.
+ */
+export function published(t: Pick<TitleEntry, "first_year" | "last_year">): string {
+  if (t.first_year === null) return t.last_year === null ? "" : `published until ${t.last_year}`;
+  if (t.last_year === null) return `published from ${t.first_year}`;
+  return t.first_year === t.last_year ? `published ${t.first_year}` : `published ${t.first_year}–${t.last_year}`;
 }
 
-/** "Omaha, NE · 1883–1922 · English, German · 12,345 pages": what tells papers of one name apart. */
+/**
+ * The paper's pages on this site: "12,345 pages from 1885 to 1910" (the years of its first
+ * and last pages in the version), "1 page from 1898", "12,345 pages" when the version
+ * doesn't record the dates, or "" when it counts neither.
+ */
+export function pagesDetail(t: Pick<TitleEntry, "pages" | "first_page_date" | "last_page_date">): string {
+  const count = t.pages === null ? "pages" : `${t.pages.toLocaleString("en-US")} ${t.pages === 1 ? "page" : "pages"}`;
+  const first = t.first_page_date?.slice(0, 4);
+  const last = t.last_page_date?.slice(0, 4);
+  if (!first || !last) return t.pages === null ? "" : count;
+  return first === last ? `${count} from ${first}` : `${count} from ${first} to ${last}`;
+}
+
+/**
+ * "Omaha, NE · published 1883–1922 · English, German · 12,345 pages from 1885 to 1910":
+ * what tells papers of one name apart.
+ */
 export function titleDetail(t: TitleEntry): string {
-  const pages = t.pages === null ? null : `${t.pages.toLocaleString("en-US")} ${t.pages === 1 ? "page" : "pages"}`;
   return [
     t.place ? `${t.place}, ${t.state}` : t.state,
-    years(t),
+    published(t),
     t.languages.map((c) => languageName(c)).join(", "),
-    pages,
+    pagesDetail(t),
   ]
     .filter(Boolean)
     .join(" · ");

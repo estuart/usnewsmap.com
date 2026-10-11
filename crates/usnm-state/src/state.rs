@@ -143,6 +143,19 @@ pub const RUN_BATCHES_FILE: &str = "batches.json";
 /// written before it existed don't have it.
 pub const TITLE_PAGES_FILE: &str = "title_pages.json";
 
+/// The file in a version's reference snapshot with the dates of every
+/// title's first and last published page, `{lccn: {first, last}}`
+/// ([`TitleDates`]): the same pages as [`TITLE_PAGES_FILE`], by date.
+/// Snapshots written before it existed don't have it.
+pub const TITLE_DATES_FILE: &str = "title_dates.json";
+
+/// The first and last days with a published page of one title.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TitleDates {
+    pub first: chrono::NaiveDate,
+    pub last: chrono::NaiveDate,
+}
+
 /// The file in a version's reference snapshot with the copies of duplicated
 /// pages that searches must not see: `[{doc_id, batch}]`, the losing copies
 /// an earlier index of the version holds (04 §4.7). Snapshots written before

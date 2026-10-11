@@ -19,8 +19,8 @@ use usnm_core::time::{date_from_day, day_number, BucketSpec};
 use usnm_search::IndexSet;
 use usnm_state::ocr_local::{OcrLocalPages, OCR_LOCAL_PAGES_FILE};
 use usnm_state::state::{
-    JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, DUPLICATES_FILE, JA_LATIN_FILE,
-    LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
+    JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, TitleDates, DUPLICATES_FILE,
+    JA_LATIN_FILE, LANGUAGE_BASELINES_FILE, TITLE_DATES_FILE, TITLE_PAGES_FILE,
 };
 use usnm_store::{is_safe_segment, ObjectStore};
 
@@ -174,6 +174,10 @@ pub struct RefData {
     /// Pages published per title, from the snapshot's `title_pages.json`;
     /// `None` for snapshots written before releases recorded it.
     pub title_pages: Option<HashMap<String, u64>>,
+    /// The first and last dates of each title's pages, from the snapshot's
+    /// `title_dates.json`; `None` for snapshots written before releases
+    /// recorded them.
+    pub title_dates: Option<HashMap<String, TitleDates>>,
     /// The batches (and their versions) the version was built from, from the
     /// snapshot manifest; `None` for snapshots that don't record them.
     pub published_batches: Option<HashMap<String, u16>>,
@@ -299,6 +303,10 @@ impl RefData {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
         };
+        let title_dates = match optional(TITLE_DATES_FILE) {
+            Some(entry) => Some(fetch_checked(store, dir, entry).await?),
+            None => None,
+        };
         let hidden = match optional(DUPLICATES_FILE) {
             Some(entry) => {
                 let (path, bytes) = fetch_checked(store, dir, entry).await?;
@@ -341,6 +349,9 @@ impl RefData {
             let mut rd = Self::build(current, &raw)?;
             if let Some((path, bytes)) = title_pages {
                 rd.title_pages = Some(parse(&path, &bytes)?);
+            }
+            if let Some((path, bytes)) = title_dates {
+                rd.title_dates = Some(parse(&path, &bytes)?);
             }
             if let Some((path, bytes)) = language_baselines {
                 let mut lb: LanguageBaselines = parse(&path, &bytes)?;
@@ -509,6 +520,7 @@ impl RefData {
             place_pages,
             year_pages,
             title_pages: None,
+            title_dates: None,
             published_batches: None,
             duplicate_pages: None,
             american_stories_built: None,
