@@ -33,7 +33,7 @@
 # scan server's port from anyone but --allow, writes
 # /etc/usnm/scanserve.env and the unit usnm-scanserve.service, and starts
 # it. The manifests mount must be read-write for the server's PUT; a
-# container made before that is switched over and must be restarted.
+# container made before that is switched over and rebooted.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '2,36s/^# \{0,1\}//p' "$0" >&2; exit 2; }
@@ -176,9 +176,18 @@ if $SERVE; then
     [[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--allow: $ip isn't an IPv4 address"
   done
   # The manifests mount read-write, for PUT /manifests.
+  # The mount changes only when the container starts again, so it is
+  # rebooted here (a fetch in it stops and goes on where it stopped).
   if pct config "$CTID" | grep -q '^mp1:.*ro=1'; then
     pct set "$CTID" --mp1 "$DATA/manifests,mp=/tank/ocr/manifests"
-    echo "mp1 is read-write now; it takes effect when CT $CTID restarts (pct reboot $CTID)"
+    echo "mp1 is read-write now; rebooting CT $CTID to apply it"
+    pct reboot "$CTID"
+    for _ in $(seq 60); do
+      pct status "$CTID" | grep -q running && in_ct true 2> /dev/null && break
+      sleep 2
+    done
+    in_ct su -s /bin/sh scanfetch -c 'touch /tank/ocr/manifests/.write-check && rm /tank/ocr/manifests/.write-check' ||
+      die "the manifests mount still isn't writable in CT $CTID"
   fi
   set_list=$(IFS=,; echo "${IPS[*]}")
   in_ct bash -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables > /dev/null'

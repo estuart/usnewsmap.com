@@ -66,6 +66,20 @@ pub fn scan_rel(path: &str) -> Option<&str> {
     (ok && (last.ends_with(".jpg") || last.ends_with(".jpg.json"))).then_some(set)
 }
 
+/// `rel` under `root`, built from its checked segments only, so it can't
+/// leave the root.
+fn under(root: &Path, rel: &str) -> Option<PathBuf> {
+    scan_rel(rel)?;
+    let mut p = root.to_owned();
+    for seg in rel.split('/') {
+        if matches!(seg, "." | "..") {
+            return None;
+        }
+        p.push(seg);
+    }
+    p.starts_with(root).then_some(p)
+}
+
 fn sidecar(scan: &Path) -> PathBuf {
     let mut p = scan.as_os_str().to_owned();
     p.push(".json");
@@ -103,7 +117,10 @@ async fn get_scan(
     if scan_rel(&path).is_none() {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    match tokio::fs::read(opts.scans.join(&path)).await {
+    let Some(file) = under(&opts.scans, &path) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match tokio::fs::read(file).await {
         Ok(b) => {
             let ct = if path.ends_with(".json") {
                 "application/json"
@@ -129,25 +146,36 @@ async fn delete_scan(
         Some("keep") => return StatusCode::FORBIDDEN.into_response(),
         _ => return StatusCode::BAD_REQUEST.into_response(),
     }
-    let scan = opts.scans.join(&path);
+    let Some(scan) = under(&opts.scans, &path) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     let mut done = scan.as_os_str().to_owned();
     done.push(".done");
-    let side = tokio::fs::rename(sidecar(&scan), PathBuf::from(done)).await;
-    let jpg = tokio::fs::remove_file(&scan).await;
-    let missing =
-        |r: &std::io::Result<()>| matches!(r, Err(e) if e.kind() == std::io::ErrorKind::NotFound);
-    if missing(&side) && missing(&jpg) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    for r in [&side, &jpg] {
-        if let Err(e) = r {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(path, error = %e, "can't delete a buffer scan");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    let done = PathBuf::from(done);
+    // The marker first: the scan goes only once the page is marked done
+    // (now, or by an earlier delete), so it is never fetched again.
+    match tokio::fs::rename(sidecar(&scan), &done).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if !tokio::fs::try_exists(&done).await.unwrap_or(false) {
+                return StatusCode::NOT_FOUND.into_response();
             }
         }
+        Err(e) => {
+            tracing::warn!(path, error = %e, "can't mark a buffer scan done");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     }
-    StatusCode::NO_CONTENT.into_response()
+    match tokio::fs::remove_file(&scan).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => {
+            tracing::warn!(path, error = %e, "can't delete a buffer scan");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 async fn put_manifest(
@@ -309,7 +337,27 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(again.status(), 404);
+        // A repeat (a worker's retry) succeeds: the page is marked done.
+        assert_eq!(again.status(), 204);
+        let never = http
+            .delete(url("/scans/buffer/b/sn1/1890-05-03/1/9.jpg"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(never.status(), 404);
+        // The scan stays if the page can't be marked done.
+        let d = dir.path().join("scans/buffer/b/sn1/1890-05-03/2");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("1.jpg"), b"jpeg").unwrap();
+        std::fs::create_dir_all(d.join("1.jpg.json")).unwrap();
+        std::fs::create_dir_all(d.join("1.jpg.done/x")).unwrap();
+        let blocked = http
+            .delete(url("/scans/buffer/b/sn1/1890-05-03/2/1.jpg"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(blocked.status(), 500);
+        assert!(d.join("1.jpg").exists());
         // A path out of the tree, and a sidecar delete, are refused.
         for p in [
             "/scans/buffer/../keep/b/1.jpg",
