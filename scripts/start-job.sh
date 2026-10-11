@@ -3,11 +3,12 @@
 # arguments, keeping the job's image, settings and replicas, and print the
 # execution's name.
 #
-#   scripts/start-job.sh dev INGEST_JOB enqueue --batches a_ver01,b_ver01
-#   scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
+#   scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches a_ver01,b_ver01
+#   scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
+#   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v20261003-1
 #
-# The second argument is the setting that names the job (INGEST_JOB,
-# BACKFILL_JOB, ...: the stack's outputs). The rest replaces the first
+# --job names the setting that names the job (INGEST_JOB, BACKFILL_JOB,
+# ...: the stack's outputs). Everything after `--` replaces the first
 # container's arguments; its command stays. `az containerapp job start
 # --args` sends a container without the image or settings, so this copies
 # the job's template and swaps only the arguments (as
@@ -15,13 +16,23 @@
 # volumes (the API's JobExecutionTemplate takes containers and init
 # containers with image, command, args, env and resources only), so it
 # can't name the job's volumes or mounts: use it for commands that don't
-# need the ingest job's scratch share, such as enqueue, curate or
-# archive-copy. Needs az signed in to the environment's subscription and jq.
+# need the ingest job's scratch share, such as enqueue, curate,
+# archive-copy or ocr-damage. Needs az signed in to the environment's
+# subscription and jq.
 set -euo pipefail
-[ $# -ge 3 ] || { sed -n '2,19s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-ENV_NAME=$1
-SETTING=$2
-shift 2
+usage() { sed -n '2,21s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+ENV_NAME=""
+SETTING=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
+    --job) [ $# -ge 2 ] || usage; SETTING=$2; shift 2 ;;
+    --) shift; break ;;
+    -h|--help) usage ;;
+    *) echo "error: unexpected \"$1\" (the job's arguments go after --)" >&2; usage ;;
+  esac
+done
+[ -n "$ENV_NAME" ] && [ -n "$SETTING" ] && [ $# -ge 1 ] || usage
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 . scripts/lib/env.sh

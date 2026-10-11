@@ -18,6 +18,7 @@ pub mod decade_order;
 pub mod dedup;
 pub mod heartbeat;
 pub mod merges;
+pub mod ocr_damage;
 pub mod ocr_ja;
 pub mod places;
 pub mod progress;

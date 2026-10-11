@@ -197,6 +197,43 @@ enum Command {
     /// JSON on stdout. Reads every batch's counts and the parts of the
     /// batches that share title-days; changes nothing.
     Duplicates,
+    /// Score every curated page of an index version with the OCR damage
+    /// metric (12 §12.5 Step 6, #296): tables under
+    /// `audit/damage/v<VERSION>/` in the curated store, one per batch
+    /// version, skipping those already scored. With `--sample-pct` and
+    /// `--compare-csv`, the parity gate against the Python audit instead
+    /// (writes no tables); with `--parity`, a parity file from
+    /// `jaocr.py damage-parity`. Logs counts and doc_ids, never text.
+    OcrDamage {
+        /// The index version whose batches to score (`{version}/batches.json`).
+        #[arg(
+            long = "version",
+            value_name = "INDEX_VERSION",
+            required_unless_present = "parity"
+        )]
+        index_version: Option<String>,
+        /// Only these batches (`name` or `name_verNN`). The version's list
+        /// of tables is written only by a run over every batch.
+        #[arg(long, value_delimiter = ',')]
+        batches: Vec<String>,
+        /// The gate: score only the pages the audit samples at this
+        /// percentage, and compare them with `--compare-csv`.
+        #[arg(long, requires_all = ["index_version", "compare_csv"])]
+        sample_pct: Option<f64>,
+        /// The audit's per-page CSV (`.csv.gz`, a curated path) to compare the sample with.
+        #[arg(long, requires = "sample_pct")]
+        compare_csv: Option<String>,
+        /// A parity file (`.jsonl.zst`, a curated path) to score again.
+        #[arg(long)]
+        parity: Option<String>,
+        /// Seconds after the start to stop starting batches; the next run
+        /// continues. Keep it under the job's replica timeout.
+        #[arg(long)]
+        max_runtime_secs: Option<u64>,
+        /// Batches scored at once (default: the CPUs).
+        #[arg(long)]
+        parallel: Option<usize>,
+    },
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
         /// As for `enqueue`: LoC's listing unless another list is given.
@@ -605,6 +642,7 @@ impl Command {
             Command::Geocode => "geocode",
             Command::Duplicates => "duplicates",
             Command::ArchiveCopy { .. } => "archive-copy",
+            Command::OcrDamage { .. } => "ocr-damage",
             Command::Run { .. } => "run",
         }
     }
@@ -627,7 +665,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::Curate { .. }
         | Command::Geocode
         | Command::Duplicates
-        | Command::ArchiveCopy { .. } => None,
+        | Command::ArchiveCopy { .. }
+        | Command::OcrDamage { .. } => None,
     }
 }
 
@@ -736,6 +775,32 @@ async fn command(
             .await?;
             tracing::info!(?copied, "archives copied");
             Ok(None)
+        }
+        Command::OcrDamage {
+            index_version,
+            batches,
+            sample_pct,
+            compare_csv,
+            parity,
+            max_runtime_secs,
+            parallel,
+        } => {
+            let opts = usnm_ingest::ocr_damage::Options {
+                index_version: index_version.clone().unwrap_or_default(),
+                batches: batches.clone(),
+                sample_pct: *sample_pct,
+                compare_csv: compare_csv.clone(),
+                parity: parity.clone(),
+                deadline: deadline(start, *max_runtime_secs),
+                parallel: parallel.unwrap_or_else(|| {
+                    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+                }),
+            };
+            let curated = usnm_store::open(&cli.stores.curated)?;
+            let reference = usnm_store::open(&cli.stores.reference)?;
+            usnm_ingest::ocr_damage::run(curated, reference.as_ref(), &opts)
+                .await
+                .map(|()| None)
         }
         Command::Duplicates => {
             let curated = usnm_store::open(&cli.stores.curated)?;
@@ -1045,5 +1110,63 @@ mod tests {
         assert!(!single_text_field, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
         assert_eq!(target.min_free_gib, 0);
+    }
+
+    #[test]
+    fn ocr_damage_arguments() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+        let parse = |args: &[&str]| {
+            let mut all = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "ocr-damage",
+            ];
+            all.extend_from_slice(args);
+            Cli::try_parse_from(all)
+        };
+        assert!(parse(&[]).is_err(), "needs --version or --parity");
+        assert!(parse(&["--parity", "p.jsonl.zst"]).is_ok());
+        assert!(
+            parse(&["--version", "v1", "--compare-csv", "x.csv.gz"]).is_err(),
+            "--compare-csv needs --sample-pct"
+        );
+        assert!(
+            parse(&["--version", "v1", "--sample-pct", "10"]).is_err(),
+            "the gate needs --compare-csv"
+        );
+        assert!(parse(&[
+            "--version",
+            "v1",
+            "--sample-pct",
+            "10",
+            "--compare-csv",
+            "x.csv.gz"
+        ])
+        .is_ok());
+        let cli = parse(&[
+            "--version",
+            "v1",
+            "--batches",
+            "a,b_ver02",
+            "--max-runtime-secs",
+            "60",
+        ])
+        .unwrap();
+        let Command::OcrDamage {
+            index_version,
+            batches,
+            max_runtime_secs,
+            ..
+        } = cli.command
+        else {
+            panic!("not ocr-damage");
+        };
+        assert_eq!(index_version.as_deref(), Some("v1"));
+        assert_eq!(batches, ["a", "b_ver02"]);
+        assert_eq!(max_runtime_secs, Some(60));
     }
 }

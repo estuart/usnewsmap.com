@@ -17,7 +17,7 @@ Reads, for the environment's settings (scripts/settings.sh):
 If Log Analytics is over its daily cap (or behind), stream the stored
 reports instead and pass the capture with --from-file:
 
-    scripts/start-job.sh <env> SEARCH_CLUSTER_JOB dump --hold-secs 600
+    scripts/start-job.sh --env <env> --job SEARCH_CLUSTER_JOB -- dump --hold-secs 600
     az containerapp job logs show -n <job> -g <rg> --container qwbench --follow > lines.txt
 
 The bench job keeps every report in qw-bench (`runs/`, `sample/`); `dump`

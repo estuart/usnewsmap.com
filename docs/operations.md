@@ -329,11 +329,57 @@ Read the numbers with these limits in mind:
 The v2 metric's per-page code is `ja-ocr/damage_v2.py`, which `quality.py` imports. `usnm_core::damage` (cargo feature `damage`) is its Rust port, which the OCR pipeline uses (12 §12.5 Steps 5 and 6). Two checks keep them the same: the same language, decision, second language and script, equal token, word, head, near-miss and function-word counts, and rates within 1e-9.
 
 - In CI, `cargo test -p usnm-core --features damage` scores the pages of `crates/usnm-core/tests/data/damage-parity.jsonl.zst` again: 66 pages of loc.gov's OCR text from 33 titles in 25 catalog languages, and 17 made-up pages for the traps between Python's string handling and Rust's. It fails when `damage_v2.py`'s sha256 isn't the one the file records. After a change to `damage_v2.py`, port the change and score the same pages again: `python3 ja-ocr/damage_parity.py --rescore <old file> --out <new file>` (wordfreq 3.1.1; no loc.gov requests). `--pages-from <file> --out <path> --synthetic` builds a new one from loc.gov, with jaocr.py's pacing.
-- In the cloud, on curated text: `jaocr.py damage-parity` samples 400 pages of the 10% audit's per-page CSV, spread across languages, decisions and scripts, and writes `audit/damage-parity/<stamp>.jsonl.zst` in the curated container. It logs each page's doc_id and title languages (`damage parity page`), never text. `usnm-ingest ocr-damage --parity <that path>` (12 §12.5 Step 6) scores them in Rust.
+- In the cloud, on curated text: `jaocr.py damage-parity` samples 400 pages of the 10% audit's per-page CSV, spread across languages, decisions and scripts, and writes `audit/damage-parity/<stamp>.jsonl.zst` in the curated container. It logs each page's doc_id and title languages (`damage parity page`), never text. `usnm-ingest ocr-damage --parity <that path>` scores them in Rust ([below](#ocr-damage-tables-296)).
 
 ```sh
 scripts/ja-ocr/start-quality.sh --env prod --command damage-parity --pages 400
 ```
+
+### OCR damage tables (#296)
+
+`usnm-ingest ocr-damage` scores pages with the Rust port (12 §12.5 Step 6). It runs as one-off executions of the ingest job, which reads and writes the curated container. `scripts/start-job.sh` starts one with the job's image and settings and other arguments. An execution can't mount the job's scratch share, and this command needs none. It logs counts and doc_ids, never text. Run the three modes in this order: parity, the gate, then the full pass.
+
+1. **Parity on curated text** (Step 5's cloud check). Write the pages with `damage-parity` ([above](#damage-metric-parity-296)), take the path from its `damage parity written` line, then:
+
+   ```sh
+   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --parity audit/damage-parity/<stamp>.jsonl.zst
+   ```
+
+   It logs `ocr damage parity` with the pages that agree and up to 50 doc_ids that don't, and fails if any page differs.
+
+2. **The gate.** The 10% audit's pages, picked by the audit's own sampler from every curated row of `pages-v20261003-1` (duplicate copies included), scored in Rust and compared with the audit's per-page CSV, joined on doc_id and batch. The CSV rounds every score to 4 decimals, so Rust's are formatted the same way before the comparison. A page agrees when the language, the decision and the three scores all match; the gate passes when at least 99.99% of the CSV's 2,368,911 rows agree. It writes no tables, only its result, `audit/damage/v2/gate/<version>-<pct>pct-<stamp>.json`, and the `ocr damage gate` line (counts by kind of difference, up to 50 doc_ids). It fails when the gate does. The result goes in a draft report PR.
+
+   ```sh
+   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v20261003-1 \
+     --sample-pct 10 --compare-csv audit/ocr-quality-v2-pages-v20261003-1-10pct-pages.csv.gz
+   ```
+
+3. **The full pass**, on the live version (`index_version` in the reference container's `current.json`), once the gate has passed:
+
+   ```sh
+   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version <live version> --max-runtime-secs 165600
+   ```
+
+   Each batch version gets `audit/damage/v2/<batch>_ver<NN>.parquet`, one row per page: `doc_id`, `lccn`, `date`, `edition`, `seq`, the base `batch`, `batch_version`, `text_status`, `lang`, `decision` (`detected`, `mixed`, `und`, or `no_text` for pages without text), `mixed_with`, `script`, `damage_rate`, `function_share`, `garbage_share`, `words`, `head` and `near`. Beside it, `<batch>_ver<NN>.summary.json` holds per-title counts (pages, scored pages, und, mixed, damaged and badly damaged), the median damage rate and pages by language. The summary is written last and marks the batch version done, so a later run skips it and pays only for new batches. When every batch of the version has its tables, `audit/damage/v2/versions/<version>.json` lists them; the seeder and `ocr-sync` read that list. A second run on the same version writes nothing. `--batches a,b_ver02` scores only those batches and doesn't write the list. A page is scored against its title's languages in the version's `titles.json`, which the command requires (the working catalog only fills in titles it lacks). A later correction to a title's catalog languages doesn't rescore tables already written. Tables are create-only, so to rescore, delete both the `.parquet` and the `.summary.json` of each of that title's batch versions, then run the pass again.
+
+   The ingest job has a 48-hour replica timeout. `--max-runtime-secs` stops the run from starting new batches (it finishes those it has started), and the next execution continues. `ocr damage progress` lines come once a minute with the pages per second. Batches are scored `--parallel` at a time, by default one per CPU. On one laptop core the scoring runs at about 1,650 pages a second, so the corpus's 23.7 million pages are a few hours of CPU on the job's 4 vCPUs, plus reading the curated parts. The Python audit's 10% sample took 5,725 s. Time the first full run and record it here. On the Consumption profile the job costs about $0.43 an hour, and reading curated parts that have moved to Cool adds about $0.01 per GB read.
+
+**A dev-scale test** (dev holds nothing outside a focused experiment, so this needs the maintainer's approval first). Locally, from the repository root:
+
+```sh
+python3 scripts/fixture-batches.py /tmp/usnm-dmg
+cd /tmp/usnm-dmg
+ingest="cargo run --release --manifest-path $OLDPWD/Cargo.toml -p usnm-ingest --"
+$ingest --state-file state.json --curated curated --reference reference run --list batches.json --synthetic --index-dir reference/indexes
+v=$(jq -r .index_version reference/current.json)
+USNM_REFERENCE_URL=$PWD/reference USNM_CURATED_URL=$PWD/curated python3 $OLDPWD/ja-ocr/jaocr.py quality --sample-pct 100
+$ingest --state-file state.json --curated curated --reference reference ocr-damage --version "$v" \
+  --sample-pct 100 --compare-csv "audit/ocr-quality-v2-$v-100pct-pages.csv.gz"
+$ingest --state-file state.json --curated curated --reference reference ocr-damage --version "$v"
+$ingest --state-file state.json --curated curated --reference reference ocr-damage --version "$v"   # writes nothing
+```
+
+On 10 October 2026 that gate agreed on all 1,872 fixture pages, and the second full run skipped both batches. In dev, after `scripts/provision.sh dev`: curate and release a few small batches (`dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01`), run `scripts/ja-ocr/start-quality.sh --env dev --sample-pct 100`, then the three commands above with `--env dev`, the dev version and the dev audit's CSV, and `--command damage-parity --pages 50`. Check the tables, the gate result and the second run's `skipped`, then `scripts/teardown.sh dev`.
 
 ## Text the Japanese titles' pages hold that search can't reach
 
@@ -427,14 +473,14 @@ To keep the archives of batches curated before, queue them again with `--force` 
 Stopping a curate run mid-batch leaves its batches leased for up to 2 hours (the curate worker's lease, set in `crates/usnm-ingest/src/main.rs`; the 45-minute `BATCH_LIMIT` is a running batch's own limit): `--force` leaves a leased batch alone and a new run skips it until the lease runs out. A batch whose runs are stopped repeatedly can reach the attempt cap (5) and be marked failed at its next claim; `enqueue --force` resets its attempts. Found on the dev 1% run (October 2026): after a stopped run, 8 batches needed two more passes.
 
 ```sh
-scripts/start-job.sh dev INGEST_JOB enqueue --batches "$B" --force
-scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
+scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches "$B" --force
+scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
 ```
 
 **An environment's own `raw` container** (`USNM_RETAIN_RAW true`) does the same inside the environment's data account. It goes with the environment, and turning the setting off deletes it, so it suits a short trial. `USNM_ARCHIVE_ACCOUNT` takes precedence when both are set. To move archives kept there into the archival account, with both settings on, run the copy in the ingest job. It streams each archive, checks it against its manifest, and skips those already there. A batch for which the destination holds another archive is left as it is and fails the copy at the end:
 
 ```sh
-scripts/start-job.sh dev INGEST_JOB archive-copy \
+scripts/start-job.sh --env dev --job INGEST_JOB -- archive-copy \
   --from "$(az storage account show -n "$(scripts/settings.sh dev STORAGE_ACCOUNT)" --query primaryEndpoints.blob -o tsv)raw" \
   --batches "$B"
 ```
@@ -452,7 +498,7 @@ A set packages a sample for reuse in `sets/{name}/`, built once by the search cl
 - `manifest.json`, written last: name and version, how the batches were chosen, the batch list with each archive's bytes and sha256, page and document counts, each file's bytes and sha256, the corpus bounds, the common-word pairs' and American Stories' versions, the index config's sha256, the builder's commit and `created_at`.
 
 ```sh
-J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 J bundle --name loc-1pct-v1 --sample dev1pct \
   --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
 J load --set loc-1pct-v1 --index s1ixset          # the cluster loads straight from the set
@@ -512,9 +558,9 @@ scripts/provision.sh dev
 # The 1%: every 100th batch of LoC's listing by name, from the 40th (offset 39):
 # 30 batches, 238,057 pages of 23,838,683 (0.999%), 26 awardees, 23.8 GB of archives.
 B=arhi_beatles_ver01,az_fireant_ver01,ct_fairfield_ver01,curiv_plasse_ver01,dlc_alpha_ver03,dlc_debaptiste_ver01,dlc_goldenrod_ver01,dlc_leibovitz_ver01,dlc_saluki_ver01,gu_drteeth_ver01,iahi_hypno_ver01,in_irvington_ver01,khi_garwood_ver02,lu_juggernaut_ver01,me_calais_ver03,mnhi_dassel_ver01,mohi_berenice_ver01,mthi_goldeneye_ver01,ncu_cotton_ver04,nhd_lafayette_ver01,nn_keddy_ver01,ohi_himilco_ver01,oru_longspur_ver01,rp_hobgoblin_ver02,tu_eddie_ver02,uuml_anderson_ver01,vi_fezza_ver01,vnstcsc_duggan_ver01,whi_brie_ver01,wvu_jolie_ver02
-scripts/start-job.sh dev INGEST_JOB enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
-scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
-scripts/start-job.sh dev INGEST_JOB run --batches $B --full --curate-max-runtime-secs 21600 \
+scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
+scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
+scripts/start-job.sh --env dev --job INGEST_JOB -- run --batches $B --full --curate-max-runtime-secs 21600 \
   --titles-max-runtime-secs 28800 --quickwit-bin /usr/local/bin/quickwit \
   --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index
 scripts/logs.sh dev release-progress 6h    # the single-writer baseline on the same pages
@@ -524,7 +570,7 @@ scripts/settings.sh dev USNM_SEARCH_CLUSTER true
 scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 1
 scripts/settings.sh dev USNM_SEARCH_CLUSTER_INDEXERS 1
 scripts/provision.sh dev
-J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 J members
 J sample --name dev1pct --pct 100          # dev's whole version is the 1%
 J bundle --name loc-1pct-v1 --sample dev1pct \
@@ -586,7 +632,7 @@ scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
 scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODE_VCPU 4
 scripts/settings.sh dev USNM_SEARCH_COMPARE_TAGS "$TAG,$TAG-qw2509"
 scripts/provision.sh dev
-J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 JOB=$(scripts/settings.sh dev SEARCH_CLUSTER_JOB)
 wait_for() {  # until execution $1 has ended; prints how
   local s; while :; do
