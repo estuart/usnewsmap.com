@@ -26,8 +26,23 @@ done
 (cd "$DIST" && sha256sum --check --quiet SHA256SUMS)
 
 tag="ocr-worker-$(date -u +%Y%m%d)-${GITHUB_SHA:0:7}"
-if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-  echo "::notice::release $tag exists already; leaving it"
+# A release is created as a draft, gets its files, and is published only
+# then, so an interrupted run never leaves a published release without all
+# of them. A rerun finishes a draft it finds; a published one must be
+# complete.
+if state=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets \
+  --jq '"\(.isDraft) \([.assets[].name] | sort | join(","))"' 2> /dev/null); then
+  want=$(echo "$files" | tr ' ' '\n' | LC_ALL=C sort | paste -sd, -)
+  if [ "$state" = "false $want" ]; then
+    echo "::notice::release $tag exists with every file; leaving it"
+    exit 0
+  fi
+  [ "${state%% *}" = true ] || { echo "error: release $tag is published without every file ($state)" >&2; exit 1; }
+  for f in $files; do
+    gh release upload "$tag" "$DIST/$f" --repo "$GITHUB_REPOSITORY" --clobber
+  done
+  gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
+  echo "finished and published $tag"
   exit 0
 fi
 image=$(cat "$DIST/usnm-ocr-tesseract.image-id")
@@ -45,5 +60,6 @@ NOTES
 args=()
 for f in $files; do args+=("$DIST/$f"); done
 gh release create "$tag" "${args[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-  --title "$tag" --notes-file "$notes" --latest=false
+  --title "$tag" --notes-file "$notes" --draft
+gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
 echo "published $tag"

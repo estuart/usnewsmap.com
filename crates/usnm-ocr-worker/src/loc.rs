@@ -403,16 +403,16 @@ mod tests {
     #[test]
     fn builds_iiif_bases_from_the_item_json() {
         let item = serde_json::json!({"resources": [{"files": [
-            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/batch_nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0365.jp2"},
+            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0365.jp2"},
              {"mimetype": "text/xml", "url": "https://tile.loc.gov/x.xml"}],
-            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/batch_nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0364.jp2"}],
+            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0364.jp2"}],
             [{"mimetype": "text/xml", "url": "https://tile.loc.gov/y.xml"}]
         ]}]});
         let pages = page_images("https://tile.loc.gov/image-services/iiif/", &item);
         assert_eq!(pages.len(), 2);
         assert_eq!(
             pages[&1],
-            "https://tile.loc.gov/image-services/iiif/service:ndnp:nbu:batch_nbu_gage_ver01:data:sn83045462:00271743700:1890050301:0365"
+            "https://tile.loc.gov/image-services/iiif/service:ndnp:nbu:nbu_gage_ver01:data:sn83045462:00271743700:1890050301:0365"
         );
         assert!(pages[&2].ends_with(":0364"));
         assert_eq!(iiif_base("r/", "https://elsewhere/x.jp2"), None);

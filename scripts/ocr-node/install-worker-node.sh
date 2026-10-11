@@ -50,7 +50,20 @@ done
 [ -z "$RELEASE" ] || [[ $RELEASE =~ ^ocr-worker-[0-9]{8}-[0-9a-f]{7}$ ]] || die "--release: ocr-worker-<yyyymmdd>-<sha7>"
 
 # Podman as usnm, in its home, where the unit's podman keeps its storage.
-as_usnm() { (cd "$USNM_HOME" && runuser -u usnm -- env HOME="$USNM_HOME" "$@"); }
+# usnm is a system user with no login session, so it has no runtime
+# directory of its own (/run/user/<uid>); rootless podman needs one, as the
+# unit's RuntimeDirectory gives it. This run makes its own, removed at exit.
+RUNTIME=""
+cleanup() { [ -z "$RUNTIME" ] || rm -rf "$RUNTIME"; }
+trap cleanup EXIT
+as_usnm() {
+  if [ -z "$RUNTIME" ]; then
+    RUNTIME=$(mktemp -d /run/usnm-ocr-install.XXXXXX)
+    chown usnm:usnm "$RUNTIME"
+    chmod 0700 "$RUNTIME"
+  fi
+  (cd "$USNM_HOME" && runuser -u usnm -- env HOME="$USNM_HOME" XDG_RUNTIME_DIR="$RUNTIME" "$@")
+}
 
 current_release() {
   local target
@@ -149,7 +162,7 @@ else
   # operator's connection. Its sha256 comes from the release's attested
   # SHA256SUMS, which install-worker.sh verified.
   tmp=$(mktemp -d /var/tmp/usnm-ocr-image.XXXXXX)
-  trap 'rm -rf "$tmp"' EXIT
+  trap 'rm -rf "$tmp"; cleanup' EXIT
   chown usnm:usnm "$tmp"
   curl -fsSL --retry 3 --proto '=https' -o "$tmp/image.tar.gz" "$IMAGE_URL"
   echo "$IMAGE_SUM  $tmp/image.tar.gz" | sha256sum --check --quiet || die "the image archive's sha256 differs from the release's"
@@ -175,19 +188,22 @@ switch_to "$RELEASE"
 systemd-analyze verify "$UNIT"
 echo "systemd-analyze verify: ok"
 
-if [ "$ENABLE" = true ] && ! systemctl is-enabled --quiet usnm-ocr-worker.service; then
+if [ "$ENABLE" = true ]; then
   step "Checking the engine before enabling the unit"
-  # As usnm with the unit's settings, reading a rendered line.
+  # As usnm with the release's image, reading a rendered line.
   as_usnm env USNM_OCR_TESSERACT_IMAGE="$IMAGE_ID" "$LINK" check-engine
-  systemctl enable --now usnm-ocr-worker.service
-  # The worker checks its engine at start and exits on failure, before
-  # it takes a message; give it time to do that.
-  sleep 20
-  if systemctl is-active --quiet usnm-ocr-worker.service; then
+  # Enabled or not, running or not: (re)start it on this release and check
+  # that it stays up. The worker checks its engine at start and exits on
+  # failure, before it takes a message; give it time to do that.
+  ok=true
+  systemctl enable usnm-ocr-worker.service || ok=false
+  [ "$ok" = false ] || systemctl restart usnm-ocr-worker.service || ok=false
+  [ "$ok" = false ] || sleep 20
+  if [ "$ok" = true ] && systemctl is-active --quiet usnm-ocr-worker.service; then
     echo "usnm-ocr-worker.service: $(unit_state)"
   else
     journalctl -u usnm-ocr-worker.service -n 20 --no-pager || true
-    systemctl disable --now usnm-ocr-worker.service
+    systemctl disable --now usnm-ocr-worker.service || true
     die "the unit didn't stay up, so it is disabled again (see the journal above)"
   fi
 else

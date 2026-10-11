@@ -15,7 +15,7 @@ usnm-ocr-worker run \
 
 # Queue one page (testing).
 usnm-ocr-worker enqueue --queue-url <url|dir> \
-  --page sn83045462/1890-05-03/ed-1/seq-7 --batch batch_nbu_gage \
+  --page sn83045462/1890-05-03/ed-1/seq-7 --batch nbu_gage \
   --priority bulk --language deu
 
 # OCR one image file and print the time taken (benchmarking on a node).
@@ -49,7 +49,7 @@ In directory mode, each queue is a directory with `ready/` and `leased/` subdire
 ### Message
 
 ```json
-{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"batch_nbu_gage","language":"deu","reason":"bulk","score":0.62,"queued_at":"2026-10-10T12:00:00Z"}
+{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"nbu_gage","language":"deu","reason":"bulk","score":0.62,"queued_at":"2026-10-10T12:00:00Z"}
 ```
 
 `page` must be a canonical `PageKey`, `batch` the base batch name without its `_verNN` (curated rows and the release use the base name, so a versioned one would be skipped at release), `language` is ISO 639-3, `reason` is `user` or `bulk`, and `score` is optional (0 to 1). Unknown fields are refused, so a search query can't be carried in a message. On the queue the JSON is base64-encoded, the convention the portal, Storage Explorer and Functions follow. Raw JSON is accepted too.

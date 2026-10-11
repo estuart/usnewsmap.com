@@ -588,7 +588,7 @@ mod tests {
         OcrMessage {
             v: 1,
             page: page.into(),
-            batch: "batch_nbu_gage".into(),
+            batch: "nbu_gage".into(),
             language: language.into(),
             reason: Reason::Bulk,
             score: Some(0.62),
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(pages.len(), 1);
         let p = &pages[0];
         assert_eq!(p.key.to_string(), "sn83045462/1890-05-03/ed-1/seq-7");
-        assert_eq!(p.batch, "batch_nbu_gage");
+        assert_eq!(p.batch, "nbu_gage");
         assert_eq!(p.loc_text, "bulk");
         assert_eq!(p.ocr_source, "usnm-tesseract");
         assert_eq!(p.ocr_engine, "tesseract-5.5.1/deu_latf+deu");
