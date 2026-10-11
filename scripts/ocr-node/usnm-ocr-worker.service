@@ -2,21 +2,35 @@
 # and scripts/ocr-node/install-worker.sh install it; it stays disabled
 # until `install-worker.sh --enable`. It starts only once the worker binary
 # is in /usr/local/bin. Its settings come from the environment
-# (/etc/usnm/ocr-worker.env, which install-worker.sh writes), so the
-# command line has none.
+# (/etc/usnm/ocr-worker.env, which install-worker.sh writes, and the engine
+# runtime's paths below), so the command line has none.
 [Unit]
 Description=usnewsmap OCR worker
 Wants=network-online.target
 After=network-online.target himdsd.service
 ConditionFileIsExecutable=/usr/local/bin/usnm-ocr-worker
+# The engine scratch tmpfs that node-setup.sh mounts.
+RequiresMountsFor=/run/usnm-ocr/scratch
 
 [Service]
 Type=simple
 User=usnm
 Group=usnm
-SupplementaryGroups=himds
+# himds: the Arc agent's token challenge. usnmocr: the engine runtime's
+# Podman API socket and scratch (ADR-0016, 13 §13.3).
+SupplementaryGroups=himds usnmocr
 Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
 Environment=IMDS_ENDPOINT=http://localhost:40342
+# The engine runtime that node-setup.sh sets up: the engine account
+# usnmeng's Podman API socket, through which the worker runs Tesseract
+# with `podman --remote` (it never runs podman itself), and the
+# size-capped tmpfs that pages' scratch directories go in. The podman
+# client needs a HOME it can write; usnm's own, /var/lib/usnm, is read-only
+# here.
+Environment=USNM_OCR_PODMAN_URL=unix:///run/usnm-ocr/podman.sock
+Environment=USNM_OCR_SCRATCH_DIR=/run/usnm-ocr/scratch
+Environment=HOME=/var/lib/usnm-ocr
+Environment=XDG_RUNTIME_DIR=/run/usnm-ocr-worker
 EnvironmentFile=/etc/usnm/ocr-worker.env
 # Local changes (RUST_LOG, say), read after it and never written by a script.
 EnvironmentFile=-/etc/usnm/ocr-worker.local.env
@@ -26,6 +40,9 @@ ExecStart=/usr/local/bin/usnm-ocr-worker run
 # --shutdown-grace-secs), then flushes telemetry for at most 30 s. 120 s
 # covers both; then systemd kills what's left, and those pages reappear
 # when their visibility runs out. A longer grace needs a longer timeout.
+# Engine containers run under usnmeng, outside this unit's cgroup; the
+# worker removes a page's container when it gives the page up, and
+# removes exited ones it left behind when it starts.
 KillMode=mixed
 TimeoutStopSec=120
 Restart=on-failure
@@ -34,23 +51,22 @@ RestartSec=30
 # collects at Info and above (infra/modules/ocr-node-monitoring.bicep).
 SyslogIdentifier=usnm-ocr-worker
 SyslogFacility=local0
-# The worker runs Tesseract from a pinned image with podman
-# (USNM_OCR_TESSERACT_IMAGE). Under this unit's hardening, systemd implies
-# NoNewPrivileges for a service without CAP_SYS_ADMIN, so the worker's own
-# rootless podman can't map its subordinate ids (ADR-0016, context). The
-# engine runtime of ADR-0016 (#307) runs engines as a separate user behind
-# a Podman API socket, which the worker reaches with USNM_OCR_PODMAN_URL;
-# until then the worker fails its engine check at start and exits before
-# it takes a message, so enabling the unit early costs no receives.
-# Podman keeps its storage in usnm's home, /var/lib/usnm.
 StateDirectory=usnm-ocr
 CacheDirectory=usnm-ocr
-RuntimeDirectory=usnm-ocr
+RuntimeDirectory=usnm-ocr-worker
 RuntimeDirectoryMode=0700
-Environment=XDG_RUNTIME_DIR=/run/usnm-ocr
+# Hardening (13 §13.3). The worker needs no privilege and no namespaces of
+# its own: the engines' user namespaces belong to usnmeng's podman.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/usnm
+ReadWritePaths=/run/usnm-ocr/scratch
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

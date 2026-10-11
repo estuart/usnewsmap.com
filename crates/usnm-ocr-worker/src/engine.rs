@@ -3,6 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use anyhow::{bail, Context};
@@ -83,12 +84,257 @@ pub enum Runner {
     Podman {
         /// The podman binary.
         podman: PathBuf,
-        /// `--url` for `podman --remote` (a Podman API socket), or none for
-        /// podman run by the worker's own user.
-        url: Option<String>,
+        /// The engine runtime's Podman API socket, or none for podman run
+        /// by the worker's own user (a developer machine).
+        remote: Option<Remote>,
         /// `sha256:<id>` or `<name>@sha256:<digest>`: never a mutable tag.
         image: String,
     },
+}
+
+/// The engine runtime of ADR-0016 (13 §13.3): podman runs as the engine
+/// account, `usnmeng`, behind a Podman API socket that the worker reaches
+/// with `podman --remote`, so the worker itself never needs user
+/// namespaces and its unit can set `NoNewPrivileges=yes`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remote {
+    /// `unix:///run/usnm-ocr/podman.sock`.
+    pub url: String,
+    /// The size-capped tmpfs that pages' scratch directories go in
+    /// (`/run/usnm-ocr/scratch`). The worker's own `/tmp` is private to its
+    /// unit, so the engine account's containers couldn't mount it.
+    pub scratch: PathBuf,
+    pub limits: Limits,
+}
+
+/// Limits on each engine container (13 §13.6.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// `--memory` and `--memory-swap`: no swap.
+    pub memory_mib: u32,
+    pub cpus: u32,
+    pub pids: u32,
+}
+
+impl Default for Limits {
+    /// Tesseract's starting entry in 13 §13.6.2.
+    fn default() -> Self {
+        Self {
+            memory_mib: 1536,
+            cpus: 1,
+            pids: 64,
+        }
+    }
+}
+
+/// The user engine images run as (`USER 10001` in their Containerfiles).
+/// Under the engine account's rootless podman it maps to one of that
+/// account's subordinate ids, never to the account itself.
+pub const ENGINE_USER: u32 = 10001;
+
+/// The label on every container the worker starts, so stale ones can be
+/// found.
+const CONTAINER_LABEL: &str = "usnm.engine=tesseract";
+
+/// What the worker learns from the engine runtime at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Sandbox {
+    scratch: PathBuf,
+    /// The host uid that [`ENGINE_USER`] maps to.
+    engine_uid: u32,
+    selinux: bool,
+}
+
+/// From `podman info --format json`: the host uid [`ENGINE_USER`] maps to,
+/// and whether SELinux is on. Refuses a runtime that can't apply the
+/// memory, CPU and pid limits (cgroup controllers not delegated to the
+/// engine account), so limits never silently don't apply.
+fn parse_info(json: &str) -> anyhow::Result<(u32, bool)> {
+    let v: serde_json::Value = serde_json::from_str(json).context("podman info isn't JSON")?;
+    let host = &v["host"];
+    let controllers: Vec<&str> = host["cgroupControllers"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|c| c.as_str()).collect())
+        .unwrap_or_default();
+    let missing: Vec<&str> = ["memory", "pids", "cpu"]
+        .into_iter()
+        .filter(|c| !controllers.contains(c))
+        .collect();
+    if !missing.is_empty() {
+        bail!(
+            "the engine runtime's cgroup has no {} controller (it has {controllers:?}); \
+             run scripts/ocr-node/node-setup.sh to delegate them",
+            missing.join(", ")
+        );
+    }
+    let maps = host["idMappings"]["uidmap"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let field = |m: &serde_json::Value, k: &str| m[k].as_u64().unwrap_or(0);
+    let uid = if maps.is_empty() {
+        // Rootful podman: no mapping.
+        u64::from(ENGINE_USER)
+    } else {
+        let user = u64::from(ENGINE_USER);
+        maps.iter()
+            .find(|m| {
+                let c = field(m, "container_id");
+                c <= user && user < c + field(m, "size")
+            })
+            .map(|m| field(m, "host_id") + (user - field(m, "container_id")))
+            .with_context(|| {
+                format!("the engine account's subordinate ids don't cover uid {ENGINE_USER}")
+            })?
+    };
+    let uid = u32::try_from(uid).context("mapped uid out of range")?;
+    let selinux = host["security"]["selinuxEnabled"]
+        .as_bool()
+        .unwrap_or(false);
+    Ok((uid, selinux))
+}
+
+/// An MCS level for a page's container and its scratch directory: a
+/// category pair no other page in flight on this worker has (13 §13.3).
+fn next_level() -> String {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed) % 512;
+    format!("s0:c{},c{}", 2 * n, 2 * n + 1)
+}
+
+/// The owner and group of `path`.
+fn owner(path: &Path) -> anyhow::Result<(u32, u32)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path)?;
+        Ok((meta.uid(), meta.gid()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        bail!("the engine runtime needs Unix")
+    }
+}
+
+/// Runs a short helper (`setfacl`, `chcon`) and fails with its stderr.
+async fn checked(cmd: &mut tokio::process::Command) -> anyhow::Result<()> {
+    let out = cmd
+        .kill_on_drop(true)
+        .output()
+        .await
+        .with_context(|| format!("running {:?}", cmd.as_std().get_program()))?;
+    if !out.status.success() {
+        bail!(
+            "{:?} exited with {}: {}",
+            cmd.as_std().get_program(),
+            out.status,
+            tail(&String::from_utf8_lossy(&out.stderr), 400)
+        );
+    }
+    Ok(())
+}
+
+impl Sandbox {
+    async fn detect(podman: &Path, remote: &Remote) -> anyhow::Result<Self> {
+        let meta = std::fs::metadata(&remote.scratch)
+            .with_context(|| format!("scratch directory {}", remote.scratch.display()))?;
+        if !meta.is_dir() {
+            bail!("scratch {} isn't a directory", remote.scratch.display());
+        }
+        let out = podman_command(podman, Some(&remote.url))
+            .args(["info", "--format", "json"])
+            .kill_on_drop(true)
+            .output()
+            .await
+            .context("running podman info")?;
+        if !out.status.success() {
+            bail!(
+                "podman info over {} exited with {}: {}",
+                remote.url,
+                out.status,
+                tail(&String::from_utf8_lossy(&out.stderr), 400)
+            );
+        }
+        let (engine_uid, selinux) = parse_info(&String::from_utf8_lossy(&out.stdout))?;
+        // Containers left by a worker that was killed: the ones that have
+        // exited. A running one may belong to another worker process (an
+        // install's check-engine), so it's left to finish.
+        let pruned = podman_command(podman, Some(&remote.url))
+            .args(["container", "prune", "--force", "--filter"])
+            .arg(format!("label={CONTAINER_LABEL}"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+        if !matches!(pruned, Ok(s) if s.success()) {
+            tracing::warn!("couldn't remove stale engine containers");
+        }
+        Ok(Self {
+            scratch: remote.scratch.clone(),
+            engine_uid,
+            selinux,
+        })
+    }
+
+    /// A page's scratch directory, which the engine container can use:
+    /// owned by the worker with mode 0700, with ACL entries for the
+    /// container user (and defaults, so the files in it are shared both
+    /// ways), and, under SELinux, labelled `container_file_t` at a level
+    /// of its own. The container runs at that level, so no volume is
+    /// mounted with `:Z`, which the engine account couldn't apply to a
+    /// directory it doesn't own (13 §13.3).
+    async fn page_dir(&self) -> anyhow::Result<(tempfile::TempDir, Option<String>)> {
+        let dir = tempfile::Builder::new()
+            .prefix("page-")
+            .tempdir_in(&self.scratch)
+            .with_context(|| format!("a scratch directory in {}", self.scratch.display()))?;
+        let (me, _) = owner(dir.path())?;
+        let acl = format!("u:{e}:rwx,d:u:{e}:rwx,d:u:{me}:rwx", e = self.engine_uid);
+        checked(
+            tokio::process::Command::new("setfacl")
+                .args(["-m", &acl])
+                .arg(dir.path()),
+        )
+        .await?;
+        let level = if self.selinux {
+            let level = next_level();
+            checked(
+                tokio::process::Command::new("chcon")
+                    .args(["-t", "container_file_t", "-l", &level])
+                    .arg(dir.path()),
+            )
+            .await?;
+            Some(level)
+        } else {
+            None
+        };
+        Ok((dir, level))
+    }
+}
+
+/// A podman command, through the Podman API socket at `url` when given.
+/// For the socket, the client gets a cleared environment with only what it
+/// needs, so the worker's settings never reach it (13 §13.6.1).
+fn podman_command(podman: &Path, url: Option<&str>) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(podman);
+    if let Some(url) = url {
+        cmd.env_clear();
+        for k in [
+            "PATH",
+            "LANG",
+            "HOME",
+            "XDG_RUNTIME_DIR",
+            "XDG_CONFIG_HOME",
+            "CONTAINERS_CONF",
+        ] {
+            if let Some(v) = std::env::var_os(k) {
+                cmd.env(k, v);
+            }
+        }
+        cmd.args(["--remote", "--url", url]);
+    }
+    cmd
 }
 
 /// A container image reference that names its content: an image id
@@ -115,8 +361,10 @@ pub fn check_image_ref(image: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Removes a page's container if the page is cancelled or times out while
-/// it runs: killing the podman client leaves the container running.
+/// Removes a page's container. Containers run without `--rm`, so the worker
+/// can read `OOMKilled` after one exits ([`ContainerGuard::finish`]); if the
+/// page is cancelled or times out first, dropping the guard removes the
+/// container: killing the podman client leaves it running.
 struct ContainerGuard {
     podman: PathBuf,
     url: Option<String>,
@@ -124,18 +372,45 @@ struct ContainerGuard {
     armed: bool,
 }
 
+impl ContainerGuard {
+    fn rm(&self) -> tokio::process::Command {
+        let mut cmd = podman_command(&self.podman, self.url.as_deref());
+        cmd.args(["rm", "--force", "--ignore", "--time", "0", &self.name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        cmd
+    }
+
+    /// After the container exits: whether the kernel killed it for memory,
+    /// then remove it. A failed removal is left to the drop.
+    async fn finish(&mut self) -> bool {
+        let oom = podman_command(&self.podman, self.url.as_deref())
+            .args([
+                "container",
+                "inspect",
+                "--format",
+                "{{.State.OOMKilled}}",
+                &self.name,
+            ])
+            .kill_on_drop(true)
+            .output()
+            .await
+            .is_ok_and(|o| {
+                o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true"
+            });
+        if matches!(self.rm().status().await, Ok(s) if s.success()) {
+            self.armed = false;
+        }
+        oom
+    }
+}
+
 impl Drop for ContainerGuard {
     fn drop(&mut self) {
         if !self.armed {
             return;
         }
-        let mut cmd = tokio::process::Command::new(&self.podman);
-        if let Some(url) = &self.url {
-            cmd.args(["--remote", "--url", url]);
-        }
-        cmd.args(["rm", "--force", "--time", "0", &self.name])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+        let mut cmd = self.rm();
         let name = self.name.clone();
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
@@ -157,12 +432,14 @@ impl Drop for ContainerGuard {
 
 impl Runner {
     /// The command for `tesseract <args>`, with `work` (when given) shared
-    /// as `/work`, and the paths in `args` already relative to it. The guard
-    /// removes the container if the command is dropped before it ends.
+    /// as `/work`, and the paths in `args` already relative to it. `level`
+    /// is the MCS level `work` is labelled with, under the engine runtime.
+    /// The guard removes the container.
     fn command(
         &self,
         threads: u32,
         work: Option<&Path>,
+        level: Option<&str>,
     ) -> (tokio::process::Command, Option<ContainerGuard>) {
         match self {
             Runner::Host(bin) => {
@@ -173,44 +450,65 @@ impl Runner {
                 }
                 (cmd, None)
             }
-            Runner::Podman { podman, url, image } => {
+            Runner::Podman {
+                podman,
+                remote,
+                image,
+            } => {
                 let name = format!("usnm-tesseract-{}", crate::queue::random_token());
-                let mut cmd = tokio::process::Command::new(podman);
-                if let Some(url) = url {
-                    cmd.args(["--remote", "--url", url]);
-                }
+                let url = remote.as_ref().map(|r| r.url.clone());
+                let mut cmd = podman_command(podman, url.as_deref());
                 // No network, a read-only root, no capabilities and no
                 // privilege gain: the engine only reads the scan in /work
                 // and writes its output there.
-                cmd.args([
-                    "run",
-                    "--rm",
-                    "--pull=never",
-                    "--network=none",
-                    "--read-only",
-                ])
-                .args(["--cap-drop=all", "--security-opt=no-new-privileges"])
-                .args(["--userns=keep-id", "--name", &name])
-                .args(["--env", &format!("OMP_THREAD_LIMIT={threads}")])
-                .args(["--entrypoint", "tesseract"]);
-                if let Some(w) = work {
-                    // :Z gives the page's private scratch directory the
-                    // container's SELinux label. The engine runs as the
-                    // directory's owner (the worker's user, mapped to itself
-                    // by keep-id), not the image's user, so it can write its
-                    // output there.
-                    cmd.args(["--volume", &format!("{}:/work:Z", w.display())])
-                        .args(["--workdir", "/work"]);
-                    #[cfg(unix)]
-                    if let Ok(meta) = std::fs::metadata(w) {
-                        use std::os::unix::fs::MetadataExt;
-                        cmd.args(["--user", &format!("{}:{}", meta.uid(), meta.gid())]);
+                cmd.args(["run", "--pull=never", "--network=none", "--read-only"])
+                    .args(["--cap-drop=all", "--security-opt=no-new-privileges"])
+                    .args(["--name", &name, "--label", CONTAINER_LABEL])
+                    .args(["--env", &format!("OMP_THREAD_LIMIT={threads}")])
+                    .args(["--entrypoint", "tesseract"]);
+                match remote {
+                    Some(r) => {
+                        // 13 §13.6.1: the image's user, which maps to a
+                        // subordinate id of the engine account; memory
+                        // equal to memory plus swap, so no swap; CPU, pid,
+                        // open-file and core limits; nothing from the host.
+                        let mem = format!("{}m", r.limits.memory_mib);
+                        cmd.args(["--http-proxy=false", "--no-hosts"])
+                            .args(["--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777"])
+                            .args(["--user", &format!("{ENGINE_USER}:{ENGINE_USER}")])
+                            .args(["--memory", &mem, "--memory-swap", &mem])
+                            .args(["--cpus", &r.limits.cpus.to_string()])
+                            .args(["--pids-limit", &r.limits.pids.to_string()])
+                            .args(["--ulimit", "nofile=1024:1024", "--ulimit", "core=0"])
+                            .args(["--log-driver=none", "--env", "HOME=/tmp"]);
+                        if let Some(level) = level {
+                            cmd.args(["--security-opt", &format!("label=level:{level}")]);
+                        }
+                        if let Some(w) = work {
+                            cmd.args(["--volume", &format!("{}:/work:rw", w.display())])
+                                .args(["--workdir", "/work"]);
+                        }
+                    }
+                    None => {
+                        cmd.arg("--userns=keep-id");
+                        if let Some(w) = work {
+                            // :Z gives the page's private scratch directory
+                            // the container's SELinux label. The engine runs
+                            // as the directory's owner (the worker's user,
+                            // mapped to itself by keep-id), not the image's
+                            // user, so it can write its output there.
+                            cmd.args(["--volume", &format!("{}:/work:Z", w.display())])
+                                .args(["--workdir", "/work"]);
+                            if let Ok((uid, gid)) = owner(w) {
+                                cmd.args(["--user", &format!("{uid}:{gid}")]);
+                            }
+                        }
                     }
                 }
                 cmd.arg(image);
                 let guard = ContainerGuard {
                     podman: podman.clone(),
-                    url: url.clone(),
+                    url,
                     name,
                     armed: true,
                 };
@@ -222,6 +520,11 @@ impl Runner {
     fn describe(&self) -> String {
         match self {
             Runner::Host(bin) => bin.display().to_string(),
+            Runner::Podman {
+                image,
+                remote: Some(r),
+                ..
+            } => format!("podman image {image} through {}", r.url),
             Runner::Podman { image, .. } => format!("podman image {image}"),
         }
     }
@@ -230,6 +533,8 @@ impl Runner {
 #[derive(Debug, Clone)]
 pub struct Tesseract {
     runner: Runner,
+    /// Under the engine runtime.
+    sandbox: Option<Sandbox>,
     version: String,
     installed: BTreeSet<String>,
     psm: u8,
@@ -288,23 +593,25 @@ impl Default for TesseractOptions {
 }
 
 async fn run(runner: &Runner, args: &[&str]) -> anyhow::Result<String> {
-    let (mut cmd, mut guard) = runner.command(1, None);
+    let (mut cmd, mut guard) = runner.command(1, None, None);
     let out = cmd
         .args(args)
         .kill_on_drop(true)
         .output()
         .await
         .with_context(|| format!("running tesseract ({})", runner.describe()))?;
-    if let Some(g) = guard.as_mut() {
-        g.armed = false;
-    }
+    let oom = match guard.as_mut() {
+        Some(g) => g.finish().await,
+        None => false,
+    };
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         bail!(
-            "tesseract {:?} ({}) exited with {}: {}",
+            "tesseract {:?} ({}) exited with {}{}: {}",
             args,
             runner.describe(),
             out.status,
+            if oom { ", killed for memory" } else { "" },
             tail(&err, 400)
         );
     }
@@ -324,14 +631,24 @@ fn tail(s: &str, n: usize) -> String {
 impl Tesseract {
     /// Find Tesseract's version and installed models (once, at startup).
     pub async fn detect(opts: TesseractOptions) -> anyhow::Result<Self> {
-        if let Runner::Podman { image, .. } = &opts.runner {
+        let mut sandbox = None;
+        if let Runner::Podman {
+            image,
+            podman,
+            remote,
+        } = &opts.runner
+        {
             check_image_ref(image)?;
+            if let Some(r) = remote {
+                sandbox = Some(Sandbox::detect(podman, r).await?);
+            }
         }
         let version = parse_version(&run(&opts.runner, &["--version"]).await?)
             .context("can't read `tesseract --version`")?;
         let installed = parse_langs(&run(&opts.runner, &["--list-langs"]).await?);
         Ok(Self {
             runner: opts.runner,
+            sandbox,
             version,
             installed,
             psm: opts.psm,
@@ -392,6 +709,17 @@ impl Engine for Tesseract {
     ) -> Result<EngineOutput, EngineError> {
         let models = route(language, &self.installed)
             .ok_or_else(|| EngineError::Unsupported(language.to_owned()))?;
+        // Under the engine runtime, the page gets a directory on the shared
+        // scratch tmpfs instead of `work`, which the engine account's
+        // containers can't reach; the scan is copied in below.
+        let own = match &self.sandbox {
+            Some(sb) => Some(sb.page_dir().await?),
+            None => None,
+        };
+        let (work, level) = match &own {
+            Some((dir, level)) => (dir.path(), level.as_deref()),
+            None => (work, None),
+        };
         // Tesseract runs in `work`, on paths relative to it, so the same
         // arguments serve the host binary and a container with `work` as
         // /work. A scan from elsewhere is copied in first.
@@ -412,7 +740,7 @@ impl Engine for Tesseract {
             .context("scan file name isn't UTF-8")?
             .to_owned();
         let base = work.join("page");
-        let (mut cmd, mut guard) = self.runner.command(self.threads, Some(work));
+        let (mut cmd, mut guard) = self.runner.command(self.threads, Some(work), level);
         // `txt` and `alto` are Tesseract's config files for the two outputs
         // (page.txt, page.xml), written in one pass.
         let child = cmd
@@ -426,8 +754,18 @@ impl Engine for Tesseract {
             .await
             .map_err(|_| anyhow::anyhow!("tesseract took over {:?}", self.timeout))?
             .context("running tesseract")?;
-        if let Some(g) = guard.as_mut() {
-            g.armed = false;
+        let oom = match guard.as_mut() {
+            Some(g) => g.finish().await,
+            None => false,
+        };
+        if oom {
+            let limit = match &self.runner {
+                Runner::Podman {
+                    remote: Some(r), ..
+                } => format!(" ({} MiB)", r.limits.memory_mib),
+                _ => String::new(),
+            };
+            return Err(anyhow::anyhow!("tesseract ran out of memory{limit}").into());
         }
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
@@ -521,55 +859,138 @@ mod tests {
         assert!(check_image_ref(&format!("x y@sha256:{id}")).is_err());
     }
 
+    fn args_of(cmd: &tokio::process::Command) -> Vec<String> {
+        cmd.as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
     fn podman_runs_the_image_without_network_or_privileges() {
         let image = format!("sha256:{}", "b".repeat(64));
         let runner = Runner::Podman {
             podman: "podman".into(),
-            url: Some("unix:///run/usnm-ocr/podman.sock".into()),
+            remote: Some(Remote {
+                url: "unix:///run/usnm-ocr/podman.sock".into(),
+                scratch: "/run/usnm-ocr/scratch".into(),
+                limits: Limits::default(),
+            }),
             image: image.clone(),
         };
-        let (cmd, guard) = runner.command(2, Some(Path::new("/tmp/w")));
+        let (cmd, guard) = runner.command(
+            2,
+            Some(Path::new("/run/usnm-ocr/scratch/page-x")),
+            Some("s0:c4,c5"),
+        );
         let mut guard = guard.expect("a container has a guard");
         guard.armed = false;
-        let args: Vec<String> = cmd
-            .as_std()
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        let args = args_of(&cmd);
         let has = |a: &str| args.iter().any(|x| x == a);
+        let pair = |a: &str, b: &str| args.windows(2).any(|w| w[0] == a && w[1] == b);
         assert_eq!(
             args[..3],
             ["--remote", "--url", "unix:///run/usnm-ocr/podman.sock"]
         );
         for a in [
             "run",
-            "--rm",
             "--pull=never",
             "--network=none",
             "--read-only",
             "--cap-drop=all",
             "--security-opt=no-new-privileges",
+            "--http-proxy=false",
+            "--no-hosts",
+            "--log-driver=none",
             "OMP_THREAD_LIMIT=2",
-            "/tmp/w:/work:Z",
+            "HOME=/tmp",
+            "/run/usnm-ocr/scratch/page-x:/work:rw",
         ] {
             assert!(has(a), "{a} missing from {args:?}");
         }
+        // No --rm: OOMKilled is read before the container is removed.
+        assert!(!has("--rm"), "{args:?}");
+        assert!(pair("--user", "10001:10001"), "{args:?}");
+        assert!(pair("--memory", "1536m") && pair("--memory-swap", "1536m"));
+        assert!(pair("--cpus", "1") && pair("--pids-limit", "64"));
+        assert!(pair("--security-opt", "label=level:s0:c4,c5"));
+        assert!(!args
+            .iter()
+            .any(|a| a.ends_with(":Z") || a == "--userns=keep-id"));
         assert_eq!(args.last(), Some(&image));
-        // With a real scratch directory, the engine runs as its owner.
+        // The client gets none of the worker's environment.
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        assert!(envs.iter().all(|(k, _)| [
+            "PATH",
+            "LANG",
+            "HOME",
+            "XDG_RUNTIME_DIR",
+            "XDG_CONFIG_HOME",
+            "CONTAINERS_CONF"
+        ]
+        .contains(&k.to_str().unwrap())));
+
+        // Podman run by the worker's own user (a developer machine): the
+        // engine runs as the scratch directory's owner, which keep-id maps.
+        let local = Runner::Podman {
+            podman: "podman".into(),
+            remote: None,
+            image: image.clone(),
+        };
         let dir = tempfile::tempdir().unwrap();
-        let (cmd, guard) = runner.command(1, Some(dir.path()));
+        let (cmd, guard) = local.command(1, Some(dir.path()), None);
         guard.unwrap().armed = false;
+        let args = args_of(&cmd);
+        assert_eq!(args[0], "run");
+        assert!(args.iter().any(|a| a == "--userns=keep-id"));
+        assert!(args.iter().any(|a| a.ends_with("/work:Z")));
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-            let meta = std::fs::metadata(dir.path()).unwrap();
-            let want = format!("{}:{}", meta.uid(), meta.gid());
-            assert!(cmd.as_std().get_args().any(|a| a == want.as_str()));
+            let (uid, gid) = owner(dir.path()).unwrap();
+            let want = format!("{uid}:{gid}");
+            assert!(args.contains(&want));
         }
-        let (cmd, guard) = Runner::Host("tesseract".into()).command(1, None);
+        let (cmd, guard) = Runner::Host("tesseract".into()).command(1, None, None);
         assert!(guard.is_none());
         assert_eq!(cmd.as_std().get_program(), "tesseract");
+    }
+
+    #[test]
+    fn reads_the_engine_runtime_from_podman_info() {
+        let info = |controllers: &str, uidmap: &str| {
+            format!(
+                r#"{{"host": {{"cgroupControllers": {controllers},
+                  "idMappings": {{"uidmap": {uidmap}}},
+                  "security": {{"selinuxEnabled": true}}}}}}"#
+            )
+        };
+        let rootless = r#"[{"container_id": 0, "host_id": 991, "size": 1},
+                           {"container_id": 1, "host_id": 231072, "size": 65536}]"#;
+        assert_eq!(
+            parse_info(&info(r#"["cpu", "io", "memory", "pids"]"#, rootless)).unwrap(),
+            (231072 + 10000, true)
+        );
+        // Rootful: the user is itself on the host.
+        assert_eq!(
+            parse_info(&info(r#"["cpu", "memory", "pids"]"#, "[]")).unwrap(),
+            (10001, true)
+        );
+        // EL9's default delegation (memory and pids only) can't apply --cpus.
+        let err = parse_info(&info(r#"["memory", "pids"]"#, rootless)).unwrap_err();
+        assert!(err.to_string().contains("no cpu controller"), "{err}");
+        // Subordinate ids too few for the image's user.
+        let small = r#"[{"container_id": 0, "host_id": 991, "size": 1},
+                        {"container_id": 1, "host_id": 231072, "size": 1000}]"#;
+        assert!(parse_info(&info(r#"["cpu", "memory", "pids"]"#, small)).is_err());
+        assert!(parse_info("nope").is_err());
+    }
+
+    #[test]
+    fn pages_get_distinct_levels() {
+        let a = next_level();
+        let b = next_level();
+        assert_ne!(a, b);
+        assert!(a.starts_with("s0:c") && a.contains(",c"), "{a}");
     }
 
     #[test]

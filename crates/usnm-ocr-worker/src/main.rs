@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use tokio::sync::watch;
-use usnm_ocr_worker::engine::{Engine, Runner, Tesseract, TesseractOptions};
+use usnm_ocr_worker::engine::{Engine, Limits, Remote, Runner, Tesseract, TesseractOptions};
 use usnm_ocr_worker::loc::{LocClient, LocConfig};
 use usnm_ocr_worker::message::{OcrMessage, Reason};
 use usnm_ocr_worker::queue::{self, BULK, PRIORITY};
@@ -58,10 +58,25 @@ struct EngineArgs {
     /// The podman binary, for --tesseract-image.
     #[arg(long, default_value = "podman")]
     podman_bin: PathBuf,
-    /// A Podman API socket to run the image through (`podman --remote
-    /// --url`), instead of the worker's own user's podman.
+    /// The engine runtime's Podman API socket (`podman --remote --url`,
+    /// ADR-0016), instead of the worker's own user's podman. Needs
+    /// --scratch-dir.
     #[arg(long, env = "USNM_OCR_PODMAN_URL")]
     podman_url: Option<String>,
+    /// With --podman-url: the size-capped tmpfs that pages' scratch
+    /// directories go in, which the engine account's containers can mount.
+    #[arg(long, env = "USNM_OCR_SCRATCH_DIR")]
+    scratch_dir: Option<PathBuf>,
+    /// With --podman-url: the engine container's memory limit, with no
+    /// swap.
+    #[arg(long, env = "USNM_OCR_ENGINE_MEMORY_MIB", default_value_t = Limits::default().memory_mib, value_parser = clap::value_parser!(u32).range(64..))]
+    engine_memory_mib: u32,
+    /// With --podman-url: CPUs for the engine container.
+    #[arg(long, env = "USNM_OCR_ENGINE_CPUS", default_value_t = Limits::default().cpus, value_parser = clap::value_parser!(u32).range(1..))]
+    engine_cpus: u32,
+    /// With --podman-url: the engine container's process limit.
+    #[arg(long, env = "USNM_OCR_ENGINE_PIDS", default_value_t = Limits::default().pids, value_parser = clap::value_parser!(u32).range(8..))]
+    engine_pids: u32,
     /// Tesseract page segmentation mode (3: automatic, no orientation detection).
     #[arg(long, default_value_t = 3)]
     psm: u8,
@@ -81,11 +96,29 @@ impl EngineArgs {
         match self.engine {
             EngineName::Tesseract => {
                 let runner = match self.tesseract_image.as_deref().filter(|s| !s.is_empty()) {
-                    Some(image) => Runner::Podman {
-                        podman: self.podman_bin.clone(),
-                        url: self.podman_url.clone().filter(|s| !s.is_empty()),
-                        image: image.to_owned(),
-                    },
+                    Some(image) => {
+                        let remote = match self.podman_url.as_deref().filter(|s| !s.is_empty()) {
+                            Some(url) => Some(Remote {
+                                url: url.to_owned(),
+                                scratch: self
+                                    .scratch_dir
+                                    .clone()
+                                    .filter(|p| !p.as_os_str().is_empty())
+                                    .context("--podman-url needs --scratch-dir")?,
+                                limits: Limits {
+                                    memory_mib: self.engine_memory_mib,
+                                    cpus: self.engine_cpus,
+                                    pids: self.engine_pids,
+                                },
+                            }),
+                            None => None,
+                        };
+                        Runner::Podman {
+                            podman: self.podman_bin.clone(),
+                            remote,
+                            image: image.to_owned(),
+                        }
+                    }
                     None => Runner::Host(self.tesseract_bin.clone()),
                 };
                 let t = Tesseract::detect(TesseractOptions {

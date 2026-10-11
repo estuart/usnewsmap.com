@@ -12,8 +12,9 @@
 # Install: checks the binary's sha256, copies it to
 # /usr/local/lib/usnm-ocr-worker/TAG/, downloads the Tesseract image archive
 # straight from the release to the node (it never passes through the
-# operator's machine), checks its sha256 and loads it into usnm's podman
-# storage unless that image id is there already, writes
+# operator's machine), checks its sha256 and loads it into the engine
+# account's podman storage (usnmeng's, through the Podman API socket the
+# worker uses, ADR-0016) unless that image id is there already, writes
 # /etc/usnm/ocr-worker.env (root:usnm, 0640) and the unit, points
 # /usr/local/bin/usnm-ocr-worker at the new binary, and restarts the unit
 # if it was running. --enable first reads a rendered line with the engine
@@ -31,6 +32,9 @@ LINK=/usr/local/bin/usnm-ocr-worker
 ENVFILE=/etc/usnm/ocr-worker.env
 UNIT=/etc/systemd/system/usnm-ocr-worker.service
 USNM_HOME=/var/lib/usnm
+# The engine runtime node-setup.sh sets up, as in the unit.
+SOCK=/run/usnm-ocr/podman.sock
+SCRATCH=/run/usnm-ocr/scratch
 
 RELEASE="" DIR="" BIN_SUM="" IMAGE_ID="" IMAGE_URL="" IMAGE_SUM="" ENABLE=false ROLLBACK=false FACTS=false
 while [ $# -gt 0 ]; do
@@ -49,10 +53,10 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$RELEASE" ] || [[ $RELEASE =~ ^ocr-worker-[0-9]{8}-[0-9a-f]{7}$ ]] || die "--release: ocr-worker-<yyyymmdd>-<sha7>"
 
-# Podman as usnm, in its home, where the unit's podman keeps its storage.
-# usnm is a system user with no login session, so it has no runtime
-# directory of its own (/run/user/<uid>); rootless podman needs one, as the
-# unit's RuntimeDirectory gives it. This run makes its own, removed at exit.
+# Commands as usnm, in its home. usnm is a system user with no login
+# session, so it has no runtime directory of its own (/run/user/<uid>);
+# the podman client wants one, as the unit's RuntimeDirectory gives it.
+# This run makes its own, removed at exit.
 RUNTIME=""
 cleanup() { [ -z "$RUNTIME" ] || rm -rf "$RUNTIME"; }
 trap cleanup EXIT
@@ -64,6 +68,9 @@ as_usnm() {
   fi
   (cd "$USNM_HOME" && runuser -u usnm -- env HOME="$USNM_HOME" XDG_RUNTIME_DIR="$RUNTIME" "$@")
 }
+
+# Podman as the worker runs it: usnm's client, usnmeng's podman.
+engine_podman() { as_usnm podman --remote --url "unix://$SOCK" "$@"; }
 
 current_release() {
   local target
@@ -92,6 +99,7 @@ if [ "$FACTS" = true ]; then
   echo "unit=$(unit_state | tr -d ' ')"
   echo "podman=$(command -v podman || true)"
   echo "usnm=$(id -u usnm 2> /dev/null || true)"
+  echo "engine_socket=$([ -S "$SOCK" ] && echo yes || true)"
   exit 0
 fi
 
@@ -124,7 +132,7 @@ if [ "$ROLLBACK" = true ]; then
   [ "$target" != "$current" ] || die "$target is already the current release"
   [ -x "$LIB/$target/usnm-ocr-worker" ] || die "$target isn't installed in $LIB"
   image=$(cat "$LIB/$target/tesseract.image-id")
-  as_usnm podman image exists "$image" || die "$target's Tesseract image $image isn't in usnm's podman storage"
+  engine_podman image exists "$image" || die "$target's Tesseract image $image isn't in usnmeng's podman storage"
   step "Rolling back from ${current:-nothing} to $target"
   sed -i "s|^USNM_OCR_TESSERACT_IMAGE=.*|USNM_OCR_TESSERACT_IMAGE=$image|" "$ENVFILE"
   grep -q "^USNM_OCR_TESSERACT_IMAGE=$image\$" "$ENVFILE" || die "$ENVFILE has no USNM_OCR_TESSERACT_IMAGE line"
@@ -142,6 +150,7 @@ fi
   die "--image-url must be the release's usnm-ocr-tesseract.oci.tar.gz"
 id usnm > /dev/null 2>&1 || die "no usnm user; run scripts/ocr-node/onboard.sh first"
 command -v podman > /dev/null || die "no podman; run scripts/ocr-node/onboard.sh first"
+[ -S "$SOCK" ] || die "no engine runtime ($SOCK); run scripts/ocr-node/onboard.sh first"
 for f in usnm-ocr-worker ocr-worker.env usnm-ocr-worker.service; do
   [ -s "$DIR/$f" ] || die "$DIR/$f is missing"
 done
@@ -155,8 +164,8 @@ chmod 0644 "$LIB/$RELEASE/tesseract.image-id"
 "$LIB/$RELEASE/usnm-ocr-worker" --version
 
 step "The Tesseract image ($IMAGE_ID)"
-if as_usnm podman image exists "$IMAGE_ID"; then
-  echo "already in usnm's podman storage"
+if engine_podman image exists "$IMAGE_ID"; then
+  echo "already in usnmeng's podman storage"
 else
   # Downloaded by the node itself: a few hundred MB that needn't cross the
   # operator's connection. Its sha256 comes from the release's attested
@@ -167,8 +176,8 @@ else
   curl -fsSL --retry 3 --proto '=https' -o "$tmp/image.tar.gz" "$IMAGE_URL"
   echo "$IMAGE_SUM  $tmp/image.tar.gz" | sha256sum --check --quiet || die "the image archive's sha256 differs from the release's"
   chown usnm:usnm "$tmp/image.tar.gz"
-  as_usnm podman load --quiet --input "$tmp/image.tar.gz"
-  as_usnm podman image exists "$IMAGE_ID" || die "the archive didn't load as $IMAGE_ID"
+  engine_podman load --quiet --input "$tmp/image.tar.gz"
+  engine_podman image exists "$IMAGE_ID" || die "the archive didn't load as $IMAGE_ID"
   rm -rf "$tmp"
   echo "loaded"
 fi
@@ -190,8 +199,10 @@ echo "systemd-analyze verify: ok"
 
 if [ "$ENABLE" = true ]; then
   step "Checking the engine before enabling the unit"
-  # As usnm with the release's image, reading a rendered line.
-  as_usnm env USNM_OCR_TESSERACT_IMAGE="$IMAGE_ID" "$LINK" check-engine
+  # As usnm with the release's image, through the engine runtime as the
+  # unit sets it, reading a rendered line.
+  as_usnm env USNM_OCR_TESSERACT_IMAGE="$IMAGE_ID" USNM_OCR_PODMAN_URL="unix://$SOCK" \
+    USNM_OCR_SCRATCH_DIR="$SCRATCH" "$LINK" check-engine
   # Enabled or not, running or not: (re)start it on this release and check
   # that it stays up. The worker checks its engine at start and exits on
   # failure, before it takes a message; give it time to do that.
