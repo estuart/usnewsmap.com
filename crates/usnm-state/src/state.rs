@@ -654,16 +654,30 @@ impl State {
             .is_some())
     }
 
+    /// Release the lock if `owner` still holds it. A lost ETag race means
+    /// re-reading: an aborted renewer's request may still land after the
+    /// read, and ignoring that would leave the lock held until its TTL.
     pub async fn unlock(&self, name: &str, owner: &str) -> anyhow::Result<()> {
-        if let Some(held) = self.docs.get(OPS, name, name).await? {
-            if held.doc["owner"].as_str() == Some(owner) {
-                let doc = serde_json::json!({
-                    "id": name, "kind": name, "owner": "", "until": Utc::now(),
-                });
-                self.docs.replace(OPS, name, &doc, &held.etag).await?;
+        for _ in 0..5 {
+            let Some(held) = self.docs.get(OPS, name, name).await? else {
+                return Ok(());
+            };
+            if held.doc["owner"].as_str() != Some(owner) {
+                return Ok(());
+            }
+            let doc = serde_json::json!({
+                "id": name, "kind": name, "owner": "", "until": Utc::now(),
+            });
+            if self
+                .docs
+                .replace(OPS, name, &doc, &held.etag)
+                .await?
+                .is_some()
+            {
+                return Ok(());
             }
         }
-        Ok(())
+        bail!("lock `{name}` kept changing concurrently")
     }
 }
 
@@ -786,6 +800,69 @@ mod tests {
         s.lock("quickwit-writer", "c", Duration::hours(1))
             .await
             .unwrap();
+    }
+
+    /// A store where the holder's own renewal lands once, between a read and
+    /// the next replace: the request an aborted renewer had already sent.
+    struct RenewalInFlight {
+        inner: MemoryDocs,
+        pending: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl DocStore for RenewalInFlight {
+        async fn get(&self, c: &str, pk: &str, id: &str) -> anyhow::Result<Option<Versioned>> {
+            self.inner.get(c, pk, id).await
+        }
+        async fn create(&self, c: &str, pk: &str, doc: &Value) -> anyhow::Result<Option<String>> {
+            self.inner.create(c, pk, doc).await
+        }
+        async fn replace(
+            &self,
+            c: &str,
+            pk: &str,
+            doc: &Value,
+            etag: &str,
+        ) -> anyhow::Result<Option<String>> {
+            if self
+                .pending
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                let mut renewed = doc.clone();
+                renewed["owner"] = "a".into();
+                renewed["until"] = serde_json::to_value(Utc::now() + Duration::hours(1))?;
+                assert!(self.inner.replace(c, pk, &renewed, etag).await?.is_some());
+            }
+            self.inner.replace(c, pk, doc, etag).await
+        }
+        async fn upsert(&self, c: &str, pk: &str, doc: &Value) -> anyhow::Result<()> {
+            self.inner.upsert(c, pk, doc).await
+        }
+        async fn list(
+            &self,
+            c: &str,
+            field: &str,
+            values: &[&str],
+        ) -> anyhow::Result<Vec<Versioned>> {
+            self.inner.list(c, field, values).await
+        }
+    }
+
+    #[tokio::test]
+    async fn the_lock_is_released_after_a_renewal_lands_mid_unlock() {
+        let docs = Arc::new(RenewalInFlight {
+            inner: MemoryDocs::default(),
+            pending: false.into(),
+        });
+        let s = State::new(docs.clone());
+        s.lock("w", "a", Duration::hours(1)).await.unwrap();
+        docs.pending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        s.unlock("w", "a").await.unwrap();
+        assert!(!docs.pending.load(std::sync::atomic::Ordering::SeqCst));
+        let held = s.docs.get(OPS, "w", "w").await.unwrap().unwrap();
+        assert_eq!(held.doc["owner"], "");
+        s.lock("w", "b", Duration::hours(1)).await.unwrap();
     }
 
     fn activity(owner: &str, at: DateTime<Utc>) -> Activity {

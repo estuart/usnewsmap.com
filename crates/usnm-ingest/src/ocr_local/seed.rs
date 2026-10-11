@@ -746,8 +746,7 @@ pub async fn run(
     }
     let lease = Lease::take(state, owner).await?;
     let result = seed(state, stores, opts, Some(&lease)).await;
-    drop(lease);
-    let unlocked = state.unlock(super::LOCK, owner).await;
+    let unlocked = lease.release(state, owner).await;
     let report = result?;
     unlocked?;
     Ok(report)

@@ -210,8 +210,7 @@ async fn release<T>(
     let Some(lease) = lease else {
         return result;
     };
-    drop(lease);
-    let unlocked = state.unlock(super::LOCK, owner).await;
+    let unlocked = lease.release(state, owner).await;
     let out = result?;
     unlocked?;
     Ok(out)

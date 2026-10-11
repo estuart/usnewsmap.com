@@ -352,7 +352,8 @@ const LEASE_RENEW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// publishes (08 §8.4.1).
 pub struct WriterLease {
     lost: Arc<AtomicBool>,
-    renewer: tokio::task::JoinHandle<()>,
+    stop: tokio::sync::watch::Sender<bool>,
+    renewer: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl WriterLease {
@@ -380,14 +381,17 @@ impl WriterLease {
     pub(crate) fn for_test(lost: Arc<AtomicBool>) -> Self {
         Self {
             lost,
-            renewer: tokio::spawn(async {}),
+            stop: tokio::sync::watch::channel(false).0,
+            renewer: Some(tokio::spawn(async {})),
         }
     }
 }
 
 impl Drop for WriterLease {
     fn drop(&mut self) {
-        self.renewer.abort();
+        if let Some(r) = &self.renewer {
+            r.abort();
+        }
     }
 }
 
@@ -399,9 +403,13 @@ pub async fn lock_writer(state: &State, owner: &str) -> anyhow::Result<WriterLea
     state.lock(WRITER_LOCK, owner, LEASE_TTL).await?;
     let lost = Arc::new(AtomicBool::new(false));
     let (state, owner, flag) = (state.clone(), owner.to_owned(), lost.clone());
+    let (stop, mut stopped) = tokio::sync::watch::channel(false);
     let renewer = tokio::spawn(async move {
         loop {
-            tokio::time::sleep(LEASE_RENEW).await;
+            tokio::select! {
+                _ = tokio::time::sleep(LEASE_RENEW) => {}
+                _ = stopped.changed() => break,
+            }
             if let Err(e) = state.lock(WRITER_LOCK, &owner, LEASE_TTL).await {
                 tracing::error!(error = %format!("{e:#}"), "writer lock renewal failed");
                 flag.store(true, Ordering::SeqCst);
@@ -409,12 +417,25 @@ pub async fn lock_writer(state: &State, owner: &str) -> anyhow::Result<WriterLea
             }
         }
     });
-    Ok(WriterLease { lost, renewer })
+    Ok(WriterLease {
+        lost,
+        stop,
+        renewer: Some(renewer),
+    })
 }
 
 /// Stop renewing `lease` and release the writer lock `owner` holds.
-pub async fn unlock_writer(state: &State, owner: &str, lease: WriterLease) -> anyhow::Result<()> {
-    drop(lease);
+pub async fn unlock_writer(
+    state: &State,
+    owner: &str,
+    mut lease: WriterLease,
+) -> anyhow::Result<()> {
+    // Stopped between renewals and awaited, not aborted: a renewal already
+    // sent would otherwise land after the unlock and hold the lock.
+    let _ = lease.stop.send(true);
+    if let Some(r) = lease.renewer.take() {
+        let _ = r.await;
+    }
     state.unlock(WRITER_LOCK, owner).await
 }
 
@@ -2300,6 +2321,61 @@ fn language_set(title: &Title) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
+    /// Memory docs whose replaces take ten seconds, counting those that finish.
+    #[derive(Default)]
+    struct SlowReplaces(usnm_state::docs::MemoryDocs, std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl usnm_state::docs::DocStore for SlowReplaces {
+        async fn get(
+            &self,
+            c: &str,
+            pk: &str,
+            id: &str,
+        ) -> anyhow::Result<Option<usnm_state::docs::Versioned>> {
+            self.0.get(c, pk, id).await
+        }
+        async fn create(&self, c: &str, pk: &str, doc: &Value) -> anyhow::Result<Option<String>> {
+            self.0.create(c, pk, doc).await
+        }
+        async fn replace(
+            &self,
+            c: &str,
+            pk: &str,
+            doc: &Value,
+            etag: &str,
+        ) -> anyhow::Result<Option<String>> {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            let out = self.0.replace(c, pk, doc, etag).await;
+            self.1.fetch_add(1, Ordering::SeqCst);
+            out
+        }
+        async fn upsert(&self, c: &str, pk: &str, doc: &Value) -> anyhow::Result<()> {
+            self.0.upsert(c, pk, doc).await
+        }
+        async fn list(
+            &self,
+            c: &str,
+            field: &str,
+            values: &[&str],
+        ) -> anyhow::Result<Vec<usnm_state::docs::Versioned>> {
+            self.0.list(c, field, values).await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_writer_lock_is_released_after_a_renewal_under_way() {
+        let docs = Arc::new(SlowReplaces::default());
+        let state = State::new(docs.clone());
+        let lease = lock_writer(&state, "run-1").await.unwrap();
+        // Released while the first renewal (at 300 s) is still writing.
+        tokio::time::sleep(std::time::Duration::from_secs(305)).await;
+        unlock_writer(&state, "run-1", lease).await.unwrap();
+        // The renewal finished, then the unlock: two replaces, the lock free.
+        assert_eq!(docs.1.load(Ordering::SeqCst), 2);
+        lock_writer(&state, "run-2").await.unwrap();
+    }
+
     #[test]
     fn titles_group_by_their_sorted_language_set() {
         let mut t = Title {
@@ -2366,10 +2442,7 @@ mod tests {
             .await
             .unwrap();
         let lost = Arc::new(AtomicBool::new(false));
-        let lease = WriterLease {
-            lost: lost.clone(),
-            renewer: tokio::spawn(async {}),
-        };
+        let lease = WriterLease::for_test(lost.clone());
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             lost.store(true, Ordering::SeqCst);
@@ -2388,10 +2461,7 @@ mod tests {
     #[tokio::test]
     async fn a_lost_lease_ends_a_wait() {
         let lost = Arc::new(AtomicBool::new(false));
-        let lease = WriterLease {
-            lost: lost.clone(),
-            renewer: tokio::spawn(async {}),
-        };
+        let lease = WriterLease::for_test(lost.clone());
         let flag = lost.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;

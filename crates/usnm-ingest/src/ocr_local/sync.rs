@@ -174,10 +174,12 @@ pub struct ImportRecord {
     pub outcomes: Option<String>,
 }
 
-/// The lock, renewed in the background until dropped.
+/// The lock, renewed in the background until [`Lease::release`] (or, as a
+/// fallback, until dropped).
 pub(super) struct Lease {
     lost: Arc<AtomicBool>,
-    renewer: tokio::task::JoinHandle<()>,
+    stop: tokio::sync::watch::Sender<bool>,
+    renewer: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Lease {
@@ -185,9 +187,13 @@ impl Lease {
         state.lock(super::LOCK, owner, LOCK_TTL).await?;
         let lost = Arc::new(AtomicBool::new(false));
         let (state, owner, flag) = (state.clone(), owner.to_owned(), lost.clone());
+        let (stop, mut stopped) = tokio::sync::watch::channel(false);
         let renewer = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(LOCK_RENEW).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(LOCK_RENEW) => {}
+                    _ = stopped.changed() => break,
+                }
                 if let Err(e) = state.lock(super::LOCK, &owner, LOCK_TTL).await {
                     tracing::error!(error = %format!("{e:#}"), "ocr-sync lock renewal failed");
                     flag.store(true, Ordering::SeqCst);
@@ -195,7 +201,11 @@ impl Lease {
                 }
             }
         });
-        Ok(Self { lost, renewer })
+        Ok(Self {
+            lost,
+            stop,
+            renewer: Some(renewer),
+        })
     }
 
     pub(super) fn check(&self) -> anyhow::Result<()> {
@@ -204,11 +214,24 @@ impl Lease {
         }
         Ok(())
     }
+
+    /// Stop renewing, letting a renewal under way finish, and release the
+    /// lock. Aborting instead would let an already-sent renewal land after
+    /// the unlock and hold the lock until its TTL.
+    pub(super) async fn release(mut self, state: &State, owner: &str) -> anyhow::Result<()> {
+        let _ = self.stop.send(true);
+        if let Some(r) = self.renewer.take() {
+            let _ = r.await;
+        }
+        state.unlock(super::LOCK, owner).await
+    }
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.renewer.abort();
+        if let Some(r) = &self.renewer {
+            r.abort();
+        }
     }
 }
 
@@ -221,8 +244,7 @@ pub async fn run(
 ) -> anyhow::Result<Status> {
     let lease = Lease::take(state, owner).await?;
     let result = run_locked(state, stores, opts, &lease).await;
-    drop(lease);
-    let unlocked = state.unlock(super::LOCK, owner).await;
+    let unlocked = lease.release(state, owner).await;
     let status = result?;
     unlocked?;
     Ok(status)
