@@ -543,7 +543,7 @@ jobs:
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
     # Environment holds its own variables, written by scripts/bootstrap.sh.
-    needs: [changes, rust, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e]
+    needs: [changes, rust, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e]
     # Only when the images changed, and every check that ran passed: a job
     # skipped as irrelevant must not block the deploy, and a failed one must.
     if: >-
