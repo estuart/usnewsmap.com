@@ -397,14 +397,26 @@ pub async fn run(
         }
         tracing::info!(manifest = %manifest_path, "ocr prefetch manifest already there with the same rows");
     }
-    // A summary from an earlier run of the same rows is kept.
-    curated
-        .put_new(
-            &format!("{folder}/summary.json"),
-            summary_json.clone(),
-            "application/json",
-        )
-        .await?;
+    // A summary from an earlier run of the same rows is kept, and it is the
+    // one copied and returned, so the stores agree.
+    let summary_path = format!("{folder}/summary.json");
+    let (summary, summary_json) = if curated
+        .put_new(&summary_path, summary_json.clone(), "application/json")
+        .await?
+    {
+        (summary, summary_json)
+    } else {
+        let there = curated
+            .get(&summary_path)
+            .await?
+            .with_context(|| format!("{summary_path} vanished"))?;
+        let kept: Summary =
+            serde_json::from_slice(&there).with_context(|| format!("reading {summary_path}"))?;
+        if kept.manifest_sha256 != summary.manifest_sha256 {
+            bail!("{summary_path} is for another manifest; delete it and the manifest to build them again");
+        }
+        (kept, there)
+    };
     if let Some(x) = exchange {
         let xdir = exchange_dir(&opts.index_version, stamp.as_deref());
         x.put(
@@ -683,8 +695,9 @@ mod tests {
         .unwrap();
         assert_eq!(summary, s);
         // Written once: the same rows again finish what's missing (here the
-        // exchange copy) and keep the summary; other rows are refused.
-        run(
+        // exchange copy) and keep the summary, which is the one copied and
+        // returned; other rows are refused.
+        let rerun = run(
             f.curated.as_ref(),
             f.reference.as_ref(),
             Some(f.exchange.as_ref()),
@@ -692,6 +705,16 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(rerun, s);
+        let copied: Summary = serde_json::from_slice(
+            &f.exchange
+                .get("manifests/v1/summary.json")
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(copied, s);
         assert!(f
             .exchange
             .exists("manifests/v1/manifest.parquet")
