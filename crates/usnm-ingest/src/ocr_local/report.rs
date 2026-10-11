@@ -3,12 +3,8 @@
 //! The release scores both texts again; this is the pilot's estimate of the
 //! gain before a rebuild. Written to `ocr-local/report/<run>.json`.
 //!
-//! Rule v1 (Step 9; provisional until the pilot): for each page, the row
-//! with the lowest stored damage rate (ties: the newest). Ours replaces
-//! LoC's when both are decided in the same language, or LoC's is `und` (or
-//! unscored) and ours is decided; our damage rate is at least
-//! [`MARGIN`] lower (any rate, when LoC's has none); and our head count is
-//! at least LoC's.
+//! For each page, the row with the lowest stored damage rate (ties: the
+//! newest), weighed by rule v1 ([`super::rule`]).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -20,31 +16,12 @@ use usnm_store::ObjectStore;
 use super::pages::{self, Scores, StoredRow};
 use super::{report_path, run_id, ROOT};
 
-/// How much lower our damage rate must be.
-pub const MARGIN: f64 = 0.05;
+pub use super::rule::MARGIN;
 
-/// Why LoC's text stays.
+/// Why LoC's text stays, by [`super::rule::verdict`] on the stored scores,
+/// without the title-language test (the report has no catalog).
 pub fn verdict(ours: &Scores, loc: &Scores) -> Result<(), &'static str> {
-    let und = usnm_core::damage::UNKNOWN;
-    let Some(our_lang) = ours.lang.as_deref().filter(|l| *l != und) else {
-        return Err("ours_undecided");
-    };
-    let Some(our_rate) = ours.damage_rate else {
-        return Err("ours_unscored");
-    };
-    match loc.lang.as_deref() {
-        Some(l) if l != und && l != our_lang => return Err("language_differs"),
-        _ => {}
-    }
-    if let Some(loc_rate) = loc.damage_rate {
-        if loc.lang.as_deref() != Some(und) && our_rate > loc_rate - MARGIN {
-            return Err("margin");
-        }
-    }
-    if ours.head.unwrap_or(0) < loc.head.unwrap_or(0) {
-        return Err("head");
-    }
-    Ok(())
+    super::rule::verdict(ours, loc, None).map_err(super::rule::Keep::as_str)
 }
 
 /// The short engine key of 13 §13.8.1, `<family>/<version> <profile>`, or

@@ -87,6 +87,7 @@ fn over_decades(pages: &[&Page]) -> Vec<Page> {
         .collect()
 }
 
+#[derive(Clone)]
 struct Page {
     lccn: String,
     date: NaiveDate,
@@ -249,6 +250,7 @@ impl Env {
             titles_left: None,
             american_stories: false,
             ja_latin: false,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         }
@@ -287,6 +289,7 @@ impl Env {
             titles_left: None,
             american_stories,
             ja_latin,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         };
@@ -762,6 +765,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -816,6 +820,7 @@ async fn releases_into_a_quickwit_writer_node() {
             titles_left: None,
             american_stories: false,
             ja_latin: false,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         };
@@ -1274,6 +1279,7 @@ async fn a_backend_switch_forces_a_full_release() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -1314,6 +1320,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -1398,6 +1405,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         titles_left,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -1822,6 +1830,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -1880,6 +1889,7 @@ async fn a_failed_release_records_when_it_failed() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -2150,6 +2160,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             titles_left: None,
             american_stories: false,
             ja_latin: false,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         };
@@ -3195,6 +3206,7 @@ async fn our_latin_text_follows_the_decade_layout() {
         partition_decade: true,
         single_text_field: false,
         ja_latin: true,
+        ocr_local: false,
         ..e.releaser(day, full)
     };
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
@@ -3867,6 +3879,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
             titles_left: None,
             american_stories: true,
             ja_latin: false,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         };
@@ -4815,4 +4828,351 @@ async fn a_sample_set_packages_archives_and_documents() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("never replaced"), "{err}");
+}
+
+/// Our OCR's reading of a page in `ocr-local` (12 §12.5 Step 9), as
+/// `ocr-sync` imports it: both texts' scores stored with the row.
+fn local_row(
+    p: &Page,
+    batch: &str,
+    ours: &str,
+    loc: &str,
+    node: &str,
+    ocred_at: i64,
+) -> usnm_ingest::ocr_local::pages::Imported {
+    use usnm_ingest::ocr_local::pages::{Imported, Scores};
+    let langs = ["eng"];
+    Imported {
+        row: usnm_overlay::OverlayRow {
+            key: usnm_core::ids::PageKey::new(&p.lccn, p.date, 1, p.seq).unwrap(),
+            batch: batch.into(),
+            ocr_source: "usnm-tesseract".into(),
+            ocr_engine: "tesseract/5.5.1 profile=eng".into(),
+            loc_text: "bulk".into(),
+            text: ours.into(),
+            image_url: "https://tile.loc.gov/image-services/iiif/x".into(),
+            ocred_at: Utc.timestamp_opt(ocred_at, 0).unwrap(),
+        },
+        batch_version: 1,
+        source_part: "pages/x.parquet".into(),
+        node: node.into(),
+        reason: "bulk".into(),
+        ours: Scores::of(ours, &langs),
+        loc: Scores::of(loc, &langs),
+    }
+}
+
+/// A page of English prose, `n` telling pages apart.
+fn prose(n: usize) -> String {
+    format!(
+        "The city council met on Tuesday and voted for the new school on the hill. The \
+         mayor said the railroad would bring more trade to the town and its farms. Cotton \
+         prices rose in the market and the farmers were glad of it. The weather was fair \
+         and the roads were dry for the first time this year. A new church will be built \
+         on Main street next spring by the people of the {n} ward."
+    )
+}
+
+/// The Latin text of our Japanese OCR on a page in `ocr-local` too.
+const JA_LATIN: &str = "The relocation center held a meeting on Tuesday and the people of \
+    the camp voted for a new school, a store and a church to be built in the spring by the \
+    men and women who live there with their children and their old parents from the coast.";
+
+/// OCR damage of the kind LoC's text has: every other word misread.
+fn garble(text: &str) -> String {
+    text.split_whitespace()
+        .enumerate()
+        .map(|(i, w)| {
+            if i % 2 == 0 {
+                w.chars()
+                    .map(|c| match c {
+                        'e' => 'c',
+                        'h' => 'b',
+                        'n' => 'u',
+                        'i' => 'l',
+                        'o' => 'a',
+                        c => c,
+                    })
+                    .collect()
+            } else {
+                w.to_owned()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+/// With `--ocr-local` (12 §12.5 Step 9) a release gives a page our OCR's
+/// text in place of LoC's where rule v1 prefers it, on the copy the version
+/// keeps, only for the batches it indexes: a garbled page and one LoC has
+/// no text for take ours; a clean one, a short reading, a page the Japanese
+/// overlay has and a revoked node's reading keep LoC's. The version records
+/// the rule, the parts and the verdicts in `ocr_local.json`, and the pages
+/// in `ocr_local_pages.bin`, which a delta carries forward, less a copy
+/// another batch's now wins over, and the API marks those hits as ours.
+#[tokio::test]
+async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
+    use usnm_ingest::ocr_local::{pages, pages_path};
+    use usnm_state::ocr_local::{OcrLocalPages, OCR_LOCAL_FILE, OCR_LOCAL_PAGES_FILE};
+    let e = env().await;
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (mut early, mut late): (Vec<Page>, Vec<Page>) =
+        fixture_pages().into_iter().partition(|p| p.date < split);
+    let ours_of = |v: &[Page], skip: usize| -> Vec<usize> {
+        v.iter()
+            .enumerate()
+            .filter(|(_, p)| p.lccn == "sn99000001" && !p.text.is_empty())
+            .map(|(i, _)| i)
+            .skip(skip)
+            .collect()
+    };
+    let sel = ours_of(&early, 0);
+    // Pages of prose (the fixture's word lists name too few function words
+    // for the metric to decide their language).
+    let clean: Vec<String> = (0..7).map(prose).collect();
+    let (a, b, c, d, j, f) = (sel[0], sel[1], sel[2], sel[3], sel[4], sel[5]);
+    // LoC's text as the archives will have it.
+    early[a].text = garble(&clean[0]);
+    early[b].text = clean[1].clone();
+    early[c].text = format!("{}\n{}", clean[2], garble(&clean[6]));
+    early[d].text = String::new();
+    early[j].text = garble(&clean[4]);
+    early[f].text = garble(&clean[5]);
+    let g = ours_of(&late, 0)[0];
+    let late_clean = prose(7);
+    late[g].text = garble(&late_clean);
+    let id = |p: &Page| format!("{}_{}_ed-1_seq-{}", p.lccn, p.date, p.seq);
+    let early_path = e.root.join("batch_fx_early_ver01.tar.gz");
+    write_archive(&early_path, &early.iter().collect::<Vec<_>>(), true, true);
+    let late_path = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&late_path, &late.iter().collect::<Vec<_>>(), false, true);
+    curate(&e, vec![listed("batch_fx_early_ver01", &early_path, None)]).await;
+
+    // Two imports. Page a has worse readings the lower stored rate passes
+    // over; f's only reading is from a node later revoked.
+    let fx = "batch_fx_early";
+    let lccn = "sn99000001";
+    let run1 = [
+        local_row(&early[a], fx, &clean[0], &early[a].text, "node1", 10),
+        // The same page twice in one part (a message delivered twice):
+        // the chosen row's own text, not the part's last for the page.
+        local_row(
+            &early[a],
+            fx,
+            &garble(&clean[0]),
+            &early[a].text,
+            "node1",
+            10,
+        ),
+        local_row(
+            &early[b],
+            fx,
+            &garble(&clean[1]),
+            &early[b].text,
+            "node1",
+            10,
+        ),
+        local_row(&early[c], fx, &clean[2], &early[c].text, "node1", 10),
+        local_row(&early[d], fx, &clean[3], "", "node1", 10),
+        local_row(&early[j], fx, &clean[4], &early[j].text, "node1", 10),
+    ];
+    let run2 = [
+        local_row(
+            &early[a],
+            fx,
+            &garble(&clean[0]),
+            &early[a].text,
+            "node1",
+            20,
+        ),
+        local_row(&early[f], fx, &clean[5], &early[f].text, "node-bad", 20),
+        local_row(
+            &late[g],
+            "batch_fx_late",
+            &late_clean,
+            &late[g].text,
+            "node1",
+            20,
+        ),
+    ];
+    let mut part_bytes = 0;
+    for (run, rows) in [
+        ("20261011T000000Z-aaaa", &run1[..]),
+        ("20261012T000000Z-bbbb", &run2[..]),
+    ] {
+        let body = pages::encode(rows).unwrap();
+        part_bytes += body.len();
+        e.curated
+            .put(&pages_path(lccn, run), body, "application/octet-stream")
+            .await
+            .unwrap();
+    }
+    e.curated
+        .put(
+            "ocr-local/revoked/20261013T000000Z.json",
+            serde_json::to_vec(&serde_json::json!({
+                "node": "node-bad", "reason": "a bad model", "reference": "#296",
+            }))
+            .unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    // The Japanese overlay has page j, with more words than LoC's: it wins.
+    let ja_text = format!("{JA_LATIN}\n{JA_LATIN}");
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[JaRow {
+            lccn,
+            date: early[j].date,
+            seq: early[j].seq,
+            batch: fx,
+            loc_text: "garbled",
+            text: &ja_text,
+            ocred_at: 1,
+        }],
+    )
+    .await;
+
+    let release = |day, full| {
+        let r = Release {
+            ja_latin: true,
+            ocr_local: true,
+            ..e.releaser(day, full)
+        };
+        let root = e.root.clone();
+        async move {
+            let mut sink = JsonlSink::new(root.join("reference/indexes"));
+            r.run(&mut sink).await.unwrap().unwrap()
+        }
+    };
+    let v1 = release(5, true).await;
+    let docs = e.index(&v1.indexes[0]);
+    let text = |p: &Page| docs[&id(p)]["text"].as_str().unwrap().to_owned();
+    assert_eq!(
+        text(&early[a]),
+        clean[0],
+        "garbled: ours, the lower stored rate"
+    );
+    assert_eq!(text(&early[b]), clean[1], "clean: LoC's");
+    assert_eq!(text(&early[c]), early[c].text, "a short reading: LoC's");
+    assert_eq!(text(&early[d]), clean[3], "no LoC text: ours");
+    assert_eq!(
+        text(&early[j]),
+        usnm_ingest::ocr_ja::latin_text(&ja_text),
+        "the Japanese overlay's"
+    );
+    assert_eq!(text(&early[f]), early[f].text, "revoked: LoC's");
+
+    let v = &v1.index_version;
+    let record = e.reference_json(&format!("{v}/{OCR_LOCAL_FILE}")).await;
+    assert_eq!(record["rule"]["version"], 1);
+    assert_eq!(record["rule"]["margin"], 0.05);
+    assert_eq!(record["metric"]["version"], usnm_core::damage::VERSION);
+    assert_eq!(record["parts"]["count"], 2);
+    assert_eq!(record["parts"]["bytes"], part_bytes);
+    let p = &record["pages"];
+    assert_eq!(p["considered"], 6, "{record}");
+    assert_eq!(p["replaced"], 2, "{record}");
+    assert_eq!(
+        p["kept"],
+        serde_json::json!({"margin": 1, "head": 1, "japanese_ocr": 1, "revoked": 1}),
+        "{record}"
+    );
+    assert_eq!(p["by_engine"]["tesseract/5.5.1 eng"]["replaced"], 2);
+    assert_eq!(p["by_language"]["eng"]["considered"], 4);
+    assert_eq!(record["version"]["pages"], 2);
+    assert_eq!(record["revocations"][0]["reason"], "a bad model");
+    assert!(record["estimate_published"].is_null(), "a full base");
+    let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
+    assert_eq!(manifest["built_from"]["ocr_local"], record["parts"]);
+    assert_eq!(manifest["build"]["features"]["ocr_local"], 1);
+    let bin = |v: &str| {
+        let e = &e;
+        let v = v.to_owned();
+        async move {
+            let bytes = e
+                .reference
+                .get(&format!("{v}/{OCR_LOCAL_PAGES_FILE}"))
+                .await
+                .unwrap()
+                .unwrap();
+            let batches = e.reference_json(&format!("{v}/batches.json")).await;
+            let names: Vec<String> = batches
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["batch"].as_str().unwrap().to_owned())
+                .collect();
+            (OcrLocalPages::decode(&bytes, names.len()).unwrap(), names)
+        }
+    };
+    let (pages1, names1) = bin(v).await;
+    assert_eq!(pages1.len(), 2);
+    for p in [&early[a], &early[d]] {
+        let entry = pages1.get(&id(p)).expect("ours");
+        assert_eq!(names1[usize::from(entry.batch)], fx);
+        assert_eq!(pages1.engine(entry).unwrap().source, "usnm-tesseract");
+    }
+    assert!(pages1.get(&id(&early[b])).is_none());
+
+    // A delta: the late batch, and a batch sorting first whose copy of
+    // page a has clean LoC text, so the plan keeps that copy and hides ours.
+    let again = Page {
+        text: clean[0].clone(),
+        ..early[a].clone()
+    };
+    let again_path = e.root.join("batch_fx_again_ver01.tar.gz");
+    write_archive(&again_path, &[&again], false, true);
+    curate(
+        &e,
+        vec![
+            listed("batch_fx_late_ver01", &late_path, None),
+            listed("batch_fx_again_ver01", &again_path, None),
+        ],
+    )
+    .await;
+    let v2 = release(6, false).await;
+    assert!(!v2.full);
+    let delta = e.index(&v2.indexes[1]);
+    assert_eq!(delta[&id(&late[g])]["text"], late_clean.as_str());
+    assert_eq!(delta[&id(&again)]["text"], clean[0].as_str());
+    let v = &v2.index_version;
+    let hidden = e.reference_json(&format!("{v}/duplicates.json")).await;
+    assert!(hidden
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!({"doc_id": id(&early[a]), "batch": fx})));
+    let (pages2, names2) = bin(v).await;
+    assert_eq!(pages2.len(), 2, "d carried, a dropped, g added");
+    assert!(pages2.get(&id(&early[a])).is_none());
+    assert_eq!(
+        names2[usize::from(pages2.get(&id(&early[d])).unwrap().batch)],
+        fx
+    );
+    assert_eq!(
+        names2[usize::from(pages2.get(&id(&late[g])).unwrap().batch)],
+        "batch_fx_late"
+    );
+    let record = e.reference_json(&format!("{v}/{OCR_LOCAL_FILE}")).await;
+    assert_eq!(
+        record["version"],
+        serde_json::json!({"pages": 2, "carried": 2, "dropped": 1, "added": 1}),
+        "{record}"
+    );
+    // Of the published batch: a, d and j by the stored scores (f revoked,
+    // b and c kept).
+    assert_eq!(record["estimate_published"], 3, "{record}");
+    assert_eq!(
+        record["pages"]["kept"]["margin"], 1,
+        "again's copy: {record}"
+    );
+
+    // The API marks the hits on our text, not the hidden copy's.
+    let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(refdata.ocr_local.len(), 2);
+    assert!(refdata.ocr_local.get(&id(&late[g])).is_some());
 }

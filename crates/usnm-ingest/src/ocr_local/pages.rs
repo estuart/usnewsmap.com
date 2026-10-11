@@ -166,7 +166,18 @@ pub fn encode(rows: &[Imported]) -> anyhow::Result<Vec<u8>> {
 pub struct StoredRow {
     pub doc_id: String,
     pub lccn: String,
+    /// The base batch the page was queued from.
+    pub batch: String,
+    pub ocr_source: String,
     pub ocr_engine: String,
+    /// The node that read it.
+    pub node: String,
+    /// The damage metric version `ocr-sync` scored the row with. Rows of
+    /// another version than `usnm_core::damage::VERSION` are read with no
+    /// scores (`ours` and `loc` empty): their rates don't compare with
+    /// this version's, so they rank last and count in no estimate. The
+    /// release scores the chosen row again either way.
+    pub metric_version: u32,
     pub ocred_at: i64,
     pub ours: Scores,
     pub loc: Scores,
@@ -194,7 +205,11 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
         }
         let doc_id = col!("doc_id", StringArray);
         let lccn = col!("lccn", StringArray);
+        let batch_name = col!("batch", StringArray);
+        let source = col!("ocr_source", StringArray);
         let engine = col!("ocr_engine", StringArray);
+        let node = col!("node", StringArray);
+        let metric = col!("metric_version", Int32Array);
         let at = col!("ocred_at", arrow_array::TimestampMicrosecondArray);
         let s = |a: &StringArray, i: usize| (!a.is_null(i)).then(|| a.value(i).to_owned());
         let f = |a: &Float64Array, i: usize| (!a.is_null(i)).then(|| a.value(i));
@@ -225,15 +240,70 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
                 function_share: f(c.3, i),
                 head: h(c.4, i),
             };
+            let current = u32::try_from(metric.value(i)).ok() == Some(usnm_core::damage::VERSION);
             out.push(StoredRow {
                 doc_id: doc_id.value(i).to_owned(),
                 lccn: lccn.value(i).to_owned(),
+                batch: batch_name.value(i).to_owned(),
+                ocr_source: source.value(i).to_owned(),
                 ocr_engine: engine.value(i).to_owned(),
+                node: node.value(i).to_owned(),
+                metric_version: u32::try_from(metric.value(i)).unwrap_or(0),
                 ocred_at: at.value(i),
-                ours: score(&sides[0]),
-                loc: score(&sides[1]),
+                ours: if current {
+                    score(&sides[0])
+                } else {
+                    Scores::default()
+                },
+                loc: if current {
+                    score(&sides[1])
+                } else {
+                    Scores::default()
+                },
             });
         }
+    }
+    Ok(out)
+}
+
+/// The `doc_id` and text of the rows of a merged part at the places in
+/// `rows` (0-based, in file order), reading only those two columns and
+/// keeping only those rows' text.
+pub fn read_texts(
+    bytes: Bytes,
+    rows: &std::collections::HashSet<usize>,
+) -> anyhow::Result<Vec<(usize, (String, String))>> {
+    use arrow_array::LargeStringArray;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+    let schema = builder.schema().clone();
+    let wanted: Vec<usize> = ["doc_id", "text"]
+        .iter()
+        .map(|n| {
+            schema
+                .index_of(n)
+                .with_context(|| format!("no `{n}` column"))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let mask = ProjectionMask::roots(builder.parquet_schema(), wanted);
+    let mut out = Vec::with_capacity(rows.len());
+    let mut at = 0usize;
+    for batch in builder.with_projection(mask).build()? {
+        let b = batch?;
+        let doc_id = b
+            .column_by_name("doc_id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .context("column `doc_id` has an unexpected type")?;
+        let text = b
+            .column_by_name("text")
+            .and_then(|c| c.as_any().downcast_ref::<LargeStringArray>())
+            .context("column `text` has an unexpected type")?;
+        for i in 0..b.num_rows() {
+            if rows.contains(&(at + i)) {
+                let t = if text.is_null(i) { "" } else { text.value(i) };
+                out.push((at + i, (doc_id.value(i).to_owned(), t.to_owned())));
+            }
+        }
+        at += b.num_rows();
     }
     Ok(out)
 }

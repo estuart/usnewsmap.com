@@ -17,6 +17,7 @@ use usnm_core::text::{Analyzer, Analyzers};
 use usnm_core::text_layout::TextLayout;
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
+use usnm_state::ocr_local::{OcrLocalPages, OCR_LOCAL_PAGES_FILE};
 use usnm_state::state::{
     JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, DUPLICATES_FILE, JA_LATIN_FILE,
     LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
@@ -175,6 +176,11 @@ pub struct RefData {
     /// text, not LoC's (#203), from the snapshot's `ja_latin.json`: their
     /// hits are marked as our OCR. Empty for snapshots without it.
     pub ja_latin: HashMap<String, JaLatinPage>,
+    /// Pages whose main-index document holds our own OCR's text in place of
+    /// LoC's (12 §12.5 Step 9), from the snapshot's `ocr_local_pages.bin`,
+    /// less the copies the version hides: their hits are marked as our OCR.
+    /// Empty for snapshots without it.
+    pub ocr_local: OcrLocalPages,
     /// Whether searches cover American Stories' text when the version has
     /// it (`USNM_AMERICAN_STORIES_SEARCH`, 05 §5.5.4). True when loaded; the
     /// API sets it from its configuration before the snapshot serves.
@@ -274,12 +280,24 @@ impl RefData {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
         };
+        let ocr_local = match optional(OCR_LOCAL_PAGES_FILE) {
+            Some(entry) => Some(fetch_checked(store, dir, entry).await?),
+            None => None,
+        };
+        // The version's batch list, in order: `ocr_local_pages.bin` names
+        // batches by their place in it.
+        let batch_order: Vec<String> = manifest
+            .built_from
+            .as_ref()
+            .map(|b| b.batches.iter().map(|b| b.batch.clone()).collect())
+            .unwrap_or_default();
         let published_batches = manifest.built_from.map(|b| {
             b.batches
                 .into_iter()
                 .map(|b| (b.batch, b.version))
                 .collect()
         });
+        let batch_count = batch_order.len();
         // Parsing large snapshots is CPU-bound; keep it off the async workers.
         let mut refdata = tokio::task::spawn_blocking(move || {
             let mut rd = Self::build(current, &raw)?;
@@ -297,6 +315,10 @@ impl RefData {
                 let latin: JaLatin = parse(&path, &bytes)?;
                 rd.ja_latin = latin.pages.into_iter().collect();
             }
+            if let Some((path, bytes)) = ocr_local {
+                rd.ocr_local = OcrLocalPages::decode(&bytes, batch_count)
+                    .map_err(|e| format!("{path}: {e}"))?;
+            }
             Ok::<_, String>(rd)
         })
         .await
@@ -313,6 +335,23 @@ impl RefData {
             refdata
                 .ja_latin
                 .retain(|doc_id, p| !hidden_ours.contains(&(doc_id.as_str(), p.batch.as_str())));
+        }
+        // Nor is a hidden copy of a page given our text from `ocr-local`.
+        if !refdata.ocr_local.is_empty() {
+            let drop: std::collections::HashSet<u64> = hidden
+                .iter()
+                .filter(|h| {
+                    refdata
+                        .ocr_local
+                        .get(&h.doc_id)
+                        .is_some_and(|e| batch_order.get(usize::from(e.batch)) == Some(&h.batch))
+                })
+                .map(|h| usnm_state::ocr_local::doc_hash(&h.doc_id))
+                .collect();
+            refdata
+                .ocr_local
+                .entries
+                .retain(|e| !drop.contains(&e.hash));
         }
         refdata.hidden = hidden;
         Ok(refdata)
@@ -427,6 +466,7 @@ impl RefData {
             duplicate_pages: None,
             hidden: Vec::new(),
             ja_latin: HashMap::new(),
+            ocr_local: OcrLocalPages::default(),
             american_stories_search: true,
             congress_search: true,
         })

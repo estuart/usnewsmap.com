@@ -31,6 +31,12 @@
 //! - `ocr-local/deadletter/<day>/<run>.jsonl`: drained dead letters,
 //!   re-encoded from their checked fields.
 //! - `ocr-local/report/<stamp>.json`: `ocr-sync --report` ([`report`]).
+//! - `ocr-local/revoked/<stamp>.json`: rows the release leaves out, by node,
+//!   engine, import run or time ([`replace::Revocation`]), written by hand.
+//!
+//! The release (`--ocr-local`, Step 9) reads the merged parts batch by batch
+//! and gives a page our text in place of LoC's where rule v1 ([`rule`])
+//! prefers it ([`replace`]).
 //!
 //! The reference store gets `status/ocr-local.json` ([`sync::Status`]).
 //! Logs carry page ids, paths, counts and reason codes, never text.
@@ -40,7 +46,9 @@ pub mod enqueue;
 pub mod ledger;
 pub mod pages;
 pub mod quarantine;
+pub mod replace;
 pub mod report;
+pub mod rule;
 pub mod seed;
 pub mod sync;
 

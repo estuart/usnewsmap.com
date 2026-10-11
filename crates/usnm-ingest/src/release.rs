@@ -24,7 +24,7 @@
 //! are never rewritten: a failed run leaves an unpublished index for the
 //! janitor, and the retry builds a new one.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -48,6 +48,7 @@ use crate::decade_order::DecadeOrder;
 use crate::dedup::{self, Plan};
 use crate::merges::{self, IndexLayout};
 use crate::ocr_ja;
+use crate::ocr_local;
 use crate::progress::{self, Progress};
 use crate::sink::{Decades, IndexSink, MainLayout};
 use crate::source::hex;
@@ -106,7 +107,41 @@ pub struct Release {
     /// delta follows the published version, whatever this says. Off: the
     /// documents, the index config and `current.json` are as before.
     pub single_text_field: bool,
+    /// Weigh our own OCR from `ocr-local` against LoC's text (12 §12.5 Step
+    /// 9): on the pages of the batches this release indexes, ours replaces
+    /// LoC's where rule v1 prefers it (`crate::ocr_local::rule`), and the
+    /// version records it in `ocr_local.json` and `ocr_local_pages.bin`.
+    /// Pages of published batches take it at the next full rebuild. Off:
+    /// nothing is read and the documents are as before; a delta still
+    /// carries the published version's `ocr_local_pages.bin` forward.
+    pub ocr_local: bool,
 }
+
+/// What the release reads of `ocr-local` (`Release::ocr_local`).
+struct LocalRun {
+    listing: ocr_local::replace::Listing,
+    revoked: Vec<ocr_local::replace::Revocation>,
+    /// Pages the Japanese overlay has, or whose document is its Latin text:
+    /// that overlay wins.
+    ja: HashSet<String>,
+    /// Pages of published batches ours would replace (stored scores).
+    estimate: Option<u64>,
+}
+
+/// What a version records of our OCR from `ocr-local`.
+#[derive(Debug, Default)]
+struct LocalFiles {
+    /// `ocr_local_pages.bin`, when the version holds such pages.
+    pages: Option<Vec<u8>>,
+    /// `ocr_local.json`, with the setting.
+    record: Option<Value>,
+    /// The manifest's `built_from.ocr_local`: the parts summary.
+    summary: Option<Value>,
+}
+
+/// The pages this release's main index gave our text: (doc_id, engine,
+/// the batch of the copy that holds it).
+type LocalReplaced = Vec<(String, usnm_state::ocr_local::Engine, String)>;
 
 /// A full release refused to start because titles-sync left titles unfetched
 /// (`Release::titles_left`): nothing was published, and the next execution
@@ -830,6 +865,58 @@ impl Release {
             );
         }
 
+        // Our own OCR (12 §12.5 Step 9): listed once, loaded batch by batch
+        // as the build reaches each.
+        let local = if self.ocr_local && !overlay_only {
+            let listing = ocr_local::replace::Listing::list(self.curated.as_ref()).await?;
+            let revoked = ocr_local::replace::revocations(self.curated.as_ref()).await?;
+            // Pages of published batches only take ours at a full rebuild:
+            // how many would, by the scores `ocr-sync` stored.
+            let estimate = if indexed.is_empty() || listing.parts() == 0 {
+                None
+            } else {
+                let n = listing
+                    .estimate(
+                        self.curated.as_ref(),
+                        &indexed,
+                        |lccn| {
+                            catalog
+                                .title(lccn)
+                                .map(|t| t.languages.clone())
+                                .unwrap_or_default()
+                        },
+                        &revoked,
+                    )
+                    .await?;
+                tracing::info!(
+                    pages = n,
+                    "pages of ocr-local that would replace LoC's text in published batches, by \
+                     the scores ocr-sync stored: a full rebuild (USNM_INGEST_FULL) applies them"
+                );
+                Some(n)
+            };
+            tracing::info!(
+                parts = listing.parts(),
+                titles = listing.titles(),
+                revocations = revoked.len(),
+                "our OCR in ocr-local"
+            );
+            let ja: HashSet<String> = overlay
+                .pages
+                .iter()
+                .map(|p| p.key.doc_id())
+                .chain(latin_owned.keys().cloned())
+                .collect();
+            Some(LocalRun {
+                listing,
+                revoked,
+                ja,
+                estimate,
+            })
+        } else {
+            None
+        };
+
         // American Stories' text, listed once: the parts of the years the
         // writer has finished. With the setting on and nothing written yet,
         // nothing is built: a version without the text mustn't say it has it.
@@ -867,6 +954,7 @@ impl Release {
             writer: crate::sink::WriterTuning::from_env()?,
             american_stories: self.american_stories,
             ja_latin: self.ja_latin,
+            ocr_local: local.is_some(),
             decades,
             text_layout,
             analyzer,
@@ -904,8 +992,8 @@ impl Release {
         report.version(&version);
         report.step(Step::Indexing).await;
         let outcome = async {
-            let (docs, stories_record, replaced) = if overlay_only {
-                (0, None, Vec::new())
+            let (docs, stories_record, replaced, (local_tally, local_replaced)) = if overlay_only {
+                (0, None, Vec::new(), Default::default())
             } else {
                 self.build_index(
                     lease,
@@ -919,6 +1007,7 @@ impl Release {
                     &latin_new,
                     &latin_curated,
                     &latin_owned,
+                    local.as_ref(),
                     MainLayout {
                         decades,
                         text: text_layout,
@@ -931,6 +1020,16 @@ impl Release {
             let added_latin = (latin_new.len() + replaced.len()) as u64;
             latin_after.pages.extend(replaced);
             let stories_record = stories.as_ref().zip(stories_record.as_ref());
+            // The pages the version holds with our OCR's text.
+            let local_files = self
+                .ocr_local_files(
+                    previous.as_ref().filter(|_| !full),
+                    &version_batches,
+                    &dedup.hidden,
+                    &local_replaced,
+                    local.as_ref().map(|l| (l, &local_tally)),
+                )
+                .await?;
             let ja = self
                 .build_ja_index(lease, sink, &version, &overlay, &catalog, analyzer)
                 .await?;
@@ -961,6 +1060,7 @@ impl Release {
                         version: &latin_after,
                     },
                     stories_record,
+                    &local_files,
                     &build_info::record(&built),
                     analyzer,
                 )
@@ -1280,6 +1380,7 @@ impl Release {
         latin: &[(&ocr_ja::JaPage, String)],
         latin_curated: &HashMap<String, (&ocr_ja::JaPage, String)>,
         latin_owned: &HashMap<String, String>,
+        local: Option<&LocalRun>,
         layout: MainLayout,
         analyzer: Analyzer,
         report: &Reporter,
@@ -1287,6 +1388,7 @@ impl Release {
         u64,
         Option<american_stories::Record>,
         Vec<(String, JaLatinPage)>,
+        (ocr_local::replace::Tally, LocalReplaced),
     )> {
         // Every title must resolve before anything is written.
         let mut missing = BTreeSet::new();
@@ -1344,7 +1446,37 @@ impl Release {
         let mut record = stories.map(|_| american_stories::Record::default());
         // The pages given our Latin text in place of LoC's (#203).
         let mut replaced: Vec<(String, JaLatinPage)> = Vec::new();
+        // Our OCR from `ocr-local` weighed and given in place of LoC's (Step 9).
+        let mut local_tally = ocr_local::replace::Tally::default();
+        let mut local_replaced: LocalReplaced = Vec::new();
         for b in scope {
+            // This batch's titles' readings of ours, dropped after the batch.
+            let mine = match local {
+                Some(l)
+                    if l.listing
+                        .has_any(b.curated.lccns.iter().map(String::as_str)) =>
+                {
+                    lease.check()?;
+                    let loaded = l
+                        .listing
+                        .load(
+                            self.curated.as_ref(),
+                            b.curated.lccns.iter().map(String::as_str),
+                            &l.revoked,
+                        )
+                        .await?;
+                    tracing::info!(
+                        batch = %b.batch,
+                        pages = loaded.pages.len(),
+                        revoked = loaded.revoked.len(),
+                        parts = loaded.parts.len(),
+                        "our OCR for the batch's titles"
+                    );
+                    local_tally.add_parts(&loaded.parts);
+                    loaded
+                }
+                _ => ocr_local::replace::Loaded::default(),
+            };
             // This batch's American Stories texts, dropped after the batch.
             let texts = match stories {
                 Some(source) => {
@@ -1391,7 +1523,36 @@ impl Release {
                         .get(&doc_id)
                         .filter(|(_, t)| ocr_ja::better_than_locs(t, row.text.as_deref()));
                     let ok = row.status == TextStatus::Ok;
-                    if !ok && text_as.is_none() && ours.is_none() {
+                    let title = catalog.title(&row.key.lccn).context("title")?;
+                    // Our own OCR of the page, where rule v1 prefers it to
+                    // LoC's text (Step 9). The Japanese overlay wins.
+                    let mut local_text: Option<&str> = None;
+                    if let Some(c) = mine.pages.get(&doc_id) {
+                        if let (Some(l), None) = (local, ours) {
+                            if l.ja.contains(&doc_id) {
+                                local_tally.keep("japanese_ocr");
+                            } else {
+                                let langs: Vec<&str> =
+                                    title.languages.iter().map(String::as_str).collect();
+                                let (scores, _, verdict) =
+                                    ocr_local::rule::judge(&c.text, row.text.as_deref(), &langs);
+                                local_tally.weighed(c, &scores, verdict);
+                                if verdict.is_ok() {
+                                    local_text = Some(c.text.as_str());
+                                    local_replaced.push((
+                                        doc_id.clone(),
+                                        c.engine(),
+                                        b.batch.clone(),
+                                    ));
+                                }
+                            }
+                        } else {
+                            local_tally.keep("japanese_ocr");
+                        }
+                    } else if mine.revoked.contains(&doc_id) {
+                        local_tally.keep("revoked");
+                    }
+                    if !ok && text_as.is_none() && ours.is_none() && local_text.is_none() {
                         return Ok(());
                     }
                     // A copy without LoC's text of a page whose document is
@@ -1405,9 +1566,8 @@ impl Release {
                         return Ok(());
                     }
                     with_as += u64::from(text_as.is_some());
-                    only_as += u64::from(!ok && ours.is_none());
+                    only_as += u64::from(!ok && ours.is_none() && local_text.is_none());
                     without_locs += u64::from(!ok);
-                    let title = catalog.title(&row.key.lccn).context("title")?;
                     let place = catalog.place(&title.place_id).context("place")?;
                     part_docs.push(match ours {
                         Some((p, text)) => {
@@ -1423,7 +1583,12 @@ impl Release {
                             ));
                             main_doc(&row.key, &row.batch, text, title, place, text_as, format)
                         }
-                        None => page_doc(&row, title, place, text_as, format),
+                        None => match local_text {
+                            Some(text) => {
+                                main_doc(&row.key, &row.batch, text, title, place, text_as, format)
+                            }
+                            None => page_doc(&row, title, place, text_as, format),
+                        },
                     });
                     Ok(())
                 })
@@ -1494,9 +1659,17 @@ impl Release {
             r = sink.finish(docs) => r?,
             () = lease.lost() => lease.check()?,
         }
+        if local.is_some() {
+            tracing::info!(
+                considered = local_tally.considered,
+                replaced = local_tally.replaced,
+                kept = ?local_tally.kept,
+                "weighed our OCR against LoC's text"
+            );
+        }
         progress.snapshot().log(None);
         progress::report(&self.state, version, &progress.snapshot()).await;
-        Ok((docs, record, replaced))
+        Ok((docs, record, replaced, (local_tally, local_replaced)))
     }
 
     /// Whether a release with no newly curated batches and no Latin text
@@ -1618,6 +1791,7 @@ impl Release {
         ja: Option<&(String, u64)>,
         latin: &Latin<'_>,
         stories: Option<(&american_stories::Source, &american_stories::Record)>,
+        local: &LocalFiles,
         build: &Value,
         analyzer: Analyzer,
     ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
@@ -1787,6 +1961,17 @@ impl Release {
                 serde_json::to_vec(&record.file(source))?,
             ));
         }
+        // Our OCR from `ocr-local` (Step 9): the pages the main indexes hold
+        // with it, for the API, and with the setting, how this run weighed it.
+        if let Some(body) = &local.pages {
+            snapshot_files.push((usnm_state::ocr_local::OCR_LOCAL_PAGES_FILE, body.clone()));
+        }
+        if let Some(record) = &local.record {
+            snapshot_files.push((
+                usnm_state::ocr_local::OCR_LOCAL_FILE,
+                serde_json::to_vec(record)?,
+            ));
+        }
         let mut files = Vec::new();
         for (name, body) in snapshot_files {
             files.push(json!({
@@ -1814,6 +1999,9 @@ impl Release {
         }
         if let Some((source, record)) = stories {
             manifest["built_from"]["american_stories"] = record.summary(source);
+        }
+        if let Some(summary) = &local.summary {
+            manifest["built_from"]["ocr_local"] = summary.clone();
         }
         // What built it (#161), with the index templates in full.
         manifest["build"] = build.clone();
@@ -1871,6 +2059,98 @@ impl Release {
         Ok(found)
     }
 
+    /// The version's [`LocalFiles`]: the published version's pages carried
+    /// forward on a delta (`previous`), less the copies the version hides,
+    /// plus `replaced`; and with the setting, the record of this run.
+    async fn ocr_local_files(
+        &self,
+        previous: Option<&IndexRun>,
+        batches: &[RunBatch],
+        hidden: &[dedup::Hidden],
+        replaced: &LocalReplaced,
+        run: Option<(&LocalRun, &ocr_local::replace::Tally)>,
+    ) -> anyhow::Result<LocalFiles> {
+        use usnm_state::ocr_local::{Builder, OcrLocalPages, OCR_LOCAL_PAGES_FILE};
+        let index: HashMap<&str, u16> = batches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| Ok((b.batch.as_str(), u16::try_from(i)?)))
+            .collect::<Result<_, std::num::TryFromIntError>>()
+            .context("more than 65,536 batches")?;
+        // A delta's batch list starts with its published version's, in the
+        // same order, so the published indexes still hold.
+        let mut pages = match previous {
+            Some(prev) => {
+                let path = format!("{}/{OCR_LOCAL_PAGES_FILE}", prev.index_version);
+                match self.reference.get(&path).await? {
+                    Some(bytes) => {
+                        let before = OcrLocalPages::decode(&bytes, batches.len())
+                            .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+                        Builder::from_pages(&before, |e| Some(e.batch))
+                            .map_err(|e| anyhow::anyhow!("{path}: {e}"))?
+                    }
+                    None => Builder::default(),
+                }
+            }
+            None => Builder::default(),
+        };
+        let carried = pages.len();
+        // A copy the version hides isn't what its hits show.
+        let mut dropped = 0u64;
+        for h in hidden {
+            if pages.batch_of(&h.doc_id).is_some()
+                && pages.batch_of(&h.doc_id) == index.get(h.batch.as_str()).copied()
+            {
+                pages.remove(&h.doc_id);
+                dropped += 1;
+            }
+        }
+        for (doc_id, engine, batch) in replaced {
+            let i = *index
+                .get(batch.as_str())
+                .with_context(|| format!("`{batch}` isn't in the version"))?;
+            pages
+                .add(doc_id, engine.clone(), i)
+                .map_err(|e| anyhow::anyhow!(e))?;
+        }
+        if dropped > 0 {
+            tracing::warn!(
+                pages = dropped,
+                "pages indexed with our OCR's text now have another copy; dropping them"
+            );
+        }
+        let pages = pages.finish();
+        let mut files = LocalFiles {
+            pages: (!pages.is_empty())
+                .then(|| pages.encode())
+                .transpose()
+                .map_err(|e| anyhow::anyhow!(e))?,
+            ..LocalFiles::default()
+        };
+        if let Some((run, tally)) = run {
+            let summary = tally.parts_summary();
+            let mut record = ocr_local::rule::record();
+            record["parts"] = summary.clone();
+            record["pages"] = serde_json::to_value(tally)?;
+            record["version"] = json!({
+                "pages": pages.len(),
+                "carried": carried,
+                "dropped": dropped,
+                "added": replaced.len(),
+            });
+            record["revocations"] = run
+                .revoked
+                .iter()
+                .map(|r| json!({"path": r.path, "reason": r.reason, "reference": r.reference}))
+                .collect();
+            // Of published batches, by stored scores (`Listing::estimate`).
+            record["estimate_published"] = json!(run.estimate);
+            files.record = Some(record);
+            files.summary = Some(summary);
+        }
+        Ok(files)
+    }
+
     /// The pages `version`'s main indexes hold with our Latin text (its
     /// `ja_latin.json`; none if it has none).
     async fn previous_latin(&self, version: &str) -> anyhow::Result<JaLatin> {
@@ -1882,11 +2162,13 @@ impl Release {
     }
 
     async fn put_new(&self, path: &str, body: Vec<u8>) -> anyhow::Result<()> {
-        if !self
-            .reference
-            .put_new(path, body, "application/json")
-            .await?
-        {
+        // Every snapshot file is JSON but `ocr_local_pages.bin`.
+        let content_type = if path.ends_with(".bin") {
+            "application/octet-stream"
+        } else {
+            "application/json"
+        };
+        if !self.reference.put_new(path, body, content_type).await? {
             bail!("`{path}` already exists; reference snapshots are immutable");
         }
         Ok(())
