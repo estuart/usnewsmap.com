@@ -291,6 +291,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "linechart",
+        "aggregation": 5,
         "timeContext": {
           "durationMs": 2592000000
         },
@@ -312,6 +313,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "linechart",
+        "aggregation": 5,
         "timeContext": {
           "durationMs": 2592000000
         },
@@ -333,6 +335,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "linechart",
+        "aggregation": 5,
         "timeContext": {
           "durationMs": 2592000000
         },
@@ -354,6 +357,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "linechart",
+        "aggregation": 2,
         "timeContext": {
           "durationMs": 2592000000
         },
