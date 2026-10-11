@@ -541,8 +541,9 @@ fn wildcard_word(text: &str, pos: usize, analyzer: Analyzer) -> Result<Node, Que
             pattern.push_str(&folded);
         }
     }
-    // The index drops words over MAX_TOKEN_CHARS (`remove_long`), so no word
-    // can match a pattern that needs more characters than that.
+    // No query word is longer than MAX_TOKEN_CHARS, and the fields our code
+    // writes drop longer ones; `text` keeps OCR runs up to 254 bytes (#286),
+    // but no pattern needs to be longer to search them.
     if pattern.chars().filter(|&c| c != '*').count() > MAX_TOKEN_CHARS {
         return Err(QueryError::at(
             format!("a word with * or ? can't be longer than {MAX_TOKEN_CHARS} letters"),

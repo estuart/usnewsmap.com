@@ -8,7 +8,12 @@ doc_mapping:
   mode: strict
   timestamp_field: date
   tokenizers:
-    # Unicode word split, lowercase, ASCII folding, drop OCR runs > 40 chars.
+    # Unicode word split, drop OCR runs of 255 bytes or more (remove_long's
+    # fixed limit, measured before folding; the run keeps its position),
+    # lowercase, ASCII folding. So `text` and `text_as` keep runs of 41 to
+    # 254 bytes as words, where text_cg, text_as_cg and the one-field layout's
+    # text_all (written by the release) have `_` for any word over 40
+    # characters (05 §5.5, #286).
     # No stemming or stop words: phrases like "cross of gold" need "of".
     - name: usnm_text
       type: simple

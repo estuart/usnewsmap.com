@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use async_trait::async_trait;
 use usnm_core::params::Filters;
 use usnm_core::query::{wildcard_matches, Node, Term};
-use usnm_core::text::{fold, tokenize, Analyzer, USNM_TEXT};
+use usnm_core::text::{fold, index_tokens, tokenize, Analyzer, MAX_TOKEN_CHARS, USNM_TEXT};
 use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
 
@@ -17,23 +17,81 @@ use crate::{
     KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
+/// One position of an indexed text: the word there, or none where the
+/// engine drops a word but still counts its position, so no term matches it
+/// and no phrase matches across it.
+pub trait Position {
+    fn word(&self) -> Option<&str>;
+}
+
+impl Position for String {
+    fn word(&self) -> Option<&str> {
+        Some(self)
+    }
+}
+
+impl Position for Option<String> {
+    fn word(&self) -> Option<&str> {
+        self.as_deref()
+    }
+}
+
+/// One text of a page as the main index's fields hold it, for each layout
+/// (05 §5.5.7).
+struct Words {
+    /// As Quickwit's `usnm_text` indexes `text` and `text_as` (layout 1):
+    /// a word of 255 bytes or more dropped, a shorter one kept however
+    /// long ([`index_tokens`], #286).
+    separate: Vec<Option<String>>,
+    /// As the release writes `text_all` (layout 2,
+    /// `usnm_core::text_layout::index_fields`), where that differs: words
+    /// over [`MAX_TOKEN_CHARS`] dropped too, keeping their positions.
+    single: Option<Vec<Option<String>>>,
+}
+
+impl Words {
+    fn new(separate: Vec<Option<String>>) -> Self {
+        let long = |w: &Option<String>| {
+            w.as_ref()
+                .is_some_and(|w| w.chars().count() > MAX_TOKEN_CHARS)
+        };
+        let single = separate.iter().any(long).then(|| {
+            separate
+                .iter()
+                .map(|w| if long(w) { None } else { w.clone() })
+                .collect()
+        });
+        Self { separate, single }
+    }
+
+    fn get(&self, layout: TextLayout) -> &[Option<String>] {
+        match layout {
+            TextLayout::Separate => &self.separate,
+            TextLayout::Single => self.single.as_deref().unwrap_or(&self.separate),
+        }
+    }
+}
+
 struct Indexed {
     doc: PageDoc,
     /// The page's words as Quickwit indexes them: `usnm_text`'s tokens of
-    /// `text`, whatever analyzer version built the index (#168), or a
-    /// Japanese page's tokens as written (`whitespace`).
-    tokens: Vec<String>,
+    /// `text`, whatever analyzer version built the index (#168), with the
+    /// positions of the ones it drops, or a Japanese page's tokens as
+    /// written (`whitespace`).
+    tokens: Words,
     /// American Stories' text's tokens (05 §5.5.4), when the page has it.
-    as_tokens: Option<Vec<String>>,
+    as_tokens: Option<Words>,
 }
 
 impl Indexed {
-    /// The token streams a search reads: LoC's text, and American Stories'
-    /// when the index set searches it.
-    fn texts(&self, american_stories: bool) -> Vec<&[String]> {
-        let mut out = vec![self.tokens.as_slice()];
-        if american_stories {
-            out.extend(self.as_tokens.as_deref());
+    /// The token streams a search of `indexes` reads, as its layout has
+    /// them: LoC's text, and American Stories' when the index set searches
+    /// it.
+    fn texts(&self, indexes: &IndexSet) -> Vec<&[Option<String>]> {
+        let layout = indexes.text_layout();
+        let mut out = vec![self.tokens.get(layout)];
+        if indexes.american_stories() {
+            out.extend(self.as_tokens.as_ref().map(|t| t.get(layout)));
         }
         out
     }
@@ -101,17 +159,25 @@ impl MemoryBackend {
 
     pub fn add_index(&mut self, index_id: &str, docs: impl IntoIterator<Item = PageDoc>) {
         let entry = self.indexes.entry(index_id.to_owned()).or_default();
-        entry.extend(docs.into_iter().map(|doc| Indexed {
-            // A Japanese page's text is already its tokens (Quickwit's
-            // `whitespace` tokenizer, pages-ja-index.yaml); folding them again
-            // would strip dakuten (が → か).
-            tokens: if doc.printed.is_some() {
-                doc.text.split_whitespace().map(str::to_owned).collect()
-            } else {
-                tokenize(&doc.text, USNM_TEXT)
-            },
-            as_tokens: doc.text_as.as_deref().map(|t| tokenize(t, USNM_TEXT)),
-            doc,
+        entry.extend(docs.into_iter().map(|doc| {
+            Indexed {
+                // A Japanese page's text is already its tokens (Quickwit's
+                // `whitespace` tokenizer, pages-ja-index.yaml); folding them again
+                // would strip dakuten (が → か).
+                tokens: Words::new(if doc.printed.is_some() {
+                    doc.text
+                        .split_whitespace()
+                        .map(|w| Some(w.to_owned()))
+                        .collect()
+                } else {
+                    index_tokens(&doc.text, USNM_TEXT)
+                }),
+                as_tokens: doc
+                    .text_as
+                    .as_deref()
+                    .map(|t| Words::new(index_tokens(t, USNM_TEXT))),
+                doc,
+            }
         }));
     }
 
@@ -147,10 +213,7 @@ impl MemoryBackend {
                         .as_ref()
                         .is_some_and(|s| filters.series.contains(s)))
                 && !indexes.hides(&doc.doc_id, &doc.batch)
-                && eval_texts(
-                    d.reads(query, &analyzed),
-                    &d.texts(indexes.american_stories()),
-                )
+                && eval_texts(d.reads(query, &analyzed), &d.texts(indexes))
         }))
     }
 }
@@ -258,7 +321,7 @@ impl SearchBackend for MemoryBackend {
             .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.doc.lccn == l))
             .map(|d| {
                 let mentions: usize = d
-                    .texts(indexes.american_stories())
+                    .texts(indexes)
                     .into_iter()
                     .map(|t| mentions(d.reads(query, &analyzed), t))
                     .sum();
@@ -337,7 +400,9 @@ impl SearchBackend for MemoryBackend {
             .matching(&both, query, filters)?
             .filter(|d| {
                 let q = d.reads(query, &analyzed);
-                !eval(q, &d.tokens) && d.as_tokens.as_ref().is_some_and(|t| eval(q, t))
+                let layout = TextLayout::Separate;
+                !eval(q, d.tokens.get(layout))
+                    && d.as_tokens.as_ref().is_some_and(|t| eval(q, t.get(layout)))
             })
             .count();
         Ok(only as u64)
@@ -366,8 +431,9 @@ fn cells<'a>(docs: impl Iterator<Item = &'a Indexed>, spec: &BucketSpec) -> Vec<
         .collect()
 }
 
-/// Evaluate the AST against a document's token stream.
-pub fn eval(node: &Node, tokens: &[String]) -> bool {
+/// Evaluate the AST against a document's token stream: its words, or its
+/// positions ([`Position`]) where the engine drops some words.
+pub fn eval<T: Position>(node: &Node, tokens: &[T]) -> bool {
     eval_texts(node, &[tokens])
 }
 
@@ -375,11 +441,11 @@ pub fn eval(node: &Node, tokens: &[String]) -> bool {
 /// phrase matches when it matches in any one of them (a phrase within one
 /// text), and the operators combine those as usual, so `NOT x` excludes a
 /// page with `x` in any text.
-pub fn eval_texts(node: &Node, texts: &[&[String]]) -> bool {
+pub fn eval_texts<T: Position>(node: &Node, texts: &[&[T]]) -> bool {
     match node {
         Node::Term(t) => texts
             .iter()
-            .any(|tokens| tokens.iter().any(|tok| term_matches(t, tok))),
+            .any(|tokens| tokens.iter().any(|tok| term_at(t, tok))),
         Node::Phrase { terms, slop } => texts
             .iter()
             .any(|tokens| phrase_matches(terms, *slop, tokens)),
@@ -387,6 +453,16 @@ pub fn eval_texts(node: &Node, texts: &[&[String]]) -> bool {
         Node::Or(c) => c.iter().any(|n| eval_texts(n, texts)),
         Node::Not(n) => !eval_texts(n, texts),
     }
+}
+
+/// Whether a term matches the word at a position: never where it was dropped.
+fn term_at<T: Position>(t: &Term, tok: &T) -> bool {
+    tok.word().is_some_and(|w| term_matches(t, w))
+}
+
+/// Whether a query's word matches the word at a position.
+fn word_at<T: Position>(word: &str, tok: &T) -> bool {
+    tok.word().is_some_and(|w| word_matches(word, w))
 }
 
 /// Whether a term matches one indexed word.
@@ -415,29 +491,29 @@ pub(crate) fn word_matches(word: &str, token: &str) -> bool {
 }
 
 /// Ordered phrase match where the total number of extra words between
-/// consecutive terms is at most `slop`.
-fn phrase_matches(terms: &[String], slop: u8, tokens: &[String]) -> bool {
+/// consecutive terms is at most `slop`. A dropped word's position counts as
+/// an extra word.
+fn phrase_matches<T: Position>(terms: &[String], slop: u8, tokens: &[T]) -> bool {
     phrase_starts(terms, slop, tokens).next().is_some()
 }
 
 /// Where in `tokens` the phrase starts a match, within `slop` extra words.
-fn phrase_starts<'a>(
+fn phrase_starts<'a, T: Position>(
     terms: &'a [String],
     slop: u8,
-    tokens: &'a [String],
+    tokens: &'a [T],
 ) -> impl Iterator<Item = usize> + 'a {
-    fn from(terms: &[String], tokens: &[String], pos: usize, budget: usize) -> bool {
+    fn from<T: Position>(terms: &[String], tokens: &[T], pos: usize, budget: usize) -> bool {
         let Some((first, rest)) = terms.split_first() else {
             return true;
         };
         let end = (pos + budget + 1).min(tokens.len());
-        (pos..end).any(|i| {
-            word_matches(first, &tokens[i]) && from(rest, tokens, i + 1, budget - (i - pos))
-        })
+        (pos..end)
+            .any(|i| word_at(first, &tokens[i]) && from(rest, tokens, i + 1, budget - (i - pos)))
     }
     tokens.iter().enumerate().filter_map(move |(i, t)| {
         let (first, rest) = terms.split_first()?;
-        (word_matches(first, t) && from(rest, tokens, i + 1, usize::from(slop))).then_some(i)
+        (word_at(first, t) && from(rest, tokens, i + 1, usize::from(slop))).then_some(i)
     })
 }
 
@@ -476,9 +552,9 @@ fn counts(m: BTreeMap<&str, u64>) -> Vec<KeyCount> {
 /// matches, and each place an exact or NEAR phrase matches as a phrase (not
 /// its words one by one, so the `of` in "cross of gold" counts only there).
 /// The reference for "most mentions first" (`HitSort::Relevant`).
-fn mentions(node: &Node, tokens: &[String]) -> usize {
+fn mentions<T: Position>(node: &Node, tokens: &[T]) -> usize {
     match node {
-        Node::Term(t) => tokens.iter().filter(|tok| term_matches(t, tok)).count(),
+        Node::Term(t) => tokens.iter().filter(|tok| term_at(t, *tok)).count(),
         Node::Phrase { terms, slop } => phrase_starts(terms, *slop, tokens).count(),
         Node::And(c) | Node::Or(c) => c.iter().map(|n| mentions(n, tokens)).sum(),
         Node::Not(_) => 0,
@@ -822,6 +898,89 @@ mod shard_tests {
         // finds only where they are printed: `a㊀` is the term `a一`.
         assert_eq!(ids(hits(Analyzer::V1, "a㊀").await), [id(3)]);
         assert_eq!(ids(hits(Analyzer::V1, "㊀").await), [id(4)]);
+    }
+
+    /// Quickwit's `text` and `text_as` keep a word of up to 254 bytes and
+    /// drop a longer one, keeping its position; `text_all` (layout 2) drops
+    /// a word over 40 characters, keeping its position too (#286).
+    #[tokio::test]
+    async fn long_words_are_kept_or_dropped_as_each_layout_indexes_them() {
+        let (kept, dropped) = ("Qzxwy".repeat(12), "Vyxwz".repeat(51));
+        assert_eq!((kept.len(), dropped.len()), (60, 255));
+        let mut long = doc(1, 1);
+        long.text = format!("cable garbled {kept} wharfage tolls; signal {dropped} semaphore");
+        let mut american = doc(2, 1);
+        american.text = "local news".into();
+        american.text_as = Some(format!("lamps {kept} lit"));
+        let mut b = MemoryBackend::new();
+        b.add_index("i", [long, american]);
+        let separate = IndexSet::new(vec!["i".into()]).with_american_stories(true);
+        let single = separate.clone().with_text_layout(TextLayout::Single);
+        let f = Filters {
+            from: usnm_core::time::date_from_day(71_000),
+            to: usnm_core::time::date_from_day(71_300),
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+            series: Vec::new(),
+        };
+        let page = HitsQuery {
+            limit: 10,
+            ..HitsQuery::default()
+        };
+        let ids = |set: &IndexSet, q: &str| {
+            let (b, f, page, set) = (&b, &f, &page, set.clone());
+            let q = usnm_core::query::parse(q).unwrap();
+            async move {
+                let hits = b.hits(&set, &q, f, page).await.unwrap();
+                hits.hits.into_iter().map(|h| h.doc_id).collect::<Vec<_>>()
+            }
+        };
+        let (one, two) = (doc(1, 1).doc_id, doc(2, 1).doc_id);
+        for set in [&separate, &single] {
+            // No phrase across either word, in either layout: each keeps
+            // its position, which a phrase with one word of slop spans.
+            for q in [r#""garbled wharfage""#, r#""signal semaphore""#] {
+                assert!(ids(set, q).await.is_empty(), "{q}");
+            }
+            for q in [r#""garbled wharfage"~1"#, r#""signal semaphore"~1"#] {
+                assert_eq!(ids(set, q).await, std::slice::from_ref(&one), "{q}");
+            }
+            // The 255-byte word is in neither.
+            assert!(ids(set, "vyxwz*").await.is_empty());
+        }
+        // The 60-letter word is a word of `text` and `text_as`, which a
+        // prefix or a wildcard reaches, and not of `text_all`.
+        for q in ["qzxwy*", "qzxwy*yqzxwy", "qzxwy?zxw*"] {
+            assert_eq!(ids(&separate, q).await, [one.clone(), two.clone()], "{q}");
+            assert!(ids(&single, q).await.is_empty(), "{q}");
+        }
+        // Only American Stories' text has it on the second page.
+        let q = usnm_core::query::parse("qzxwy*").unwrap();
+        assert_eq!(b.american_stories_only(&separate, &q, &f).await.unwrap(), 1);
+        let hits = b.hits(&separate, &q, &f, &page).await.unwrap().hits;
+        let mark = format!("cable garbled <mark>{kept}</mark> wharfage");
+        assert!(
+            hits[0].snippets[0].starts_with(&mark),
+            "{:?}",
+            hits[0].snippets
+        );
+        assert_eq!(hits[1].matched_in, Some(vec!["american_stories"]));
+    }
+
+    #[test]
+    fn dropped_words_keep_their_positions_in_a_phrase() {
+        use usnm_core::query::parse;
+        let text = format!("cross of {} gold, cross of gold", "x".repeat(255));
+        let t = index_tokens(&text, USNM_TEXT);
+        assert_eq!(t.iter().filter(|w| w.is_none()).count(), 1);
+        let phrase = parse(r#""of gold""#).unwrap();
+        assert_eq!(mentions(&phrase, &t), 1);
+        assert_eq!(mentions(&parse(r#""of gold"~1"#).unwrap(), &t), 2);
+        assert!(!eval(&parse("xxxxx*").unwrap(), &t));
+        // `tokenize` loses the position, so the phrase would match twice.
+        assert_eq!(mentions(&phrase, &tokenize(&text, USNM_TEXT)), 2);
     }
 
     #[test]

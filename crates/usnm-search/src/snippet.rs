@@ -5,7 +5,7 @@
 //! (which its REST API can't lengthen) no longer decides what readers see.
 
 use usnm_core::query::{Node, Term};
-use usnm_core::text::{fold, tokenize, MAX_TOKEN_CHARS, USNM_TEXT};
+use usnm_core::text::{fold, index_tokens, REMOVE_LONG_BYTES, USNM_TEXT};
 
 use crate::memory::{as_analyzed, eval, term_matches, word_matches};
 use crate::{mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES};
@@ -17,7 +17,8 @@ pub const CONTEXT: usize = 80;
 
 /// One word as the analyzer counts positions: its folded token, or `None`
 /// for an over-long OCR run the analyzer drops but still counts as a
-/// position (05 §5.5.3), and its character range in the text.
+/// position (255 bytes or more, as `text` and `text_as` index them,
+/// [`index_tokens`], #286), and its character range in the text.
 struct Word {
     token: Option<String>,
     start: usize,
@@ -39,10 +40,9 @@ fn words(chars: &[char]) -> Vec<Word> {
             i += 1;
         }
         let raw: String = chars[start..i].iter().collect();
-        let token = fold(&raw, USNM_TEXT);
         // A dropped run keeps its position, so a phrase can't match across it.
         out.push(Word {
-            token: (token.chars().count() <= MAX_TOKEN_CHARS).then_some(token),
+            token: (raw.len() < REMOVE_LONG_BYTES).then(|| fold(&raw, USNM_TEXT)),
             start,
             end: i,
         });
@@ -226,14 +226,15 @@ pub fn page_snippets(
 /// Evaluated as the memory backend evaluates a query, so a page listed
 /// without `loc` is one a search of LoC's text alone doesn't find: the
 /// pages `/v1/aggregate` counts in `total.american_stories_only`. Both
-/// backends use it.
+/// backends use it. The texts are read as `text` and `text_as` index them
+/// ([`index_tokens`]), where that count is made.
 pub fn matched_in(text: &str, text_as: Option<&str>, query: &Node) -> Vec<&'static str> {
     let Some(text_as) = text_as else {
         return vec![MATCHED_IN_LOC];
     };
     let query = as_analyzed(query);
-    let loc = eval(&query, &tokenize(text, USNM_TEXT));
-    let american = eval(&query, &tokenize(text_as, USNM_TEXT));
+    let loc = eval(&query, &index_tokens(text, USNM_TEXT));
+    let american = eval(&query, &index_tokens(text_as, USNM_TEXT));
     match (loc, american) {
         (true, false) => vec![MATCHED_IN_LOC],
         (false, true) => vec![SNIPPETS_FROM_AMERICAN_STORIES],
@@ -357,12 +358,20 @@ mod tests {
 
     #[test]
     fn a_dropped_ocr_run_breaks_a_phrase() {
-        // The analyzer drops runs over 40 characters but keeps their position.
-        let run = "x".repeat(41);
-        assert!(snip(&format!("cross {run} of gold"), "\"cross of gold\"").is_empty());
+        // A run of 41 to 254 bytes is a word of `text`, and one of 255 or
+        // more is dropped; both keep their positions (#286).
+        for run in ["x".repeat(41), "x".repeat(254), "x".repeat(255)] {
+            assert!(snip(&format!("cross {run} of gold"), "\"cross of gold\"").is_empty());
+            assert_eq!(
+                snip(&format!("{run} gold"), "gold"),
+                [format!("{run} <mark>gold</mark>")]
+            );
+        }
+        // A prefix reaches the first, as on `text`.
+        let (kept, dropped) = ("y".repeat(254), "z".repeat(255));
         assert_eq!(
-            snip(&format!("{run} gold"), "gold"),
-            [format!("{run} <mark>gold</mark>")]
+            snip(&format!("{kept} {dropped}"), "yyyyy* zzzzz*"),
+            [format!("<mark>{kept}</mark> {dropped}")]
         );
     }
 

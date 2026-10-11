@@ -7,10 +7,12 @@
 //! within 2 words 9 s (06 §6.5).
 //!
 //! The field has the same positions as `text`: one token per word. A word
-//! the analyzer drops (longer than [`MAX_TOKEN_CHARS`]) keeps its position
-//! as [`GAP`]. A common word's token holds the next word's, so a phrase whose
-//! words map through [`query_terms`] matches at a position in `text_cg`
-//! exactly when the words are at that position in `text`: a non-common word
+//! longer than [`MAX_TOKEN_CHARS`], which no query has, keeps its position
+//! as [`GAP`], whether `text` drops it (255 bytes or more) or keeps it
+//! (`crate::text::index_tokens`, #286). A common word's token holds the
+//! next word's, so a phrase whose words map through [`query_terms`]
+//! matches at a position in `text_cg` exactly when the words are at that
+//! position in `text`: a non-common word
 //! is its own token, and a common one checks the word after it as well.
 //! Only the last word of the phrase has no word after it to check, so a
 //! phrase ending in a common word stays on `text`.
