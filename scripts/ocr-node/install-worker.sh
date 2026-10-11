@@ -203,7 +203,7 @@ echo "binary sha256 $BIN_SUM; Tesseract image $IMAGE_ID"
 step "/etc/usnm/ocr-worker.env"
 # The connection string isn't a secret (ingestion needs an Entra token as
 # well), but it needn't be in a terminal's scrollback either.
-sed -E 's/(InstrumentationKey=)[^;"]*/\1.../' "$TMP/ocr-worker.env"
+sed -E 's/^(APPLICATIONINSIGHTS_CONNECTION_STRING=).*/\1"<OCR_NODE_APPINSIGHTS>"/' "$TMP/ocr-worker.env"
 
 if [ "$DRY_RUN" = true ]; then
   step "Dry run"
