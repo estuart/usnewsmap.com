@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The scan-fetch container on pve-big (#368, 12 §12.2.4): an unprivileged
 # Debian 12 LXC whose only job is `usnm-ocr-worker prefetch`, fetching
-# scans from LoC into the host's tank/ocr/scans. It holds no Azure
-# credentials; the manifest reaches /tank/ocr/manifests from a node
-# (pull-manifest.sh). Run on the Proxmox host as root, after
-# pve-ocr-storage.sh; safe to run again.
+# scans from LoC into the host's tank/ocr/scans, and serving them to the
+# OCR nodes over HTTP (serve-scans). It holds no Azure credentials; a node
+# PUTs the manifest to the scan server (pull-manifest.sh). Run on the
+# Proxmox host as root, after pve-ocr-storage.sh; safe to run again.
 #
 #   scanfetch-ct.sh --create [--ctid 211] [--hostname usnm-scanfetch]
 #     [--storage ssd] [--bridge vmbr0] [--cores 2] [--memory 4096] [--swap 512]
@@ -15,10 +15,12 @@
 #     [--resolution full] [--buffer-resolution full] [--sets both]
 #     [--buffer-cap BYTES] [--order priority] [--max-total-bytes N]
 #     [--concurrency 2] [--enable] [--ctid 211]
+#   scanfetch-ct.sh --serve --allow 192.168.0.192,192.168.0.243 [--port 8380]
+#     [--ctid 211]
 #
 # --create makes the container (onboot, one NIC on --bridge with DHCP,
 # nesting for systemd's sandboxing) with <data>/scans bind-mounted
-# read-write at /tank/ocr/scans (mp0) and <data>/manifests read-only at
+# read-write at /tank/ocr/scans (mp0) and <data>/manifests read-write at
 # /tank/ocr/manifests (mp1), and inside it the user scanfetch, uid and gid
 # 2000, which the unprivileged mapping makes the host's 102000 (ocrdata).
 # --install downloads the release's usnm-ocr-worker and SHA256SUMS inside
@@ -27,9 +29,14 @@
 # --configure writes /etc/usnm/scanfetch.env and the unit
 # (usnm-scanfetch.service, beside this script), and with --enable starts it
 # (restarts it if it was running, which goes on where it stopped).
+# --serve installs nftables in the container with a rule that drops the
+# scan server's port from anyone but --allow, writes
+# /etc/usnm/scanserve.env and the unit usnm-scanserve.service, and starts
+# it. The manifests mount must be read-write for the server's PUT; a
+# container made before that is switched over and must be restarted.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,28s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,36s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 CTID=211 NAME=usnm-scanfetch STORAGE=ssd BRIDGE=vmbr0 CORES=2 MEMORY=4096 SWAP=512
@@ -37,6 +44,7 @@ TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst DATA=/tank/ocr
 CREATE=false INSTALL=false CONFIGURE=false ENABLE=false RELEASE=""
 MANIFEST="" RESOLUTION=full ORDER=priority MAX_BYTES="" CONCURRENCY=2
 BUFFER_RESOLUTION=full SETS=both BUFFER_CAP=1000000000000
+SERVE=false ALLOW="" PORT=8380
 REPO=tgoodyear/usnewsmap.com
 FETCH_UID=2000
 while [ $# -gt 0 ]; do
@@ -63,11 +71,14 @@ while [ $# -gt 0 ]; do
     --sets) SETS=${2:-}; shift 2 ;;
     --buffer-cap) BUFFER_CAP=${2:-}; shift 2 ;;
     --concurrency) CONCURRENCY=${2:-}; shift 2 ;;
+    --serve) SERVE=true; shift ;;
+    --allow) ALLOW=${2:-}; shift 2 ;;
+    --port) PORT=${2:-}; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
   esac
 done
-$CREATE || $INSTALL || $CONFIGURE || usage
+$CREATE || $INSTALL || $CONFIGURE || $SERVE || usage
 [[ $CTID =~ ^[0-9]+$ ]] || die "--ctid: a number"
 [[ $MEMORY =~ ^[0-9]+$ && $SWAP =~ ^[0-9]+$ ]] || die "--memory and --swap: MB"
 [ "$(id -u)" = 0 ] || die "run as root on the Proxmox host"
@@ -84,7 +95,7 @@ if $CREATE; then
       --rootfs "$STORAGE:4" --onboot 1 --ostype debian \
       --net0 "name=eth0,bridge=$BRIDGE,ip=dhcp,firewall=0" \
       --mp0 "$DATA/scans,mp=/tank/ocr/scans" \
-      --mp1 "$DATA/manifests,mp=/tank/ocr/manifests,ro=1" \
+      --mp1 "$DATA/manifests,mp=/tank/ocr/manifests" \
       --description "usnewsmap scan prefetch (#368): the only LoC fetcher while it runs. scripts/ocr-node/scanfetch-ct.sh"
   else
     # Memory and swap apply live; the rest of an existing CT is left as it is.
@@ -155,4 +166,45 @@ USNM_PREFETCH_MAX_TOTAL_BYTES=$MAX_BYTES"
     sleep 5
     in_ct systemctl --no-pager status usnm-scanfetch.service | head -5
   fi
+fi
+
+if $SERVE; then
+  [[ $PORT =~ ^[0-9]{2,5}$ ]] || die "--port: a port number"
+  IFS=, read -r -a IPS <<< "$ALLOW"
+  [ "${#IPS[@]}" -gt 0 ] || die "--serve needs --allow"
+  for ip in "${IPS[@]}"; do
+    [[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--allow: $ip isn't an IPv4 address"
+  done
+  # The manifests mount read-write, for PUT /manifests.
+  if pct config "$CTID" | grep -q '^mp1:.*ro=1'; then
+    pct set "$CTID" --mp1 "$DATA/manifests,mp=/tank/ocr/manifests"
+    echo "mp1 is read-write now; it takes effect when CT $CTID restarts (pct reboot $CTID)"
+  fi
+  set_list=$(IFS=,; echo "${IPS[*]}")
+  in_ct bash -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables > /dev/null'
+  in_ct bash -c "cat > /etc/nftables.conf.tmp <<NFT
+#!/usr/sbin/nft -f
+# Written by scripts/ocr-node/scanfetch-ct.sh --serve: the scan server's
+# port only from the OCR nodes.
+flush ruleset
+table inet usnm {
+  chain input {
+    type filter hook input priority 0; policy accept;
+    tcp dport $PORT ip saddr != { ${set_list} } drop
+    tcp dport $PORT ip6 saddr ::/0 drop
+  }
+}
+NFT
+mv /etc/nftables.conf.tmp /etc/nftables.conf && nft -f /etc/nftables.conf && systemctl enable nftables > /dev/null"
+  printf '%s\n' "# Written by scripts/ocr-node/scanfetch-ct.sh --serve." \
+    "USNM_SCANSERVE_LISTEN=0.0.0.0:$PORT" "USNM_SCANSERVE_ALLOW=$set_list" "RUST_LOG=info" |
+    in_ct bash -c 'cat > /etc/usnm/scanserve.env.tmp && mv /etc/usnm/scanserve.env.tmp /etc/usnm/scanserve.env'
+  in_ct install -d -o scanfetch -g scanfetch -m 2775 /tank/ocr/scans/buffer /tank/ocr/scans/keep
+  pct push "$CTID" "$HERE/usnm-scanserve.service" /etc/systemd/system/usnm-scanserve.service
+  in_ct systemctl daemon-reload
+  in_ct systemctl enable usnm-scanserve.service
+  in_ct systemctl restart usnm-scanserve.service
+  sleep 2
+  in_ct systemctl --no-pager status usnm-scanserve.service | head -5
+  echo "scan server: http://$(in_ct hostname -I | cut -d' ' -f1):$PORT"
 fi

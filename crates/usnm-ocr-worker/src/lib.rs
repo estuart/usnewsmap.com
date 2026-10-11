@@ -4,7 +4,7 @@
 //! no LoC text and makes no keep-or-drop decision; a cloud job checks the
 //! parts and the release decides.
 
-/// Scans read from the prefetch cache before LoC (#368).
+/// Scans read from the prefetch cache over HTTP before LoC (#368).
 pub mod cache;
 pub mod engine;
 pub mod loc;
@@ -14,6 +14,8 @@ pub mod prefetch;
 /// with the cloud jobs that fill and drain the queues).
 pub use usnm_ocr_contract::message;
 pub mod queue;
+/// The scan server on pve-big (#368).
+pub mod serve;
 pub mod telemetry;
 pub mod worker;
 

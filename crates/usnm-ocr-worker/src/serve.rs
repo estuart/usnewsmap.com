@@ -5,10 +5,11 @@
 //!
 //! - `GET /scans/<set>/<batch>/<lccn>/<date>/<ed>/<seq>.jpg` and the
 //!   sidecar `<…>.jpg.json`, from the scan root, read-only.
-//! - `DELETE /scans/buffer/<…>.jpg` removes a buffer-set scan and its
-//!   sidecar (the sidecar first, so a half-done delete never leaves a scan
-//!   that looks valid): a worker sends it once its output for the page is
-//!   uploaded. A keep-set path is refused with 403.
+//! - `DELETE /scans/buffer/<…>.jpg` removes a buffer-set scan: its
+//!   sidecar is renamed `<…>.jpg.done` first (so a half-done delete never
+//!   leaves a scan that looks valid, and the fetcher knows not to fetch the
+//!   page again), then the scan goes. A worker sends it once its output for
+//!   the page is uploaded. A keep-set path is refused with 403.
 //! - `PUT /manifests/<version>/{manifest.parquet,summary.json}` writes a
 //!   prefetch manifest from a node (`pull-manifest.sh`), through a temporary
 //!   file and a rename.
@@ -129,11 +130,12 @@ async fn delete_scan(
         _ => return StatusCode::BAD_REQUEST.into_response(),
     }
     let scan = opts.scans.join(&path);
-    let side = tokio::fs::remove_file(sidecar(&scan)).await;
+    let mut done = scan.as_os_str().to_owned();
+    done.push(".done");
+    let side = tokio::fs::rename(sidecar(&scan), PathBuf::from(done)).await;
     let jpg = tokio::fs::remove_file(&scan).await;
-    let missing = |r: &std::io::Result<()>| {
-        matches!(r, Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-    };
+    let missing =
+        |r: &std::io::Result<()>| matches!(r, Err(e) if e.kind() == std::io::ErrorKind::NotFound);
     if missing(&side) && missing(&jpg) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -215,7 +217,10 @@ mod tests {
 
     #[test]
     fn scan_paths_are_checked() {
-        assert_eq!(scan_rel("keep/nbu_gage/sn1/1890-05-03/1/7.jpg"), Some("keep"));
+        assert_eq!(
+            scan_rel("keep/nbu_gage/sn1/1890-05-03/1/7.jpg"),
+            Some("keep")
+        );
         assert_eq!(
             scan_rel("buffer/curiv_joshuaTree/sn1/1890-05-03/1/7.jpg.json"),
             Some("buffer")
@@ -285,7 +290,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(keep.status(), 403);
-        assert!(dir.path().join("scans/keep/b/sn1/1890-05-03/1/1.jpg").exists());
+        assert!(dir
+            .path()
+            .join("scans/keep/b/sn1/1890-05-03/1/1.jpg")
+            .exists());
         let buf = http
             .delete(url("/scans/buffer/b/sn1/1890-05-03/1/1.jpg"))
             .send()
@@ -294,6 +302,8 @@ mod tests {
         assert_eq!(buf.status(), 204);
         let gone = dir.path().join("scans/buffer/b/sn1/1890-05-03/1");
         assert!(!gone.join("1.jpg").exists() && !gone.join("1.jpg.json").exists());
+        // The sidecar stays as the page's consumed marker.
+        assert!(gone.join("1.jpg.done").exists());
         let again = http
             .delete(url("/scans/buffer/b/sn1/1890-05-03/1/1.jpg"))
             .send()
@@ -301,9 +311,17 @@ mod tests {
             .unwrap();
         assert_eq!(again.status(), 404);
         // A path out of the tree, and a sidecar delete, are refused.
-        for p in ["/scans/buffer/../keep/b/1.jpg", "/scans/buffer/b/1.jpg.json"] {
+        for p in [
+            "/scans/buffer/../keep/b/1.jpg",
+            "/scans/buffer/b/1.jpg.json",
+        ] {
             let r = http.delete(url(p)).send().await.unwrap();
-            assert!(r.status() == 400 || r.status() == 404, "{p}: {}", r.status());
+            // The client resolves `..` to a keep path, refused too.
+            assert!(
+                [400, 403, 404].contains(&r.status().as_u16()),
+                "{p}: {}",
+                r.status()
+            );
         }
         let put = http
             .put(url("/manifests/pages-v1/manifest.parquet"))
