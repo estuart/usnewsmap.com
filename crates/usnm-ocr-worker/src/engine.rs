@@ -32,6 +32,11 @@ pub enum EngineError {
 pub trait Engine: Send + Sync + std::fmt::Debug {
     /// `ocr_source` for this engine's rows, e.g. `usnm-tesseract`.
     fn source(&self) -> &str;
+    /// Whether this node can read pages in `language` (ISO 639-3). The
+    /// worker asks before it fetches a scan, so a page with no model here
+    /// costs no image request (12 Step 7). The engine contract (ADR-0016,
+    /// #307) answers it from routing.
+    fn can_read(&self, language: &str) -> bool;
     /// Read `image` (a file) for a page in `language` (ISO 639-3), using
     /// `work` for scratch files.
     async fn ocr(
@@ -365,6 +370,10 @@ pub fn set_alto_file_name(alto: &str, name: &str) -> String {
 impl Engine for Tesseract {
     fn source(&self) -> &str {
         "usnm-tesseract"
+    }
+
+    fn can_read(&self, language: &str) -> bool {
+        route(language, &self.installed).is_some()
     }
 
     async fn ocr(

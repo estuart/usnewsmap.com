@@ -2661,6 +2661,7 @@ dependencies = [
 name = "usnm-store"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "base64 0.23.1",
@@ -2668,6 +2669,7 @@ dependencies = [
  "futures",
  "httpdate",
  "reqwest",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
