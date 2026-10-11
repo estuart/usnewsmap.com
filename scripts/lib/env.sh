@@ -172,10 +172,30 @@ ocr_nodes_off_check() {
   echo "offboard those nodes first (scripts/ocr-node/offboard.sh), or turn USNM_OCR_NODES back on" >&2
   return 1
 }
+# The OCR nodes' Key Vault (usnmocrkv<env><suffix>, ADR-0017) is deleted by
+# the stack when USNM_OCR_NODES goes off, and a deleted vault stays
+# soft-deleted, holding its name, for its retention (7 days outside prod).
+# Turning the nodes back on then fails on the reserved name, so recover a
+# soft-deleted vault of this environment first; the stack takes it back over
+# with its secrets. Prod's has purge protection and is recovered the same way.
+ocr_vault_recover() {
+  local nodes out v
+  nodes=$(aget USNM_OCR_NODES) || return 1
+  [ "$nodes" = true ] || return 0
+  out=$(az keyvault list-deleted --resource-type vault \
+    --query "[?starts_with(name, 'usnmocrkv${ENV_NAME:0:9}')].name" -o tsv 2>&1) ||
+    { echo "error: can't list deleted Key Vaults: $out" >&2; return 1; }
+  [ -n "$out" ] || return 0
+  while IFS= read -r v; do
+    echo "recovering soft-deleted Key Vault $v before the deployment re-creates it"
+    az keyvault recover --name "$v" -o none || return 1
+  done <<< "$out"
+}
 # New roles and permissions take a minute or two to apply everywhere, so a
 # deployment that depends on one can fail once; it's idempotent, so retry.
 provision() {
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
+  ocr_vault_recover || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
     deploy_guardrails && deploy_stack && save_outputs && return 0
     [ "$attempt" = 3 ] && die "provisioning failed three times"
