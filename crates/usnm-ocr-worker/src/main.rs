@@ -8,8 +8,9 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use tokio::sync::watch;
 use usnm_ocr_worker::engine::{Engine, Limits, Remote, Runner, Tesseract, TesseractOptions};
-use usnm_ocr_worker::loc::{LocClient, LocConfig};
+use usnm_ocr_worker::loc::{ImageSize, LocClient, LocConfig};
 use usnm_ocr_worker::message::{OcrMessage, Reason};
+use usnm_ocr_worker::prefetch;
 use usnm_ocr_worker::queue::{self, BULK, PRIORITY};
 use usnm_ocr_worker::telemetry::{self, Metrics};
 use usnm_ocr_worker::worker::{check_node_id, Config, Worker};
@@ -179,6 +180,70 @@ enum Command {
         #[command(flatten)]
         engine: EngineArgs,
     },
+    /// Fetch the scans a prefetch manifest lists onto local disk (#368),
+    /// with the worker's LoC client and pacing, until done, stopped,
+    /// `--max-total-bytes` is reached or 20 pages fail in a row. Resumable:
+    /// scans already there and matching their sidecar are skipped.
+    Prefetch {
+        /// The manifest (`manifest.parquet` from `usnm-ingest
+        /// ocr-prefetch-manifest`).
+        #[arg(long, env = "USNM_PREFETCH_MANIFEST")]
+        manifest: PathBuf,
+        /// Where the scans go: `<out>/<batch>/<lccn>/<date>/<ed>/<seq>.<ext>`.
+        #[arg(long, env = "USNM_PREFETCH_OUT")]
+        out: PathBuf,
+        /// `full`, or `scaled:<1-99>` (IIIF `pct:<n>`).
+        #[arg(long, env = "USNM_PREFETCH_RESOLUTION", default_value = "full")]
+        resolution: ImageSize,
+        /// Only the first N pages (after --sample and the order).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// About N pages, stratified by language and decade.
+        #[arg(long)]
+        sample: Option<usize>,
+        /// `priority` (German before the 1920s, the worst English batches,
+        /// Czech, Serbian, Russian, the rest) or `issue` (the manifest's).
+        #[arg(
+            long,
+            env = "USNM_PREFETCH_ORDER",
+            value_enum,
+            default_value = "priority"
+        )]
+        order: PrefetchOrder,
+        /// Stop starting pages once this run's scans on disk add up to this.
+        #[arg(long, env = "USNM_PREFETCH_MAX_TOTAL_BYTES")]
+        max_total_bytes: Option<u64>,
+        /// Pages in flight at once; they share the pacers.
+        #[arg(long, env = "USNM_PREFETCH_CONCURRENCY", default_value_t = 2)]
+        concurrency: usize,
+        /// The lock that keeps it to one fetching process (default
+        /// `<out>/.prefetch.lock`).
+        #[arg(long, env = "USNM_PREFETCH_LOCK")]
+        lock_file: Option<PathBuf>,
+        /// A status write and progress line every N pages.
+        #[arg(long, default_value_t = 100)]
+        progress_every: u64,
+        /// Gap between loc.gov API requests.
+        #[arg(long, env = "USNM_OCR_API_GAP_MS", default_value_t = 3500)]
+        api_gap_ms: u64,
+        /// Gap between image requests to LoC's IIIF server.
+        #[arg(long, env = "USNM_OCR_TILE_GAP_MS", default_value_t = 1000)]
+        tile_gap_ms: u64,
+    },
+    /// Project a manifest's size and fetch time from a sample's index
+    /// (`index-<tag>.jsonl` from `prefetch --sample`). Prints JSON.
+    PrefetchEstimate {
+        /// The whole manifest to project for.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// The sample run's index file.
+        #[arg(long)]
+        index: PathBuf,
+        #[arg(long, default_value_t = 3500)]
+        api_gap_ms: u64,
+        #[arg(long, default_value_t = 1000)]
+        tile_gap_ms: u64,
+    },
     /// Queue one page (for testing).
     Enqueue {
         #[arg(long)]
@@ -222,6 +287,12 @@ enum Command {
 
 /// The line `check-engine` renders and must read back.
 const CHECK_TEXT: &str = "HELLO WORLD";
+
+#[derive(Clone, Copy, ValueEnum)]
+enum PrefetchOrder {
+    Priority,
+    Issue,
+}
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Priority {
@@ -318,6 +389,68 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 metrics: Metrics::global(),
             });
             worker.run(stop_signal()).await
+        }
+        Command::Prefetch {
+            manifest,
+            out,
+            resolution,
+            limit,
+            sample,
+            order,
+            max_total_bytes,
+            concurrency,
+            lock_file,
+            progress_every,
+            api_gap_ms,
+            tile_gap_ms,
+        } => {
+            let loc = Arc::new(LocClient::new(LocConfig {
+                api_gap: Duration::from_millis(api_gap_ms),
+                tile_gap: Duration::from_millis(tile_gap_ms),
+                ..LocConfig::default()
+            })?);
+            let opts = prefetch::Options {
+                manifest,
+                out,
+                size: resolution,
+                limit,
+                sample,
+                concurrency: concurrency.max(1),
+                progress_every,
+                order: match order {
+                    PrefetchOrder::Priority => prefetch::Order::Priority,
+                    PrefetchOrder::Issue => prefetch::Order::Issue,
+                },
+                max_total_bytes,
+                lock_file,
+                ..prefetch::Options::default()
+            };
+            let status = prefetch::run(opts, loc, stop_signal()).await?;
+            println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::PrefetchEstimate {
+            manifest,
+            index,
+            api_gap_ms,
+            tile_gap_ms,
+        } => {
+            let rows = usnm_ocr_contract::prefetch::decode(bytes::Bytes::from(
+                std::fs::read(&manifest)
+                    .with_context(|| format!("reading {}", manifest.display()))?,
+            ))?;
+            let index = prefetch::read_index(
+                &std::fs::read_to_string(&index)
+                    .with_context(|| format!("reading {}", index.display()))?,
+            )?;
+            let e = prefetch::estimate(
+                &rows,
+                &index,
+                Duration::from_millis(api_gap_ms),
+                Duration::from_millis(tile_gap_ms),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&e)?);
+            Ok(())
         }
         Command::Enqueue {
             queue_url,

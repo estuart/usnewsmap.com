@@ -361,6 +361,28 @@ enum Command {
         #[arg(long)]
         parallel: Option<usize>,
     },
+    /// The scan prefetch manifest (#368): the pages of an index version
+    /// above `--min-damage` in the damage tables, as Parquet in issue
+    /// order, and a summary by language, decade and batch, under
+    /// `audit/damage/v2/prefetch/<version>/` in the curated store. Logs
+    /// counts, never text.
+    OcrPrefetchManifest {
+        /// The index version whose damage tables to read.
+        #[arg(long = "version", value_name = "INDEX_VERSION")]
+        index_version: String,
+        /// Before the damage pass has listed every table: read the batches
+        /// that have theirs, into `partial-<stamp>/`.
+        #[arg(long)]
+        partial: bool,
+        /// Pages with damage above this go in.
+        #[arg(long, default_value_t = usnm_core::damage::BADLY_DAMAGED)]
+        min_damage: f64,
+        /// The exchange account's `ocr-out` container (a Blob container URL
+        /// or a directory): also copy the manifest and summary to
+        /// `manifests/<version>/` there, for the nodes.
+        #[arg(long)]
+        exchange_url: Option<String>,
+    },
     /// Pick up the OCR nodes' output (12 §12.5 Step 8, #296): drain the
     /// dead letters, check each part in the exchange account's `ocr-out`
     /// and its ALTO, import what passes into `ocr-local/` in the curated
@@ -960,6 +982,7 @@ impl Command {
             Command::ArchiveCopy { .. } => "archive-copy",
             Command::Prune { .. } => "prune",
             Command::OcrDamage { .. } => "ocr-damage",
+            Command::OcrPrefetchManifest { .. } => "ocr-prefetch-manifest",
             Command::OcrSync { .. } => "ocr-sync",
             Command::OcrSeed { .. } => "ocr-seed",
             Command::OcrEnqueue { .. } => "ocr-enqueue",
@@ -989,6 +1012,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::ArchiveCopy { .. }
         | Command::Prune { .. }
         | Command::OcrDamage { .. }
+        | Command::OcrPrefetchManifest { .. }
         | Command::OcrSync { .. }
         | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
@@ -1127,6 +1151,29 @@ async fn command(
             usnm_ingest::ocr_damage::run(curated, reference.as_ref(), &opts)
                 .await
                 .map(|()| None)
+        }
+        Command::OcrPrefetchManifest {
+            index_version,
+            partial,
+            min_damage,
+            exchange_url,
+        } => {
+            let curated = usnm_store::open(&cli.stores.curated)?;
+            let reference = usnm_store::open(&cli.stores.reference)?;
+            let exchange = exchange_url.as_deref().map(usnm_store::open).transpose()?;
+            let opts = usnm_ingest::ocr_prefetch::Options {
+                index_version: index_version.clone(),
+                partial: *partial,
+                min_damage: *min_damage,
+            };
+            usnm_ingest::ocr_prefetch::run(
+                curated.as_ref(),
+                reference.as_ref(),
+                exchange.as_deref(),
+                &opts,
+            )
+            .await
+            .map(|_| None)
         }
         Command::OcrSync {
             queue_url,

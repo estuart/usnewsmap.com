@@ -607,6 +607,7 @@ mod tests {
                     key.seq
                 ),
                 jpeg: bytes::Bytes::from_static(b"jpeg"),
+                download: std::time::Duration::ZERO,
             })
         }
     }
