@@ -189,7 +189,7 @@ enum Command {
         /// ocr-prefetch-manifest`).
         #[arg(long, env = "USNM_PREFETCH_MANIFEST")]
         manifest: PathBuf,
-        /// Where the scans go: `<out>/<batch>/<lccn>/<date>/<ed>/<seq>.<ext>`.
+        /// Where the scans go: `<out>/<keep|buffer>/<batch>/<lccn>/<date>/<ed>/<seq>.<ext>`.
         #[arg(long, env = "USNM_PREFETCH_OUT")]
         out: PathBuf,
         /// The keep set's resolution: `full`, or `scaled:<1-99>` (IIIF `pct:<n>`).
