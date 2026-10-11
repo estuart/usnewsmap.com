@@ -6,5 +6,5 @@ web/dist/
 web/test-results/
 web/playwright-report/
 web/*.tsbuildinfo
-.azure/
+.azure
 __pycache__/
