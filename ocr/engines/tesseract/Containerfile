@@ -1,0 +1,50 @@
+# Tesseract 5.5 with tessdata_best models, for the OCR worker on the nodes
+# (#296, 12 Step 2). The worker runs it with podman, one container per page
+# (`usnm-ocr-worker run --tesseract-image`); the engine contract (ADR-0016,
+# #307) later puts an adapter in front of it. Built by CI from the
+# repository root and published with the worker's release:
+#
+#   podman build -f ocr/engines/tesseract/Containerfile -t usnm-ocr/tesseract ocr/engines/tesseract
+#
+# The base is the engine survey's, pinned by digest, and Tesseract is the
+# survey's package (Debian's 5.5.0-1+b1), so the worker reads with what the
+# survey measured. Packages come from snapshot.debian.org at a fixed time,
+# so a rebuild gets the same ones. Models come from models.lock, each
+# checked by sha256.
+ARG BASE=mirror.gcr.io/library/debian:trixie-slim@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
+ARG SNAPSHOT=20261001T000000Z
+
+FROM ${BASE} AS models
+ARG SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+      "$SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+ && apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+COPY models.lock /models.lock
+# Each line: name, URL, sha256. A download whose hash differs fails the build.
+RUN set -eu; mkdir -p /models; cd /models; \
+    grep -v '^#' /models.lock | while read -r name url sum; do \
+      [ -n "$name" ] || continue; \
+      mkdir -p "$(dirname "$name")"; \
+      curl -fsSL --retry 3 -o "$name" "$url"; \
+      echo "$sum  $name" | sha256sum --check --quiet; \
+    done
+
+FROM ${BASE}
+ARG SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+      "$SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+ && apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      tesseract-ocr=5.5.0-1+b1 libtesseract5=5.5.0-1+b1 \
+ && rm -rf /var/lib/apt/lists/* /usr/share/tesseract-ocr/5/tessdata/*.traineddata
+ENV TESSDATA_PREFIX=/opt/tessdata OMP_THREAD_LIMIT=1
+COPY --from=models /models/tessdata/ /opt/tessdata/
+COPY models.lock /opt/tessdata/models.lock
+# The output configs (txt, alto) live beside the models: without them
+# Tesseract writes text only.
+RUN cp -r /usr/share/tesseract-ocr/5/tessdata/configs /usr/share/tesseract-ocr/5/tessdata/tessconfigs /opt/tessdata/ \
+ && cd /opt && grep '^tessdata/' /opt/tessdata/models.lock | awk '{print $3 "  " $1}' | sha256sum --check --quiet
+USER 10001
+ENTRYPOINT ["tesseract"]

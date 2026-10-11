@@ -20,7 +20,8 @@
 #   2. unless the node is already connected, creates a throwaway app
 #      registration and service principal with a 2-hour secret and only
 #      Azure Connected Machine Onboarding on the environment's group;
-#   3. copies scripts/ocr-node/node-setup.sh to the node and runs it with
+#   3. copies scripts/ocr-node/node-setup.sh and the worker's unit,
+#      usnm-ocr-worker.service, to the node and runs node-setup.sh with
 #      sudo, sending the tenant, app id and secret on its stdin (never on a
 #      command line, never on the node's disk), and the exchange account
 #      and the nodes' Application Insights connection string
@@ -293,7 +294,7 @@ elif [ "$DRY_RUN" = true ]; then
   echo "and delete all three (purging the Entra objects) when this script exits"
 fi
 if [ "$DRY_RUN" = true ]; then
-  echo "would copy scripts/ocr-node/node-setup.sh to $HOST and run:"
+  echo "would copy scripts/ocr-node/node-setup.sh and usnm-ocr-worker.service to $HOST and run:"
   echo "  sudo bash node-setup.sh $SETUP_ARGS < (tenant, app id and secret)"
 else
   if [ "$connected" != Connected ]; then
@@ -329,6 +330,8 @@ else
     die "can't reach $HOST over ssh"
   # shellcheck disable=SC2029 # $remote is meant to expand here
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/node-setup.sh" < scripts/ocr-node/node-setup.sh
+  # shellcheck disable=SC2029
+  ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/usnm-ocr-worker.service" < scripts/ocr-node/usnm-ocr-worker.service
   # The tenant, app id and secret go to the node on ssh's stdin, never on a
   # command line; node-setup.sh reads them there. On a connected node,
   # nothing is sent.

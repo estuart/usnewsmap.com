@@ -1,22 +1,34 @@
 //! `usnm-ocr-worker`: see the crate's README.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use tokio::sync::watch;
-use usnm_ocr_worker::engine::{Engine, Tesseract, TesseractOptions};
+use usnm_ocr_worker::engine::{Engine, Runner, Tesseract, TesseractOptions};
 use usnm_ocr_worker::loc::{LocClient, LocConfig};
 use usnm_ocr_worker::message::{OcrMessage, Reason};
 use usnm_ocr_worker::queue::{self, BULK, PRIORITY};
 use usnm_ocr_worker::telemetry::{self, Metrics};
 use usnm_ocr_worker::worker::{check_node_id, Config, Worker};
 
+/// `--version`: the crate version and the commit CI built it from
+/// (`USNM_GIT_SHA` at build time), or `unknown commit` for a local build.
+static VERSION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("USNM_GIT_SHA")
+            .filter(|s| !s.is_empty())
+            .map_or_else(|| "unknown commit".to_owned(), |s| format!("commit {s}"))
+    )
+});
+
 #[derive(Parser)]
 #[command(
-    version,
+    version = VERSION.as_str(),
     about = "Re-OCR damaged newspaper pages from a work queue (#296)"
 )]
 struct Cli {
@@ -34,9 +46,22 @@ struct EngineArgs {
     /// OCR engine.
     #[arg(long, value_enum, default_value = "tesseract")]
     engine: EngineName,
-    /// The Tesseract binary.
-    #[arg(long, default_value = "tesseract")]
+    /// The Tesseract binary, when Tesseract is installed on the host.
+    #[arg(long, default_value = "tesseract", conflicts_with = "tesseract_image")]
     tesseract_bin: PathBuf,
+    /// Run Tesseract from this container image with podman, one container
+    /// per page: `sha256:<image id>` or `<name>@sha256:<digest>`, never a
+    /// tag. `scripts/ocr-node/install-worker.sh` loads the release's image
+    /// and sets it.
+    #[arg(long, env = "USNM_OCR_TESSERACT_IMAGE")]
+    tesseract_image: Option<String>,
+    /// The podman binary, for --tesseract-image.
+    #[arg(long, default_value = "podman")]
+    podman_bin: PathBuf,
+    /// A Podman API socket to run the image through (`podman --remote
+    /// --url`), instead of the worker's own user's podman.
+    #[arg(long, env = "USNM_OCR_PODMAN_URL")]
+    podman_url: Option<String>,
     /// Tesseract page segmentation mode (3: automatic, no orientation detection).
     #[arg(long, default_value_t = 3)]
     psm: u8,
@@ -55,8 +80,16 @@ impl EngineArgs {
     async fn engine(&self) -> anyhow::Result<Arc<dyn Engine>> {
         match self.engine {
             EngineName::Tesseract => {
+                let runner = match self.tesseract_image.as_deref().filter(|s| !s.is_empty()) {
+                    Some(image) => Runner::Podman {
+                        podman: self.podman_bin.clone(),
+                        url: self.podman_url.clone().filter(|s| !s.is_empty()),
+                        image: image.to_owned(),
+                    },
+                    None => Runner::Host(self.tesseract_bin.clone()),
+                };
                 let t = Tesseract::detect(TesseractOptions {
-                    bin: self.tesseract_bin.clone(),
+                    runner,
                     psm: self.psm,
                     dpi: self.dpi,
                     threads: self.threads_per_page,
@@ -65,6 +98,7 @@ impl EngineArgs {
                 .await?;
                 tracing::info!(
                     version = t.version(),
+                    runner = ?t.runner(),
                     models = ?t.installed(),
                     "tesseract found"
                 );
@@ -79,31 +113,31 @@ enum Command {
     /// Take pages from the queues and OCR them until stopped.
     Run {
         /// `https://<account>.queue.core.windows.net`, or a directory.
-        #[arg(long)]
+        #[arg(long, env = "USNM_OCR_QUEUE_URL")]
         queue_url: String,
         /// `https://<account>.blob.core.windows.net/<container>`, or a directory.
-        #[arg(long)]
+        #[arg(long, env = "USNM_OCR_OUT_URL")]
         out_url: String,
         /// This node's name, in part names and logs.
-        #[arg(long)]
+        #[arg(long, env = "USNM_OCR_NODE_ID")]
         node_id: String,
         /// Pages in flight at once.
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, env = "USNM_OCR_CONCURRENCY", default_value_t = 1)]
         concurrency: usize,
         /// Stop once both queues are empty.
         #[arg(long)]
         once: bool,
         /// Gap between loc.gov API requests, shared by all pages on this
         /// node. With several nodes, multiply by their number.
-        #[arg(long, default_value_t = 3500)]
+        #[arg(long, env = "USNM_OCR_API_GAP_MS", default_value_t = 3500)]
         api_gap_ms: u64,
         /// Gap between image requests to LoC's IIIF server.
-        #[arg(long, default_value_t = 1000)]
+        #[arg(long, env = "USNM_OCR_TILE_GAP_MS", default_value_t = 1000)]
         tile_gap_ms: u64,
         /// How long a taken message stays hidden. It isn't renewed, so it
         /// must cover the slowest page; a page not done by 80% of it is
         /// abandoned without output.
-        #[arg(long, default_value_t = 1800, value_parser = clap::value_parser!(u64).range(60..=604_800))]
+        #[arg(long, env = "USNM_OCR_VISIBILITY_SECS", default_value_t = 1800, value_parser = clap::value_parser!(u64).range(60..=604_800))]
         visibility_secs: u64,
         /// How long in-flight pages may take after SIGTERM before they are
         /// abandoned (they reappear when their visibility runs out).
@@ -145,7 +179,16 @@ enum Command {
         #[command(flatten)]
         engine: EngineArgs,
     },
+    /// Read a rendered line of English with the engine and fail unless it
+    /// comes back: a node's check before the unit is enabled.
+    CheckEngine {
+        #[command(flatten)]
+        engine: EngineArgs,
+    },
 }
+
+/// The line `check-engine` renders and must read back.
+const CHECK_TEXT: &str = "HELLO WORLD";
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Priority {
@@ -301,6 +344,32 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     "secs": (secs * 1000.0).round() / 1000.0,
                     "chars": text.chars().count(),
                     "status": usnm_overlay::status_str(status),
+                })
+            );
+            Ok(())
+        }
+        Command::CheckEngine { engine } => {
+            let engine = engine.engine().await?;
+            let work = tempfile::tempdir()?;
+            let image = work.path().join("check.pgm");
+            std::fs::write(&image, usnm_ocr_worker::testimg::text_image(CHECK_TEXT))?;
+            let t0 = Instant::now();
+            let result = engine.ocr(&image, "eng", work.path()).await?;
+            let text = usnm_core::text::normalize_ocr(&result.text);
+            anyhow::ensure!(
+                text.contains(CHECK_TEXT),
+                "the engine read {text:?}, not {CHECK_TEXT:?}"
+            );
+            anyhow::ensure!(
+                String::from_utf8_lossy(&result.alto).contains("<alto"),
+                "the engine wrote no ALTO"
+            );
+            println!(
+                "{}",
+                serde_json::json!({
+                    "engine": result.engine,
+                    "secs": (t0.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
+                    "read": text.trim(),
                 })
             );
             Ok(())

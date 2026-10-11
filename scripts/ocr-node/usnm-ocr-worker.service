@@ -1,0 +1,68 @@
+# The on-prem OCR worker (#296, ADR-0015). scripts/ocr-node/node-setup.sh
+# and scripts/ocr-node/install-worker.sh install it; it stays disabled
+# until `install-worker.sh --enable`. It starts only once the worker binary
+# is in /usr/local/bin. Its settings come from the environment
+# (/etc/usnm/ocr-worker.env, which install-worker.sh writes), so the
+# command line has none.
+[Unit]
+Description=usnewsmap OCR worker
+Wants=network-online.target
+After=network-online.target himdsd.service
+ConditionFileIsExecutable=/usr/local/bin/usnm-ocr-worker
+
+[Service]
+Type=simple
+User=usnm
+Group=usnm
+SupplementaryGroups=himds
+Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
+Environment=IMDS_ENDPOINT=http://localhost:40342
+EnvironmentFile=/etc/usnm/ocr-worker.env
+# Local changes (RUST_LOG, say), read after it and never written by a script.
+EnvironmentFile=-/etc/usnm/ocr-worker.local.env
+ExecStart=/usr/local/bin/usnm-ocr-worker run
+# On stop, SIGTERM goes to the worker alone (mixed), so the engine keeps
+# running while the worker gives in-flight pages 60 s (its default
+# --shutdown-grace-secs), then flushes telemetry for at most 30 s. 120 s
+# covers both; then systemd kills what's left, and those pages reappear
+# when their visibility runs out. A longer grace needs a longer timeout.
+KillMode=mixed
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=30
+# Its JSON lines reach syslog on local0, which the Azure Monitor Agent
+# collects at Info and above (infra/modules/ocr-node-monitoring.bicep).
+SyslogIdentifier=usnm-ocr-worker
+SyslogFacility=local0
+# The worker runs Tesseract from a pinned image with podman
+# (USNM_OCR_TESSERACT_IMAGE). Under this unit's hardening, systemd implies
+# NoNewPrivileges for a service without CAP_SYS_ADMIN, so the worker's own
+# rootless podman can't map its subordinate ids (ADR-0016, context). The
+# engine runtime of ADR-0016 (#307) runs engines as a separate user behind
+# a Podman API socket, which the worker reaches with USNM_OCR_PODMAN_URL;
+# until then the worker fails its engine check at start and exits before
+# it takes a message, so enabling the unit early costs no receives.
+# Podman keeps its storage in usnm's home, /var/lib/usnm.
+StateDirectory=usnm-ocr
+CacheDirectory=usnm-ocr
+RuntimeDirectory=usnm-ocr
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/usnm-ocr
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/usnm
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+# Model files for the Tesseract image: file name, URL, sha256. The image's
+# build downloads each one and checks its hash. The same entries as the
+# engine survey's models.lock (#296), less osd (psm 3 doesn't read
+# orientation) and frak2021 (its licence isn't cleared for production, 13
+# §13.7.2). Every model here is Apache-2.0.
+# Tesseract tessdata_best, pinned to commit e12c65a915945e4c28e237a9b52bc4a8f39a0cec (2024-03-09).
+tessdata/eng.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/eng.traineddata 8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba
+tessdata/deu.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/deu.traineddata 8407331d6aa0229dc927685c01a7938fc5a641d1a9524f74838cdac599f0d06e
+tessdata/deu_latf.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/deu_latf.traineddata 429b8c33d37e1a4823a2bb082a644ff13e252f735b7945e08a518d22ddcc459e
+tessdata/srp.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/srp.traineddata b090f9bb22366d9b4b0cb6baa2136c4f75e992ddba01ecb78240896e359e4072
+tessdata/srp_latn.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/srp_latn.traineddata 9bc6caa2ad9daf1706bf4c21741992dd5a334e9ff64cfc1ecd32aa43dd7a150c
+tessdata/rus.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/rus.traineddata b617eb6830ffabaaa795dd87ea7fd251adfe9cf0efe05eb9a2e8128b7728d6b6
+tessdata/ces.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/ces.traineddata d821773116d3c4e0360ea750066436c60ae45af02c39da3a840a543d761b3f41
+tessdata/pol.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/pol.traineddata e80cc4cefbdface06e9223f43f089556b9dcf104020fbc0a200f6863c57d4405

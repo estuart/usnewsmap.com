@@ -15,14 +15,22 @@ usnm-ocr-worker run \
 
 # Queue one page (testing).
 usnm-ocr-worker enqueue --queue-url <url|dir> \
-  --page sn83045462/1890-05-03/ed-1/seq-7 --batch nbu_gage_ver01 \
+  --page sn83045462/1890-05-03/ed-1/seq-7 --batch batch_nbu_gage \
   --priority bulk --language deu
 
 # OCR one image file and print the time taken (benchmarking on a node).
 usnm-ocr-worker ocr-file --image page.jpg --language deu --out /tmp/ocr
+
+# Read a rendered line of English with the engine; fails unless it comes back.
+usnm-ocr-worker check-engine --tesseract-image sha256:<image id>
+
+# The version and the commit CI built it from.
+usnm-ocr-worker --version
 ```
 
-`--queue-url` and `--out-url` also take a directory, so the whole loop runs locally with no Azure at all. Other `run` flags: `--api-gap-ms` (3500) and `--tile-gap-ms` (1000) set the gaps between loc.gov API and image requests, `--visibility-secs` (1800) sets how long a taken message stays hidden, and `--shutdown-grace-secs` (60) sets how long in-flight pages get after SIGTERM. The Tesseract flags are `--tesseract-bin`, `--psm` (3), `--dpi` (300), `--threads-per-page` (1) and `--page-timeout-secs` (600).
+`--queue-url` and `--out-url` also take a directory, so the whole loop runs locally with no Azure at all. Other `run` flags: `--api-gap-ms` (3500) and `--tile-gap-ms` (1000) set the gaps between loc.gov API and image requests, `--visibility-secs` (1800) sets how long a taken message stays hidden, and `--shutdown-grace-secs` (60) sets how long in-flight pages get after SIGTERM. The Tesseract flags are `--tesseract-bin` or `--tesseract-image` (with `--podman-bin` and `--podman-url`), `--psm` (3), `--dpi` (300), `--threads-per-page` (1) and `--page-timeout-secs` (600).
+
+These `run` flags can also come from the environment, which is how the node's unit sets them (`/etc/usnm/ocr-worker.env`, written by `scripts/ocr-node/install-worker.sh`): `USNM_OCR_QUEUE_URL`, `USNM_OCR_OUT_URL`, `USNM_OCR_NODE_ID`, `USNM_OCR_CONCURRENCY`, `USNM_OCR_API_GAP_MS`, `USNM_OCR_TILE_GAP_MS`, `USNM_OCR_VISIBILITY_SECS`, and for the engine `USNM_OCR_TESSERACT_IMAGE` and `USNM_OCR_PODMAN_URL`. A flag on the command line wins. `--shutdown-grace-secs` and `--once` are command-line only: the unit's `TimeoutStopSec` is set for the default grace.
 
 ## Queues
 
@@ -32,7 +40,7 @@ There are three Azure Storage Queues: `ocr-priority`, `ocr-bulk` and `ocr-deadle
 - A message received more than 5 times goes to `ocr-deadletter` and is deleted from its queue. So does a message that can never succeed: one that fails its checks (bad JSON, say), or a page loc.gov lists no image for. The dead letter keeps the original queue, the message id, the error, the dequeue count, the node and the time. It keeps the message itself only if the message passed its checks, re-encoded from the checked fields. A message that failed them might carry anything, so the dead letter records only what kind of check failed.
 - A temporary failure (LoC or storage errors, a Tesseract crash or timeout, or a language with no model on this node, which another node may have) leaves the message, which reappears when its time runs out.
 - The output uploads are cut off at the same 80% mark, so a node never writes a page after its message may have gone to another node. A cut between the two uploads leaves an ALTO without its part, which does no harm because parts are only read with their ALTO.
-- On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are abandoned and reappear when their time runs out. The systemd unit's `TimeoutStopSec` should be longer than the grace period plus the telemetry flush (up to 30 s); the node's unit (`scripts/ocr-node/node-setup.sh`) passes `--shutdown-grace-secs 60`, sets `TimeoutStopSec=120` and `KillMode=mixed`, so only the worker gets the SIGTERM and Tesseract keeps running through the grace period.
+- On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are abandoned and reappear when their time runs out. The systemd unit's `TimeoutStopSec` should be longer than the grace period plus the telemetry flush (up to 30 s); the node's unit (`scripts/ocr-node/usnm-ocr-worker.service`) keeps the default 60 s grace, sets `TimeoutStopSec=120` and `KillMode=mixed`, so only the worker gets the SIGTERM and Tesseract keeps running through the grace period.
 
 The REST calls use API version 2023-11-03 and an Entra bearer token for `https://storage.azure.com/`. No keys or SAS tokens are used.
 
@@ -41,10 +49,10 @@ In directory mode, each queue is a directory with `ready/` and `leased/` subdire
 ### Message
 
 ```json
-{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"nbu_gage_ver01","language":"deu","reason":"bulk","score":0.62,"queued_at":"2026-10-10T12:00:00Z"}
+{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"batch_nbu_gage","language":"deu","reason":"bulk","score":0.62,"queued_at":"2026-10-10T12:00:00Z"}
 ```
 
-`page` must be a canonical `PageKey`, `language` is ISO 639-3, `reason` is `user` or `bulk`, and `score` is optional (0 to 1). Unknown fields are refused, so a search query can't be carried in a message. On the queue the JSON is base64-encoded, the convention the portal, Storage Explorer and Functions follow. Raw JSON is accepted too.
+`page` must be a canonical `PageKey`, `batch` the base batch name without its `_verNN` (curated rows and the release use the base name, so a versioned one would be skipped at release), `language` is ISO 639-3, `reason` is `user` or `bulk`, and `score` is optional (0 to 1). Unknown fields are refused, so a search query can't be carried in a message. On the queue the JSON is base64-encoded, the convention the portal, Storage Explorer and Functions follow. Raw JSON is accepted too.
 
 ## Identity
 
@@ -56,7 +64,9 @@ The worker fetches scans the way `ja-ocr/jaocr.py` does. It makes one request pe
 
 ## Tesseract
 
-Tesseract runs as a subprocess with `--psm 3 --dpi 300` and the `txt` and `alto` configs, so one pass writes both outputs. `OMP_THREAD_LIMIT` is set to `--threads-per-page`. The worker lists the installed models once at startup and routes each language to the first candidate whose models are all installed:
+On a node, Tesseract runs from a pinned container image, `ocr/engines/tesseract/` (Debian's Tesseract 5.5.0 package on the engine survey's base, with tessdata_best's `eng`, `deu`, `deu_latf`, `srp`, `srp_latn`, `ces`, `pol` and `rus`, all Apache-2.0). `--tesseract-image` names it by image id or digest, never by tag, and the worker runs one container per page with podman: no network, a read-only root, all capabilities dropped, no privilege gain, and the page's scratch directory as `/work`. A page that times out or is abandoned has its container removed. The engine contract ([ADR-0016](../../docs/design/adr/0016-pluggable-ocr-engines.md), #307) replaces this with a long-lived instance per engine behind a Podman API socket, which `--podman-url` can already reach. Without `--tesseract-image`, `--tesseract-bin` runs a Tesseract on the host (a developer machine).
+
+Tesseract runs with `--psm 3 --dpi 300` and the `txt` and `alto` configs, so one pass writes both outputs. `OMP_THREAD_LIMIT` is set to `--threads-per-page`. The worker lists the installed models once at startup and routes each language to the first candidate whose models are all installed:
 
 | Language            | Candidates                                      |
 | ------------------- | ----------------------------------------------- |
@@ -107,19 +117,13 @@ Metrics are sent every 30 s and once more at shutdown.
 
 ## Building for AlmaLinux 9
 
-The binary uses rustls and has no OpenSSL dependency. It must be linked against a glibc no newer than EL9's 2.34, so don't build it on a newer distribution and copy it over. Either of these works:
+CI builds the worker on AlmaLinux 9 (`ocr-worker-el9` in `.github/workflows/ci.yml`), fails if it needs a glibc symbol newer than EL9's 2.34, runs it on AlmaLinux 10, and reads a rendered line through the Tesseract image with `check-engine`. On `main` it publishes the binary and the image as an attested GitHub release, `ocr-worker-<yyyymmdd>-<sha7>`, which `scripts/ocr-node/install-worker.sh` verifies and installs ([operations](../../docs/operations.md#on-prem-ocr-nodes)). The binary uses rustls and has no OpenSSL dependency. To build one by hand, use an EL9 container, not a newer distribution:
 
 ```sh
-# On the node, or in an EL9 container with podman:
 podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
   dnf -y install gcc && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal &&
   ~/.cargo/bin/cargo build --release --locked -p usnm-ocr-worker'
-
-# Or from a developer machine with cross (its default image has an older glibc):
-cross build --release --locked --target x86_64-unknown-linux-gnu -p usnm-ocr-worker
 ```
-
-The node also needs Tesseract and its language models. EL9's AppStream has only Tesseract 4.1.1 and EPEL 9 has none, so ADR-0015 has the engines come from pinned container images or a source build; `--tesseract-bin` can name a wrapper that runs one. `ocr_engine` records whichever version runs.
 
 ## Tests
 
