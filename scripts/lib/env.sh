@@ -17,7 +17,10 @@ valid_env_name() {
     echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter" >&2
     exit 2
   }
-  [ "$1" != guardrails ] || { echo "error: \"guardrails\" is reserved" >&2; exit 2; }
+  # usnm-<name> would be another stack's name, and rg-usnm-<name> its group.
+  case "$1" in
+    guardrails | archive) echo "error: \"$1\" is reserved" >&2; exit 2 ;;
+  esac
 }
 valid_env_name "$ENV_NAME"
 # need_stack_az, GUARDRAILS_STACK, stack_param and deploy_guardrails.

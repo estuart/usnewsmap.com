@@ -92,6 +92,15 @@ class SettingsLocation(Stubbed):
         self.assertEqual(r.stdout.strip(), ".azure/nosuchenv/.env")
 
 
+class ReservedNames(Stubbed):
+    def test_other_stacks_names_are_reserved(self):
+        # usnm-archive and usnm-guardrails are stacks of their own.
+        for name in ("archive", "guardrails"):
+            r = self.lib("true", env_name=name)
+            self.assertEqual(r.returncode, 2, name)
+            self.assertIn("reserved", r.stderr)
+
+
 class ExperimentMarker(Stubbed):
     def test_dev_needs_an_experiment(self):
         self.settings_file('AZURE_ENV_NAME="dev"\n')

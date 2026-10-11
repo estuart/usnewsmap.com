@@ -247,13 +247,21 @@ if [ -n "$archive" ]; then
   trap 'restore_lock || true' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  # The identities whose roles must be gone afterwards, read now: the
-  # provision deletes the search cluster's.
-  principals=""
-  for g in $groups; do
-    p=$(az identity list -g "$g" --query "[].principalId" -o tsv) || die "can't list the identities in $g"
-    principals="$principals$p"$'\n'
-  done
+  # The identities whose roles must be gone afterwards, read before the
+  # provision deletes the search cluster's, and kept beside the marker so a
+  # run that picks up an interrupted detach checks all of them.
+  principals_file="${archive_mark%.archive}.principals"
+  if [ -s "$principals_file" ]; then
+    principals=$(cat "$principals_file")
+  else
+    principals=""
+    for g in $groups; do
+      p=$(az identity list -g "$g" --query "[].principalId" -o tsv) || die "can't list the identities in $g"
+      principals="$principals$p"$'\n'
+    done
+    mkdir -p "$(dirname "$principals_file")"
+    printf '%s' "$principals" > "$principals_file"
+  fi
   echo "detaching $ENV_NAME from the archival account $archive_name (USNM_ARCHIVE_ACCOUNT was $archive)"
   scripts/archive-store.sh unlock --subscription "$archive_sub"
   # archive-store.sh selects its own subscription.
@@ -266,13 +274,15 @@ if [ -n "$archive" ]; then
   # Nothing of the environment's may be left in the account's group: no
   # role assignment for one of its identities, and no endpoint connection
   # from one of its groups. Read only: the account isn't changed.
+  # JMESPath in az has no lower-case function: the scopes are compared here.
   prefix=$(lower "/subscriptions/$archive_sub/resourceGroups/$archive_group/")
   assigned=$(az role assignment list --all --subscription "$archive_sub" \
-    --query "[?starts_with(to_lower(scope), '$prefix')].[principalId, scope]" -o tsv) ||
+    --query "[].[principalId, scope]" -o tsv) ||
     die "can't list the role assignments in $archive_group"
   stray=""
   while IFS=$'\t' read -r p scope; do
-    [ -n "$p" ] && grep -Fqx "$p" <<< "$principals" && stray="$stray  $scope ($p)"$'\n'
+    [ -n "$p" ] && [[ $(lower "$scope") == "$prefix"* ]] && grep -Fqx "$p" <<< "$principals" &&
+      stray="$stray  $scope ($p)"$'\n'
   done <<< "$assigned"
   [ -z "$stray" ] || die "$ENV_NAME's identities still have roles in $archive_group:"$'\n'"$stray"
   conns=$(az storage account show -n "$archive_name" -g "$archive_group" --subscription "$archive_sub" \
@@ -286,7 +296,7 @@ if [ -n "$archive" ]; then
   # puts it back on.
   restore_lock || die "detached from $archive_name, but its lock isn't back on (see above); then run this again"
   trap - EXIT INT TERM
-  rm -f "$archive_mark"
+  rm -f "$archive_mark" "$principals_file"
   az account set --subscription "$SUBSCRIPTION"
   # The stack no longer manages the endpoint, the roles or the archive's
   # writer role definition.

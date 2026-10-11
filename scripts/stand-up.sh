@@ -52,8 +52,9 @@ ENV_NAME=$TARGET
 need_stack_az
 for tool in az git jq; do command -v "$tool" > /dev/null || die "$tool is not installed"; done
 az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
-[ -z "$(git status --porcelain --untracked-files=no)" ] ||
-  die "commit or stash the checkout's changes first: the image tag names the commit"
+# Untracked files too: the image builds send the checkout as their context.
+[ -z "$(git status --porcelain)" ] ||
+  die "commit, stash or remove the checkout's changes and untracked files first: the image tag names the commit"
 SHA=$(git rev-parse HEAD)
 TAG=exp-$(git rev-parse --short HEAD)
 
