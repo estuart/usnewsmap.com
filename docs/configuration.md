@@ -41,4 +41,4 @@ The API (`usnm-api`) is configured with environment variables. Defaults suit loc
 
 - **Web app build-time variables** (`VITE_*`, the dev server's API origin): [`web/README.md`](../web/README.md).
 - **Ingest pipeline** (`usnm-ingest`): the store, state and index-target options also read environment variables (`USNM_CURATED_URL`, `USNM_REFERENCE_URL`, `USNM_COSMOS_ENDPOINT`, `USNM_QUICKWIT_*`, …); see `usnm-ingest --help` and [Development](development.md#ingest-pipeline).
-- **Deployment settings** (`.azure/<env>/.env`, read by the Bicep parameters): [`infra/README.md`](../infra/README.md).
+- **Deployment settings** (`~/.config/usnewsmap/<env>/.env` when that directory exists, otherwise `.azure/<env>/.env`; read by the Bicep parameters): [`infra/README.md`](../infra/README.md).
