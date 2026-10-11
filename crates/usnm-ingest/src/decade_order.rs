@@ -14,8 +14,8 @@
 //! Each commit then holds one or two decades: locally, one merge pass over
 //! the pages, as without decades, and 1.4× the writer's memory. At the end,
 //! the files left are sent, oldest decade first. The disk this needs is
-//! bounded: under `chunk` pages per decade, at most 15 × 30,000 pages (a
-//! few GB compressed), never the whole corpus. Each page is read from the
+//! bounded: under `chunk` pages per decade, at most 15 × `chunk` pages (a
+//! few GB compressed at 30,000), never the whole corpus. Each page is read from the
 //! curated store once, as without partitions.
 
 use std::collections::BTreeMap;

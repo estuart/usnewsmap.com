@@ -253,6 +253,7 @@ impl Env {
             ocr_local: false,
             partition_decade: false,
             single_text_field: false,
+            split_docs: None,
         }
     }
 
@@ -292,6 +293,7 @@ impl Env {
             ocr_local: false,
             partition_decade: false,
             single_text_field: false,
+            split_docs: None,
         };
         let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
         r.run(&mut sink).await
@@ -375,6 +377,7 @@ impl Env {
         let r = Release {
             american_stories: true,
             single_text_field: single,
+            split_docs: None,
             ..self.releaser(day, full)
         };
         let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
@@ -768,6 +771,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         ocr_local: false,
         partition_decade: false,
         single_text_field: false,
+        split_docs: None,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     assert!(r.run(&mut sink).await.is_err());
@@ -823,6 +827,7 @@ async fn releases_into_a_quickwit_writer_node() {
             ocr_local: false,
             partition_decade: false,
             single_text_field: false,
+            split_docs: None,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -987,6 +992,7 @@ async fn a_writer_merges_small_splits_before_the_index_is_sealed() {
         &n,
         id,
         docs.len() as u64,
+        merges::template_split_target(),
         Some(&node.events()),
         &quick_merges(),
         None,
@@ -1422,6 +1428,7 @@ async fn a_backend_switch_forces_a_full_release() {
         ocr_local: false,
         partition_decade: false,
         single_text_field: false,
+        split_docs: None,
     };
     let mut sink = OtherBackend(0);
     let p = r.run(&mut sink).await.unwrap().unwrap();
@@ -1463,6 +1470,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         ocr_local: false,
         partition_decade: false,
         single_text_field: false,
+        split_docs: None,
     };
     let lease = r.lock().await.unwrap();
     // Another writer takes the lock over (e.g. after this one stalled).
@@ -1548,6 +1556,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         ocr_local: false,
         partition_decade: false,
         single_text_field: false,
+        split_docs: None,
     };
     let why = Some("LoC rate limited titles-sync with 5 of 9 titles left".to_owned());
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
@@ -1973,6 +1982,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         ocr_local: false,
         partition_decade: false,
         single_text_field: false,
+        split_docs: None,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     let err = format!("{:#}", r.run(&mut sink).await.unwrap_err());
@@ -2032,6 +2042,7 @@ async fn a_failed_release_records_when_it_failed() {
         ocr_local: false,
         partition_decade: false,
         single_text_field: false,
+        split_docs: None,
     };
     let before = Utc::now();
     let err = r.run(&mut FailingSink).await.unwrap_err();
@@ -2303,6 +2314,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             ocr_local: false,
             partition_decade: false,
             single_text_field: false,
+            split_docs: None,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -3345,6 +3357,7 @@ async fn our_latin_text_follows_the_decade_layout() {
     let release = |day, full| Release {
         partition_decade: true,
         single_text_field: false,
+        split_docs: None,
         ja_latin: true,
         ocr_local: false,
         ..e.releaser(day, full)
@@ -3857,6 +3870,49 @@ async fn a_text_layout_the_release_does_not_know_is_rebuilt_in_full() {
     assert_eq!(e.index_single(&p.indexes[0]), both);
 }
 
+/// A full release with `--split-docs` (#283) creates its main index with
+/// that split target and records it in the manifest; a delta keeps the
+/// template's, whatever the setting says. The documents and `current.json`
+/// are as without it.
+#[tokio::test]
+async fn a_split_target_is_taken_by_a_full_base_only() {
+    let e = env().await;
+    let (early, late, ..) = curate_early_and_late(&e).await;
+    let release = |day, full| Release {
+        split_docs: Some(120_000),
+        ..e.releaser(day, full)
+    };
+    let build = |p: &Published| {
+        let path = format!("{}/manifest.json", p.index_version);
+        let e = &e;
+        async move { e.reference_json(&path).await["build"].clone() }
+    };
+    let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
+
+    curate(&e, early).await;
+    let p1 = release(1, true).run(&mut sink).await.unwrap().unwrap();
+    assert!(p1.full);
+    let b1 = build(&p1).await;
+    assert_eq!(b1["features"]["split_docs"], 120_000);
+    let yaml = b1["templates"]["pages"]["yaml"].as_str().unwrap();
+    assert!(yaml.contains("  split_num_docs_target: 120000\n"), "{yaml}");
+    assert_eq!(e.index(&p1.indexes[0]), loc_fixture("pages-base-fixture"));
+    let current = e.reference_json("current.json").await;
+    assert!(current.get("split_docs").is_none(), "{current}");
+
+    curate(&e, late).await;
+    let p2 = release(8, false).run(&mut sink).await.unwrap().unwrap();
+    assert!(!p2.full);
+    let b2 = build(&p2).await;
+    assert!(b2["features"].get("split_docs").is_none(), "{b2}");
+    let yaml = b2["templates"]["pages"]["yaml"].as_str().unwrap();
+    assert!(yaml.contains("  split_num_docs_target: 30000\n"), "{yaml}");
+    assert_eq!(
+        e.index(p2.indexes.last().unwrap()),
+        loc_fixture("pages-delta-fixture-1")
+    );
+}
+
 /// With the setting on and no American Stories text written yet (no
 /// finished year), nothing is released: the version would claim text it
 /// doesn't have.
@@ -4022,6 +4078,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
             ocr_local: false,
             partition_decade: false,
             single_text_field: false,
+            split_docs: None,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -4405,6 +4462,7 @@ async fn releases_a_base_laid_out_by_decade_into_a_quickwit_writer_node() {
         let r = Release {
             partition_decade: true,
             single_text_field: false,
+            split_docs: None,
             ..e.releaser(day, full)
         };
         let mut sink = QuickwitSink::new(&node.url, &root)

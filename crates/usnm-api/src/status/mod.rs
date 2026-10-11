@@ -1,4 +1,4 @@
-//! `GET /v1/status`: the public pipeline status page's data (06 §6.3.6).
+//! `GET /v1/status`: the data behind the site's dataset details page (06 §6.3.6).
 //!
 //! The document combines the version the API is serving (its reference
 //! data, always available) with the pipeline state in Cosmos DB (batches,

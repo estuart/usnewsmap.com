@@ -109,8 +109,8 @@ klondike q=klondike&from=1896-01-01&to=1901-12-31&bucket=month
 mormon q=mormon&from=1850-01-01&to=1930-12-31&bucket=year
 baking_powder q=%22baking+powder%22&from=1880-01-01&to=1920-12-31&bucket=year
 EOF
-cargo run -q --release -p usnm-core --example term_skew -- $D \
-  yellow_fever free_silver cross_of_gold boll_weevil klondike mormon baking_powder
+cargo run -q --release -p usnm-core --example term_skew -- --dir $D \
+  --names yellow_fever,free_silver,cross_of_gold,boll_weevil,klondike,mormon,baking_powder
 ```
 
 A request pinned to an older version is redirected once a newer one is published, so rerunning this later measures the newer version. The full output is in §11.13. The corpus figures:

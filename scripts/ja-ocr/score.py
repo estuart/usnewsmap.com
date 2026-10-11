@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score the OCR engines' output on a sample (#128).
 
-    scripts/ja-ocr/score.py SAMPLE_DIR [--engines ndlocr-lite azure tesseract-jpn_vert]
+    scripts/ja-ocr/score.py --sample-dir SAMPLE_DIR [--engines ndlocr-lite azure tesseract-jpn_vert]
 
 Needs rapidfuzz (pip install rapidfuzz). Prints markdown:
 
@@ -26,6 +26,7 @@ import argparse
 import csv
 import re
 import statistics
+import sys
 from pathlib import Path
 
 from rapidfuzz.distance import Levenshtein
@@ -63,9 +64,19 @@ def cer(hyp: str, ref: str) -> float:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("sample", type=Path)
+    ap.add_argument("--sample-dir", dest="sample", type=Path, help="the sample to score (required)")
+    # The positional form (`score.py SAMPLE_DIR`) works for one release, with a
+    # warning (#277).
+    ap.add_argument("legacy_sample", nargs="?", type=Path, help=argparse.SUPPRESS)
     ap.add_argument("--engines", nargs="+", default=["ndlocr-lite", "azure", "tesseract-jpn_vert"])
     a = ap.parse_args()
+    if a.legacy_sample is not None:
+        if a.sample is not None:
+            ap.error("give SAMPLE_DIR once, as --sample-dir")
+        print("warning: a positional SAMPLE_DIR is deprecated; use --sample-dir (#277)", file=sys.stderr)
+        a.sample = a.legacy_sample
+    if a.sample is None:
+        ap.error("--sample-dir is required")
     rows = list(csv.DictReader((a.sample / "sample.csv").open()))
     engines = [e for e in a.engines if (a.sample / "out" / e).is_dir()]
     text = {e: {} for e in engines}

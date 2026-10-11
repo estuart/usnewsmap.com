@@ -42,7 +42,7 @@ command -v jq > /dev/null || die "jq is needed to build the request"
 sub=$(aget AZURE_SUBSCRIPTION_ID)
 rg=$(aget AZURE_RESOURCE_GROUP)
 job=$(aget "$SETTING")
-[ -n "$job" ] || die "$SETTING isn't set for $ENV_NAME (is the job deployed? run scripts/provision.sh $ENV_NAME)"
+[ -n "$job" ] || die "$SETTING isn't set for $ENV_NAME (is the job deployed? run scripts/provision.sh --env $ENV_NAME)"
 template=$(az containerapp job show -n "$job" -g "$rg" --subscription "$sub" --query properties.template -o json) ||
   die "can't read $job (is az signed in to the environment's tenant?)"
 volumes=$(jq -r '[.volumes[]?.name] | join(", ")' <<< "$template")

@@ -4,14 +4,16 @@ words, most frequent first) for languages wordfreq has none for. See ja-ocr/word
 
     scripts/ja-ocr/build-wordlists.py haw   # Hawaiian Corpus Project frequency list (CC0)
     scripts/ja-ocr/build-wordlists.py yi    # Yiddish Wikipedia and Wikisource articles (CC BY-SA 4.0)
-    scripts/ja-ocr/build-wordlists.py ger-check DTA.zip   # German: which 19th-century words the audit
-                                                          # would count as damage (Deutsches Textarchiv)
+    scripts/ja-ocr/build-wordlists.py ger-check --dta DTA.zip   # German: which 19th-century words the
+                                                                # audit would count as damage
+                                                                # (Deutsches Textarchiv)
 
 Downloads go to a temporary directory and send DNT: 1. Words are folded the way quality.py folds a page's
 words (case, combining marks; Hawaiian ʻokina and kahakō, which 19th-century papers didn't print;
 Yiddish ligatures as their two letters).
 """
 
+import argparse
 import bz2
 import collections
 import os
@@ -116,13 +118,28 @@ def german_check(zip_path: str) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) < 2 or sys.argv[1] not in ("haw", "yi", "ger-check"):
-        sys.exit(__doc__)
-    if sys.argv[1] == "ger-check":
-        german_check(sys.argv[2])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0].replace("\n", " "))
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("haw", help="Hawaiian")
+    sub.add_parser("yi", help="Yiddish")
+    g = sub.add_parser("ger-check", help="German: which 19th-century words would count as damage")
+    g.add_argument("--dta", help="the Deutsches Textarchiv's 1800-1899 texts, as a zip (required)")
+    # The positional form (`ger-check DTA.zip`) works for one release, with a
+    # warning (#277).
+    g.add_argument("legacy_dta", nargs="?", help=argparse.SUPPRESS)
+    a = ap.parse_args()
+    if a.cmd == "ger-check":
+        if a.legacy_dta is not None:
+            if a.dta is not None:
+                g.error("give the zip once, as --dta")
+            print("warning: a positional DTA.zip is deprecated; use --dta (#277)", file=sys.stderr)
+            a.dta = a.legacy_dta
+        if a.dta is None:
+            g.error("--dta is required")
+        german_check(a.dta)
         return
     with tempfile.TemporaryDirectory() as tmp:
-        (hawaiian if sys.argv[1] == "haw" else yiddish)(tmp)
+        (hawaiian if a.cmd == "haw" else yiddish)(tmp)
 
 
 if __name__ == "__main__":

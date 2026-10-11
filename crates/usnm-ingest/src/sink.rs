@@ -140,28 +140,85 @@ impl Decades {
 }
 
 /// How this run's new main index lays its pages out: by decade (05
-/// §5.5.5) and in which text fields (05 §5.5.7). Only the main index takes
-/// it; the Japanese index keeps its own mapping.
+/// §5.5.5), in which text fields (05 §5.5.7) and in splits of how many
+/// pages. Only the main index takes it; the Japanese index keeps its own
+/// mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MainLayout {
     pub decades: Decades,
     pub text: TextLayout,
+    /// The split target in place of the template's (`--split-docs`, #283):
+    /// only a full base takes one. `None` keeps the template's.
+    pub split_docs: Option<u64>,
 }
 
 impl From<Decades> for MainLayout {
     fn from(decades: Decades) -> Self {
         MainLayout {
             decades,
-            text: TextLayout::Separate,
+            ..MainLayout::default()
         }
     }
 }
 
+impl MainLayout {
+    /// The pages a merge stops at in this index: `split_docs`, or the
+    /// template's `split_num_docs_target`.
+    pub fn split_target(&self) -> u64 {
+        self.split_docs
+            .unwrap_or_else(merges::template_split_target)
+    }
+}
+
 /// The main index's config for this run: the template with the writer's
-/// tuning, the decade layout and the text fields.
+/// tuning, the split target, the decade layout and the text fields.
 pub fn main_template(tuning: &WriterTuning, layout: MainLayout) -> anyhow::Result<String> {
-    let template = text_fields(layout.text, &tuning.apply(INDEX_TEMPLATE)?)?;
+    let mut template = text_fields(layout.text, &tuning.apply(INDEX_TEMPLATE)?)?;
+    if let Some(docs) = layout.split_docs {
+        template = split_target(docs, &template)?;
+    }
     layout.decades.apply(&template)
+}
+
+/// The template line [`split_target`] replaces.
+const TEMPLATE_SPLIT_TARGET: &str = "split_num_docs_target: 30000";
+
+/// The split targets [`split_target`] takes are below this. A
+/// million-page split (about 23 GB before the common-word pairs) killed
+/// the writer while it uploaded in October 2026 (08 §8.4).
+pub const MAX_SPLIT_DOCS: u64 = 1_000_000;
+
+/// `template` with `split_num_docs_target: docs` (#283): a merge stops
+/// taking splits once it holds that many pages, so a larger target leaves
+/// fewer, larger splits. The line must be there exactly once, so a
+/// template change can't silently keep the template's target.
+pub fn split_target(docs: u64, template: &str) -> anyhow::Result<String> {
+    if docs == 0 || docs >= MAX_SPLIT_DOCS {
+        bail!("the split target must be above 0 and below {MAX_SPLIT_DOCS}, not {docs}");
+    }
+    let found = template
+        .lines()
+        .filter(|l| l.trim() == TEMPLATE_SPLIT_TARGET)
+        .count();
+    if found != 1 {
+        bail!("the index template needs exactly one `{TEMPLATE_SPLIT_TARGET}` line, not {found}");
+    }
+    let mut out = template
+        .lines()
+        .map(|l| {
+            if l.trim() == TEMPLATE_SPLIT_TARGET {
+                let indent = &l[..l.len() - l.trim_start().len()];
+                format!("{indent}split_num_docs_target: {docs}")
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if template.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// The template's text field mappings for [`TextLayout::Separate`], in the
@@ -520,6 +577,9 @@ pub struct QuickwitSink {
     stats: Arc<SinkStats>,
     /// How `finish` waits for the new index's merges.
     merge_wait: MergeWait,
+    /// The new index's split target when it isn't the template's (a main
+    /// index with `MainLayout::split_docs`), for the merge checks.
+    split_docs: Option<u64>,
     /// The writer node's output, when this release runs the node.
     events: Option<Arc<NodeEvents>>,
 }
@@ -539,6 +599,7 @@ impl QuickwitSink {
             retry_for: INGEST_RETRY_FOR,
             stats: Arc::default(),
             merge_wait: MergeWait::default(),
+            split_docs: None,
             events: None,
         })
     }
@@ -674,8 +735,13 @@ impl IndexSink for QuickwitSink {
                 "one searched text field"
             );
         }
+        if let Some(docs) = layout.split_docs {
+            tracing::info!(index = index_id, split_docs = docs, "split target");
+        }
         let template = main_template(&tuning, layout)?;
-        self.create_with(index_id, &template).await
+        self.create_with(index_id, &template).await?;
+        self.split_docs = layout.split_docs;
+        Ok(())
     }
 
     async fn create_with(&mut self, index_id: &str, template: &str) -> anyhow::Result<()> {
@@ -700,6 +766,7 @@ impl IndexSink for QuickwitSink {
             );
         }
         self.index = Some(index_id.to_owned());
+        self.split_docs = None;
         Ok(())
     }
 
@@ -753,6 +820,8 @@ impl IndexSink for QuickwitSink {
             &self.node(),
             &id,
             expected,
+            self.split_docs
+                .unwrap_or_else(merges::template_split_target),
             self.events.as_deref(),
             &self.merge_wait,
             self.stats.work_dir.as_deref(),
@@ -1587,7 +1656,11 @@ mod tests {
         assert!(
             yaml.starts_with(&INDEX_TEMPLATE[..INDEX_TEMPLATE.find("field_mappings:").unwrap()])
         );
-        // With the writer's tuning and a decade layout too.
+        // Strict, as every main index: a document with a field of the other
+        // layout (`text_cg` here, `text_all` in the template) is refused.
+        assert!(yaml.contains("\n  mode: strict\n"));
+        assert!(!INDEX_TEMPLATE.contains("name: text_all"));
+        // With the writer's tuning, a decade layout and a split target too.
         let t = WriterTuning {
             heap: "6GiB".into(),
             commit_timeout_secs: 120,
@@ -1596,14 +1669,45 @@ mod tests {
         let layout = MainLayout {
             decades: Decades::Partitioned,
             text: TextLayout::Single,
+            split_docs: Some(120_000),
         };
         let yaml = main_template(&t, layout).unwrap();
+        assert!(yaml.contains("\n  split_num_docs_target: 120000\n"));
         assert!(yaml.contains("heap_size: 6GiB") && yaml.contains("partition_key: decade"));
         assert!(yaml.contains("name: text_all,") && yaml.contains("name: decade,"));
         // A template without one of the lines it changes is refused.
         let no_pairs = INDEX_TEMPLATE.replace(TEMPLATE_TEXT_FIELDS[1], "");
         assert!(text_fields(TextLayout::Single, &no_pairs).is_err());
         assert!(text_fields(TextLayout::Single, "version: 0.9").is_err());
+    }
+
+    #[test]
+    fn a_split_target_replaces_the_templates() {
+        let default = MainLayout::default();
+        assert_eq!(default.split_target(), 30_000);
+        assert_eq!(
+            main_template(&WriterTuning::default(), default).unwrap(),
+            INDEX_TEMPLATE
+        );
+        let layout = MainLayout {
+            split_docs: Some(90_000),
+            ..MainLayout::default()
+        };
+        assert_eq!(layout.split_target(), 90_000);
+        let yaml = main_template(&WriterTuning::default(), layout).unwrap();
+        assert_eq!(
+            yaml,
+            INDEX_TEMPLATE.replace(
+                "  split_num_docs_target: 30000\n",
+                "  split_num_docs_target: 90000\n"
+            )
+        );
+        assert!(split_target(0, INDEX_TEMPLATE).is_err());
+        assert!(split_target(MAX_SPLIT_DOCS, INDEX_TEMPLATE).is_err());
+        // A template without the line, or with it twice, is refused.
+        assert!(split_target(90_000, "version: 0.9").is_err());
+        let twice = format!("{INDEX_TEMPLATE}  {TEMPLATE_SPLIT_TARGET}\n");
+        assert!(split_target(90_000, &twice).is_err());
     }
 
     #[test]
