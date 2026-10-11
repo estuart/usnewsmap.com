@@ -570,13 +570,11 @@ impl Queue for Flaky {
     }
     async fn send(&self, queue: &str, text: &str) -> anyhow::Result<()> {
         use std::sync::atomic::Ordering;
-        if self
-            .ok
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_err()
-        {
+        // Sends in these tests are sequential.
+        if self.ok.load(Ordering::SeqCst) == 0 {
             anyhow::bail!("queue unavailable");
         }
+        self.ok.fetch_sub(1, Ordering::SeqCst);
         self.inner.send(queue, text).await
     }
     async fn approximate_count(&self, queue: &str) -> anyhow::Result<u64> {
