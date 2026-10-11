@@ -1021,18 +1021,8 @@ async fn the_most_searched_examples_are_warmed_first() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// After a start, the warm-up doesn't start a search while every visitor
-/// slot is taken: it waits, within its budget.
-#[tokio::test]
-async fn a_starting_warm_up_gives_way_to_visitors() {
-    let dir = temp_reference("give-way");
-    let mut cfg = config();
-    cfg.compute_concurrency = 1;
-    cfg.prewarm_startup_budget = Duration::from_millis(400);
-    let backend = Counting::new(Duration::from_secs(2), false);
-    let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
-
-    // A visitor's search holds the only slot.
+/// A visitor's search, returned once it is running.
+async fn visitor_search(state: &Arc<AppState>) -> tokio::task::JoinHandle<(StatusCode, Value)> {
     let visitor = {
         let state = state.clone();
         tokio::spawn(async move {
@@ -1043,9 +1033,26 @@ async fn a_starting_warm_up_gives_way_to_visitors() {
             .await
         })
     };
-    while state.flights.free_slots() > 0 {
+    while state.flights.visitor_searches() == 0 {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    visitor
+}
+
+/// After a start, the warm-up doesn't start a search while a visitor's is
+/// running, even with a visitor slot free: it waits, within its budget.
+#[tokio::test]
+async fn a_starting_warm_up_gives_way_to_visitors() {
+    let dir = temp_reference("give-way");
+    let mut cfg = config();
+    cfg.compute_concurrency = 2;
+    cfg.prewarm_startup_budget = Duration::from_millis(400);
+    let backend = Counting::new(Duration::from_secs(2), false);
+    let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
+
+    // A visitor's search holds one of the two slots.
+    let visitor = visitor_search(&state).await;
+    assert_eq!(state.flights.free_slots(), 1);
     let calls = backend.calls();
     let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
     assert_eq!(backend.calls(), calls, "no warm-up search: {report:?}");
@@ -1062,6 +1069,34 @@ async fn a_starting_warm_up_gives_way_to_visitors() {
     let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Publish).await;
     assert_eq!(report.gave_way, Duration::ZERO, "{report:?}");
     assert_eq!(report.examples_warm, prewarm::examples().len());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// After a start, the warm-up computes once no visitor's search is running,
+/// and `gave_way` is the time it waited; with none running it doesn't wait.
+#[tokio::test]
+async fn a_starting_warm_up_goes_when_no_visitor_searches() {
+    let dir = temp_reference("give-way-ends");
+    let mut cfg = config();
+    cfg.compute_concurrency = 2;
+    cfg.prewarm_startup_budget = Duration::from_secs(3);
+    let backend = Counting::new(Duration::from_millis(300), false);
+    let state = Arc::new(reloading_state(&dir, cfg.clone(), backend).await);
+
+    let visitor = visitor_search(&state).await;
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert!(report.computed > 0, "{report:?}");
+    assert!(report.gave_way >= Duration::from_millis(100), "{report:?}");
+    assert!(report.gave_way < Duration::from_secs(2), "{report:?}");
+    visitor.await.unwrap();
+
+    // Nobody searching: no wait at all.
+    let quick = Counting::new(Duration::ZERO, false);
+    let state = Arc::new(reloading_state(&dir, cfg, quick).await);
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert_eq!(report.gave_way, Duration::ZERO, "{report:?}");
+    assert!(report.computed > 0, "{report:?}");
+    assert_eq!(report.skipped, 0, "{report:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
