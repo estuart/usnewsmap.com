@@ -273,6 +273,31 @@ mod tests {
 
     #[cfg(feature = "damage")]
     #[test]
+    fn local_lists_are_ja_ocrs() {
+        // damage_v2.py reads ja-ocr/wordlists/<code>.txt itself: the embedded
+        // copies must be its first 5,000 words.
+        for l in LANGUAGES.iter().filter(|l| l.local_list) {
+            let code = l.wordlist.unwrap();
+            let path = format!(
+                "{}/../../ja-ocr/wordlists/{code}.txt",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let src = std::fs::read_to_string(&path).expect("the local word list");
+            let want: Vec<&str> = src
+                .split('\n')
+                .filter(|w| !w.is_empty())
+                .take(5000)
+                .collect();
+            assert_eq!(
+                wordlist(code).unwrap().lines().collect::<Vec<_>>(),
+                want,
+                "{code}"
+            );
+        }
+    }
+
+    #[cfg(feature = "damage")]
+    #[test]
     fn lists_start_with_their_most_frequent_words() {
         assert_eq!(wordlist("en").unwrap().lines().next(), Some("the"));
         assert_eq!(
