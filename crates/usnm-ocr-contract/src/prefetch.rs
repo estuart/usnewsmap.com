@@ -200,6 +200,16 @@ pub fn encode(rows: &[ManifestRow]) -> anyhow::Result<Vec<u8>> {
 /// Read a manifest, checking its format, its columns and every row: the
 /// doc_id must be its key's, and the item URL the one [`item_url`] gives.
 pub fn decode(bytes: Bytes) -> anyhow::Result<Vec<ManifestRow>> {
+    decode_where(bytes, |_| true)
+}
+
+/// [`decode`], keeping only the rows `keep` accepts, so a reader that
+/// wants part of a manifest never holds the rest (every row is still
+/// checked).
+pub fn decode_where(
+    bytes: Bytes,
+    mut keep: impl FnMut(&ManifestRow) -> bool,
+) -> anyhow::Result<Vec<ManifestRow>> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
     let format = builder
         .metadata()
@@ -258,7 +268,9 @@ pub fn decode(bytes: Bytes) -> anyhow::Result<Vec<ManifestRow>> {
             if !safe_batch(&row.batch) {
                 bail!("manifest row {} has an unsafe batch name", row.doc_id);
             }
-            out.push(row);
+            if keep(&row) {
+                out.push(row);
+            }
         }
     }
     Ok(out)
@@ -302,6 +314,8 @@ mod tests {
         );
         let back = decode(Bytes::from(encode(&rows).unwrap())).unwrap();
         assert_eq!(back, rows);
+        let some = decode_where(Bytes::from(encode(&rows).unwrap()), |r| r.lccn == "sn1").unwrap();
+        assert_eq!(some.len(), 2);
         assert_eq!(back[0].lang_or_und(), "und");
         assert_eq!(back[1].decade(), 1900);
         assert_eq!(
