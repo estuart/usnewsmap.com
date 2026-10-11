@@ -85,9 +85,9 @@ pub struct Record {
     pub text: String,
     pub score: PyScore,
     pub damage: Option<PyDamage>,
-    /// The forced-language score, by MARC code (Rust scores it by the
-    /// ISO 639-3 code); null where the language has no word list.
-    #[serde(default)]
+    /// The forced-language score of each title language and English, by
+    /// MARC code (Rust scores it by the ISO 639-3 code); null where the
+    /// language has no word list.
     pub forced: BTreeMap<String, Option<PyForced>>,
 }
 
@@ -236,6 +236,12 @@ pub fn compare(r: &Record) -> Vec<String> {
         &score(&r.text, &languages),
         &mut out,
     );
+    // Every title language and English has a forced score (null without a word list).
+    for marc in languages.iter().copied().chain(std::iter::once("eng")) {
+        if !r.forced.contains_key(marc) {
+            out.push(format!("forced {marc}: missing from the file"));
+        }
+    }
     for (marc, py) in &r.forced {
         let rs = lang::marc_to_iso3(marc).and_then(|iso3| score_forced(&r.text, iso3));
         compare_forced(marc, py.as_ref(), rs.as_ref(), &mut out);
@@ -265,4 +271,33 @@ pub fn check(records: &[Record]) -> Report {
         }
     }
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(forced: serde_json::Value) -> Record {
+        let s = score("", &["cho"]);
+        serde_json::from_value(serde_json::json!({
+            "doc_id": "d1", "languages": ["cho"], "text": "",
+            "score": {"lang": s.lang, "decision": s.decision.as_str(), "mixed_with": null, "script": s.script,
+                      "function_share": null, "damage_rate": null, "garbage_share": null,
+                      "chars": 0, "tokens": 0, "words": 0},
+            "damage": null, "forced": forced,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn every_forced_score_must_be_there() {
+        let forced = score_forced("", "eng").unwrap();
+        let eng = serde_json::json!({"tokens": 0, "words": 0, "head": 0, "near": 0, "function": 0,
+                                     "function_share": null, "damage_rate": null, "known_words": 0});
+        assert_eq!(forced.tokens, 0);
+        assert!(compare(&record(serde_json::json!({"cho": null, "eng": eng}))).is_empty());
+        let diff = compare(&record(serde_json::json!({"cho": null})));
+        assert_eq!(diff, ["forced eng: missing from the file"]);
+        assert!(serde_json::from_value::<Record>(serde_json::json!({"doc_id": "d"})).is_err());
+    }
 }

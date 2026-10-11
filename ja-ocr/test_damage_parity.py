@@ -99,6 +99,11 @@ class Records(unittest.TestCase):
             self.assertEqual(got, {"p1": ["eng", "ger"], "p2": ["eng"]})
             with self.assertRaises(ValueError):
                 damage_parity.damage_parity(ref, cur, pages=0, audit_version=version)
+            # With the audit version's snapshot gone, the current one's, if its name is safe.
+            ref2 = jaocr.LocalStore(f"{root}/ref2")
+            ref2.write("current.json", json.dumps({"reference": "../escape"}).encode())
+            with self.assertRaisesRegex(ValueError, "unsafe reference version"):
+                damage_parity.damage_parity(ref2, cur, pages=5, audit_version=version)
 
 
 if __name__ == "__main__":

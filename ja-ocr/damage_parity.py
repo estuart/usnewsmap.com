@@ -165,7 +165,10 @@ def damage_parity(reference, curated, pages: int = 400, audit_version: str = DEF
         jaocr.log("damage parity page", doc_id=r["doc_id"], languages=r["title_languages"], batch=r["batch"])
     batches_path = f"{audit_version}/batches.json"
     if not reference.exists(batches_path):  # an old version's files can be gone: the current one's
-        batches_path = f"{json.loads(reference.read('current.json'))['reference']}/batches.json"
+        current = json.loads(reference.read("current.json"))["reference"]
+        if not jaocr.SAFE_SEGMENT.match(current):
+            raise ValueError(f"current.json names an unsafe reference version: {current!r}")
+        batches_path = f"{current}/batches.json"
     parts = {quality.batch_name(b): (b.get("curated") or {}).get("parts") or []
              for b in json.loads(reference.read(batches_path))}
     wanted: dict[str, dict[str, dict]] = {}
