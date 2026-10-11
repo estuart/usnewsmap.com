@@ -782,7 +782,7 @@ scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name us
 `scripts/logs.sh` runs the `ocr-node-*` queries against the nodes' workspace (`OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID`):
 
 ```sh
-scripts/logs.sh prod ocr-node-health      # per node: heartbeat, counters, CPU, memory, free space on /, worker lines, PerfMB, SyslogMB and WorkerMB; DayMB and CapPct for the workspace
+scripts/logs.sh prod ocr-node-health      # per node: heartbeat, counters, CPU, memory, free space on /, worker lines, PerfMB, SyslogMB, InsightsMB and WorkerMB; DayMB and CapPct for the workspace
 scripts/logs.sh prod ocr-node-errors 2d   # worker warnings and errors, panics, failed units, OOM kills, other errors
 ```
 
