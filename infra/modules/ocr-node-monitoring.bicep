@@ -51,7 +51,8 @@
 //   named MSVMI-*).
 //
 // Estimated volume per node (an estimate; measure it with
-// ops/queries/ocr-node-health.kql, columns PerfMB, SyslogMB and WorkerMB):
+// ops/queries/ocr-node-health.kql, columns PerfMB, SyslogMB, InsightsMB and
+// WorkerMB):
 // - Perf: measured on 11 October 2026, 28 series a sample on node 1 (4
 //   vCPUs) and 35 on node 2 (8 vCPUs): the CPUs and a total, memory, 3 disk
 //   counters x 9 or 10 mounts and a total (/run, /dev and the like
