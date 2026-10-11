@@ -577,13 +577,22 @@ pub async fn full_pass(
                 })
                 .await??;
                 // The summary last: it marks the batch version done.
-                curated
+                if !curated
                     .put_new(
                         &table_path(name, v),
                         table,
                         "application/vnd.apache.parquet",
                     )
-                    .await?;
+                    .await?
+                {
+                    // An earlier run wrote it and stopped before the summary.
+                    // Tables are create-only: to rescore, delete both files.
+                    tracing::warn!(
+                        batch = name,
+                        version = v,
+                        "ocr damage table kept from an earlier run"
+                    );
+                }
                 curated
                     .put_new(&summary_path(name, v), summary, "application/json")
                     .await?;
