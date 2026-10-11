@@ -482,6 +482,10 @@ build = "ocr/engines/tesseract"
 adapter = "rust"
 class = "cpu"                    # cpu, or gpu (node 2)
 production = true
+license = "Apache-2.0"           # the engine's code, gated like a model
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tesseract"
+credit = "Tesseract OCR engine, Tesseract OCR project, Apache-2.0"
 deterministic = true
 memory = "1536m"
 cpus = 1.0
@@ -564,7 +568,7 @@ restricted = """Qwen Research License 1(i): "'Non-Commercial' shall mean for res
 https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE"""
 ```
 
-**The gate.** `production = false` keeps an engine out of production routes. A production route may use a profile only if every model the profile uses is in tier 1 or tier 2:
+**The gate.** `production = false` keeps an engine out of production routes. A production route may use a profile only if the engine's code and every model the profile uses are in tier 1 or tier 2. The engine's code is recorded on `[[engine]]` with the same fields as a model (`license`, `author`, `source`, `credit`, and `fetched`, `note`, `restricted` or `undecided` where they apply), and the same rules hold for it:
 
 1. **Cleared.** Its `license` is in `production_licenses`.
 2. **Openly published, no explicit licence, attributed.** Its `license` is `none`, and it has `source` (the URL the file was fetched from), `author` (the author or publisher as the source names them), `fetched` (a date), `note` (that it has no explicit licence, and where that was checked) and `credit`.
@@ -756,7 +760,7 @@ min_word_overlap = 0.6           # share of the first reading's dictionary words
 
 ### 13.7.8 Validation, tools and distribution
 
-- `usnm-ocr-worker routes check --routing ocr/routing/routes.toml --engines ocr/engines/engines.toml --engines-lock ocr/engines/engines.lock.json [--survey-results <dir>]` fails on: an unknown engine or profile; an empty `candidates` list or `fallback_after = 0`; candidates of one route in different capability queues; options not in a profile's `tunable`; an unreachable route; no catch-all; a production route to a `production = false` engine, or to a profile that uses a model outside tiers 1 and 2 (§13.7.2), meaning a `license` not in `production_licenses` and not `none`, a `none` entry without `source`, `author`, `fetched`, `note` or `credit`, any entry with `restricted` or `undecided`, or any production model without `author`, `source` and `credit`; a `batch` pattern ending in `_verNN`; `score_*` keys or a cascade on a route that matches `jpn` or `und`; timeouts over the page budget; a changed file without a new `version`. `routes.golden.toml` includes a page on the default route and checks its resolved request: profile, merged options and `image.dpi` 300. With `--survey-results` it warns when a production route's locked image and model digests have no survey result. CI runs it.
+- `usnm-ocr-worker routes check --routing ocr/routing/routes.toml --engines ocr/engines/engines.toml --engines-lock ocr/engines/engines.lock.json [--survey-results <dir>]` fails on: an unknown engine or profile; an empty `candidates` list or `fallback_after = 0`; candidates of one route in different capability queues; options not in a profile's `tunable`; an unreachable route; no catch-all; a production route to a `production = false` engine, to an engine whose code is outside tiers 1 and 2, or to a profile that uses a model outside them (§13.7.2), meaning a `license` not in `production_licenses` and not `none`, a `none` entry without `source`, `author`, `fetched`, `note` or `credit`, any entry with `restricted` or `undecided`, or any production engine or model without `author`, `source` and `credit`; a `batch` pattern ending in `_verNN`; `score_*` keys or a cascade on a route that matches `jpn` or `und`; timeouts over the page budget; a changed file without a new `version`. `routes.golden.toml` includes a page on the default route and checks its resolved request: profile, merged options and `image.dpi` 300. With `--survey-results` it warns when a production route's locked image and model digests have no survey result. CI runs it.
 - `routes explain --page sn83045462/1890-05-03/ed-1/seq-7 --language deu --batch nbu_gage` prints the route, the candidates and why any were dropped.
 - `routes diff --from-version 1 --to-version 2 --manifest <sample.jsonl>` counts pages whose engine or profile changes.
 - **Distribution, first release:** the bundle files are installed on the node with the worker and passed by named flags (`--routing-file`, `--engines-file`, `--engines-lock`).
