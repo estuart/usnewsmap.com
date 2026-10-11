@@ -123,7 +123,8 @@ fn alto_version(ns: &ResolveResult<'_>) -> Option<AltoVersion> {
 fn dimension(e: &BytesStart<'_>, name: &str) -> Result<Option<f64>, AltoError> {
     for a in e.attributes().with_checks(true) {
         let a = a.map_err(|_| AltoError::Malformed)?;
-        if a.key.local_name().as_ref() == name {
+        // The unprefixed attribute only: `x:WIDTH` is someone else's.
+        if a.key.as_ref() == name {
             return Ok(a
                 .value
                 .trim()
@@ -291,6 +292,10 @@ mod tests {
         assert_eq!(ok(&V3.replace("ns-v3#", "ns-v2#")).version, AltoVersion::V2);
         assert_eq!(ok(&V3.replace("ns-v3#", "ns-v4#")).version, AltoVersion::V4);
         // A prefixed namespace is the same document.
+        assert_eq!(
+            err(&V3.replace("WIDTH=\"5000\"", "xmlns:x=\"urn:x\" x:WIDTH=\"5000\"")),
+            AltoError::NoPage
+        );
         let prefixed = r#"<a:alto xmlns:a="http://www.loc.gov/standards/alto/ns-v4#"><a:Layout><a:Page WIDTH="1.5" HEIGHT="2"/></a:Layout></a:alto>"#;
         assert_eq!(ok(prefixed).version, AltoVersion::V4);
     }

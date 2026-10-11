@@ -28,15 +28,24 @@ fn io(path: &Path, e: std::io::Error) -> StoreError {
     StoreError::Io(format!("{}: {e}", path.display()))
 }
 
-/// A local object's ETag: its size and modification time, which change
-/// with every write (each write replaces the file).
+/// A local object's ETag: the file's identity (device and inode on Unix),
+/// size and modification time. Every write makes a new file (a temp file
+/// renamed or linked into place), so the identity changes with each one
+/// even when the clock's resolution doesn't.
 fn local_etag(m: &std::fs::Metadata) -> String {
     let nanos = m
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_nanos());
-    format!("{:x}-{nanos:x}", m.len())
+    #[cfg(unix)]
+    let id = {
+        use std::os::unix::fs::MetadataExt;
+        format!("{:x}.{:x}", m.dev(), m.ino())
+    };
+    #[cfg(not(unix))]
+    let id = String::from("0");
+    format!("{id}-{:x}-{nanos:x}", m.len())
 }
 
 /// Bytes per chunk of a streamed read (`get_stream`).
@@ -262,20 +271,37 @@ impl ObjectStore for LocalStore {
         }
     }
 
+    /// Moves the file aside first (atomic), then compares the ETag of the
+    /// file it moved, so a write that lands between the check and the
+    /// delete is never the one deleted: a file that doesn't match is linked
+    /// back unless a newer one has taken its place.
     async fn delete_if_match(&self, path: &str, etag: &str) -> Result<bool, StoreError> {
         validate_path(path)?;
         let full = self.root.join(path);
-        match tokio::fs::metadata(&full).await {
-            Ok(m) if local_etag(&m) == etag => {}
-            Ok(_) => return Ok(false),
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(io(&full, e)),
-        }
-        match tokio::fs::remove_file(&full).await {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(io(&full, e)),
-        }
+        let etag = etag.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let aside = temp_path(&full);
+            match std::fs::rename(&full, &aside) {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+                Err(e) => return Err(io(&full, e)),
+            }
+            let matched = std::fs::metadata(&aside)
+                .map(|m| local_etag(&m) == etag)
+                .map_err(|e| io(&aside, e))?;
+            if !matched {
+                match std::fs::hard_link(&aside, &full) {
+                    Ok(()) => {}
+                    // Written again meanwhile: the newer file stays.
+                    Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(io(&full, e)),
+                }
+            }
+            std::fs::remove_file(&aside).map_err(|e| io(&aside, e))?;
+            Ok(matched)
+        })
+        .await
+        .map_err(|e| StoreError::Io(e.to_string()))?
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
@@ -348,11 +374,12 @@ mod tests {
         ));
         assert_eq!(store.get_if_match(&a.path, "other", 3).await.unwrap(), None);
         assert!(!store.delete_if_match(&a.path, "other").await.unwrap());
-        // Written again since the listing: neither read nor deleted.
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        store.put(&a.path, b"three".to_vec(), "x").await.unwrap();
+        // Written again since the listing, at the same size: neither read
+        // nor deleted.
+        store.put(&a.path, b"two".to_vec(), "x").await.unwrap();
         assert_eq!(store.get_if_match(&a.path, &a.etag, 9).await.unwrap(), None);
         assert!(!store.delete_if_match(&a.path, &a.etag).await.unwrap());
+        assert_eq!(store.get(&a.path).await.unwrap().unwrap(), b"two", "kept");
         let now = store.list_info("out").await.unwrap();
         assert!(store
             .delete_if_match(&now[0].path, &now[0].etag)

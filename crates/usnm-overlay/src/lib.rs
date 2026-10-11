@@ -95,8 +95,12 @@ fn unix_days(d: NaiveDate) -> i32 {
     i32::try_from((d - epoch).num_days()).expect("dates fit in i32 days")
 }
 
-fn from_unix_days(n: i32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid") + chrono::Duration::days(i64::from(n))
+/// A `Date32` as a date; `None` outside chrono's range (a part from an OCR
+/// node can hold any value).
+fn from_unix_days(n: i32) -> Option<NaiveDate> {
+    NaiveDate::from_ymd_opt(1970, 1, 1)
+        .expect("valid")
+        .checked_add_signed(chrono::Duration::days(i64::from(n)))
 }
 
 /// A part holding `rows`, zstd-compressed.
@@ -220,7 +224,7 @@ pub fn read_part(bytes: Bytes) -> anyhow::Result<Vec<OverlayPage>> {
         for i in 0..batch.num_rows() {
             let key = PageKey::new(
                 lccn.value(i),
-                from_unix_days(date.value(i)),
+                from_unix_days(date.value(i)).context("date out of range")?,
                 unsigned(edition.value(i))?,
                 unsigned(seq.value(i))?,
             )?;
@@ -243,6 +247,166 @@ pub fn read_part(bytes: Bytes) -> anyhow::Result<Vec<OverlayPage>> {
         }
     }
     Ok(out)
+}
+
+/// Page headers read without decoding the pages: Thrift's compact
+/// protocol, as far as it takes to find each header's end and its sizes.
+mod pages {
+    use anyhow::{bail, Context};
+
+    /// Nesting a page header may have (it has two levels; statistics a few).
+    const MAX_DEPTH: usize = 16;
+
+    struct Reader<'a> {
+        b: &'a [u8],
+        at: usize,
+    }
+
+    impl Reader<'_> {
+        fn byte(&mut self) -> anyhow::Result<u8> {
+            let v = *self
+                .b
+                .get(self.at)
+                .context("page header runs past the column")?;
+            self.at += 1;
+            Ok(v)
+        }
+
+        fn varint(&mut self) -> anyhow::Result<u64> {
+            let mut v = 0u64;
+            for shift in (0..64).step_by(7) {
+                let b = self.byte()?;
+                v |= u64::from(b & 0x7f) << shift;
+                if b & 0x80 == 0 {
+                    return Ok(v);
+                }
+            }
+            bail!("varint too long")
+        }
+
+        fn zigzag(&mut self) -> anyhow::Result<i64> {
+            let v = self.varint()?;
+            Ok((v >> 1) as i64 ^ -((v & 1) as i64))
+        }
+
+        fn skip(&mut self, n: u64) -> anyhow::Result<()> {
+            let n = usize::try_from(n)?;
+            if self.b.len().saturating_sub(self.at) < n {
+                bail!("page header runs past the column");
+            }
+            self.at += n;
+            Ok(())
+        }
+
+        /// Skip one value of compact type `t`.
+        fn value(&mut self, t: u8, depth: usize) -> anyhow::Result<()> {
+            if depth > MAX_DEPTH {
+                bail!("page header nested too deeply");
+            }
+            match t {
+                1 | 2 => Ok(()),
+                3 => self.skip(1),
+                4..=6 => self.varint().map(drop),
+                7 => self.skip(8),
+                8 => {
+                    let n = self.varint()?;
+                    self.skip(n)
+                }
+                9 | 10 => {
+                    let h = self.byte()?;
+                    let n = match h >> 4 {
+                        15 => self.varint()?,
+                        n => u64::from(n),
+                    };
+                    let et = h & 0x0f;
+                    for _ in 0..n {
+                        // A bool in a list is a byte of its own.
+                        if et == 1 || et == 2 {
+                            self.skip(1)?;
+                        } else {
+                            self.value(et, depth + 1)?;
+                        }
+                    }
+                    Ok(())
+                }
+                11 => {
+                    let n = self.varint()?;
+                    if n > 0 {
+                        let kv = self.byte()?;
+                        for _ in 0..n {
+                            self.value(kv >> 4, depth + 1)?;
+                            self.value(kv & 0x0f, depth + 1)?;
+                        }
+                    }
+                    Ok(())
+                }
+                12 => self.fields(depth + 1, |_, _, _| Ok(false)).map(drop),
+                _ => bail!("unknown compact type {t}"),
+            }
+        }
+
+        /// Read a struct's fields; `top` handles one (id, type) itself and
+        /// says so, or leaves it to be skipped.
+        fn fields(
+            &mut self,
+            depth: usize,
+            mut top: impl FnMut(&mut Self, i16, u8) -> anyhow::Result<bool>,
+        ) -> anyhow::Result<()> {
+            let mut id: i16 = 0;
+            loop {
+                let h = self.byte()?;
+                if h == 0 {
+                    return Ok(());
+                }
+                let t = h & 0x0f;
+                id = match h >> 4 {
+                    0 => i16::try_from(self.zigzag()?)?,
+                    d => id.checked_add(i16::from(d)).context("field id")?,
+                };
+                if !top(self, id, t)? {
+                    self.value(t, depth)?;
+                }
+            }
+        }
+    }
+
+    /// The uncompressed bytes the pages of one column chunk declare, read
+    /// from its page headers between `start` and `start + len` of `file`.
+    pub fn declared_bytes(file: &[u8], start: i64, len: i64) -> anyhow::Result<i64> {
+        let start = usize::try_from(start)?;
+        let end = start
+            .checked_add(usize::try_from(len)?)
+            .filter(|&e| e <= file.len())
+            .context("column chunk outside the file")?;
+        let mut r = Reader {
+            b: &file[..end],
+            at: start,
+        };
+        let mut total = 0i64;
+        while r.at < end {
+            let (mut uncompressed, mut compressed) = (None, None);
+            r.fields(0, |r, id, t| match (id, t) {
+                (2, 5) => {
+                    uncompressed = Some(r.zigzag()?);
+                    Ok(true)
+                }
+                (3, 5) => {
+                    compressed = Some(r.zigzag()?);
+                    Ok(true)
+                }
+                _ => Ok(false),
+            })?;
+            let (Some(u), Some(c)) = (uncompressed, compressed) else {
+                bail!("page header without its sizes");
+            };
+            if u < 0 || c < 0 {
+                bail!("negative page size");
+            }
+            total = total.saturating_add(u);
+            r.skip(u64::try_from(c)?)?;
+        }
+        Ok(total)
+    }
 }
 
 /// A row of a part an OCR node wrote, with every column (13 §13.8.4).
@@ -277,19 +441,33 @@ pub const MAX_NODE_PART_UNCOMPRESSED: i64 = 4 * 1024 * 1024;
 /// says its columns hold more than [`MAX_NODE_PART_UNCOMPRESSED`] bytes
 /// decompressed, before decoding any page of it.
 pub fn read_node_part(bytes: Bytes) -> anyhow::Result<Vec<NodeRow>> {
+    let file = bytes.clone();
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
     let meta = builder.metadata().file_metadata();
     if meta.num_rows() > MAX_NODE_PART_ROWS || meta.num_rows() < 0 {
         bail!("{} rows, over {MAX_NODE_PART_ROWS}", meta.num_rows());
     }
-    let mut uncompressed = 0i64;
+    // The footer's sizes and every page header's, since the reader sizes
+    // its decompression buffers by the page headers, which the footer
+    // needn't agree with.
+    let (mut footer, mut declared) = (0i64, 0i64);
     for rg in builder.metadata().row_groups() {
         for c in rg.columns() {
-            uncompressed = uncompressed.saturating_add(c.uncompressed_size().max(0));
+            if c.uncompressed_size() < 0 || c.compressed_size() < 0 {
+                bail!("negative column size");
+            }
+            footer = footer.saturating_add(c.uncompressed_size());
+            let start = c.dictionary_page_offset().unwrap_or(c.data_page_offset());
+            declared = declared.saturating_add(
+                pages::declared_bytes(&file, start, c.compressed_size())
+                    .context("reading the page headers")?,
+            );
         }
     }
-    if uncompressed > MAX_NODE_PART_UNCOMPRESSED {
-        bail!("{uncompressed} bytes decompressed, over {MAX_NODE_PART_UNCOMPRESSED}");
+    for n in [footer, declared] {
+        if n > MAX_NODE_PART_UNCOMPRESSED {
+            bail!("{n} bytes decompressed, over {MAX_NODE_PART_UNCOMPRESSED}");
+        }
     }
     let want = schema();
     let got = builder.schema();
@@ -351,7 +529,7 @@ pub fn read_node_part(bytes: Bytes) -> anyhow::Result<Vec<NodeRow>> {
         for i in 0..batch.num_rows() {
             let key = PageKey::new(
                 lccn.value(i),
-                from_unix_days(date.value(i)),
+                from_unix_days(date.value(i)).context("date out of range")?,
                 unsigned(edition.value(i))?,
                 unsigned(seq.value(i))?,
             )?;
@@ -472,6 +650,37 @@ mod tests {
         let big = "x".repeat(5 * 1024 * 1024);
         assert!(read_node_part(Bytes::from(write_part(&[row(&big)]).unwrap())).is_err());
         assert!(read_node_part(Bytes::from_static(b"not parquet")).is_err());
+    }
+
+    #[test]
+    fn page_headers_are_read_without_decoding() {
+        // A valid part: its pages declare less than the footer's total,
+        // which also counts the headers.
+        let bytes = write_part(&[row("Die Zeitung erscheint jeden Sonnabend.")]).unwrap();
+        let reader = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(bytes.clone())).unwrap();
+        for c in reader.metadata().row_group(0).columns() {
+            let start = c.dictionary_page_offset().unwrap_or(c.data_page_offset());
+            let n = pages::declared_bytes(&bytes, start, c.compressed_size()).unwrap();
+            assert!(n > 0 && n <= c.uncompressed_size(), "{n}");
+        }
+        // A page header (type 0, 100 MB uncompressed, 4 bytes compressed),
+        // then its 4 bytes: what a forged part's page could say.
+        let mut forged = vec![0x15, 0x00, 0x15];
+        let mut v = 200_000_000u64; // zigzag(100_000_000)
+        while v >= 0x80 {
+            forged.push((v as u8) | 0x80);
+            v >>= 7;
+        }
+        forged.push(v as u8);
+        forged.extend([0x15, 0x08, 0x00, 1, 2, 3, 4]);
+        let len = forged.len() as i64;
+        assert_eq!(pages::declared_bytes(&forged, 0, len).unwrap(), 100_000_000);
+        // A header that runs past its column, a negative size, a chunk
+        // outside the file.
+        assert!(pages::declared_bytes(&forged, 0, 4).is_err());
+        let negative = [0x15, 0x00, 0x15, 0x01, 0x15, 0x00, 0x00];
+        assert!(pages::declared_bytes(&negative, 0, 7).is_err());
+        assert!(pages::declared_bytes(&forged, 0, len + 1).is_err());
     }
 
     #[test]
