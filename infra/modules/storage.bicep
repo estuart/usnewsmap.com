@@ -38,6 +38,13 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
     isVersioningEnabled: true
     deleteRetentionPolicy: { enabled: true, days: 14 }
     containerDeleteRetentionPolicy: { enabled: true, days: 14 }
+    // Lets the tiering rules below go by last read, not creation (#245).
+    lastAccessTimeTrackingPolicy: {
+      enable: true
+      name: 'AccessTimeTracking'
+      trackingGranularityInDays: 1
+      blobType: ['blockBlob']
+    }
   }
 }
 
@@ -55,6 +62,8 @@ resource blobContainers 'Microsoft.Storage/storageAccounts/blobServices/containe
 resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
   parent: account
   name: 'default'
+  // Last-access rules need the tracking policy in place first.
+  dependsOn: [blobService]
   properties: {
     policy: {
       rules: [
@@ -73,14 +82,49 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           }
         }
         {
-          // The Quickwit metastore rewrites small JSON files often.
+          // The Quickwit metastore rewrites small JSON files often, and every
+          // merge deletes splits, which versioning would otherwise keep (#245).
+          // Deleted versions stay in the 14-day soft delete above, so the
+          // metastore is still recoverable.
           name: 'prune-index-versions'
           enabled: true
           type: 'Lifecycle'
           definition: {
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['qw-index/'] }
             actions: {
-              version: { delete: { daysAfterCreationGreaterThan: 7 } }
+              version: { delete: { daysAfterCreationGreaterThan: 1 } }
+            }
+          }
+        }
+        {
+          // Searches keep the live index Hot. A rollback index nobody reads
+          // moves to Cool and comes back Hot on its first read. 14 days, not
+          // 7: the searcher's footer cache can leave live splits unread for
+          // days, and Cool bills a 30-day minimum and retrieval (#245).
+          name: 'tier-index-cool'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['qw-index/'] }
+            actions: {
+              baseBlob: {
+                tierToCool: { daysAfterLastAccessTimeGreaterThan: 14 }
+                enableAutoTierToHotFromCool: true
+              }
+            }
+          }
+        }
+        {
+          // Read only by curation and releases. By last access, so a
+          // rebuild's reads don't churn it. reference/, cache/ and searches/
+          // stay Hot (tiny).
+          name: 'tier-curated-cool'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['curated/'] }
+            actions: {
+              baseBlob: { tierToCool: { daysAfterLastAccessTimeGreaterThan: 7 } }
             }
           }
         }
