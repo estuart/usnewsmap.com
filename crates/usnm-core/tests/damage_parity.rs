@@ -16,17 +16,35 @@ fn fixture() -> (parity::Header, Vec<parity::Record>) {
     parity::parse(&text).expect("a parity file")
 }
 
+fn sha256(path: &str) -> String {
+    let digest = Sha256::digest(std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}")));
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+const RESCORE: &str = "port the change and score the fixture's pages again: \
+    python3 ja-ocr/damage_parity.py --rescore crates/usnm-core/tests/data/damage-parity.jsonl.zst --out <new file>";
+
 #[test]
 fn fixture_was_scored_by_this_damage_v2_py() {
     let (header, _) = fixture();
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ja-ocr/damage_v2.py");
-    let digest = Sha256::digest(std::fs::read(path).expect("ja-ocr/damage_v2.py"));
-    let ours: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let ja_ocr = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ja-ocr");
     assert_eq!(
-        header.damage_v2_sha256, ours,
-        "damage_v2.py changed since the fixture was built: port the change and rebuild the fixture \
-         (python3 ja-ocr/damage_parity.py --pages-from <file> --out <path> --synthetic)"
+        header.damage_v2_sha256,
+        sha256(&format!("{ja_ocr}/damage_v2.py")),
+        "damage_v2.py changed since the fixture was built: {RESCORE}"
     );
+    // The models also read our own word lists.
+    assert_eq!(
+        header.wordlists_sha256.keys().collect::<Vec<_>>(),
+        ["haw", "yi"]
+    );
+    for (code, want) in &header.wordlists_sha256 {
+        assert_eq!(
+            want,
+            &sha256(&format!("{ja_ocr}/wordlists/{code}.txt")),
+            "ja-ocr/wordlists/{code}.txt changed since the fixture was built: {RESCORE}"
+        );
+    }
     assert_eq!(header.wordfreq, "3.1.1");
 }
 
@@ -53,7 +71,7 @@ fn fixture_covers_the_traps_and_the_decisions() {
     for d in ["detected", "mixed", "und"] {
         assert!(has(&|r| r.score.decision == d), "no {d} page");
     }
-    for s in ["latin", "hebrew", "cyrillic"] {
+    for s in ["latin", "hebrew", "cyrillic", "greek"] {
         assert!(has(&|r| r.score.script == s), "no {s} page");
     }
     assert!(has(&|r| r.text.contains('ß')));

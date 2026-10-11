@@ -19,8 +19,9 @@ whitespace). That builds the small fixture CI checks: crates/usnm-core/tests/dat
 After a change to damage_v2.py, --rescore scores a file's pages again from the text it holds, with no
 loc.gov requests.
 
-Each file is JSON lines, zstd-compressed. The first line is {"header": {...}} with damage_v2.py's sha256,
-the wordfreq and Unicode versions and the page count. Each other line is a page: doc_id, the title's
+Each file is JSON lines, zstd-compressed. The first line is {"header": {...}} with the sha256 of
+damage_v2.py and of our own word lists (wordlists/haw.txt and yi.txt), the wordfreq and Unicode versions and
+the page count. Each other line is a page: doc_id, the title's
 languages, the text, score_v2's output ("score", rates at full precision), detect()'s damage counts
 ("damage": words, function, head, near; score_v2 doesn't return them) and the forced-language score of each
 of the title's languages and English ("forced", by MARC code; null without a word list).
@@ -51,6 +52,15 @@ def damage_v2_sha256() -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def wordlists_sha256() -> dict[str, str]:
+    """sha256 of our own word lists (damage_v2.LOCAL_WORDLISTS), which the models read besides wordfreq's."""
+    out = {}
+    for code in sorted(damage_v2.LOCAL_WORDLISTS.values()):
+        with open(os.path.join(damage_v2.WORDLIST_DIR, f"{code}.txt"), "rb") as f:
+            out[code] = hashlib.sha256(f.read()).hexdigest()
+    return out
+
+
 def wordfreq_version() -> str | None:
     try:
         from importlib.metadata import version
@@ -73,7 +83,8 @@ def record(doc_id: str, text: str, languages: tuple, models: damage_v2.Models) -
 
 
 def header(source: str, pages: int) -> dict:
-    return {"header": {"damage_v2_sha256": damage_v2_sha256(), "wordfreq": wordfreq_version(),
+    return {"header": {"damage_v2_sha256": damage_v2_sha256(), "wordlists_sha256": wordlists_sha256(),
+                       "wordfreq": wordfreq_version(),
                        "python": sys.version.split()[0], "unicode": unicodedata.unidata_version,
                        "source": source, "pages": pages,
                        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}}

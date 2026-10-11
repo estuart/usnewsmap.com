@@ -3,7 +3,8 @@
 //!
 //! A parity file is JSON lines, zstd-compressed by its writer
 //! (`ja-ocr/damage_parity.py`). The first line is `{"header": {...}}`,
-//! which holds `damage_v2.py`'s sha256; each other line is one page
+//! which holds the sha256 of `damage_v2.py` and of the local word lists;
+//! each other line is one page
 //! ([`Record`]): its text, its title's languages, `score_v2`'s output, the
 //! damage counts `detect` keeps, and the forced-language score for each of
 //! the title's languages and English. A page agrees when the language,
@@ -26,6 +27,9 @@ pub const TOLERANCE: f64 = 1e-9;
 pub struct Header {
     /// sha256 of the `damage_v2.py` that scored the pages.
     pub damage_v2_sha256: String,
+    /// sha256 of the local word lists it read (`ja-ocr/wordlists/<code>.txt`), by code.
+    #[serde(default)]
+    pub wordlists_sha256: BTreeMap<String, String>,
     /// The wordfreq version its word lists came from.
     pub wordfreq: String,
     /// Where the text came from (`curated`, `loc.gov`, `synthetic`...).

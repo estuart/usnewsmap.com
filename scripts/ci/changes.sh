@@ -58,8 +58,9 @@ matches '^\.github/' && all "workflow changed"
 # The Rust build and tests: the crates, the files compiled into binaries
 # (index config, place overrides, the example searches the API warms, the
 # reconstructed index history), the fixtures the tests read, and the Python
-# metric the damage port is checked against (its tables and its sha256).
-rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|scripts/(ci/|quickwit-fixtures\.sh))'
+# metric the damage port is checked against (its tables, its word lists and
+# their sha256).
+rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/(ci/|quickwit-fixtures\.sh))'
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer): the code those tests run and what they load. Not catalog/,
 # web/src/examples.json, ops/index-history.json or other CI scripts, which
