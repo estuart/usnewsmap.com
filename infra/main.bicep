@@ -389,6 +389,12 @@ module ocrVault 'modules/ocr-vault.bicep' = if (ocrNodes) {
 // Publisher grant on that component only; and alerts on a node sending too
 // much and on the cap. onboard.sh installs the agent on each node and
 // associates it with the rule.
+// The nodes' workspace's daily cap in GB, which the OCR nodes workbook also
+// charts against. 0.1 GB to start: about 8 to 25 MB a day per node is
+// estimated before the worker's telemetry, which isn't measured yet. Raise
+// it with cap_gb in ops/queries/ocr-node-health.kql.
+var ocrNodeDailyCapGb = '0.1'
+
 module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
   scope: rg
   name: 'ocr-node-monitoring'
@@ -399,10 +405,7 @@ module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
     workspaceName: 'usnm-ocr-log-${env}'
     appInsightsName: 'usnm-ocr-appi-${env}'
     ruleName: 'usnm-ocr-dcr-${env}'
-    // 0.1 GB to start: about 8 to 25 MB a day per node is estimated before
-    // the worker's telemetry, which isn't measured yet. Raise it with
-    // cap_gb in ops/queries/ocr-node-health.kql.
-    dailyCapGb: '0.1'
+    dailyCapGb: ocrNodeDailyCapGb
     nodeGroupId: trim(ocrNodeGroupId)
     actionGroupId: monitoring.outputs.actionGroupId
   }
@@ -720,9 +723,10 @@ module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
   }
 }
 
-// Dashboards over the workspace: the pipeline workbook with the jobs, the
-// API workbook with the API. No alert emails needed.
-module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deployApi) {
+// Dashboards: the pipeline workbook with the jobs and the API workbook with
+// the API, over the workspace; the OCR nodes workbook with the nodes, over
+// their own workspace. No alert emails needed.
+module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deployApi || ocrNodes) {
   scope: rg
   name: 'workbooks'
   params: {
@@ -730,8 +734,13 @@ module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deplo
     tags: tags
     workspaceId: monitoring.outputs.workspaceId
     appInsightsId: monitoring.outputs.appInsightsId
+    env: env
     pipeline: ingestJobs && useAcr
     api: deployApi
+    ocrNodes: ocrNodes
+    ocrNodeWorkspaceId: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceId : ''
+    ocrNodeAppInsightsId: ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsId : ''
+    ocrNodeDailyCapGb: ocrNodeDailyCapGb
   }
 }
 

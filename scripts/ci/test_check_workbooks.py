@@ -29,7 +29,7 @@ class Check(unittest.TestCase):
     def test_the_committed_workbooks_pass(self):
         placeholder, files = check.module_parts(check.MODULE.read_text())
         self.assertEqual(placeholder, P)
-        self.assertEqual(sorted(files), ["../workbooks/api.json", "../workbooks/pipeline.json"])
+        self.assertEqual(sorted(files), ["../workbooks/api.json", "../workbooks/ocr-nodes.json", "../workbooks/pipeline.json"])
         with unittest.mock.patch.object(check.sys, "argv", ["check"]):
             self.assertEqual(check.main(), 0)
 
