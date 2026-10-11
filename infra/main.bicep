@@ -77,6 +77,11 @@ param partitionDecade bool = false
 @description('Search the next full rebuild\'s texts, LoC\'s and American Stories\', in one field (#283, 05 §5.5.7), so a search looks each word up once. Only a full base takes it; deltas follow the published version, and a full rebuild without it searches a field per text again (docs/operations.md, "Full rebuild").')
 param singleTextField bool = false
 
+@description('Pages per split of the next full rebuild\'s base, in place of the 30,000 in pages-index.yaml (#283): fewer, larger splits for a cold search to open. 0: the template\'s. Only a full base takes it; deltas keep the template\'s. A larger target needs the E4 profile\'s memory for the split uploads (08 §8.4; docs/operations.md, "Full rebuild").')
+@minValue(0)
+@maxValue(999999)
+param splitDocs int = 0
+
 @description('Add a memory-optimized E4 workload profile (4 vCPU / 32 GiB, no minimum nodes) for full index rebuilds (#172). The environment pays the Dedicated plan management fee while it exists: turn it on for a rebuild, off afterwards (docs/operations.md, "Full rebuild").')
 param dedicatedProfile bool = false
 
@@ -661,6 +666,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     ocrLocal: ocrLocal
     partitionDecade: partitionDecade
     singleTextField: singleTextField
+    splitDocs: splitDocs
     workers: backfillWorkers
     backfillCron: backfillCron
     scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''

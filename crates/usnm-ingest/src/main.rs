@@ -252,6 +252,12 @@ enum Command {
         /// Only a full base takes it; deltas follow the published version.
         #[arg(long)]
         single_text_field: bool,
+        /// Pages per split of a full base, in place of the index template's
+        /// 30,000 (#283): fewer, larger splits for a cold search to open.
+        /// Bounded by the writer's memory and scratch share (08 §8.4). Only
+        /// a full base takes it; deltas keep the template's.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..usnm_ingest::sink::MAX_SPLIT_DOCS))]
+        split_docs: Option<u64>,
         #[command(flatten)]
         target: IndexTarget,
     },
@@ -486,6 +492,9 @@ enum Command {
         /// As for `release`.
         #[arg(long)]
         single_text_field: bool,
+        /// As for `release`.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..usnm_ingest::sink::MAX_SPLIT_DOCS))]
+        split_docs: Option<u64>,
         /// As `curate --max-runtime-secs`, counted from the start of `run`:
         /// batches still queued then wait for the next run, and what was
         /// curated is released. Leave room for titles-sync and the release
@@ -698,6 +707,7 @@ async fn release(
     ocr_local: bool,
     partition_decade: bool,
     single_text_field: bool,
+    split_docs: Option<u64>,
     titles_left: Option<String>,
     t: &IndexTarget,
     report: &Reporter,
@@ -716,6 +726,7 @@ async fn release(
         ocr_local,
         partition_decade,
         single_text_field,
+        split_docs,
     };
     // Held from before the writer node starts until after it stops, and
     // released on every path.
@@ -1263,6 +1274,7 @@ async fn command(
             ocr_local,
             partition_decade,
             single_text_field,
+            split_docs,
             target,
         } => {
             release(
@@ -1275,6 +1287,7 @@ async fn command(
                 *ocr_local,
                 *partition_decade,
                 *single_text_field,
+                *split_docs,
                 None,
                 target,
                 report,
@@ -1291,6 +1304,7 @@ async fn command(
             ocr_local,
             partition_decade,
             single_text_field,
+            split_docs,
             curate_max_runtime_secs,
             titles_max_runtime_secs,
             target,
@@ -1337,6 +1351,7 @@ async fn command(
                 *ocr_local,
                 *partition_decade,
                 *single_text_field,
+                *split_docs,
                 titles_left,
                 target,
                 report,
@@ -1446,6 +1461,8 @@ mod tests {
             "--ocr-local",
             "--partition-decade",
             "--single-text-field",
+            "--split-docs",
+            "120000",
             "--titles-max-runtime-secs",
             "28800",
             "--index-dir",
@@ -1460,6 +1477,7 @@ mod tests {
             ocr_local,
             partition_decade,
             single_text_field,
+            split_docs,
             ..
         } = cli.command
         else {
@@ -1473,10 +1491,39 @@ mod tests {
                 ja_latin,
                 ocr_local,
                 partition_decade,
-                single_text_field
+                single_text_field,
+                split_docs
             ),
-            (Some(28800), true, true, true, true, true, true)
+            (
+                Some(28800),
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                Some(120_000)
+            )
         );
+        // A split target of 0, or of a million pages or more, is refused.
+        for bad in ["0", "1000000", "-1"] {
+            assert!(
+                Cli::try_parse_from([
+                    "usnm-ingest",
+                    "--curated",
+                    "c",
+                    "--reference",
+                    "r",
+                    "release",
+                    "--split-docs",
+                    bad,
+                    "--index-dir",
+                    "x",
+                ])
+                .is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -1590,11 +1637,13 @@ mod tests {
             ocr_local,
             partition_decade,
             single_text_field,
+            split_docs,
             ..
         } = cli.command
         else {
             panic!("not a release");
         };
+        assert_eq!(split_docs, None, "the template's unless asked for");
         assert!(!american_stories, "off unless asked for");
         assert!(!ja_latin, "off unless asked for");
         assert!(!ocr_local, "off unless asked for");

@@ -42,11 +42,8 @@ use crate::sink::INDEX_TEMPLATE;
 /// Request bodies stay well under Quickwit's 10 MiB limit, as the release's.
 pub const CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
-/// The template line the split target replaces.
-const TEMPLATE_TARGET: &str = "split_num_docs_target: 30000";
-
 /// The production index config for `index_id`, with `split_docs` pages per
-/// split and `min_shards` ingest shards.
+/// split (as a release's `--split-docs`) and `min_shards` ingest shards.
 pub fn index_config(
     index_id: &str,
     index_uri: &str,
@@ -56,26 +53,11 @@ pub fn index_config(
     if split_docs == 0 || min_shards == 0 {
         bail!("the split target and the shard count must be above 0");
     }
-    let found = INDEX_TEMPLATE
-        .lines()
-        .filter(|l| l.trim() == TEMPLATE_TARGET)
-        .count();
-    if found != 1 || INDEX_TEMPLATE.contains("ingest_settings") {
-        bail!("the index template needs exactly one `{TEMPLATE_TARGET}` and no ingest_settings");
+    if INDEX_TEMPLATE.contains("ingest_settings") {
+        bail!("the index template has ingest_settings already");
     }
-    let lines: Vec<String> = INDEX_TEMPLATE
-        .lines()
-        .map(|l| {
-            if l.trim() == TEMPLATE_TARGET {
-                let indent = &l[..l.len() - l.trim_start().len()];
-                format!("{indent}split_num_docs_target: {split_docs}")
-            } else {
-                l.to_owned()
-            }
-        })
-        .collect();
-    let mut out = lines
-        .join("\n")
+    let mut out = crate::sink::split_target(split_docs, INDEX_TEMPLATE)?
+        .trim_end_matches('\n')
         .replace("${INDEX_ID}", index_id)
         .replace("${INDEX_URI}", index_uri);
     out.push_str(&format!(

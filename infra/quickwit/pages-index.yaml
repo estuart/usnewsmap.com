@@ -68,15 +68,18 @@ indexing_settings:
   # memory while it uploads, and the ingest container has 7.5 GiB. A
   # million-page split (about 23 GB) killed the writer in October 2026.
   # A merge stops taking splits once it holds this many pages, so merged
-  # splits hold a little over 30,000 pages and never 60,000. In the main
-  # index the common-word pairs (05 §5.5.3) make a page about 37 KB of
-  # index, not 23, and American Stories' text with its own pairs
-  # (05 §5.5.4) about 74 KB on the pages that have it, so that is at most
-  # about 2.4 GB and 4.4 GB: no more than the 60,000-page splits before
-  # it, or the 100,000-page splits before the pairs (about 2.6 GB, at most
-  # 4.6 GB; 08 §8.4). The Japanese pages' index (pages-ja-index.yaml)
-  # keeps the same settings: the release checks every index of a version
-  # against this bound (crates/usnm-ingest/src/merges.rs).
+  # splits hold a little over this target and never twice it. At the
+  # template's 30,000, in the main index the common-word pairs
+  # (05 §5.5.3) make a page about 37 KB of index, not 23, and American
+  # Stories' text with its own pairs (05 §5.5.4) about 74 KB on the pages
+  # that have it, so that is at most about 2.4 GB and 4.4 GB: no more than
+  # the 60,000-page splits before it, or the 100,000-page splits before
+  # the pairs (about 2.6 GB, at most 4.6 GB; 08 §8.4). A full base can be
+  # given a larger target (the release's --split-docs, which rewrites this
+  # value and needs the E4 profile; docs/operations.md). The Japanese
+  # pages' index (pages-ja-index.yaml) keeps the same settings: the
+  # release checks every index of a version against the target it was
+  # created with (crates/usnm-ingest/src/merges.rs).
   split_num_docs_target: 30000
   merge_policy:
     type: limit_merge
