@@ -66,6 +66,12 @@ param americanStoriesSearch bool = true
 @description('Search the Congress pages (#229) on a version whose current.json names a Congress index set. False makes the API leave them unloaded and answer source=congress with 422, without a release; the provision restarts the API (docs/configuration.md, USNM_CONGRESS_SEARCH).')
 param congressSearch bool = true
 
+@description('Give each ingest release the Congress pages curated under curated/congress/ (#229, the ingest job\'s --congress): an index set of their own, rebuilt when the curated pages change and kept otherwise. Clearing it makes the next release publish a version without them (docs/operations.md, "Congress pages").')
+param congress bool = false
+
+@description('Deploy the Congress fetch job, usnm-cong-caj-<env> (#229): manual, one replica of `usnm-ingest congress-globe`, which fetches the Congressional Globe from UNT at its crawl delay into curated/congress/. Set archiveAccountId first so every response is kept (docs/operations.md, "Congress pages").')
+param congressJob bool = false
+
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
 
@@ -255,6 +261,10 @@ var appName = 'ca-usnm-${env}'
 // environment name (environmentName's limit) the name is 31 characters,
 // within the container app limit (containerapp.bicep checks it).
 var searcherName = 'usnm-search-ca-${env}'
+// The Congress fetch job (congressJob, #229), in ADR-0017's form. 'cong',
+// not 'congress': with a 16-character environment name the name is 30
+// characters, within the Container Apps job limit (ingestjobs.bicep checks it).
+var congressJobName = 'usnm-cong-caj-${env}'
 var appOrigin = 'https://${appName}.${containerEnv.outputs.defaultDomain}'
 var domainOrigins = empty(dnsZoneName) ? [] : ['https://${dnsZoneName}', 'https://www.${dnsZoneName}']
 var siteOrigins = union(allowedOrigins, domainOrigins, [appOrigin])
@@ -664,6 +674,9 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     americanStories: americanStories
     jaLatin: jaLatin
     ocrLocal: ocrLocal
+    congress: congress
+    congressJob: congressJob
+    congressJobName: congressJobName
     partitionDecade: partitionDecade
     singleTextField: singleTextField
     splitDocs: splitDocs
@@ -867,6 +880,8 @@ output JA_AUDIT_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaAuditJobNa
 // The OCR pickup job (12 §12.5 Step 8); scripts/start-job.sh --job OCR_SYNC_JOB
 // runs ocr-enqueue and ocr-requeue as executions of it.
 output OCR_SYNC_JOB string = ingestJobs && useAcr ? ingest!.outputs.ocrSyncJobName : ''
+// The Congress fetch job (#229); scripts/start-job.sh --job CONGRESS_JOB.
+output CONGRESS_JOB string = ingestJobs && useAcr ? ingest!.outputs.congressJobName : ''
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
 // For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).

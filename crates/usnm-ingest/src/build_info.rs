@@ -55,6 +55,11 @@ pub struct Built {
     /// a full base, the published version's for a delta. The record's
     /// `common_grams` and `ja_fold` name it.
     pub analyzer: usnm_core::text::Analyzer,
+    /// The version has a Congress index set (`--congress`, #229): built by
+    /// this run or kept from the published version.
+    pub congress: bool,
+    /// This run wrote the Congress index (`congress-…`).
+    pub congress_index: bool,
 }
 
 /// The index templates the run applies, by name.
@@ -75,6 +80,9 @@ fn templates(b: &Built) -> Vec<(&'static str, String)> {
     }
     if b.ja_index {
         t.push(("pages-ja", crate::ocr_ja::JA_TEMPLATE.to_owned()));
+    }
+    if b.congress_index {
+        t.push(("congress", crate::congress::TEMPLATE.to_owned()));
     }
     t
 }
@@ -115,6 +123,10 @@ pub fn summary(b: &Built) -> Value {
     }
     if b.ocr_local {
         features["ocr_local"] = json!(crate::ocr_local::rule::VERSION);
+    }
+    // Likewise, as its `congress` block (#229).
+    if b.congress {
+        features["congress"] = json!(crate::congress::VERSION);
     }
     // Likewise, as its `decades`.
     if b.decades.on() {
@@ -158,7 +170,28 @@ mod tests {
             text_layout: usnm_core::text_layout::TextLayout::Separate,
             split_docs: None,
             analyzer: usnm_core::text::Analyzer::LATEST,
+            congress: false,
+            congress_index: false,
         }
+    }
+
+    #[test]
+    fn records_the_congress_template_when_the_run_writes_the_index() {
+        let off = record(&built(true, false));
+        assert!(off["features"].get("congress").is_none(), "{off}");
+        assert!(off["templates"].get("congress").is_none(), "{off}");
+        // Kept from the published version: the feature, not the template.
+        let mut b = built(true, false);
+        b.congress = true;
+        let kept = summary(&b);
+        assert_eq!(kept["features"]["congress"], crate::congress::VERSION);
+        assert!(kept["templates"].get("congress").is_none(), "{kept}");
+        b.congress_index = true;
+        let v = record(&b);
+        assert_eq!(
+            v["templates"]["congress"]["yaml"].as_str(),
+            Some(crate::congress::TEMPLATE)
+        );
     }
 
     #[test]

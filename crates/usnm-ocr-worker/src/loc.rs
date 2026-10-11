@@ -252,15 +252,8 @@ fn retry_after(resp: &reqwest::Response) -> Option<(Duration, bool)> {
         .headers()
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()
-        .ok()?
-        .trim();
-    let d = match v.parse::<u64>() {
-        Ok(s) => Duration::from_secs(s),
-        Err(_) => httpdate::parse_http_date(v)
-            .ok()?
-            .duration_since(std::time::SystemTime::now())
-            .unwrap_or_default(),
-    };
+        .ok()?;
+    let d = usnm_core::retry_after::parse(v, std::time::SystemTime::now())?;
     Some((d.min(MAX_RETRY_AFTER), d > MAX_RETRY_AFTER))
 }
 

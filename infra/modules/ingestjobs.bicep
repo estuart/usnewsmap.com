@@ -30,6 +30,14 @@
 //   `ocr-enqueue`, `ocr-requeue` and `ocr-seed` run as one-off executions of
 //   it (scripts/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
 //   account's endpoints.
+// - `usnm-cong-caj-{env}` (when `congressJob`, named in main.bicep): manual, one replica of
+//   `usnm-ingest congress-globe` as id-usnm-ingest (#229, 04 §4.10): fetches
+//   the Congressional Globe from UNT's page OCR at UNT's 3-second crawl
+//   delay into curated/congress/, keeping every response in the raw store
+//   (the archive's `raw`, when set), so an execution stopped at its max
+//   runtime resumes from those copies. About 105,000 pages, about 4 days:
+//   started again until it reports nothing left. Named by ADR-0017. The
+//   ingest job's release indexes what it wrote once `congress` is on.
 // - `caj-usnm-jaone-{env}` (with the jaocr job): manual, one replica, the
 //   same image and settings, for jaocr.py's one-off measurements (`mixed`,
 //   `american-stories`) that one replica does anyway; a second replica only
@@ -64,6 +72,13 @@ param americanStories bool = false
 param jaLatin bool = false
 @description('Weigh our own OCR from curated/ocr-local against LoC\'s text on the pages of the batches a release indexes (12 §12.5 Step 9, #296).')
 param ocrLocal bool = false
+@description('Give each release the Congress pages curated under curated/congress/ (#229): their own index set, rebuilt when they change.')
+param congress bool = false
+@description('Deploy the Congress fetch job, `congressJobName` (#229): manual, one replica of `usnm-ingest congress-globe`.')
+param congressJob bool = false
+@description('The Congress fetch job\'s name (with congressJob), usnm-cong-caj-<env>; a Container Apps job name is under 32 characters (ADR-0017).')
+@maxLength(31)
+param congressJobName string = ''
 @description('Lay a full rebuild\'s base out by decade (#123, 05 §5.5.5), so date-limited searches skip the other decades\' splits. Only a full base takes it; deltas follow the published version.')
 param partitionDecade bool = false
 @description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.7). Only a full base takes it; deltas follow the published version.')
@@ -246,6 +261,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             americanStories ? ['--american-stories'] : [],
             jaLatin ? ['--ja-latin'] : [],
             ocrLocal ? ['--ocr-local'] : [],
+            congress ? ['--congress'] : [],
             partitionDecade ? ['--partition-decade'] : [],
             singleTextField ? ['--single-text-field'] : [],
             splitDocs > 0 ? ['--split-docs', string(splitDocs)] : []
@@ -382,6 +398,48 @@ resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
   }
 }
 
+// congress-globe stops between pages at 22 h, leaving 2 h of the 24 h
+// replica timeout: an item it stops writes nothing, and the next execution
+// reads that item's pages back from the raw store instead of UNT.
+var congressMaxRuntimeSecs = 79200
+
+resource congressFetch 'Microsoft.App/jobs@2025-01-01' = if (congressJob) {
+  name: congressJobName
+  location: location
+  tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${ingestIdentityId}': {} }
+  }
+  properties: {
+    environmentId: environmentId
+    workloadProfileName: 'Consumption'
+    configuration: {
+      registries: [{ server: registryServer, identity: ingestIdentityId }]
+      triggerType: 'Manual'
+      // One replica: UNT asks for one request every 3 seconds, and the
+      // Cosmos lock `congress-globe` refuses a second execution anyway.
+      manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
+      replicaTimeout: replicaTimeoutSecs
+      // Started again by hand; a retry would only repeat a failure.
+      replicaRetryLimit: 0
+    }
+    template: {
+      containers: [
+        {
+          name: 'congress'
+          image: image
+          args: ['congress-globe', '--max-runtime-secs', string(congressMaxRuntimeSecs)]
+          // Mostly waiting on the crawl delay; an item's pages are held in
+          // memory until it is written (about 1,500 pages, under 100 MB).
+          resources: { cpu: json('0.5'), memory: '1Gi' }
+          env: concat(env, rawEnv)
+        }
+      ]
+    }
+  }
+}
+
 // ocr-sync stops starting imports at 3000 s, leaving 10 minutes of its
 // 3600 s replica timeout for the import in hand, the status file and the
 // telemetry flush. An hourly run normally takes a few minutes.
@@ -460,3 +518,4 @@ output backfillJobName string = backfill.name
 output jaOcrJobName string = empty(jaOcrImage) ? '' : jaOcr.name
 output jaAuditJobName string = empty(jaOcrImage) ? '' : jaAudit.name
 output ocrSyncJobName string = ocrSync ? ocrSyncJob.name : ''
+output congressJobName string = congressJob ? congressFetch.name : ''

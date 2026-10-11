@@ -343,7 +343,7 @@ Matching pages per day for up to 20 places, so the site can work out their exact
 
 ### 6.3.10 Congress pages (#229)
 
-`source=congress` searches the Congress index set that `current.json` names under `congress` (05 §5.5.6) instead of the newspapers' indexes. Phase 0 (this API) has the parameters, the selection and the response fields; the pages themselves come with the first source.
+`source=congress` searches the Congress index set that `current.json` names under `congress` (05 §5.5.6) instead of the newspapers' indexes. Phase 0 (this API) has the parameters, the selection and the response fields. The first source, the Congressional Globe, and the release step that builds the set came in phase 1 (04 §4.10); Congress baselines and rates in responses, and `source=all`, are still to come.
 
 - **What answers.** `/v1/aggregate`, `/v1/hits` and `/v1/days` take `source` and `series`. A newspaper search (no `source`, or `source=news`) sends exactly the requests it sent before, under the same canonical URL and cache key.
 - **Dates.** `from` and `to` are clamped to the Congress series' span (`congress.series` in `/v1/meta`), which runs past the newspapers' at both ends (1789 to 1994 when complete), and `source=all` to the span of both.

@@ -1,0 +1,144 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="/digital/media/oai/oai2.xsl"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd">
+  <responseDate>2026-10-11T18:44:44Z</responseDate>
+  <request verb="ListRecords" metadataPrefix="untl" set="collection:CGLOB">https://digital.library.unt.edu/oai/</request>
+  <ListRecords>
+    <record>
+      <header>
+        <identifier>info:ark/67531/metadc29274</identifier>
+        <datestamp>2025-10-08T18:33:25Z</datestamp>
+        <setSpec>partner:UNTGD</setSpec>
+        <setSpec>collection:CGLOB</setSpec>
+        <setSpec>access_rights:public</setSpec>
+      </header>
+      <metadata>
+        <untl:metadata xmlns:untl="http://digital2.library.unt.edu/untl/">
+          <untl:title qualifier="addedtitle">The Congressional Globe, Twenty-Fifth Congress, Second Session, Volume 6</untl:title>
+          <untl:title qualifier="officialtitle">The Congressional Globe, Volume 6: Twenty-Fifth Congress, Second Session</untl:title>
+          <untl:title qualifier="serialtitle">Congressional Globe</untl:title>
+          <untl:title qualifier="seriestitle">25th Congress</untl:title>
+          <untl:title qualifier="sorttitle">Congressional Globe, Congress 25, Session 2</untl:title>
+          <untl:title qualifier="addedtitle">The Congressional Globe, Containing Sketches of the Debates and Proceedings of the Twenty-Fifth Congress. Second Session, Volume 6</untl:title>
+          <untl:creator qualifier="edt">
+            <untl:name>Blair &amp; Rives</untl:name>
+            <untl:type>org</untl:type>
+          </untl:creator>
+          <untl:publisher>
+            <untl:info>City of Washington: Printed at the Globe Office for the Editors.</untl:info>
+            <untl:location>Washington D.C.</untl:location>
+            <untl:name>Blair &amp; Rives</untl:name>
+          </untl:publisher>
+          <untl:date qualifier="creation">1838</untl:date>
+          <untl:language>eng</untl:language>
+          <untl:description qualifier="content">The Congressional Globe contains the records for sessions of the U.S. Congress including summaries of proceedings, letters, speeches, and some legislation for the Senate and House of Representatives.  The index to the Globe starts on page 3; the appendix starts after page 512 with a separate index at the end.</untl:description>
+          <untl:description qualifier="physical">512, 641, 6 p. ; 30 cm.</untl:description>
+          <untl:subject qualifier="LCSH">Law</untl:subject>
+          <untl:subject qualifier="LCSH">United States -- Politics and government</untl:subject>
+          <untl:subject qualifier="LCGFT">Periodicals</untl:subject>
+          <untl:subject qualifier="KWD">United States Congress</untl:subject>
+          <untl:subject qualifier="KWD">Congressional documents</untl:subject>
+          <untl:subject qualifier="KWD">minutes</untl:subject>
+          <untl:subject qualifier="KWD">records</untl:subject>
+          <untl:primarySource>1</untl:primarySource>
+          <untl:coverage qualifier="placeName">United States</untl:coverage>
+          <untl:coverage qualifier="date">1837-12-04/1838-07-18</untl:coverage>
+          <untl:collection>CGLOB</untl:collection>
+          <untl:institution>UNTGD</untl:institution>
+          <untl:rights qualifier="note">The contents of UNT Digital Library (digital content including images, text, and sound and video recordings) are made publicly available by the collection-holding partners for use in research, teaching, and private study. For the full terms of use, see https://digital.library.unt.edu/terms-of-use/</untl:rights>
+          <untl:resourceType>text_book</untl:resourceType>
+          <untl:format>text</untl:format>
+          <untl:identifier qualifier="itemURL">https://digital.library.unt.edu/ark:/67531/metadc29274/</untl:identifier>
+          <untl:identifier qualifier="OCLC">1716190</untl:identifier>
+          <untl:identifier qualifier="LCCN">12-36437</untl:identifier>
+          <untl:identifier qualifier="LCCN">sn 85-18374</untl:identifier>
+          <untl:identifier qualifier="CALL-NO">X75:25/2</untl:identifier>
+          <untl:identifier qualifier="UNTCAT">b2454563</untl:identifier>
+          <untl:identifier qualifier="thumbnailURL">https://digital.library.unt.edu/ark:/67531/metadc29274/small/</untl:identifier>
+          <untl:identifier qualifier="ARK">ark:/67531/metadc29274</untl:identifier>
+          <untl:identifier qualifier="iiif-manifest">https://digital.library.unt.edu/ark:/67531/metadc29274/manifest/</untl:identifier>
+          <untl:note qualifier="display">"Second Session----Volume VI."</untl:note>
+          <untl:note qualifier="nonDisplay">comment: Descriptive metadata by htarver 2010-09-14.</untl:note>
+          <untl:meta qualifier="meta-id">metadc29274</untl:meta>
+          <untl:meta qualifier="system">DC</untl:meta>
+          <untl:meta qualifier="ark">ark:/67531/metadc29274</untl:meta>
+          <untl:meta qualifier="metadataCreationDate">2010-10-23, 10:09:36</untl:meta>
+          <untl:meta qualifier="metadataCreator">acpmaker</untl:meta>
+          <untl:meta qualifier="metadataModifier">marreguin</untl:meta>
+          <untl:meta qualifier="metadataModificationDate">2025-10-08, 18:33:25</untl:meta>
+          <untl:meta qualifier="hidden">False</untl:meta>
+        </untl:metadata>
+      </metadata>
+    </record>
+    <record>
+      <header>
+        <identifier>info:ark/67531/metadc29282</identifier>
+        <datestamp>2025-10-08T18:15:52Z</datestamp>
+        <setSpec>partner:UNTGD</setSpec>
+        <setSpec>collection:CGLOB</setSpec>
+        <setSpec>access_rights:public</setSpec>
+      </header>
+      <metadata>
+        <untl:metadata xmlns:untl="http://digital2.library.unt.edu/untl/">
+          <untl:title qualifier="addedtitle">The Congressional Globe, Twenty-Fourth Congress, First Session, Volumes 2 and 3</untl:title>
+          <untl:title qualifier="addedtitle">Index to the Congressional Globe, First Session, Twenty-Fourth Congress</untl:title>
+          <untl:title qualifier="officialtitle">The Congressional Globe, Volume 2-3: Twenty-Fourth Congress, First Session</untl:title>
+          <untl:title qualifier="serialtitle">Congressional Globe</untl:title>
+          <untl:title qualifier="seriestitle">24th Congress</untl:title>
+          <untl:title qualifier="sorttitle">Congressional Globe, Congress 24, Session 1</untl:title>
+          <untl:title qualifier="addedtitle">The Congressional Globe: Containing Sketches of the Debates and Proceedings of the First Session of the Twenty-Fourth Congress. Volume 2-3</untl:title>
+          <untl:title qualifier="addedtitle">Appendix to The Congressional Globe, for the First Session, Twenty-Fourth Congress: Containing Speeches and Important State Papers.</untl:title>
+          <untl:creator qualifier="edt">
+            <untl:name>Blair &amp; Rives</untl:name>
+            <untl:type>org</untl:type>
+          </untl:creator>
+          <untl:publisher>
+            <untl:info>City of Washington: Printed at the Globe Office for the Editors.</untl:info>
+            <untl:location>Washington D.C.</untl:location>
+            <untl:name>Blair &amp; Rives</untl:name>
+          </untl:publisher>
+          <untl:date qualifier="creation">1836</untl:date>
+          <untl:language>eng</untl:language>
+          <untl:description qualifier="content">The Congressional Globe contains the records for sessions of the U.S. Congress including summaries of proceedings, letters, speeches, and some legislation for the Senate and House of Representatives.  Indexes are printed at the start of each section.</untl:description>
+          <untl:description qualifier="physical">xliv, 616, ix, 769 p. ; 30 cm.</untl:description>
+          <untl:subject qualifier="LCSH">Law</untl:subject>
+          <untl:subject qualifier="LCSH">United States -- Politics and government</untl:subject>
+          <untl:subject qualifier="LCGFT">Periodicals</untl:subject>
+          <untl:subject qualifier="KWD">United States Congress</untl:subject>
+          <untl:subject qualifier="KWD">Congressional documents</untl:subject>
+          <untl:subject qualifier="KWD">minutes</untl:subject>
+          <untl:subject qualifier="KWD">records</untl:subject>
+          <untl:primarySource>1</untl:primarySource>
+          <untl:coverage qualifier="placeName">United States</untl:coverage>
+          <untl:coverage qualifier="date">1835-12-07/1836-07-04</untl:coverage>
+          <untl:relation qualifier="has-version">Index to the Congressional Globe, First Session, Twenty-Fourth Congress, ark:/67531/metadc30905</untl:relation>
+          <untl:collection>CGLOB</untl:collection>
+          <untl:institution>UNTGD</untl:institution>
+          <untl:rights qualifier="note">The contents of UNT Digital Library (digital content including images, text, and sound and video recordings) are made publicly available by the collection-holding partners for use in research, teaching, and private study. For the full terms of use, see https://digital.library.unt.edu/terms-of-use/</untl:rights>
+          <untl:resourceType>text_book</untl:resourceType>
+          <untl:format>text</untl:format>
+          <untl:identifier qualifier="itemURL">https://digital.library.unt.edu/ark:/67531/metadc29282/</untl:identifier>
+          <untl:identifier qualifier="OCLC">1716190</untl:identifier>
+          <untl:identifier qualifier="LCCN">12-36437</untl:identifier>
+          <untl:identifier qualifier="LCCN">sn 85-18374</untl:identifier>
+          <untl:identifier qualifier="CALL-NO">X73:24/1</untl:identifier>
+          <untl:identifier qualifier="UNTCAT">b2454563</untl:identifier>
+          <untl:identifier qualifier="thumbnailURL">https://digital.library.unt.edu/ark:/67531/metadc29282/small/</untl:identifier>
+          <untl:identifier qualifier="ARK">ark:/67531/metadc29282</untl:identifier>
+          <untl:identifier qualifier="iiif-manifest">https://digital.library.unt.edu/ark:/67531/metadc29282/manifest/</untl:identifier>
+          <untl:note qualifier="display">"Volume II-III."</untl:note>
+          <untl:note qualifier="nonDisplay">comment: Descriptive metadata by htarver 2010-09-14.</untl:note>
+          <untl:meta qualifier="meta-id">metadc29282</untl:meta>
+          <untl:meta qualifier="system">DC</untl:meta>
+          <untl:meta qualifier="ark">ark:/67531/metadc29282</untl:meta>
+          <untl:meta qualifier="metadataCreationDate">2010-11-13, 16:49:25</untl:meta>
+          <untl:meta qualifier="metadataCreator">acpmaker</untl:meta>
+          <untl:meta qualifier="metadataModifier">marreguin</untl:meta>
+          <untl:meta qualifier="metadataModificationDate">2025-10-08, 18:15:52</untl:meta>
+          <untl:meta qualifier="hidden">False</untl:meta>
+        </untl:metadata>
+      </metadata>
+    </record>
+    <resumptionToken cursor="0" completeListSize="4">fixture/page2</resumptionToken>
+  </ListRecords>
+</OAI-PMH>

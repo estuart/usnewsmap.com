@@ -3,10 +3,19 @@
 //! page in their own index set (`infra/quickwit/congress-index.yaml`),
 //! named in `current.json` under `congress`.
 //!
-//! Phase 0 holds the shapes: the curated page a fetch job writes
-//! ([`CongressPage`]) and the engine document a release builds from it
-//! ([`congress_doc`]). The fetch jobs and the release step that builds the
-//! index come with the first source (the Globe, from UNT).
+//! - [`CongressPage`] and [`congress_doc`]: the page a release indexes and
+//!   its engine document.
+//! - [`curated`]: the curated Parquet a fetch writes, with `counts.json`.
+//! - [`globe`]: the Congressional Globe from UNT's page OCR, the first
+//!   source (`usnm-ingest congress-globe`), with [`parse`] reading its pages.
+//! - [`release`]: what a release with `--congress` builds from the curated
+//!   units: the index, `congress.json`, `congress/baselines.json` and the
+//!   `current.json` block.
+
+pub mod curated;
+pub mod globe;
+pub mod parse;
+pub mod release;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,6 +33,10 @@ pub const PLACE_ID: &str = "PC001";
 /// The series a page can come from, in the order hits on one day list them.
 pub const SERIES: &[&str] = &["annals", "register", "globe", "serialset"];
 
+/// How a release turns curated Congress pages into an index (the documents,
+/// `congress.json` and the baselines), recorded in a version's build record.
+pub const VERSION: u32 = 1;
+
 /// One state a page names, and how we know it (#229 design §6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateRef {
@@ -31,6 +44,9 @@ pub struct StateRef {
     pub state: String,
     /// `mods_geographic`, `title`, `text_gazetteer` or `speaker`.
     pub via: String,
+    /// What named it (`CLAY of Alabama`), kept in the curated rows only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 /// One curated Congress page: the fields the release indexes. The curated
@@ -178,10 +194,12 @@ mod tests {
                 StateRef {
                     state: "AL".into(),
                     via: "speaker".into(),
+                    value: None,
                 },
                 StateRef {
                     state: "AL".into(),
                     via: "title".into(),
+                    value: None,
                 },
             ],
             speakers: vec!["C000482".into()],

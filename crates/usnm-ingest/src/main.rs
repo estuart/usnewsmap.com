@@ -242,6 +242,11 @@ enum Command {
         /// it at the next full release.
         #[arg(long)]
         ocr_local: bool,
+        /// Search the Congress pages curated under `congress/` (#229, 04
+        /// §4.10): the version gets a Congress index set, rebuilt when the
+        /// curated units changed and kept otherwise. Off: no Congress set.
+        #[arg(long, env = "USNM_CONGRESS")]
+        congress: bool,
         /// Lay a full base out by decade (#123, 05 §5.5.5), so date-limited
         /// searches skip the other decades' splits. Only a full base takes
         /// it; deltas follow the published version.
@@ -498,6 +503,36 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Fetch the Congressional Globe from UNT's page OCR into curated
+    /// Congress pages (#229, 04 §4.10): list the collection over OAI-PMH,
+    /// leave out the items another holds, then fetch each item's pages at
+    /// UNT's crawl delay and write a curated attempt per item. Items with a
+    /// finished attempt are skipped. With USNM_RAW_URL every response is
+    /// kept there and read back on a later run. Holds the
+    /// `congress-globe` lock. Prints what it did as JSON.
+    CongressGlobe {
+        /// Only these items (`metadc29274`), comma separated.
+        #[arg(long, value_delimiter = ',')]
+        items: Vec<String>,
+        /// Fetch items that already have a finished attempt again.
+        #[arg(long)]
+        refetch: bool,
+        /// Stop after this many items.
+        #[arg(long)]
+        max_items: Option<usize>,
+        /// Seconds after the start to stop: an item stopped between pages
+        /// writes nothing, and the next run resumes it (from the raw store's
+        /// copies, when there is one). Keep it under the job's replica timeout.
+        #[arg(long)]
+        max_runtime_secs: Option<u64>,
+        /// Seconds between requests; UNT's robots.txt asks for 3, the least
+        /// this takes.
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u64).range(3..=60))]
+        crawl_delay_secs: u64,
+        /// Where to fetch from (UNT; another host only for a copy of its responses).
+        #[arg(long, default_value = usnm_ingest::congress::globe::UNT)]
+        unt_url: String,
+    },
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
         /// As for `enqueue`: LoC's listing unless another list is given.
@@ -519,6 +554,9 @@ enum Command {
         /// As for `release`.
         #[arg(long)]
         ocr_local: bool,
+        /// As for `release`.
+        #[arg(long, env = "USNM_CONGRESS")]
+        congress: bool,
         /// As for `release`.
         #[arg(long)]
         partition_decade: bool,
@@ -757,6 +795,7 @@ async fn release(
     american_stories: bool,
     ja_latin: bool,
     ocr_local: bool,
+    congress: bool,
     partition_decade: bool,
     single_text_field: bool,
     split_docs: Option<u64>,
@@ -776,6 +815,7 @@ async fn release(
         american_stories,
         ja_latin,
         ocr_local,
+        congress,
         partition_decade,
         single_text_field,
         split_docs,
@@ -1008,6 +1048,7 @@ impl Command {
             Command::OcrSeed { .. } => "ocr-seed",
             Command::OcrEnqueue { .. } => "ocr-enqueue",
             Command::OcrRequeue { .. } => "ocr-requeue",
+            Command::CongressGlobe { .. } => "congress-globe",
             Command::Run { .. } => "run",
         }
     }
@@ -1039,7 +1080,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrSync { .. }
         | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
-        | Command::OcrRequeue { .. } => None,
+        | Command::OcrRequeue { .. }
+        | Command::CongressGlobe { .. } => None,
     }
 }
 
@@ -1349,6 +1391,54 @@ async fn command(
             .await
             .map(|_| None)
         }
+        Command::CongressGlobe {
+            items,
+            refetch,
+            max_items,
+            max_runtime_secs,
+            crawl_delay_secs,
+            unt_url,
+        } => {
+            use usnm_ingest::congress::globe;
+            let curated = usnm_store::open(&cli.stores.curated)?;
+            let raw = cli
+                .stores
+                .raw
+                .as_deref()
+                .map(usnm_store::open)
+                .transpose()?;
+            if raw.is_none() {
+                tracing::warn!(
+                    "no raw store (USNM_RAW_URL): UNT's responses aren't kept, and an item \
+                     stopped by the deadline is fetched again from its first page"
+                );
+            }
+            let fetch = globe::Http::new(std::time::Duration::from_secs(*crawl_delay_secs))?;
+            let opts = globe::Options {
+                base: unt_url.trim_end_matches('/').to_owned(),
+                items: items.clone(),
+                refetch: *refetch,
+                deadline: deadline(start, *max_runtime_secs),
+                max_items: *max_items,
+                ..globe::Options::default()
+            };
+            let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let report = globe::locked(
+                &state,
+                &owner_id(),
+                globe::run(
+                    &fetch,
+                    curated.as_ref(),
+                    raw.as_deref(),
+                    &opts,
+                    lost.as_ref(),
+                ),
+                lost.clone(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(None)
+        }
         Command::Duplicates => {
             let curated = usnm_store::open(&cli.stores.curated)?;
             let report = usnm_ingest::dedup::report(&state, curated.as_ref()).await?;
@@ -1386,6 +1476,7 @@ async fn command(
             american_stories,
             ja_latin,
             ocr_local,
+            congress,
             partition_decade,
             single_text_field,
             split_docs,
@@ -1399,6 +1490,7 @@ async fn command(
                 *american_stories,
                 *ja_latin,
                 *ocr_local,
+                *congress,
                 *partition_decade,
                 *single_text_field,
                 *split_docs,
@@ -1416,6 +1508,7 @@ async fn command(
             american_stories,
             ja_latin,
             ocr_local,
+            congress,
             partition_decade,
             single_text_field,
             split_docs,
@@ -1463,6 +1556,7 @@ async fn command(
                 *american_stories,
                 *ja_latin,
                 *ocr_local,
+                *congress,
                 *partition_decade,
                 *single_text_field,
                 *split_docs,
@@ -1573,6 +1667,7 @@ mod tests {
             "--american-stories",
             "--ja-latin",
             "--ocr-local",
+            "--congress",
             "--partition-decade",
             "--single-text-field",
             "--split-docs",
@@ -1589,6 +1684,7 @@ mod tests {
             american_stories,
             ja_latin,
             ocr_local,
+            congress,
             partition_decade,
             single_text_field,
             split_docs,
@@ -1604,12 +1700,14 @@ mod tests {
                 american_stories,
                 ja_latin,
                 ocr_local,
+                congress,
                 partition_decade,
                 single_text_field,
                 split_docs
             ),
             (
                 Some(28800),
+                true,
                 true,
                 true,
                 true,
@@ -1732,6 +1830,40 @@ mod tests {
     }
 
     #[test]
+    fn congress_globe_keeps_unt_s_crawl_delay() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "congress-globe",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        let Command::CongressGlobe {
+            items,
+            crawl_delay_secs,
+            unt_url,
+            refetch,
+            ..
+        } = parse(&["--items", "metadc29274,metadc29275"])
+            .unwrap()
+            .command
+        else {
+            panic!("not congress-globe");
+        };
+        assert_eq!(items, ["metadc29274", "metadc29275"]);
+        assert_eq!(crawl_delay_secs, 3);
+        assert_eq!(unt_url, usnm_ingest::congress::globe::UNT);
+        assert!(!refetch);
+        assert!(parse(&["--crawl-delay-secs", "2"]).is_err());
+        assert!(parse(&["--crawl-delay-secs", "5"]).is_ok());
+    }
+
+    #[test]
     fn merge_and_disk_settings_default() {
         let cli = Cli::try_parse_from([
             "usnm-ingest",
@@ -1749,6 +1881,7 @@ mod tests {
             american_stories,
             ja_latin,
             ocr_local,
+            congress,
             partition_decade,
             single_text_field,
             split_docs,
@@ -1761,6 +1894,7 @@ mod tests {
         assert!(!american_stories, "off unless asked for");
         assert!(!ja_latin, "off unless asked for");
         assert!(!ocr_local, "off unless asked for");
+        assert!(!congress, "off unless asked for");
         assert!(!partition_decade, "off unless asked for");
         assert!(!single_text_field, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
