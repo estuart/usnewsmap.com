@@ -1006,9 +1006,13 @@ pub async fn locked<T>(
     let ttl = chrono::Duration::minutes(30);
     state.lock(LOCK, owner, ttl).await?;
     let (s, o, flag) = (state.clone(), owner.to_owned(), lost.clone());
+    let (stop, mut stopped) = tokio::sync::watch::channel(false);
     let renewer = tokio::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(300)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(300)) => {}
+                _ = stopped.changed() => break,
+            }
             if let Err(e) = s.lock(LOCK, &o, ttl).await {
                 tracing::error!(error = %format!("{e:#}"), "congress-globe lock renewal failed");
                 flag.store(true, Ordering::SeqCst);
@@ -1017,7 +1021,10 @@ pub async fn locked<T>(
         }
     });
     let result = body.await;
-    renewer.abort();
+    // Stopped between renewals, not aborted: a renewal under way when the
+    // body ends would otherwise land after the unlock and hold the lock.
+    let _ = stop.send(true);
+    let _ = renewer.await;
     let unlocked = state.unlock(LOCK, owner).await;
     let out = result?;
     unlocked?;
@@ -1472,6 +1479,73 @@ mod tests {
             (c2.days.clone(), c2.text_status.clone()),
             (counts.days, counts.text_status)
         );
+    }
+
+    /// Memory docs whose replaces take ten seconds, counting those that finish.
+    #[derive(Default)]
+    struct SlowReplaces(crate::docs::MemoryDocs, std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl crate::docs::DocStore for SlowReplaces {
+        async fn get(
+            &self,
+            c: &str,
+            pk: &str,
+            id: &str,
+        ) -> anyhow::Result<Option<crate::docs::Versioned>> {
+            self.0.get(c, pk, id).await
+        }
+        async fn create(
+            &self,
+            c: &str,
+            pk: &str,
+            doc: &serde_json::Value,
+        ) -> anyhow::Result<Option<String>> {
+            self.0.create(c, pk, doc).await
+        }
+        async fn replace(
+            &self,
+            c: &str,
+            pk: &str,
+            doc: &serde_json::Value,
+            etag: &str,
+        ) -> anyhow::Result<Option<String>> {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let out = self.0.replace(c, pk, doc, etag).await;
+            self.1.fetch_add(1, Ordering::SeqCst);
+            out
+        }
+        async fn upsert(&self, c: &str, pk: &str, doc: &serde_json::Value) -> anyhow::Result<()> {
+            self.0.upsert(c, pk, doc).await
+        }
+        async fn list(
+            &self,
+            c: &str,
+            field: &str,
+            values: &[&str],
+        ) -> anyhow::Result<Vec<crate::docs::Versioned>> {
+            self.0.list(c, field, values).await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_lock_is_released_after_a_renewal_under_way() {
+        let docs = Arc::new(SlowReplaces::default());
+        let state = crate::state::State::new(docs.clone());
+        let lost = Arc::new(AtomicBool::new(false));
+        // The body ends while the first renewal (at 300 s) is still writing.
+        let body = async {
+            tokio::time::sleep(Duration::from_secs(305)).await;
+            Ok(())
+        };
+        locked(&state, "run-1", body, lost.clone()).await.unwrap();
+        assert!(!lost.load(Ordering::SeqCst));
+        // The renewal finished, then the unlock: two replaces, the lock free.
+        assert_eq!(docs.1.load(Ordering::SeqCst), 2);
+        state
+            .lock(LOCK, "run-2", chrono::Duration::minutes(30))
+            .await
+            .unwrap();
     }
 
     /// The recorded responses, losing the lock while the last page is asked for.
