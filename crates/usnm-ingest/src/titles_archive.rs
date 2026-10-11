@@ -167,7 +167,18 @@ pub async fn save(
         .put_new(&path, serde_json::to_vec(&copy)?, "application/json")
         .await?
     {
-        // Another run's copy in the same second: that one stays.
+        // Another run's copy in the same second: that one stays. It counts
+        // as this one only if it holds the same; otherwise this run fails,
+        // and the next one saves under its own time.
+        let bytes = raw
+            .get(&path)
+            .await?
+            .with_context(|| format!("`{path}` was there and is gone"))?;
+        let other: Copy = serde_json::from_slice(&bytes).with_context(|| path.clone())?;
+        anyhow::ensure!(
+            other.same_content(&copy),
+            "another run saved a different copy at `{path}` in the same second; not saved, run again"
+        );
         return Ok(Saved::Unchanged { path });
     }
     Ok(Saved::Written {
@@ -197,7 +208,11 @@ pub struct Seeded {
 
 /// Seed `reference` from the newest copy in `raw`, if the environment has
 /// no record cache yet. Each file is written create-only, the catalog
-/// before the cache: once the cache exists, nothing more is written.
+/// before the cache: once the cache exists, nothing more is written. A
+/// file already there is kept only if it holds what the copy holds (a seed
+/// that stopped partway); one that differs stops the seed before the cache
+/// is written, so the environment never gets one copy's cache with another
+/// catalog.
 pub async fn seed(raw: &dyn ObjectStore, reference: &dyn ObjectStore) -> anyhow::Result<Seeded> {
     let mut out = Seeded::default();
     let Some((path, copy)) = newest(raw).await? else {
@@ -219,25 +234,42 @@ pub async fn seed(raw: &dyn ObjectStore, reference: &dyn ObjectStore) -> anyhow:
     ];
     for (file, value) in files {
         let Some(value) = value else { continue };
-        if reference
-            .put_new(file, serde_json::to_vec_pretty(value)?, "application/json")
-            .await?
-        {
+        let bytes = serde_json::to_vec_pretty(value)?;
+        if put_new_or_same(reference, file, bytes, value).await? {
             out.written.push(file.to_owned());
         } else {
             out.kept.push(file.to_owned());
         }
     }
     // As titles-sync saves it (compact).
-    if reference
-        .put_new(RAW, serde_json::to_vec(&copy.records)?, "application/json")
-        .await?
-    {
+    let records = serde_json::to_value(&copy.records)?;
+    if put_new_or_same(reference, RAW, serde_json::to_vec(&copy.records)?, &records).await? {
         out.written.push(RAW.to_owned());
     } else {
         out.kept.push(RAW.to_owned());
     }
     Ok(out)
+}
+
+/// Write `bytes` to `path` if nothing is there (true). If something is, it
+/// must hold `expected` (false); anything else is an error.
+async fn put_new_or_same(
+    store: &dyn ObjectStore,
+    path: &str,
+    bytes: Vec<u8>,
+    expected: &Value,
+) -> anyhow::Result<bool> {
+    if store.put_new(path, bytes, "application/json").await? {
+        return Ok(true);
+    }
+    let existing = json(store, path)
+        .await?
+        .with_context(|| format!("`{path}` was there and is gone"))?;
+    anyhow::ensure!(
+        &existing == expected,
+        "`{path}` is already there and differs from the copy; not seeding over it (remove it, or let titles-sync build the catalog)"
+    );
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -411,15 +443,69 @@ mod tests {
         assert_eq!(get(&reference, RAW).await, Some(own));
         assert_eq!(get(&reference, TITLES).await, None);
 
-        // A catalog without a cache (a stopped seed): kept, the cache written.
+        // A seed that stopped after the catalog's titles: kept, the rest
+        // written.
         let dir2 = tempfile::tempdir().unwrap();
         let fresh = LocalStore::new(dir2.path().join("reference"));
-        let own_titles = json!([]);
-        put(&fresh, TITLES, &own_titles).await;
+        put(&fresh, TITLES, &catalog_titles("sn1")).await;
         let s = seed(&raw, &fresh).await.unwrap();
         assert_eq!(s.written, vec![PLACES, RAW]);
         assert_eq!(s.kept, vec![TITLES]);
-        assert_eq!(get(&fresh, TITLES).await, Some(own_titles));
+
+        // A catalog of its own without a cache: the seed stops before the
+        // cache, so no copy's cache goes with another catalog.
+        let dir3 = tempfile::tempdir().unwrap();
+        let other = LocalStore::new(dir3.path().join("reference"));
+        let own_titles = json!([]);
+        put(&other, TITLES, &own_titles).await;
+        assert!(seed(&raw, &other).await.is_err());
+        assert_eq!(get(&other, TITLES).await, Some(own_titles));
+        assert!(!other.exists(RAW).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_different_copy_in_the_same_second_fails_the_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference = LocalStore::new(dir.path().join("reference"));
+        let raw = LocalStore::new(dir.path().join("raw"));
+        put(&reference, RAW, &json!({ "sn1": record("sn1", "A") })).await;
+        // Another run's copy at the same time, of other records.
+        let other = Copy {
+            saved_at: at(2),
+            git_sha: None,
+            records: [("sn2".to_owned(), record("sn2", "B"))].into(),
+            catalog_titles: None,
+            catalog_places: None,
+        };
+        // It is also the newest copy, so `save` gets past "same as the
+        // newest" and finds the path taken.
+        put(
+            &raw,
+            "titles/20261011T020000Z.json",
+            &serde_json::to_value(&other).unwrap(),
+        )
+        .await;
+        assert!(save(&reference, &raw, at(2)).await.is_err());
+        // The same records at that time count as saved (here caught as
+        // the newest copy already).
+        let dir2 = tempfile::tempdir().unwrap();
+        let raw2 = LocalStore::new(dir2.path().join("raw"));
+        let same = Copy {
+            records: [("sn1".to_owned(), record("sn1", "A"))].into(),
+            ..other
+        };
+        put(
+            &raw2,
+            "titles/20261011T020000Z.json",
+            &serde_json::to_value(&same).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            save(&reference, &raw2, at(2)).await.unwrap(),
+            Saved::Unchanged {
+                path: "titles/20261011T020000Z.json".into()
+            }
+        );
     }
 
     #[tokio::test]
