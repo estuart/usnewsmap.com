@@ -6,13 +6,18 @@
 //! and_expr  := unary ( ["AND"] unary )*
 //! unary     := ("-" | "NOT") primary | primary
 //! primary   := PHRASE [ "~" INT ]
-//!            | TERM [ "~" ("1" | "2") | "*" ]
+//!            | TERM [ "~" ("1" | "2") | "~ocr" | "*" ]
 //!            | WILDCARD
+//!            | INT "OF" "(" item item+ ")"
 //!            | "(" query ")"
+//! item      := PHRASE [ "~" INT ] | TERM [ "~ocr" | "*" ] | WILDCARD
 //! ```
 //!
 //! A `WILDCARD` is a word with `?` (exactly one character) or `*` (any run)
-//! inside it, after at least [`MIN_PREFIX_CHARS`] letters (#124).
+//! inside it, after at least [`MIN_PREFIX_CHARS`] letters (#124). `word~ocr`
+//! matches the word and the spellings OCR commonly gives it
+//! ([`crate::ocr_variants`]), and `2 OF (a b c)` pages with at least two of
+//! the items (#124).
 //!
 //! Only the parsed AST ever reaches a search backend; raw user syntax is never
 //! forwarded, which removes the legacy Solr injection risk structurally.
@@ -23,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ja::{self, has_ja, tokenize, MAX_JA_RUN_CHARS};
+use crate::ocr_variants;
 use crate::text::{fold, Analyzer, MAX_TOKEN_CHARS};
 
 pub const MAX_QUERY_CHARS: usize = 256;
@@ -35,6 +41,9 @@ pub const MAX_OR_BRANCHES: usize = 4;
 /// (06 §6.4).
 pub const MIN_PREFIX_CHARS: usize = 5;
 pub const MAX_FUZZY: u8 = 2;
+/// The most words and phrases `N OF (...)` takes (#124). The engine runs it
+/// as an `OR` of each `N` of them `AND`ed: at most 20 for 6.
+pub const MAX_AT_LEAST_ITEMS: usize = 6;
 pub const MAX_SLOP: u8 = 20;
 const MAX_DEPTH: usize = 8;
 
@@ -73,16 +82,38 @@ pub struct Term {
     /// A word with only a trailing `*` is a `prefix` instead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wildcard: bool,
+    /// `word~ocr` (#124): matches `text` and the spellings OCR commonly
+    /// gives it, [`crate::ocr_variants::variants`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ocr: bool,
+}
+
+impl Term {
+    /// Whether the term is one word, matched as it is: not a prefix,
+    /// wildcard, `~ocr` or fuzzy term.
+    pub fn is_exact(&self) -> bool {
+        !self.prefix && !self.wildcard && !self.ocr && self.fuzzy == 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum Node {
     Term(Term),
-    Phrase { terms: Vec<String>, slop: u8 },
+    Phrase {
+        terms: Vec<String>,
+        slop: u8,
+    },
     And(Vec<Node>),
     Or(Vec<Node>),
     Not(Box<Node>),
+    /// `N OF (a b c)` (#124): pages with at least `min` of the words and
+    /// phrases in `of`, `2 ≤ min < of.len() ≤` [`MAX_AT_LEAST_ITEMS`].
+    #[serde(rename = "at_least")]
+    AtLeast {
+        min: u8,
+        of: Vec<Node>,
+    },
 }
 
 /// How a plain word list is combined (06 §6.3.1).
@@ -158,7 +189,7 @@ pub fn build(
             let mut terms: Vec<Node> = Vec::new();
             for w in q.split_whitespace() {
                 if has_ja(w) {
-                    terms.push(word(w, 0, 0, analyzer)?);
+                    terms.push(word(w, 0, false, 0, analyzer)?);
                 } else {
                     terms.extend(tokenize(w, analyzer).into_iter().map(exact));
                 }
@@ -215,6 +246,7 @@ fn exact(text: String) -> Node {
         fuzzy: 0,
         prefix: false,
         wildcard: false,
+        ocr: false,
     })
 }
 
@@ -240,10 +272,12 @@ enum Tok {
         text: String,
         slop: u8,
     },
-    /// A word as typed, with any `*` and `?` in it.
+    /// A word as typed, with any `*` and `?` in it, and whether `~ocr`
+    /// follows it.
     Word {
         text: String,
         fuzzy: u8,
+        ocr: bool,
     },
 }
 
@@ -292,6 +326,9 @@ fn lex(input: &str) -> Result<Vec<Spanned>, QueryError> {
                     .ok_or_else(|| QueryError::at("unterminated quote", pos))?;
                 let text: String = chars[start..end].iter().collect();
                 i = end + 1;
+                if is_ocr_suffix(&chars, i) {
+                    return Err(QueryError::at("~ocr needs a single word, not a phrase", i));
+                }
                 let (slop, next) = read_tilde(&chars, i, MAX_SLOP, "phrase slop")?;
                 i = next;
                 out.push(Spanned {
@@ -319,15 +356,21 @@ fn lex(input: &str) -> Result<Vec<Spanned>, QueryError> {
                     "OR" => Tok::Or,
                     "NOT" => Tok::Not,
                     _ => {
+                        let ocr = is_ocr_suffix(&chars, i);
+                        let both = if ocr { OCR_NOT_WILD } else { NOT_BOTH };
                         if has_wildcard(&text) && i < chars.len() && chars[i] == '~' {
-                            return Err(QueryError::at(NOT_BOTH, i));
+                            return Err(QueryError::at(both, i));
                         }
-                        let (fuzzy, next) = read_tilde(&chars, i, MAX_FUZZY, "fuzzy distance")?;
+                        let (fuzzy, next) = if ocr {
+                            (0, i + OCR_SUFFIX.len())
+                        } else {
+                            read_tilde(&chars, i, MAX_FUZZY, "fuzzy distance")?
+                        };
                         if next < chars.len() && matches!(chars[next], '*' | '?' | '~') {
-                            return Err(QueryError::at(NOT_BOTH, next));
+                            return Err(QueryError::at(both, next));
                         }
                         i = next;
-                        Tok::Word { text, fuzzy }
+                        Tok::Word { text, fuzzy, ocr }
                     }
                 };
                 out.push(Spanned { tok, pos: start });
@@ -338,6 +381,19 @@ fn lex(input: &str) -> Result<Vec<Spanned>, QueryError> {
 }
 
 const NOT_BOTH: &str = "a term can be fuzzy or have wildcards (* or ?), not both";
+const OCR_NOT_WILD: &str = "a term can have ~ocr or wildcards (* or ?), not both";
+const OCR_SUFFIX: &str = "~ocr";
+
+/// Whether `~ocr` (in any case) is at `i` and ends the word.
+fn is_ocr_suffix(chars: &[char], i: usize) -> bool {
+    let end = i + OCR_SUFFIX.len();
+    end <= chars.len()
+        && chars[i..end]
+            .iter()
+            .collect::<String>()
+            .eq_ignore_ascii_case(OCR_SUFFIX)
+        && chars.get(end).is_none_or(|c| !c.is_alphanumeric())
+}
 
 /// Read an optional `~N` at `i`. Returns (N, next index).
 fn read_tilde(chars: &[char], i: usize, max: u8, what: &str) -> Result<(u8, usize), QueryError> {
@@ -410,6 +466,71 @@ impl Parser {
         })
     }
 
+    /// Whether `N OF (` starts here: `text`, just read, is a number, then
+    /// come `OF` (upper case, as `AND` and `OR` are) and a `(`.
+    fn at_least_ahead(&self, text: &str) -> bool {
+        let tok = |i: usize| self.tokens.get(self.pos + i).map(|t| &t.tok);
+        !text.is_empty()
+            && text.bytes().all(|b| b.is_ascii_digit())
+            && matches!(tok(0), Some(Tok::Word { text, fuzzy: 0, ocr: false }) if text == "OF")
+            && matches!(tok(1), Some(Tok::LParen))
+    }
+
+    /// `N OF (a b c)` after its number (#124): words and phrases, without
+    /// operators or groups. Its limits are checked once it is normalized.
+    fn at_least(&mut self, n: &str, pos: usize) -> Result<Node, QueryError> {
+        let min: u8 = n
+            .parse()
+            .ok()
+            .filter(|&m: &u8| m >= 2 && usize::from(m) < MAX_AT_LEAST_ITEMS)
+            .ok_or_else(|| {
+                QueryError::at(
+                    format!("N OF (...) needs N from 2 to {}", MAX_AT_LEAST_ITEMS - 1),
+                    pos,
+                )
+            })?;
+        let open = self.tokens[self.pos + 1].pos;
+        self.pos += 2;
+        let mut of = Vec::new();
+        loop {
+            let Some(t) = self.peek().cloned() else {
+                return Err(QueryError::at("missing ')'", open));
+            };
+            match t.tok {
+                Tok::RParen => {
+                    self.pos += 1;
+                    break;
+                }
+                Tok::Word { .. } | Tok::Phrase { .. } => {
+                    let item = self.primary()?;
+                    match (&t.tok, &item) {
+                        (_, Node::Term(_)) | (Tok::Phrase { .. }, Node::Phrase { .. }) => {}
+                        // A Japanese word is a phrase of its characters
+                        // (§6.4), and one item, as a word is.
+                        (Tok::Word { text, .. }, Node::Phrase { .. }) if has_ja(text) => {}
+                        // `gold-silver` would be the phrase "gold silver":
+                        // an item is a word or a quoted phrase, so the
+                        // phrase has to be written as one.
+                        (Tok::Word { .. }, Node::Phrase { terms, .. }) => {
+                            return Err(QueryError::at(
+                                format!(
+                                    "N OF (...) takes words and phrases; punctuation splits \
+                                     this word, so quote it as a phrase: \"{}\"",
+                                    terms.join(" ")
+                                ),
+                                t.pos,
+                            ));
+                        }
+                        _ => return Err(QueryError::at(AT_LEAST_ITEMS, t.pos)),
+                    }
+                    of.push(item);
+                }
+                _ => return Err(QueryError::at(AT_LEAST_ITEMS, t.pos)),
+            }
+        }
+        Ok(Node::AtLeast { min, of })
+    }
+
     fn unary(&mut self) -> Result<Node, QueryError> {
         if matches!(self.peek().map(|t| &t.tok), Some(Tok::Minus | Tok::Not)) {
             self.pos += 1;
@@ -451,7 +572,12 @@ impl Parser {
             ),
             Tok::Phrase { text, slop } => phrase(tokenize(&text, self.analyzer), slop)
                 .map_err(|e| QueryError::at(e.message, t.pos)),
-            Tok::Word { text, fuzzy } => word(&text, fuzzy, t.pos, self.analyzer),
+            Tok::Word {
+                text,
+                fuzzy: 0,
+                ocr: false,
+            } if self.at_least_ahead(&text) => self.at_least(&text, t.pos),
+            Tok::Word { text, fuzzy, ocr } => word(&text, fuzzy, ocr, t.pos, self.analyzer),
             Tok::RParen => Err(QueryError::at("unexpected ')'", t.pos)),
             Tok::And | Tok::Or | Tok::Not | Tok::Minus => Err(QueryError::at(
                 "operator is missing a word before or after it",
@@ -461,9 +587,18 @@ impl Parser {
     }
 }
 
-fn word(text: &str, fuzzy: u8, pos: usize, analyzer: Analyzer) -> Result<Node, QueryError> {
+const AT_LEAST_ITEMS: &str =
+    "N OF (...) takes words and phrases, without operators, groups or punctuation splitting them";
+
+fn word(
+    text: &str,
+    fuzzy: u8,
+    ocr: bool,
+    pos: usize,
+    analyzer: Analyzer,
+) -> Result<Node, QueryError> {
     if has_ja(text) {
-        return ja_word(text, fuzzy, has_wildcard(text), pos, analyzer);
+        return ja_word(text, fuzzy > 0 || ocr, has_wildcard(text), pos, analyzer);
     }
     if has_wildcard(text) {
         return wildcard_word(text, pos, analyzer);
@@ -471,12 +606,43 @@ fn word(text: &str, fuzzy: u8, pos: usize, analyzer: Analyzer) -> Result<Node, Q
     let tokens = tokenize(text, analyzer);
     match tokens.len() {
         0 => Err(QueryError::at("word has no searchable characters", pos)),
+        1 if ocr => {
+            let text = tokens.into_iter().next().expect("one token");
+            // Folded by `Analyzer::V1`, one word can be several (`ﷺ`) or
+            // hold a separator (`½`): not one index token, so not one
+            // member of the term set the engine is sent.
+            if !ocr_variants::is_one_token(&text) {
+                return Err(QueryError::at(
+                    "~ocr needs a single word of letters and digits; this one is several words in the index",
+                    pos,
+                ));
+            }
+            let n = ocr_variants::variants(&text).len();
+            if n > ocr_variants::MAX_OCR_VARIANTS {
+                return Err(QueryError::at(
+                    format!(
+                        "this word has {n} OCR spellings; ~ocr takes words with up to {}",
+                        ocr_variants::MAX_OCR_VARIANTS
+                    ),
+                    pos,
+                ));
+            }
+            Ok(Node::Term(Term {
+                text,
+                fuzzy: 0,
+                prefix: false,
+                wildcard: false,
+                ocr: true,
+            }))
+        }
         1 => Ok(Node::Term(Term {
             text: tokens.into_iter().next().expect("one token"),
             fuzzy,
             prefix: false,
             wildcard: false,
+            ocr: false,
         })),
+        _ if ocr => Err(QueryError::at("~ocr needs a single word", pos)),
         // "well-known" → the phrase "well known"
         _ if fuzzy == 0 => Ok(Node::Phrase {
             terms: tokens,
@@ -566,6 +732,7 @@ fn wildcard_word(text: &str, pos: usize, analyzer: Analyzer) -> Result<Node, Que
             fuzzy: 0,
             prefix: true,
             wildcard: false,
+            ocr: false,
         }));
     }
     if lead < MIN_PREFIX_CHARS {
@@ -579,6 +746,7 @@ fn wildcard_word(text: &str, pos: usize, analyzer: Analyzer) -> Result<Node, Que
         fuzzy: 0,
         prefix: false,
         wildcard: true,
+        ocr: false,
     }))
 }
 
@@ -611,19 +779,19 @@ pub fn wildcard_matches(pattern: &str, token: &str) -> bool {
 }
 
 /// A word with Japanese in it: each run between punctuation (、。「」 …) is a
-/// phrase of its characters, and the runs are ANDed. Wildcard and fuzzy
-/// matching work on whole words, which Japanese text doesn't mark, so they're
-/// refused.
+/// phrase of its characters, and the runs are ANDed. Wildcard, fuzzy and
+/// `~ocr` matching work on whole words, which Japanese text doesn't mark, so
+/// they're refused (`tilde` is a fuzzy distance or `~ocr`).
 fn ja_word(
     text: &str,
-    fuzzy: u8,
+    tilde: bool,
     wildcard: bool,
     pos: usize,
     analyzer: Analyzer,
 ) -> Result<Node, QueryError> {
-    if fuzzy > 0 || wildcard {
+    if tilde || wildcard {
         return Err(QueryError::at(
-            "wildcard (* and ?) and fuzzy (~) searches aren't available for Japanese",
+            "wildcard (* and ?), fuzzy (~) and ~ocr searches aren't available for Japanese",
             pos,
         ));
     }
@@ -671,7 +839,7 @@ pub fn is_japanese(node: &Node) -> bool {
     match node {
         Node::Term(t) => is_ja_term(&t.text),
         Node::Phrase { terms, .. } => terms.iter().any(|t| is_ja_term(t)),
-        Node::And(c) | Node::Or(c) => c.iter().any(is_japanese),
+        Node::And(c) | Node::Or(c) | Node::AtLeast { of: c, .. } => c.iter().any(is_japanese),
         Node::Not(_) => false,
     }
 }
@@ -680,7 +848,7 @@ fn has_any_ja(node: &Node) -> bool {
     match node {
         Node::Term(t) => is_ja_term(&t.text),
         Node::Phrase { terms, .. } => terms.iter().any(|t| is_ja_term(t)),
-        Node::And(c) | Node::Or(c) => c.iter().any(has_any_ja),
+        Node::And(c) | Node::Or(c) | Node::AtLeast { of: c, .. } => c.iter().any(has_any_ja),
         Node::Not(n) => has_any_ja(n),
     }
 }
@@ -692,6 +860,12 @@ pub fn normalize(node: Node) -> Node {
     match node {
         Node::And(children) => flatten(children, true),
         Node::Or(children) => flatten(children, false),
+        Node::AtLeast { min, of } => {
+            let mut of: Vec<Node> = of.into_iter().map(normalize).collect();
+            of.sort_by_key(|n| n.to_string());
+            of.dedup();
+            Node::AtLeast { min, of }
+        }
         Node::Not(inner) => match normalize(*inner) {
             Node::Not(x) => *x,
             x => Node::Not(Box::new(x)),
@@ -722,10 +896,12 @@ fn apply_fuzzy(node: Node, fuzzy: u8) -> Node {
         return node;
     }
     match node {
-        Node::Term(t) if !t.prefix && !t.wildcard && t.fuzzy == 0 && !is_ja_term(&t.text) => {
-            Node::Term(Term { fuzzy, ..t })
-        }
+        Node::Term(t) if t.is_exact() && !is_ja_term(&t.text) => Node::Term(Term { fuzzy, ..t }),
         Node::And(c) => Node::And(c.into_iter().map(|n| apply_fuzzy(n, fuzzy)).collect()),
+        Node::AtLeast { min, of } => Node::AtLeast {
+            min,
+            of: of.into_iter().map(|n| apply_fuzzy(n, fuzzy)).collect(),
+        },
         Node::Or(c) => Node::Or(c.into_iter().map(|n| apply_fuzzy(n, fuzzy)).collect()),
         Node::Not(n) => Node::Not(Box::new(apply_fuzzy(*n, fuzzy))),
         other => other,
@@ -768,6 +944,21 @@ fn check(node: &Node) -> Result<(), QueryError> {
             c.iter().try_for_each(check)
         }
         Node::And(c) => c.iter().try_for_each(check),
+        Node::AtLeast { min, of } => {
+            if of.len() > MAX_AT_LEAST_ITEMS {
+                return Err(QueryError::new(format!(
+                    "N OF (...) has {} words and phrases; the limit is {MAX_AT_LEAST_ITEMS}",
+                    of.len()
+                )));
+            }
+            if usize::from(*min) >= of.len() {
+                return Err(QueryError::new(format!(
+                    "{min} OF (...) needs more than {min} different words and phrases; \
+                     for all of them, use AND"
+                )));
+            }
+            of.iter().try_for_each(check)
+        }
         Node::Not(n) => check(n),
         Node::Phrase { terms, .. } => {
             let longest = ja_runs(terms).into_iter().max().unwrap_or(0);
@@ -790,14 +981,14 @@ fn count_terms(node: &Node) -> usize {
             let latin = terms.iter().filter(|t| !is_ja_term(t)).count();
             latin + ja_runs(terms).len()
         }
-        Node::And(c) | Node::Or(c) => c.iter().map(count_terms).sum(),
+        Node::And(c) | Node::Or(c) | Node::AtLeast { of: c, .. } => c.iter().map(count_terms).sum(),
         Node::Not(n) => count_terms(n),
     }
 }
 
 fn has_positive(node: &Node) -> bool {
     match node {
-        Node::Term(_) | Node::Phrase { .. } => true,
+        Node::Term(_) | Node::Phrase { .. } | Node::AtLeast { .. } => true,
         Node::Not(_) => false,
         Node::And(c) | Node::Or(c) => c.iter().any(has_positive),
     }
@@ -815,7 +1006,9 @@ fn collect_positive(node: &Node, out: &mut Vec<String>) {
     match node {
         Node::Term(t) => out.push(t.text.clone()),
         Node::Phrase { terms, .. } => out.extend(terms.iter().cloned()),
-        Node::And(c) | Node::Or(c) => c.iter().for_each(|n| collect_positive(n, out)),
+        Node::And(c) | Node::Or(c) | Node::AtLeast { of: c, .. } => {
+            c.iter().for_each(|n| collect_positive(n, out))
+        }
         Node::Not(_) => {}
     }
 }
@@ -828,6 +1021,8 @@ impl fmt::Display for Node {
                 write!(f, "{}", t.text)?;
                 if t.prefix {
                     write!(f, "*")
+                } else if t.ocr {
+                    f.write_str(OCR_SUFFIX)
                 } else if t.fuzzy > 0 {
                     write!(f, "~{}", t.fuzzy)
                 } else {
@@ -851,6 +1046,11 @@ impl fmt::Display for Node {
             }
             Node::And(c) => join(f, c, " AND "),
             Node::Or(c) => join(f, c, " OR "),
+            Node::AtLeast { min, of } => {
+                write!(f, "{min} OF (")?;
+                join(f, of, " ")?;
+                f.write_str(")")
+            }
             Node::Not(n) => match n.as_ref() {
                 Node::And(_) | Node::Or(_) => write!(f, "-({n})"),
                 _ => write!(f, "-{n}"),
@@ -962,7 +1162,8 @@ mod tests {
                     text: "gold".into(),
                     fuzzy: 1,
                     prefix: false,
-                    wildcard: false
+                    wildcard: false,
+                    ocr: false
                 })
             ])
         );
@@ -1202,7 +1403,8 @@ mod tests {
                 text: "miscegenaton".into(),
                 fuzzy: 2,
                 prefix: false,
-                wildcard: false
+                wildcard: false,
+                ocr: false
             })
         );
         assert_eq!(
@@ -1211,7 +1413,8 @@ mod tests {
                 text: "influ".into(),
                 fuzzy: 0,
                 prefix: true,
-                wildcard: false
+                wildcard: false,
+                ocr: false
             })
         );
     }
@@ -1222,6 +1425,7 @@ mod tests {
             fuzzy: 0,
             prefix: false,
             wildcard: true,
+            ocr: false,
         })
     }
 
@@ -1367,6 +1571,171 @@ mod tests {
         let n = parse("Telegr* -wireless").unwrap();
         assert_eq!(n.to_string(), "-wireless AND telegr*");
         assert_eq!(parse(&n.to_string()).unwrap(), n);
+    }
+
+    fn ocr(t: &str) -> Node {
+        Node::Term(Term {
+            text: t.into(),
+            fuzzy: 0,
+            prefix: false,
+            wildcard: false,
+            ocr: true,
+        })
+    }
+
+    #[test]
+    fn ocr_terms() {
+        assert_eq!(parse("President~ocr").unwrap(), ocr("president"));
+        assert_eq!(parse("gold~OCR").unwrap(), ocr("gold"));
+        let n = parse("gold~ocr -silver~ocr (bryan OR orator~ocr)").unwrap();
+        assert_eq!(
+            n.to_string(),
+            "-silver~ocr AND (bryan OR orator~ocr) AND gold~ocr"
+        );
+        assert_eq!(parse(&n.to_string()).unwrap(), n);
+        // Not a plain word list, and `fuzzy` leaves it alone.
+        assert!(!is_plain("gold~ocr"));
+        assert_eq!(
+            build("gold~ocr silver", None, 0, 1).unwrap().to_string(),
+            "gold~ocr AND silver~1"
+        );
+        // `~ocr` must end the word; anything else after `~` is a fuzzy distance.
+        let err = |q: &str| parse(q).unwrap_err();
+        assert!(err("gold~ocra").message.contains("fuzzy distance"));
+        assert!(err("gold~oc").message.contains("fuzzy distance"));
+        assert_eq!(err("gold~ocr*").message, OCR_NOT_WILD);
+        assert_eq!(err("gold~ocr~1").message, OCR_NOT_WILD);
+        assert_eq!(err("presi?ent~ocr").message, OCR_NOT_WILD);
+        assert_eq!(err("silve*~ocr").message, OCR_NOT_WILD);
+        assert!(err(r#""cross of gold"~ocr"#)
+            .message
+            .contains("not a phrase"));
+        assert!(err("well-known~ocr").message.contains("single word"));
+        assert!(err("東京~ocr").message.contains("Japanese"));
+        // A word `Analyzer::V1` folds into several words or around a
+        // separator isn't one index token, so it can't be one term-set
+        // member; from V2 it folds as itself.
+        for w in ["ﷺ", "½", "61¼"] {
+            let q = format!("{w}~ocr");
+            let e = parse_with(&q, Analyzer::V1).unwrap_err();
+            assert!(
+                e.message.contains("single word of letters and digits"),
+                "{w}"
+            );
+            assert_eq!(e.position, Some(0));
+            assert_eq!(parse_with(&q, Analyzer::V2).unwrap(), ocr(w), "{w}");
+        }
+        assert!(parse_with("Æsop~ocr", Analyzer::V1).is_ok());
+        // A word with too many spellings is refused, not cut short.
+        let long = "the".repeat(13);
+        assert!(err(&format!("{long}~ocr"))
+            .message
+            .contains("OCR spellings"));
+        assert!(parse("counterintelligence~ocr").is_ok());
+    }
+
+    #[test]
+    fn at_least_n_of() {
+        let n = parse(r#"2 OF (Gold silver "free coinage" bryan)"#).unwrap();
+        assert_eq!(
+            n,
+            Node::AtLeast {
+                min: 2,
+                of: vec![
+                    Node::Phrase {
+                        terms: vec!["free".into(), "coinage".into()],
+                        slop: 0
+                    },
+                    term("bryan"),
+                    term("gold"),
+                    term("silver"),
+                ]
+            }
+        );
+        assert_eq!(n.to_string(), r#"2 OF ("free coinage" bryan gold silver)"#);
+        // Items may be prefix, wildcard and ~ocr terms and NEAR phrases, and
+        // the whole can be combined, excluded or an OR alternative.
+        for q in [
+            r#"2 OF (silve* presi?ent gold~ocr "fever port"~4) -cotton"#,
+            "3 OF (a1 b1 c1 d1) OR gold",
+            "-2 OF (a1 b1 c1) gold",
+            "(2 OF (a1 b1 c1))",
+        ] {
+            let n = parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+            assert_eq!(parse(&n.to_string()).unwrap(), n, "{q}");
+        }
+        assert_eq!(count_terms(&n), 5);
+        assert_eq!(
+            highlight_terms(&parse("2 OF (gold silver bryan)").unwrap()),
+            vec!["bryan", "gold", "silver"]
+        );
+        // Only with an upper-case OF and a group after it.
+        assert_eq!(
+            parse("2 of (a1 b1 c1)").unwrap().to_string(),
+            "2 AND a1 AND b1 AND c1 AND of"
+        );
+        assert_eq!(
+            parse("2 OF the").unwrap(),
+            Node::And(vec![term("2"), term("of"), term("the")])
+        );
+        let err = |q: &str| parse(q).unwrap_err();
+        assert!(err("1 OF (a1 b1 c1)").message.contains("N from 2 to 5"));
+        assert!(err("6 OF (a1 b1 c1 d1 e1 f1 g1)")
+            .message
+            .contains("N from 2 to 5"));
+        assert!(err("2 OF (a1 b1 c1 d1 e1 f1 g1)")
+            .message
+            .contains("limit is 6"));
+        assert!(err("2 OF (a1 b1)").message.contains("use AND"));
+        // Duplicates count once.
+        assert!(err("2 OF (a1 a1 b1)").message.contains("use AND"));
+        for q in [
+            "2 OF (a1 OR b1 c1)",
+            "2 OF (a1 -b1 c1)",
+            "2 OF ((a1 b1) c1 d1)",
+            "2 OF (2 OF (a1 b1 c1) d1 e1)",
+            "2 OF (東京、大阪 a1 b1)",
+        ] {
+            assert!(err(q).message.contains("takes words and phrases"), "{q}");
+        }
+        // An unquoted word that punctuation splits is refused, not read as
+        // a phrase item; quoted, the phrase is one (#378 review).
+        let e = err("2 OF (gold-silver bryan)");
+        assert!(e.message.contains("quote it as a phrase"), "{}", e.message);
+        assert!(e.message.contains(r#""gold silver""#), "{}", e.message);
+        assert_eq!(e.position, Some(6));
+        assert!(err("2 OF (a1 b1 o'brien)")
+            .message
+            .contains("quote it as a phrase"));
+        assert!(err("2 OF (gold-silver bryan coin)")
+            .message
+            .contains("quote it as a phrase"));
+        // Quoted, it gets as far as the item count (2 OF two items is AND).
+        assert!(err(r#"2 OF ("gold silver" bryan)"#)
+            .message
+            .contains("use AND"));
+        assert_eq!(
+            parse(r#"2 OF ("gold silver" bryan coin)"#).unwrap(),
+            Node::AtLeast {
+                min: 2,
+                of: vec![
+                    Node::Phrase {
+                        terms: vec!["gold".into(), "silver".into()],
+                        slop: 0
+                    },
+                    term("bryan"),
+                    term("coin"),
+                ]
+            }
+        );
+        // A Japanese word is a phrase of its characters, and one item.
+        assert!(parse("2 OF (東京 大阪 a1)").is_ok());
+        assert_eq!(err("gold 2 OF (a1 b1 c1").message, "missing ')'");
+        assert_eq!(err("gold 2 OF (a1 b1 c1").position, Some(10));
+        // The 12-term limit counts every item.
+        assert!(err("2 OF (a1 b1 c1 d1 e1 f1) g1 h1 i1 j1 k1 l1 m1")
+            .message
+            .contains("limit is 12"));
     }
 
     #[test]

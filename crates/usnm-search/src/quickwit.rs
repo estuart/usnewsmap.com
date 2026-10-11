@@ -322,6 +322,7 @@ fn render(node: &Node, grams: bool, texts: &[&TextFields]) -> Result<String, Sea
     Ok(match node {
         Node::And(c) => format!("({})", join(c, " AND ", grams, texts)?),
         Node::Or(c) => format!("({})", join(c, " OR ", grams, texts)?),
+        Node::AtLeast { min, of } => at_least(usize::from(*min), of, grams, texts)?,
         Node::Not(n) => format!("NOT {}", render(n, grams, texts)?),
         leaf => {
             let leaves = texts
@@ -334,6 +335,39 @@ fn render(node: &Node, grams: bool, texts: &[&TextFields]) -> Result<String, Sea
             }
         }
     })
+}
+
+/// `N OF (...)` (#124): an `OR` of each `min` of the items `AND`ed. Quickwit
+/// 0.9.1's query language has no "at least N"; its Elasticsearch-compatible
+/// API has (`bool` with `minimum_should_match`) and counts the same pages on
+/// the fixtures, but this way hits, aggregations and every text layout keep
+/// one request shape. At most `C(6, 3) = 20` groups
+/// ([`usnm_core::query::MAX_AT_LEAST_ITEMS`]).
+fn at_least(
+    min: usize,
+    of: &[Node],
+    grams: bool,
+    texts: &[&TextFields],
+) -> Result<String, SearchError> {
+    let items = of
+        .iter()
+        .map(|n| render(n, grams, texts))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut groups = Vec::new();
+    let mut pick: Vec<usize> = (0..min).collect();
+    loop {
+        let parts: Vec<&str> = pick.iter().map(|&i| items[i].as_str()).collect();
+        groups.push(format!("({})", parts.join(" AND ")));
+        // The next `min` indexes in lexicographic order, if any.
+        let Some(i) = (0..min).rev().find(|&i| pick[i] < items.len() - min + i) else {
+            break;
+        };
+        pick[i] += 1;
+        for j in i + 1..min {
+            pick[j] = pick[j - 1] + 1;
+        }
+    }
+    Ok(format!("({})", groups.join(" OR ")))
 }
 
 /// The pages a search of both texts finds that match the query in American
@@ -385,6 +419,24 @@ fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, Searc
             ));
         }
         Node::Term(t) if t.prefix => format!("{text}:{}*", t.text),
+        // `word~ocr` (#124): the word and its OCR spellings as one term set,
+        // which the engine looks up in the term dictionary like a word.
+        // Members are split at whitespace and not analyzed, so each must be
+        // one index token as it stands. The parser refuses a word that isn't
+        // (`ﷺ` folded by `Analyzer::V1`); this never sends one split into
+        // several members.
+        Node::Term(t) if t.ocr => {
+            let variants = usnm_core::ocr_variants::variants(&t.text);
+            if !variants
+                .iter()
+                .all(|v| usnm_core::ocr_variants::is_one_token(v))
+            {
+                return Err(SearchError::Unsupported(
+                    "~ocr on a word the index holds as several words".into(),
+                ));
+            }
+            format!("{text}:IN [{}]", variants.join(" "))
+        }
         // With `?` or `*` in it (#124), an unquoted word is a wildcard query
         // in Quickwit 0.9, matched against the index's words.
         Node::Term(t) => format!("{text}:{}", t.text),
@@ -411,7 +463,7 @@ fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, Searc
             }
             None => format!("{text}:\"{}\"", terms.join(" ")),
         },
-        Node::And(_) | Node::Or(_) | Node::Not(_) => {
+        Node::And(_) | Node::Or(_) | Node::AtLeast { .. } | Node::Not(_) => {
             unreachable!("query_string renders operators")
         }
     })
@@ -1169,6 +1221,59 @@ mod tests {
         assert_eq!(
             query_string(&parse("presi?ent").unwrap(), false, true).unwrap(),
             "(text:presi?ent OR text_as:presi?ent)"
+        );
+        // A word's OCR spellings are one term set (#124).
+        assert_eq!(
+            query_string(&parse("Gold~ocr").unwrap(), false, false).unwrap(),
+            "text:IN [goid golcl gold]"
+        );
+        assert_eq!(
+            query_string(&parse("gold~ocr").unwrap(), false, true).unwrap(),
+            "(text:IN [goid golcl gold] OR text_as:IN [goid golcl gold])"
+        );
+        // A word that isn't one index token (`ﷺ` or `½` folded by
+        // `Analyzer::V1`) is never sent split into several members; the
+        // parser refuses it, and a term built without the parser is refused
+        // here.
+        for text in [
+            usnm_core::text::fold("ﷺ", Analyzer::V1),
+            usnm_core::text::fold("½", Analyzer::V1),
+            "gold]".into(),
+        ] {
+            let node = Node::Term(usnm_core::query::Term {
+                text: text.clone(),
+                fuzzy: 0,
+                prefix: false,
+                wildcard: false,
+                ocr: true,
+            });
+            for american_stories in [false, true] {
+                assert!(
+                    matches!(
+                        query_string(&node, false, american_stories),
+                        Err(SearchError::Unsupported(_))
+                    ),
+                    "{text}"
+                );
+            }
+        }
+        // At least N: each N of them, ANDed, ORed.
+        assert_eq!(
+            query_string(&parse("2 OF (gold silver bryan)").unwrap(), false, false).unwrap(),
+            "((text:bryan AND text:gold) OR (text:bryan AND text:silver) \
+             OR (text:gold AND text:silver))"
+        );
+        let q = parse("3 OF (a1 b1 c1 d1 e1 f1)").unwrap();
+        let s = query_string(&q, false, false).unwrap();
+        assert_eq!(s.matches(" OR (").count() + 1, 20);
+        assert!(s.starts_with("((text:a1 AND text:b1 AND text:c1) OR "));
+        assert!(s.ends_with(" OR (text:d1 AND text:e1 AND text:f1))"));
+        assert_eq!(
+            query_string(&parse("-2 OF (a1 b1 c1) gold").unwrap(), false, true).unwrap(),
+            "(NOT (((text:a1 OR text_as:a1) AND (text:b1 OR text_as:b1)) \
+             OR ((text:a1 OR text_as:a1) AND (text:c1 OR text_as:c1)) \
+             OR ((text:b1 OR text_as:b1) AND (text:c1 OR text_as:c1))) \
+             AND (text:gold OR text_as:gold))"
         );
     }
 

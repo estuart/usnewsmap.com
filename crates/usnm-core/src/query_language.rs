@@ -17,7 +17,9 @@
 //!   must have "brown" ("john" is shared). Excluded words (`-`, `NOT`) don't
 //!   count. A prefix (`influ*`) or wildcard (`presi?ent`) term leaves the
 //!   language unknown, since it matches words the lists can't vouch for; a
-//!   fuzzy term (`railroad~1`) is judged by its word.
+//!   fuzzy term (`railroad~1`) or OCR term (`railroad~ocr`, its OCR
+//!   misspellings) is judged by its word. `2 OF (a b c)` is read as
+//!   `a OR b OR c`: English only when each of them is.
 //! - Otherwise the language is unknown and the baseline stays every page.
 //!
 //! The English words are at least as frequent in English as in each other
@@ -135,6 +137,8 @@ fn read(node: &Node) -> Reading {
         Node::Phrase { terms, .. } => all_of(terms.iter().map(|t| word(t))),
         Node::And(c) => all_of(c.iter().map(read)),
         Node::Or(c) => any_of(c.iter().map(read)),
+        // Any `min` of its parts may hold: read as an `OR` of them.
+        Node::AtLeast { of, .. } => any_of(of.iter().map(read)),
         Node::Not(_) => Reading::Neutral,
     }
 }
@@ -237,6 +241,15 @@ mod tests {
         assert_eq!(lang("railr*"), None);
         assert_eq!(lang("presi?ent"), None);
         assert_eq!(lang("railroad AND cotto*"), None);
+    }
+
+    #[test]
+    fn ocr_terms_by_their_word_and_at_least_n_as_an_or() {
+        assert_eq!(lang("railroad~ocr"), Some("eng"));
+        assert_eq!(lang("influenza~ocr"), None);
+        assert_eq!(lang("2 OF (railroad cotton strike)"), Some("eng"));
+        assert_eq!(lang("2 OF (railroad cotton john)"), None);
+        assert_eq!(lang("2 OF (railroad cotton eisenbahn)"), None);
     }
 
     #[test]

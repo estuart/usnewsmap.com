@@ -85,9 +85,10 @@ fn patterns(query: &Node) -> Vec<Pattern> {
                     fuzzy: 0,
                     prefix: false,
                     wildcard: false,
+                    ocr: false,
                 })
             })),
-            Node::And(c) | Node::Or(c) => stack.extend(c),
+            Node::And(c) | Node::Or(c) | Node::AtLeast { of: c, .. } => stack.extend(c),
             Node::Not(_) => {}
         }
     }
@@ -338,6 +339,24 @@ mod tests {
         assert_eq!(
             snip("Washington, Washinton, Washi. ton", "washi*ton"),
             ["<mark>Washington</mark>, <mark>Washinton</mark>, Washi. ton"]
+        );
+    }
+
+    #[test]
+    fn marks_each_ocr_spelling_and_each_item_of_at_least() {
+        assert_eq!(
+            snip(
+                "The Presldent, the prefident and the presidents",
+                "president~ocr"
+            ),
+            ["The <mark>Presldent</mark>, the <mark>prefident</mark> and the presidents"]
+        );
+        assert_eq!(
+            snip(
+                "gold and silver, not bryan",
+                "2 OF (gold silver bryan) -orator"
+            ),
+            ["<mark>gold</mark> and <mark>silver</mark>, not <mark>bryan</mark>"]
         );
     }
 
