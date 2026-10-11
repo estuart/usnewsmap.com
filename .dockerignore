@@ -6,3 +6,5 @@ web/dist
 web/test-results
 web/playwright-report
 web/*.tsbuildinfo
+# Environment settings (scripts/settings.sh): never part of an image or build context.
+.azure

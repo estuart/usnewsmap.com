@@ -396,7 +396,7 @@ Production keeps no batch archives (ADR-0006): LoC is the source of record. The 
 scripts/archive-store.sh deploy --subscription <id>     # prints the account's resource id
 ```
 
-**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting (or tear the environment down) this way. `scripts/teardown.sh` refuses while the setting is on.
+**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, `id-usnm-qwbench` also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting (or tear the environment down) this way. `scripts/teardown.sh` refuses while the setting is on.
 
 ```sh
 scripts/archive-store.sh unlock
@@ -409,7 +409,7 @@ scripts/archive-store.sh deploy        # the lock back
 
 - **Every archive it downloads is kept** byte for byte as fetched, at `raw/{batch}/{archive file}`. It is written in 8 MiB blocks as it streams (never held whole) at the Cold tier. Once the archive's sha256 checks out, the upload is committed and `raw/{batch}/manifest.json` records the source URL, bytes, sha256, the time and LoC's response headers (`last-modified`, `etag`, `content-length`, `content-type`). Only then is the batch marked curated. A download that fails its checksum leaves nothing. The commit is create-only: an archive already at the path (another environment's, sharing the account) is never replaced, and the batch curates from its own download with a warning if the two differ.
 - **A batch already kept is curated from the copy,** not LoC, when its manifest's sha256 is the one LoC lists (or LoC lists none). It needs no download slot, and the copy is checked again as it's read. The `archive source` line says which (`source: raw` or `loc`), and `archive retained` logs each new copy.
-- **Batch lists are kept too:** each remote list an `enqueue` or `run` reads goes to `raw/listings/{time}-{sha}.json`. Titles-sync keeps the fields it uses from each title record in the environment's `reference/raw/titles.json`. Nothing else is downloaded from outside Azure.
+- **Batch lists are kept too:** each remote list an `enqueue` or `run` reads goes to `raw/listings/{time}-{sha}.json`. Titles-sync keeps the fields it uses from each title record in the environment's `reference/raw/titles.json`. Nothing else is downloaded from outside Azure: the search cluster's sample, sets and bench read only Azure stores.
 
 To keep the archives of batches curated before, queue them again with `--force` (only curated or failed batches at the listed version; one being curated is left alone), then run the backfill job. A re-curation writes a new attempt and replaces the batch's curation when it commits.
 
@@ -434,11 +434,18 @@ Then clear `USNM_RETAIN_RAW` and provision. That deletes the environment's own c
 
 ### Sample sets
 
-A set packages a sample of the corpus for reuse in `sets/{name}/`, built once and never replaced (build `-v2` instead). The builder comes with the search cluster experiment's tooling (#240); this account holds the container and the layout below is what it writes. A build first claims the name with `building.json`, so two builds never write the same objects. A build that fails keeps its name, so the retry is the next version:
+A set packages a sample for reuse in `sets/{name}/`, built once by the search cluster's bench job and never replaced (build `-v2` instead). A build first claims the name with `building.json`, so two builds never write the same objects. A build that fails keeps its name, so the retry is the next version:
 
 - `raw.tar`: the set's LoC batch archives as kept in `raw/`, with their manifests. It's a plain tar, since the archives are bzip2 already. Curate it offline, or extract it into another raw store.
 - `docs.ndjson.zst`: the sample's documents exactly as the release builds them (`text`, `text_cg`, every field; `text_as` and `text_as_cg` only when the manifest says `american_stories`). It's one zstd stream, so it can be loaded into any Quickwit 0.9 index created from `infra/quickwit/pages-index.yaml`.
 - `manifest.json`, written last: name and version, how the batches were chosen, the batch list with each archive's bytes and sha256, page and document counts, each file's bytes and sha256, the corpus bounds, the common-word pairs' and American Stories' versions, the index config's sha256, the builder's commit and `created_at`.
+
+```sh
+J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+J bundle --name loc-1pct-v1 --sample dev1pct \
+  --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
+J load --set loc-1pct-v1 --index s1ixset          # the cluster loads straight from the set
+```
 
 **From a container or a laptop with access** (Storage Blob Data Reader on `sets`, and a network path to the account: an environment's VNet, or a private endpoint of your own; public access is off):
 
@@ -449,6 +456,193 @@ for f in chunk-*; do curl -sf -XPOST "$QW/api/v1/$INDEX/ingest" --data-binary @"
 ```
 
 Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.tar` gives `{batch}/{archive}` and `{batch}/manifest.json`, the layout of `raw/`.
+
+## Search cluster experiment
+
+An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1% sample: indexing with 1 and 2 indexers, then searching with 1, 2 and 3 searchers. It runs in its own environment (`dev`), never in prod (the template ignores the setting there), and everything it adds sits behind `USNM_SEARCH_CLUSTER`. With the setting off, the stack is exactly what it was (the module is `if (searchCluster && useAcr && env != 'prod')`).
+
+**What it deploys** (`infra/modules/searchcluster.bicep`):
+
+- **Nodes** `ca-usnm-qw-{i}`, `USNM_SEARCH_CLUSTER_NODES` of them (0 to 4), each exactly one replica of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU (default 2, the API sidecar's size) with 2 GiB per vCPU, on the Consumption profile. Node 0 is the only metastore (the single writer of the file-backed metastore in `qw-cluster`), the control plane, the janitor, an indexer, a searcher, and the root: searches enter there through its internal ingress, `http://ca-usnm-qw-0` inside the environment. Nodes 1 to `USNM_SEARCH_CLUSTER_INDEXERS - 1` also index; the rest only search. Their node config is `infra/quickwit/cluster-node.yaml`; its searcher settings are the sidecar's (`searcher.yaml`), which a test checks.
+- **Addresses.** Quickwit gossips over UDP and calls leaves over gRPC, both on replica IPs, which change whenever a replica restarts (#239). Each node starts as `usnm-qwcluster node`. That writes its replica IP to `qw-bench/seeds/qw-{i}.json`, reads the other nodes' entries as `QW_PEER_SEEDS`, sets `QW_ADVERTISE_ADDRESS`, and then becomes Quickwit. Every node writes before it reads, so of two nodes starting together at least one sees the other. A node that restarts at a new IP joins through the others, and they learn its new address by gossip.
+- **Bench job** `caj-usnm-qwbench-{env}` (manual, 4 vCPU / 8 GiB, 6 h timeout), which runs `usnm-qwcluster` with each step's arguments (`scripts/start-job.sh`).
+- **Storage, Entra only.** Containers `qw-cluster` (splits and metastore; Blob Data Contributor for each node's system-assigned identity, since Quickwit can use no other) and `qw-bench` (seeds, the sample, reports; Contributor for `id-usnm-qwnode-{env}` and `id-usnm-qwbench-{env}`). The bench identity also reads `curated` and `reference`. Nothing can write `qw-index`, `reference` or `curated`. Turning the setting off deletes both containers (soft delete keeps them 14 days).
+
+**The steps.** Each `usnm-qwcluster` step logs one `qwcluster report` line and stores the full report in `qw-bench/runs/`.
+
+| Step      | Command                                                       | What it measures                                                                                                                                                                                                                                                                                                               |
+| --------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sample`  | `sample --name N --pct P [--american-stories]`                | Takes `P`% of the published version's pages (SHA-256 of `doc_id`, mod 10,000, below `P` × 100, as the OCR audit samples) as the documents a full release builds, with duplicate copies settled as the release does. Reads every curated part once.                                                                             |
+| `load`    | `load --sample N --index I [--split-docs 3000] [--senders 4]` | Creates `I` from `pages-index.yaml` with `split_num_docs_target` set and one ingest shard per indexer, sends the sample, and times sending, all documents committed, merges settled, and sealed. Also records documents by node, splits and footer sizes, and retries on 429 and 503.                                          |
+| `bench`   | `bench --label L --index I --sample N --expect-searchers K`   | The 13 benchmark searches of `bench-cold-searches.py` and `load-cold-searches.py`, run as `/v1/aggregate` runs them (`plan::aggregate`) against node 0: `first`, `warm`, then concurrency 1, 2, 4 and 10, each with its windows a day further back. Reports median, p90, throughput, and each node's leaf searches and splits. |
+| `members` | `members`                                                     | The cluster as node 0 sees it: members, addresses, generations, services.                                                                                                                                                                                                                                                      |
+| `dump`    | `dump [--hold-secs 600]`                                      | Prints every stored report, for a log stream when Log Analytics is over its cap.                                                                                                                                                                                                                                               |
+
+**Split target.** At the production 30,000 pages, a 1% sample makes about 8 splits, too few for a root to spread over three nodes the way production spreads about 800. The loader's default of 3,000 makes about 80 splits of a tenth the size. Per-split fixed costs then weigh more than in production, so a second index at 30,000 (`--split-docs 30000`) brackets the result.
+
+**Run it** (in `dev`; prod's data account is private, so dev curates its own 1% from LoC):
+
+```sh
+scripts/archive-store.sh deploy                       # once per subscription; prints the account's id
+ARCHIVE_ID=<the id it printed>
+scripts/settings.sh dev USNM_INGEST_JOBS true
+scripts/settings.sh dev USNM_INGEST_SCRATCH_GIB 0     # 1% fits the replica's disk
+scripts/settings.sh dev USNM_LOG_DAILY_CAP_GB 1       # blob write logs; clear afterwards
+scripts/settings.sh dev USNM_ARCHIVE_ACCOUNT "$ARCHIVE_ID"   # keep every LoC download (Archival storage, above)
+scripts/provision.sh dev
+RG=$(scripts/settings.sh dev AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh dev ACR_NAME)
+TAG=qwc-$(git rev-parse --short HEAD)
+az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
+az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
+scripts/settings.sh dev USNM_IMAGE_TAG $TAG
+scripts/settings.sh dev USNM_USE_ACR true
+scripts/provision.sh dev
+
+# The 1%: every 100th batch of LoC's listing by name, from the 40th (offset 39):
+# 30 batches, 238,057 pages of 23,838,683 (0.999%), 26 awardees, 23.8 GB of archives.
+B=arhi_beatles_ver01,az_fireant_ver01,ct_fairfield_ver01,curiv_plasse_ver01,dlc_alpha_ver03,dlc_debaptiste_ver01,dlc_goldenrod_ver01,dlc_leibovitz_ver01,dlc_saluki_ver01,gu_drteeth_ver01,iahi_hypno_ver01,in_irvington_ver01,khi_garwood_ver02,lu_juggernaut_ver01,me_calais_ver03,mnhi_dassel_ver01,mohi_berenice_ver01,mthi_goldeneye_ver01,ncu_cotton_ver04,nhd_lafayette_ver01,nn_keddy_ver01,ohi_himilco_ver01,oru_longspur_ver01,rp_hobgoblin_ver02,tu_eddie_ver02,uuml_anderson_ver01,vi_fezza_ver01,vnstcsc_duggan_ver01,whi_brie_ver01,wvu_jolie_ver02
+scripts/start-job.sh dev INGEST_JOB enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
+scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
+scripts/start-job.sh dev INGEST_JOB run --batches $B --full --curate-max-runtime-secs 21600 \
+  --titles-max-runtime-secs 28800 --quickwit-bin /usr/local/bin/quickwit \
+  --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index
+scripts/logs.sh dev release-progress 6h    # the single-writer baseline on the same pages
+
+# One node, one indexer.
+scripts/settings.sh dev USNM_SEARCH_CLUSTER true
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 1
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_INDEXERS 1
+scripts/provision.sh dev
+J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+J members
+J sample --name dev1pct --pct 100          # dev's whole version is the 1%
+J bundle --name loc-1pct-v1 --sample dev1pct \
+  --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
+J load --sample dev1pct --index s1ix
+J bench --label n1 --index s1ix --sample dev1pct --expect-searchers 1
+# Two nodes, both indexing.
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 2
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_INDEXERS 2
+scripts/provision.sh dev
+J load --sample dev1pct --index s2ix
+J bench --label n2 --index s1ix --sample dev1pct --expect-searchers 2
+# Three nodes; node 2 only searches. Then the restart test.
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 3
+scripts/provision.sh dev
+J bench --label n3 --index s1ix --sample dev1pct --expect-searchers 3
+J members
+az containerapp revision restart -n ca-usnm-qw-2 -g "$RG" \
+  --revision "$(az containerapp revision list -n ca-usnm-qw-2 -g "$RG" --query "[?properties.active].name | [0]" -o tsv)"
+J bench --label n3-restart --index s1ix --sample dev1pct --expect-searchers 3 --levels 1,4 --levels-only
+J members                                  # qw-2 has a new address and generation
+
+# The report: Log Analytics, Azure Monitor per node app, list prices.
+scripts/qwcluster-report.py dev --since 2d --out qwcluster-report.md
+```
+
+Start each step once the previous execution has ended (`az containerapp job execution list -n "$(scripts/settings.sh dev SEARCH_CLUSTER_JOB)" -g "$RG" -o table`). For a cold `first` pass, restart the node revisions before a bench. The first provision with the cluster may restart node 0 a few times while its identity's role on `qw-cluster` propagates. If Log Analytics is over its cap, stream the stored reports with `J dump --hold-secs 600` and `az containerapp job logs show -n <job> -g "$RG" --container qwbench --follow > lines.txt`, then run `scripts/qwcluster-report.py dev --from-file lines.txt`. Collect the report before scaling down: a deleted app's metrics can't be queried.
+
+**Report lines.** Container Apps keeps about 16 KiB of a console line. A bench report therefore goes out as several `qwcluster report` lines (`bench`, one `bench_pass` per pass, `bench_probe`, `bench_profile`), which `scripts/qwcluster-report.py` puts back together by label. Images before this change logged a whole run on one line, and a run with `--probe` passed the limit (October 2026); the report salvages such a line's passes, and takes its Quickwit version from the run's `bench root` line, but its probe and profile are only in `qw-bench` (`runs/{label}/bench.json`). `J dump` with a current image logs those stored reports again, in parts.
+
+**Idle and teardown.** `USNM_SEARCH_CLUSTER_NODES 0` and a provision remove the node apps but keep the containers and the bench job, so nothing is billed but storage. `USNM_SEARCH_CLUSTER ""` and a provision remove everything the setting added, both containers included. Clear `USNM_LOG_DAILY_CAP_GB` afterwards.
+
+**Threads.** Every node runs one main-runtime thread and one search-pool thread per vCPU (`QW_TOKIO_RUNTIME_NUM_THREADS`, `RAYON_NUM_THREADS`), as the API's sidecar does with 4 and 4 at 3.75 vCPU (#251): 2 and 2 at the default 2 vCPU. Before October 2026 the nodes ran Quickwit's own default, a third of the CPUs rounded up for the main runtime (one thread at 2 vCPU), so the earlier benches had a single thread for downloads and split opening. `USNM_SEARCH_CLUSTER_RUNTIME_THREADS` and `USNM_SEARCH_CLUSTER_SEARCH_THREADS` override the counts (0: one per vCPU).
+
+### Quickwit version comparison
+
+Whether a pre-0.9 Quickwit searches our splits with less work than 0.9.1 (#251; upstream quickwit-oss/quickwit#6883 reports 0.9.1 1.25 to 2x slower than a 0.8 nightly on identical splits). The released 0.8.2 can't take part: it reads tantivy index formats 4 to 6 and 0.9.1 writes 7, and it authenticates to Azure only with an account key, which our accounts refuse (ADR-0009). The baseline is the `qw-azure-fix` nightly (`quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc…`, main of 23 September 2025 plus the Azure multipart fix, which reports 0.8.0): it writes and reads format 7, uses managed identity, reads the 0.9 metastore, and takes every searcher key of `searcher.yaml` but `predicate_cache_capacity` and `leaf_request_timeout_secs`.
+
+**What it deploys.** `USNM_SEARCH_COMPARE_TAGS`, ingest image tags separated by commas, gives one standalone searcher per tag, `ca-usnm-qws-{i}` (root `http://ca-usnm-qws-{i}` inside the environment), of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU each. Each runs as the API sidecar does: searcher and metastore, polling the file-backed metastore in `qw-cluster` every 30 s, with Blob Data Reader on `qw-cluster` only, so it searches the cluster's indexes and can't change them. Each has a cluster id of its own and no seeds, so the two never join and a search never mixes versions. The node wrapper reads `quickwit --version` and, below 0.9, drops the two searcher keys and pins `warmup_single_split_initial_allocation` to 0.9.1's 300 MB (the nightly's default is 1 GB). The bench records the root's Quickwit version, each node's main-runtime busy time and Blob bytes downloaded per pass, and samples the search pool's running and queued split searches every 2 s.
+
+**Images.** The second tag is the ingest image on the nightly's Quickwit (`Dockerfile.ingest`'s `QUICKWIT_IMAGE`; CI always builds the default, v0.9.1):
+
+```sh
+cd ~/code/usnewsmap.com-qwcluster
+RG=$(scripts/settings.sh dev AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh dev ACR_NAME)
+TAG=qwc-$(git rev-parse --short HEAD); SHA=$(git rev-parse HEAD)
+NIGHTLY=quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc6d6ee7db4732b8a20be544ba3455bdc08ef0ccd7683f4aa854243ff6
+az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA .
+az acr build -r "$ACR" -t usnewsmap-ingest:$TAG-qw2509 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA --build-arg QUICKWIT_IMAGE=$NIGHTLY .
+az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
+```
+
+**Smoke test** on an index the cluster already holds (`s1ixb`, the 1% without American Stories, 58 splits): cluster nodes off, so nothing writes while they search; both searchers at the sidecar's 4 vCPU.
+
+```sh
+scripts/settings.sh dev USNM_IMAGE_TAG $TAG
+scripts/settings.sh dev USNM_SEARCH_CLUSTER true
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODE_VCPU 4
+scripts/settings.sh dev USNM_SEARCH_COMPARE_TAGS "$TAG,$TAG-qw2509"
+scripts/provision.sh dev
+J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+JOB=$(scripts/settings.sh dev SEARCH_CLUSTER_JOB)
+wait_for() {  # until execution $1 has ended; prints how
+  local s; while :; do
+    s=$(az containerapp job execution show -n "$JOB" -g "$RG" --job-execution-name "$1" --query properties.status -o tsv)
+    case "$s" in Running|Processing|Unknown|"") sleep 20 ;; *) echo "$1 $s"; return ;; esac
+  done
+}
+restart() { for a in ca-usnm-qws-0 ca-usnm-qws-1; do az containerapp revision restart -n $a -g "$RG" --revision "$(az containerapp revision list -n $a -g "$RG" --query "[?properties.active].name | [0]" -o tsv)"; done; sleep 90; }
+wait_for "$(J members --cluster http://ca-usnm-qws-0)"; wait_for "$(J members --cluster http://ca-usnm-qws-1)"
+bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index s1ixb --sample dev1pct --levels 1,4,10)"; }
+restart; bench cmp-v091-r1 qws-0; bench cmp-n2509-r1 qws-1
+restart; bench cmp-n2509-r2 qws-1; bench cmp-v091-r2 qws-0
+restart; bench cmp-v091-r3 qws-0; bench cmp-n2509-r3 qws-1
+scripts/qwcluster-report.py dev --since 6h --out qwcompare.md
+```
+
+The two `members` lines show each searcher alone in its cluster, with `main_threads` 4 in its counters (the nightly reports the same metric names as 0.9.1). The report's **Quickwit version comparison** section has, per pass, the main runtime's busy seconds per search and per GB downloaded, its busy share, and the search pool's peaks, then each version's averages with ratios to 0.9.1, then whether both versions found the same pages for every search. If they didn't, the timings don't compare. On dev's 1% the searches wait on Blob, not CPU (0.1 to 0.4 vCPU in October 2026), so the latency ratios don't carry to production; busy seconds per GB do, since production's cold searches wait on the main runtime (about 95% busy on 4 threads with an idle search pool, #251). A nightly ratio well under 1 (0.8 or less) on busy seconds per GB is worth the full run; near 1, the regression of #6883 isn't what holds production back.
+
+**Full run**, if the smoke test points that way: indexes shaped like production's, built by 0.9.1 (node 0) from the 1% with `text_as` and `text_as_cg` filled from `text` and `text_cg` (`load --as-from-text`; LoC's OCR twice, the shape of production's work but not its matches), at the loader's 3,000 pages per split (production's fan-out per search) and at production's 30,000 (production's split size):
+
+```sh
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 1
+scripts/provision.sh dev
+wait_for "$(J load --sample dev1pct --index asdup3k --as-from-text)"
+wait_for "$(J load --sample dev1pct --index asdup30k --split-docs 30000 --as-from-text)"
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
+scripts/provision.sh dev
+bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index "$3" --sample dev1pct --american-stories --levels 1,4,10)"; }
+# then the same three rounds as above for asdup3k and asdup30k
+```
+
+**Afterwards** `USNM_SEARCH_COMPARE_TAGS ""` and a provision remove the searchers (collect the report first). Two 4 vCPU searchers cost about $0.86 an hour while they exist.
+
+### Local-disk test
+
+Whether reading splits from somewhere other than Blob removes the main runtime's CPU cost (#251): the same index and bench on Quickwit 0.9.1 with the sidecar's 4 and 4 threads, one searcher, `ca-usnm-qwl-0`, in one mode at a time (`USNM_SEARCH_LOCAL_MODE`):
+
+- `blob`: splits read from Blob, as the sidecar reads them.
+- `nfs`: the index (`USNM_SEARCH_LOCAL_INDEX`) copied once onto an NFS Azure Files share and served from there as `file://`. The share, `qw-search` (`USNM_SEARCH_NFS_GIB`, default 64), is a second share in the ingest scratch share's provisioned v2 SSD account, reached through the same private endpoint; it exists while the mode is `nfs` (or the scratch share is on). The copy is made at the first start (`crates/usnm-ingest/src/cluster/local.rs`) and kept: a restart, or another index, copies only what isn't there.
+- `cache`: Quickwit's split cache (`searcher.split_cache`, `USNM_SEARCH_LOCAL_CACHE_GIB`, default 40) on the replica's disk. A search reads from Blob and marks its splits; the cache downloads them whole in the background (4 at a time) and later searches read the local files.
+- `copy`: the index copied to the replica's disk before Quickwit starts and served as `file://`, so no Blob client runs at all.
+
+**Where it runs.** `blob` and `nfs` run on Consumption at the sidecar's 3.75 vCPU / 7.5 GiB (with `nfs`'s 0.25 vCPU init container that hands the share's directory to the node's user, 4 / 8 in all), the shape production searches with. A Consumption replica can mount an NFS share: the environment has its own VNet, and the ingest job mounts its scratch share on Consumption the same way ([storage mounts](https://learn.microsoft.com/azure/container-apps/storage-mounts#azure-files-volume)). `cache` and `copy` need more disk than a Consumption replica's 8 GiB ([ephemeral storage](https://learn.microsoft.com/azure/container-apps/storage-mounts#ephemeral-storage)), and a VM is out (`usnm-deny-iaas-compute` denies them in `rg-usnm-dev`), so they run on the E4 dedicated profile (`USNM_DEDICATED_PROFILE`), where Microsoft reported about 80 GiB of ephemeral storage per replica in September 2026 (microsoft/azure-container-apps#1779; the node logs `data directory disk` with `df` at start): 3.25 vCPU / 24 GiB, an E4 replica's most, its disk emptied by a restart. The E4 node costs about $0.39 an hour plus the $0.10 Dedicated plan fee while the profile exists; the share about $0.10 per GiB a month while it exists.
+
+**One E4 mode at a time, with a provision in between.** The E4 profile has one node. A new revision there can't start while the old one holds it, and the old one keeps the traffic: on the evening of 9 October 2026 (ET) the `cache` and `copy` runs were all served by the `blob` revision (`AssigningReplicaFailed: Insufficient capacity on workload profile 'ingest-e4'`, then `Deployment Progress Deadline Exceeded`), and repeated the `blob` runs' windows, which Quickwit's partial request cache answered. Their results don't stand. To switch between `cache` and `copy`, set the mode to `""`, provision, then set the new one and provision. The bench's `--variant blob|nfs|cache|copy` now reads the root's node config (`/api/v1/config`) and stops if the searcher isn't in that mode. Give each run its own `--offset` too, so no two runs share windows.
+
+**What the bench adds.** `--probe` sends each search's summary request once more over Quickwit's gRPC API, the only place 0.9.1 reports its per-split resource stats (`SearchResponse.resource_stats`, quickwit #6416: not in the REST response, not in its metrics, in its logs only for memory-hungry queries): warm-up (the main runtime's downloading and decoding), waiting for the search pool, CPU search, waiting for a search permit, and bytes downloaded (`crates/usnm-ingest/src/cluster/grpc.rs`). `--profile-secs` runs searches with fresh windows under Quickwit's own CPU profiler (`/api/developer/pprof`, in its release builds) and stores the flame graph in `qw-bench` at `runs/{label}/flamegraph.svg`; the report lists samples by thread and the main runtime's busiest functions. `--wait-split-cache-secs` waits for the split cache to hold every split before the passes, and `--variant` names the mode in the report.
+
+With `RG`, `J`, `JOB` and `wait_for` as in the version comparison above, and the image tag that has these flags in `USNM_IMAGE_TAG`:
+
+```sh
+lbench() { wait_for "$(J bench --label "$1" --cluster http://ca-usnm-qwl-0 --index "$IX" --sample dev1pct --variant "$2" --levels 1,4,10 --probe --profile-secs 120 "${@:3}")"; }
+# Until the searcher's newest revision is the ready one (a first nfs copy takes minutes).
+ready() { until [ "$(az containerapp show -n ca-usnm-qwl-0 -g "$RG" --query "properties.latestReadyRevisionName == properties.latestRevisionName" -o tsv)" = true ]; do sleep 30; done; }
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
+scripts/settings.sh dev USNM_SEARCH_COMPARE_TAGS ""
+IX=s1ixb; scripts/settings.sh dev USNM_SEARCH_LOCAL_INDEX $IX
+scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE blob; scripts/provision.sh dev; ready
+lbench c-blob-r1 blob --offset 200; lbench c-blob-r2 blob --levels-only --offset 210
+scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE nfs; scripts/provision.sh dev; ready
+lbench c-nfs-r1 nfs --offset 220; lbench c-nfs-r2 nfs --levels-only --offset 230
+az containerapp logs show -n ca-usnm-qwl-0 -g "$RG" --container qwnode --tail 300 | grep -E 'data directory disk|local copy disk|index copied'
+scripts/qwcluster-report.py dev --since 12h --out qwlocal.md
+scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE ""; scripts/provision.sh dev   # removes the searcher and the share
+```
+
+The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (and `cache`, `copy`) with ratios to blob, and its bench rows name each run's mode. Compare the `r2` runs: if `nfs` cuts the main runtime's busy seconds per search and the probe's warm-up seconds as `copy` was meant to show, the Blob path (HTTP, TLS, the Azure client) is the main runtime's cost and an NFS share is a way around it in production; if it barely moves them, the cost is in decoding what a split needs. The flame graphs show which functions those seconds went to.
 
 ## On-prem OCR nodes
 

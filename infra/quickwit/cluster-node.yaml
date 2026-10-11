@@ -1,0 +1,57 @@
+# Node config of the experimental search cluster (#239; docs/operations.md,
+# "Search cluster experiment"). Compiled into `usnm-qwcluster`
+# (crates/usnm-ingest/src/cluster/node.rs), which fills in the __NAMES__
+# from its flags (set per node by infra/modules/searchcluster.bicep), sets
+# QW_ADVERTISE_ADDRESS to the replica's IP and QW_PEER_SEEDS to the other
+# nodes' entries in the seed registry, and then runs Quickwit.
+#
+# Node 0 runs the metastore (the only one, so the file-backed metastore has a
+# single writer and needs no polling), the control plane, the janitor, an
+# indexer and a searcher; the other nodes an indexer and a searcher, or a
+# searcher alone. Every node listens on all interfaces: gossip (UDP, the
+# REST port) and gRPC (REST + 1) between replica IPs (#239).
+#
+# The version comparison's standalone searchers (#251, `node --standalone`)
+# use it too: searcher and metastore only, a cluster id of their own, no
+# seeds. For a Quickwit build from before 0.9 the wrapper drops the two
+# searcher keys it doesn't know (node.rs, LEGACY_DROPPED).
+version: 0.8
+cluster_id: usnm-qwcluster
+node_id: __NODE_ID__
+enabled_services: [__SERVICES__]
+listen_address: 0.0.0.0
+rest:
+  listen_port: __REST_PORT__
+grpc_listen_port: __GRPC_PORT__
+data_dir: __DATA_DIR__
+metastore_uri: __METASTORE__
+default_index_root_uri: __INDEX_ROOT__
+storage:
+  azure:
+    account: __STORAGE_ACCOUNT__
+# Ingest v2, as the ingest job's writer (crates/usnm-ingest/src/sink.rs):
+# Quickwit's top shard rate, a 1 GiB in-memory queue, and a 2 GiB
+# write-ahead log, half the writer's: a node works on the replica's own
+# disk, with no scratch share.
+ingest_api:
+  shard_throughput_limit: 20MB
+  max_queue_memory_usage: 1GiB
+  max_queue_disk_usage: 2GiB
+# One merge at a time, and a 1 GiB local cache of uploaded splits (the
+# writer keeps 4 GiB on its 128 GiB share).
+indexer:
+  split_store_max_num_bytes: 1GiB
+  merge_concurrency: 1
+# The API sidecar's searcher settings (infra/quickwit/searcher.yaml), so a
+# node searches as the sidecar does; node.rs checks they stay the same.
+searcher:
+  aggregation_bucket_limit: 200000
+  aggregation_memory_limit: 768MB
+  fast_field_cache_capacity: 1GB
+  split_footer_cache_capacity: 256MB
+  partial_request_cache_capacity: 32MB
+  predicate_cache_capacity: 32MB
+  max_num_concurrent_split_searches: 48
+  warmup_memory_budget: 3GB
+  request_timeout_secs: 125
+  leaf_request_timeout_secs: 125

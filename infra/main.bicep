@@ -77,10 +77,57 @@ param dedicatedProfile bool = false
 @description('Run the ingest job on the E4 profile (needs dedicatedProfile). Turn this off and provision before turning dedicatedProfile off: a profile in use can\'t be removed.')
 param ingestOnDedicated bool = false
 
+@description('Deploy the experimental Quickwit search cluster (#239): node apps ca-usnm-qw-{i}, the bench job caj-usnm-qwbench-{env} and their containers qw-cluster and qw-bench (docs/operations.md, "Search cluster experiment"). Needs useAcr; ignored in prod. Turning it off deletes all of it, the two containers included.')
+param searchCluster bool = false
+
+@description('Search cluster members (0 to 4). 0 keeps the cluster\'s containers and bench job but runs no node.')
+@minValue(0)
+@maxValue(4)
+param searchClusterNodes int = 1
+
+@description('How many search cluster nodes, from node 0, also index (1 to 4); the others only search.')
+@minValue(1)
+@maxValue(4)
+param searchClusterIndexers int = 1
+
+@description('vCPU per search cluster node (1 to 4), with 2 GiB per vCPU. 2 matches the API\'s Quickwit sidecar.')
+@minValue(1)
+@maxValue(4)
+param searchClusterNodeVcpu int = 2
+
+@description('Search cluster experiment: searcher.max_num_concurrent_split_searches per node (0: the sidecar\'s).')
+param searchClusterSplitSearches int = 0
+
+@description('Search cluster experiment: main runtime threads per node (0: one per vCPU, as the API sidecar runs).')
+@minValue(0)
+param searchClusterRuntimeThreads int = 0
+
+@description('Search cluster experiment: search pool threads per node (0: one per vCPU, as the API sidecar runs).')
+@minValue(0)
+param searchClusterSearchThreads int = 0
+
+@description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher ca-usnm-qws-{i} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations.md, "Quickwit version comparison"). Empty: none.')
+param searchCompareTags string = ''
+
+@description('Local-disk test (#251): a standalone 0.9.1 searcher, ca-usnm-qwl-0, reading the search cluster\'s indexes from Blob (blob) or a copy of searchLocalIndex on an NFS share (nfs), on Consumption at the API sidecar\'s 3.75 vCPU / 7.5 GiB, or through a split cache (cache) or from a copy (copy) on its own disk, on the E4 profile (needs dedicatedProfile) for the disk (docs/operations.md, "Local-disk test"). Empty: none.')
+@allowed(['', 'blob', 'cache', 'copy', 'nfs'])
+param searchLocalMode string = ''
+
+@description('Local-disk test: the index the copy mode copies.')
+param searchLocalIndex string = ''
+
+@description('Local-disk test: the split cache in GiB (cache mode).')
+@minValue(1)
+param searchLocalCacheGib int = 40
+
+@description('Local-disk test, nfs mode: size in GiB of the NFS share qw-search, in the ingest scratch share\'s account (provisioned v2 SSD, about $0.10/GiB a month; 32 GiB at least). 64 holds the 1% index twice over with American Stories\' fields.')
+@minValue(32)
+param searchNfsGiB int = 64
+
 @description('Retain every batch archive curation downloads, byte for byte, in a `raw` container of this environment\'s own data account (Cold tier), and curate from it instead of LoC when it holds the listed archive. It goes with the environment: turning it off deletes the container. For a set that outlives environments use archiveAccountId. Production keeps none (ADR-0006).')
 param retainRaw bool = false
 
-@description('The archival account (infra/archive/, scripts/archive-store.sh), as a resource id: curation keeps every LoC archive and listing it downloads in its `raw` container and reads archives back from it instead of LoC, through a private endpoint of this environment. Takes precedence over retainRaw. Empty: not used. Clearing it removes only this environment\'s endpoint and roles, never the account or its data.')
+@description('The archival account (infra/archive/, scripts/archive-store.sh), as a resource id: curation keeps every LoC archive and listing it downloads in its `raw` container and reads archives back from it instead of LoC, through a private endpoint of this environment; the search cluster bench job reads `raw` and writes `sets`. Takes precedence over retainRaw. Empty: not used. Clearing it removes only this environment\'s endpoint and roles, never the account or its data.')
 param archiveAccountId string = ''
 
 @description('Backfill schedule, UTC cron (e.g. "0 9 2-4 10 *" while a backfill lasts). Empty: run the job manually.')
@@ -94,6 +141,9 @@ param ingestMergeTimeoutSecs int = 14400
 
 @description('Cosmos DB free tier (one per subscription). False makes the account serverless.')
 param cosmosFreeTier bool = true
+
+@description('Log Analytics daily cap in GB; empty: 1 in prod, 0.15 elsewhere. Raise it for bulk work in a non-prod environment (the search cluster experiment writes thousands of blobs, each a log record), and clear it afterwards.')
+param logDailyCapGb string = ''
 
 @description('Comma-separated alert and budget recipients. Budget and alerts are skipped when empty.')
 param alertEmails string = ''
@@ -215,7 +265,7 @@ module monitoring 'modules/monitoring.bicep' = {
     // 5 GB/month; the cap bounds bursts from bulk jobs. Blob write logs no longer count toward it
     // (StorageBlobLogs is on the Auxiliary plan, monitoring.bicep). Dev keeps 0.15 GB, inside the
     // free allowance at any rate (ADR-0005).
-    dailyCapGb: env == 'prod' ? '1' : '0.15'
+    dailyCapGb: !empty(logDailyCapGb) ? logDailyCapGb : (env == 'prod' ? '1' : '0.15')
   }
 }
 
@@ -409,7 +459,7 @@ module diagnostics 'modules/diagnostics.bicep' = {
     cosmosName: cosmos.outputs.name
     dataStorageName: storage.outputs.name
     tilesStorageName: tiles.outputs.name
-    scratchStorageName: ingestScratch ? scratch!.outputs.accountName : ''
+    scratchStorageName: nfsAccount ? scratch!.outputs.accountName : ''
     exchangeStorageName: ocrNodes ? ocrExchange!.outputs.name : ''
     ocrNodeWorkspaceId: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceId : ''
     ocrNodeWorkspaceName: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceName : ''
@@ -483,7 +533,15 @@ module archiveGrant 'modules/archive-grant.bicep' = if (!empty(archiveAccountId)
   params: {
     accountName: archiveAccount
     env: env
-    grants: [{ container: 'raw', principalId: identities.outputs.ingestPrincipalId, role: 'writer' }]
+    grants: concat(
+      [{ container: 'raw', principalId: identities.outputs.ingestPrincipalId, role: 'writer' }],
+      searchClusterOn
+        ? [
+            { container: 'raw', principalId: searchClusterModule!.outputs.benchPrincipalId, role: 'reader' }
+            { container: 'sets', principalId: searchClusterModule!.outputs.benchPrincipalId, role: 'writer' }
+          ]
+        : []
+    )
   }
 }
 
@@ -496,14 +554,19 @@ module rawStore 'modules/raw-store.bicep' = if (retainRaw) {
   }
 }
 
-module scratch 'modules/ingest-scratch.bicep' = if (ingestScratch) {
+// The local-disk test's nfs mode puts its share in the scratch account.
+var searchNfs = searchClusterOn && searchLocalMode == 'nfs'
+var nfsAccount = ingestScratch || searchNfs
+
+module scratch 'modules/ingest-scratch.bicep' = if (nfsAccount) {
   scope: rg
   name: 'ingest-scratch'
   params: {
     location: location
     tags: tags
     name: 'stusnms${suffix}'
-    sizeGiB: ingestScratchGiB
+    sizeGiB: ingestScratch ? ingestScratchGiB : 0
+    searchGiB: searchNfs ? searchNfsGiB : 0
     vnetId: network.outputs.vnetId
     vnetName: network.outputs.vnetName
     peSubnetId: network.outputs.peSubnetId
@@ -546,6 +609,44 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     rawUrl: !empty(archiveAccountId)
       ? 'https://${archiveAccount}.blob.${environment().suffixes.storage}/raw'
       : (retainRaw ? '${storage.outputs.blobEndpoint}${rawStore!.outputs.container}' : '')
+  }
+}
+
+// The experimental search cluster (#239), off unless asked for, and never in
+// prod: it is for a dev environment (docs/operations.md, "Search cluster
+// experiment").
+var searchClusterOn = searchCluster && useAcr && env != 'prod'
+
+module searchClusterModule 'modules/searchcluster.bicep' = if (searchClusterOn) {
+  scope: rg
+  name: 'search-cluster'
+  dependsOn: [privateEndpoints]
+  params: {
+    location: location
+    tags: tags
+    nameSuffix: env
+    environmentId: containerEnv.outputs.id
+    image: '${registry.outputs.loginServer}/usnewsmap-ingest:${imageTag}'
+    registryServer: registry.outputs.loginServer
+    registryName: registry.outputs.name
+    storageAccountName: storage.outputs.name
+    storageBlobEndpoint: storage.outputs.blobEndpoint
+    archiveBlobEndpoint: empty(archiveAccountId) ? '' : 'https://${archiveAccount}.blob.${environment().suffixes.storage}/'
+    nodes: searchClusterNodes
+    indexers: searchClusterIndexers
+    nodeVcpu: searchClusterNodeVcpu
+    splitSearches: searchClusterSplitSearches
+    runtimeThreads: searchClusterRuntimeThreads
+    searchThreads: searchClusterSearchThreads
+    localMode: searchLocalMode
+    localProfile: containerEnv.outputs.dedicatedProfileName
+    localIndex: searchLocalIndex
+    localCacheGib: searchLocalCacheGib
+    localNfsStorage: searchNfs ? scratch!.outputs.searchEnvStorageName : ''
+    compareImages: map(
+      filter(split(searchCompareTags, ','), t => !empty(trim(t))),
+      t => '${registry.outputs.loginServer}/usnewsmap-ingest:${trim(t)}'
+    )
   }
 }
 
@@ -684,6 +785,15 @@ output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsi
 // The workspace's customer id, for the Log Analytics query API (scripts/logs.sh).
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceCustomerId
 output OCR_ENDPOINT string = ocr ? ocrService!.outputs.endpoint : ''
+// The search cluster's apps, bench job and root URL (inside the environment); empty when off.
+output SEARCH_CLUSTER_APPS string = searchClusterOn ? join(searchClusterModule!.outputs.nodeApps, ' ') : ''
+output SEARCH_CLUSTER_JOB string = searchClusterOn ? searchClusterModule!.outputs.benchJobName : ''
+output SEARCH_CLUSTER_URL string = searchClusterOn ? searchClusterModule!.outputs.rootUrl : ''
+// The version comparison's searchers and their roots, in the order of USNM_SEARCH_COMPARE_TAGS.
+output SEARCH_COMPARE_APPS string = searchClusterOn ? join(searchClusterModule!.outputs.compareApps, ' ') : ''
+// The local-disk test's searcher root (inside the environment); empty when off.
+output SEARCH_LOCAL_URL string = searchClusterOn ? searchClusterModule!.outputs.localUrl : ''
+output SEARCH_COMPARE_URLS string = searchClusterOn ? join(searchClusterModule!.outputs.compareUrls, ' ') : ''
 // The on-prem OCR exchange account (#296); scripts/ocr-node/onboard.sh checks it exists.
 output OCR_EXCHANGE_ACCOUNT string = ocrNodes ? ocrExchange!.outputs.name : ''
 output OCR_QUEUE_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
