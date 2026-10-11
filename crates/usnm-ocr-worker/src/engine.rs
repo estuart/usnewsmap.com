@@ -140,16 +140,26 @@ const CONTAINER_LABEL: &str = "usnm.engine=tesseract";
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Sandbox {
     scratch: PathBuf,
+    info: RuntimeInfo,
+}
+
+/// What `podman info` says about the engine runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuntimeInfo {
     /// The host uid that [`ENGINE_USER`] maps to.
     engine_uid: u32,
+    /// The host uid the runtime itself runs as (container uid 0: the
+    /// engine account), which needs to reach a page's directory to mount
+    /// it; none for rootful podman.
+    runtime_uid: Option<u32>,
     selinux: bool,
 }
 
-/// From `podman info --format json`: the host uid [`ENGINE_USER`] maps to,
-/// and whether SELinux is on. Refuses a runtime that can't apply the
+/// From `podman info --format json`: the host uids [`ENGINE_USER`] and
+/// container root map to, and whether SELinux is on. Refuses a runtime that can't apply the
 /// memory, CPU and pid limits (cgroup controllers not delegated to the
 /// engine account), so limits never silently don't apply.
-fn parse_info(json: &str) -> anyhow::Result<(u32, bool)> {
+fn parse_info(json: &str) -> anyhow::Result<RuntimeInfo> {
     let v: serde_json::Value = serde_json::from_str(json).context("podman info isn't JSON")?;
     let host = &v["host"];
     let controllers: Vec<&str> = host["cgroupControllers"]
@@ -172,34 +182,114 @@ fn parse_info(json: &str) -> anyhow::Result<(u32, bool)> {
         .cloned()
         .unwrap_or_default();
     let field = |m: &serde_json::Value, k: &str| m[k].as_u64().unwrap_or(0);
-    let uid = if maps.is_empty() {
-        // Rootful podman: no mapping.
-        u64::from(ENGINE_USER)
-    } else {
-        let user = u64::from(ENGINE_USER);
+    let host_of = |user: u64| {
         maps.iter()
             .find(|m| {
                 let c = field(m, "container_id");
                 c <= user && user < c + field(m, "size")
             })
             .map(|m| field(m, "host_id") + (user - field(m, "container_id")))
-            .with_context(|| {
-                format!("the engine account's subordinate ids don't cover uid {ENGINE_USER}")
-            })?
+            .and_then(|u| u32::try_from(u).ok())
     };
-    let uid = u32::try_from(uid).context("mapped uid out of range")?;
+    let (engine_uid, runtime_uid) = if maps.is_empty() {
+        // Rootful podman: no mapping.
+        (ENGINE_USER, None)
+    } else {
+        let engine = host_of(u64::from(ENGINE_USER)).with_context(|| {
+            format!("the engine account's subordinate ids don't cover uid {ENGINE_USER}")
+        })?;
+        (engine, host_of(0))
+    };
     let selinux = host["security"]["selinuxEnabled"]
         .as_bool()
         .unwrap_or(false);
-    Ok((uid, selinux))
+    Ok(RuntimeInfo {
+        engine_uid,
+        runtime_uid,
+        selinux,
+    })
 }
 
-/// An MCS level for a page's container and its scratch directory: a
-/// category pair no other page in flight on this worker has (13 §13.3).
-fn next_level() -> String {
+/// Scratch slots, and with them MCS category pairs: slot n is
+/// `slot-<n>` in the scratch directory, at level `s0:c<2n>,c<2n+1>`.
+const SLOTS: u32 = 512;
+
+/// A page's slot directory, removed with everything in it when dropped.
+#[derive(Debug)]
+struct PageDir {
+    path: PathBuf,
+    slot: u32,
+}
+
+impl Drop for PageDir {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
+            tracing::warn!(dir = %self.path.display(), error = %e, "couldn't remove a page's scratch directory");
+        }
+    }
+}
+
+impl PageDir {
+    /// The MCS level of the slot (13 §13.3).
+    fn level(&self) -> String {
+        format!("s0:c{},c{}", 2 * self.slot, 2 * self.slot + 1)
+    }
+}
+
+/// Claims a free slot in `scratch`, mode 0700. The claim is the directory
+/// itself (`mkdir` fails if it exists), so every process on the node that
+/// shares the scratch, a worker and an install's `check-engine` alike,
+/// gets a different slot, and so a different MCS pair, for each page in
+/// flight.
+fn claim_slot(scratch: &Path) -> anyhow::Result<PageDir> {
     static NEXT: AtomicU32 = AtomicU32::new(0);
-    let n = NEXT.fetch_add(1, Ordering::Relaxed) % 512;
-    format!("s0:c{},c{}", 2 * n, 2 * n + 1)
+    let start = NEXT
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(std::process::id());
+    for i in 0..SLOTS {
+        let slot = start.wrapping_add(i) % SLOTS;
+        let path = scratch.join(format!("slot-{slot}"));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&path) {
+            Ok(()) => return Ok(PageDir { path, slot }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(e).with_context(|| format!("creating {}", path.display()));
+            }
+        }
+    }
+    bail!(
+        "all {SLOTS} scratch slots in {} are in use",
+        scratch.display()
+    )
+}
+
+/// Removes slots older than `age`: left by a worker that was killed. No
+/// page runs that long.
+fn remove_stale_slots(scratch: &Path, age: Duration) {
+    let Ok(entries) = std::fs::read_dir(scratch) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        if !name.to_string_lossy().starts_with("slot-") {
+            continue;
+        }
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|d| d > age);
+        if old {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 /// The owner and group of `path`.
@@ -256,7 +346,8 @@ impl Sandbox {
                 tail(&String::from_utf8_lossy(&out.stderr), 400)
             );
         }
-        let (engine_uid, selinux) = parse_info(&String::from_utf8_lossy(&out.stdout))?;
+        let info = parse_info(&String::from_utf8_lossy(&out.stdout))?;
+        remove_stale_slots(&remote.scratch, Duration::from_secs(6 * 3600));
         // Containers left by a worker that was killed: the ones that have
         // exited. A running one may belong to another worker process (an
         // install's check-engine), so it's left to finish.
@@ -272,37 +363,38 @@ impl Sandbox {
         }
         Ok(Self {
             scratch: remote.scratch.clone(),
-            engine_uid,
-            selinux,
+            info,
         })
     }
 
     /// A page's scratch directory, which the engine container can use:
-    /// owned by the worker with mode 0700, with ACL entries for the
+    /// a slot owned by the worker with mode 0700, with ACL entries for the
     /// container user (and defaults, so the files in it are shared both
-    /// ways), and, under SELinux, labelled `container_file_t` at a level
-    /// of its own. The container runs at that level, so no volume is
-    /// mounted with `:Z`, which the engine account couldn't apply to a
-    /// directory it doesn't own (13 §13.3).
-    async fn page_dir(&self) -> anyhow::Result<(tempfile::TempDir, Option<String>)> {
-        let dir = tempfile::Builder::new()
-            .prefix("page-")
-            .tempdir_in(&self.scratch)
-            .with_context(|| format!("a scratch directory in {}", self.scratch.display()))?;
-        let (me, _) = owner(dir.path())?;
-        let acl = format!("u:{e}:rwx,d:u:{e}:rwx,d:u:{me}:rwx", e = self.engine_uid);
+    /// ways) and search-only for the engine account, whose podman mounts
+    /// it, and, under SELinux, labelled `container_file_t` at the slot's
+    /// level. The container runs at that level, so no volume is mounted
+    /// with `:Z`, which the engine account couldn't apply to a directory it
+    /// doesn't own (13 §13.3).
+    async fn page_dir(&self) -> anyhow::Result<(PageDir, Option<String>)> {
+        let dir = claim_slot(&self.scratch)?;
+        let (me, _) = owner(&dir.path)?;
+        let e = self.info.engine_uid;
+        let mut acl = format!("u:{e}:rwx,d:u:{e}:rwx,d:u:{me}:rwx");
+        if let Some(r) = self.info.runtime_uid {
+            acl.push_str(&format!(",u:{r}:x"));
+        }
         checked(
             tokio::process::Command::new("setfacl")
                 .args(["-m", &acl])
-                .arg(dir.path()),
+                .arg(&dir.path),
         )
         .await?;
-        let level = if self.selinux {
-            let level = next_level();
+        let level = if self.info.selinux {
+            let level = dir.level();
             checked(
                 tokio::process::Command::new("chcon")
                     .args(["-t", "container_file_t", "-l", &level])
-                    .arg(dir.path()),
+                    .arg(&dir.path),
             )
             .await?;
             Some(level)
@@ -717,7 +809,7 @@ impl Engine for Tesseract {
             None => None,
         };
         let (work, level) = match &own {
-            Some((dir, level)) => (dir.path(), level.as_deref()),
+            Some((dir, level)) => (dir.path.as_path(), level.as_deref()),
             None => (work, None),
         };
         // Tesseract runs in `work`, on paths relative to it, so the same
@@ -968,12 +1060,20 @@ mod tests {
                            {"container_id": 1, "host_id": 231072, "size": 65536}]"#;
         assert_eq!(
             parse_info(&info(r#"["cpu", "io", "memory", "pids"]"#, rootless)).unwrap(),
-            (231072 + 10000, true)
+            RuntimeInfo {
+                engine_uid: 231072 + 10000,
+                runtime_uid: Some(991),
+                selinux: true
+            }
         );
         // Rootful: the user is itself on the host.
         assert_eq!(
             parse_info(&info(r#"["cpu", "memory", "pids"]"#, "[]")).unwrap(),
-            (10001, true)
+            RuntimeInfo {
+                engine_uid: 10001,
+                runtime_uid: None,
+                selinux: true
+            }
         );
         // EL9's default delegation (memory and pids only) can't apply --cpus.
         let err = parse_info(&info(r#"["memory", "pids"]"#, rootless)).unwrap_err();
@@ -986,11 +1086,28 @@ mod tests {
     }
 
     #[test]
-    fn pages_get_distinct_levels() {
-        let a = next_level();
-        let b = next_level();
-        assert_ne!(a, b);
-        assert!(a.starts_with("s0:c") && a.contains(",c"), "{a}");
+    fn slots_are_claimed_once_and_freed() {
+        let scratch = tempfile::tempdir().unwrap();
+        let a = claim_slot(scratch.path()).unwrap();
+        let b = claim_slot(scratch.path()).unwrap();
+        assert_ne!(a.slot, b.slot);
+        assert_ne!(a.level(), b.level());
+        assert!(a.level().starts_with("s0:c"), "{}", a.level());
+        // Another process's slot is skipped.
+        let taken = (a.slot + 1) % SLOTS;
+        std::fs::create_dir_all(scratch.path().join(format!("slot-{taken}"))).unwrap();
+        for _ in 0..4 {
+            let c = claim_slot(scratch.path()).unwrap();
+            assert!(c.slot != taken && c.slot != a.slot && c.slot != b.slot);
+        }
+        let path = a.path.clone();
+        drop(a);
+        assert!(!path.exists());
+        // Old slots go; new ones stay.
+        remove_stale_slots(scratch.path(), Duration::from_secs(3600));
+        assert!(b.path.exists());
+        remove_stale_slots(scratch.path(), Duration::ZERO);
+        assert!(!scratch.path().join(format!("slot-{taken}")).exists());
     }
 
     #[test]

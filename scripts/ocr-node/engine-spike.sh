@@ -181,6 +181,9 @@ if [ "$INNER" = true ]; then
   # The host uid the image's user 10001 maps to.
   X=$(pod info --format '{{range .Host.IDMappings.UIDMap}}{{.ContainerID}} {{.HostID}} {{.Size}}{{"\n"}}{{end}}' |
     awk '$1 <= 10001 && 10001 < $1 + $3 { print $2 + 10001 - $1 }' || true)
+  # And the uid the runtime itself runs as (container root: usnmeng).
+  R=$(pod info --format '{{range .Host.IDMappings.UIDMap}}{{.ContainerID}} {{.HostID}} {{.Size}}{{"\n"}}{{end}}' |
+    awk '$1 == 0 { print $2 }' || true)
   ENG_UID=$(id -u usnmeng)
   if [ -n "$X" ] && [ "$X" != "$ENG_UID" ]; then
     pass "container user 10001 maps to a subordinate id" "$X (usnmeng is $ENG_UID)"
@@ -189,9 +192,14 @@ if [ "$INNER" = true ]; then
     exit 1
   fi
 
-  # The slot (13 §13.3): in/ and out/, labelled with the slot's MCS pair
-  # by usnm, which owns them; out/<run_id>/ 0700 with an ACL for X.
-  if mkdir -p "$SLOT/in" "$SLOT/out" &&
+  # The slot (13 §13.3): in/ and out/, 0700 like the worker's, labelled
+  # with the slot's MCS pair by usnm, which owns them, with ACL entries
+  # for X (read in/, go through out/) and search-only for the runtime
+  # (R), which mounts them; out/<run_id>/ 0700 with an ACL for X.
+  if mkdir -m 0700 "$SLOT" "$SLOT/in" "$SLOT/out" &&
+    { [ -z "$R" ] || setfacl -m "u:$R:x" "$SLOT"; } &&
+    setfacl -m "u:$X:rx${R:+,u:$R:x}" "$SLOT/in" &&
+    setfacl -m "u:$X:x${R:+,u:$R:x}" "$SLOT/out" &&
     chcon -t container_file_t -l "$LEVEL" "$SLOT/in" "$SLOT/out" &&
     printf 'spike %s\n' "$RUN_ID" > "$SLOT/in/page.txt" &&
     mkdir -m 0700 "$SLOT/out/$RUN_ID" &&

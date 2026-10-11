@@ -586,8 +586,9 @@ ExecStart=/usr/bin/podman --log-level=info system service" && api_changed=true
 systemctl daemon-reload
 systemctl --global enable usnm-podman.socket > /dev/null 2>&1
 if [ "$remount" = true ] && mountpoint -q "$SCRATCH"; then
-  # Only the size and owners change; a remount keeps the files.
-  mount -o "remount,size=$SCRATCH_SIZE,mode=0750,uid=$USNM_UID,gid=$OCR_GID" "$SCRATCH"
+  # Only the size and owners change; a remount keeps the files. The
+  # security flags are repeated so the remount can't drop them.
+  mount -o "remount,size=$SCRATCH_SIZE,mode=0750,uid=$USNM_UID,gid=$OCR_GID,nosuid,nodev,noexec" "$SCRATCH"
 fi
 systemctl enable --now "$mount_unit" > /dev/null
 loginctl enable-linger usnmeng
