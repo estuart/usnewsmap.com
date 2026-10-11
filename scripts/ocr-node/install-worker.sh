@@ -85,7 +85,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 # shellcheck source=scripts/lib/env.sh
 . scripts/lib/env.sh
-[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh $ENV_NAME first"
+[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh --env $ENV_NAME first"
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=20)
 [ -z "$SSH_KEY" ] || SSH_OPTS+=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
@@ -126,9 +126,9 @@ SUBSCRIPTION=$(aget AZURE_SUBSCRIPTION_ID)
 TENANT=$(aget AZURE_TENANT_ID)
 [ "$(aget USNM_OCR_NODES)" = true ] || die "USNM_OCR_NODES isn't true for $ENV_NAME"
 [[ $QUEUE =~ ^https://[a-z0-9]+\.queue\.core\.windows\.net/?$ ]] ||
-  die "OCR_QUEUE_ENDPOINT isn't a queue endpoint (${QUEUE:-empty}); run scripts/provision.sh $ENV_NAME"
+  die "OCR_QUEUE_ENDPOINT isn't a queue endpoint (${QUEUE:-empty}); run scripts/provision.sh --env $ENV_NAME"
 [[ $BLOB =~ ^https://[a-z0-9]+\.blob\.core\.windows\.net/?$ ]] ||
-  die "OCR_BLOB_ENDPOINT isn't a blob endpoint (${BLOB:-empty}); run scripts/provision.sh $ENV_NAME"
+  die "OCR_BLOB_ENDPOINT isn't a blob endpoint (${BLOB:-empty}); run scripts/provision.sh --env $ENV_NAME"
 [ -n "$NODE_GROUP" ] || die "no USNM_OCR_NODE_GROUP for $ENV_NAME"
 [[ $CONN != *'"'* ]] || die "OCR_NODE_APPINSIGHTS contains a double quote"
 [ -n "$CONN" ] || echo "warning: OCR_NODE_APPINSIGHTS is empty, so the worker will send no telemetry"

@@ -2,7 +2,7 @@
 //! responses with `usnm_core::skew` and prints the tables the doc quotes.
 //!
 //! ```sh
-//! cargo run -p usnm-core --example term_skew -- DIR NAME...
+//! cargo run -p usnm-core --example term_skew -- --dir DIR --names NAME,...
 //! ```
 //!
 //! `DIR` holds `places.json` (`/v1/places`), `cov_year.json` (`/v1/coverage`
@@ -593,15 +593,33 @@ fn label(info: &HashMap<String, Place>, id: &str) -> String {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some((dir, names)) = args.split_first() else {
-        eprintln!("usage: term_skew DIR NAME...");
+    let usage = || -> ! {
+        eprintln!("usage: term_skew --dir DIR --names NAME,...");
         std::process::exit(2);
     };
-    let dir = Path::new(dir);
+    let mut args = std::env::args().skip(1).peekable();
+    let (mut dir, mut names) = (None, Vec::new());
+    // The positional form (`term_skew DIR NAME...`) works for one release,
+    // with a warning (#277).
+    if let Some(d) = args.next_if(|a| !a.starts_with('-')) {
+        eprintln!(
+            "warning: `term_skew DIR NAME...` is deprecated; use --dir DIR --names NAME,... (#277)"
+        );
+        dir = Some(d);
+        names.extend(args.by_ref());
+    }
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), args.next()) {
+            ("--dir", Some(d)) => dir = Some(d),
+            ("--names", Some(n)) => names.extend(n.split(',').map(str::to_owned)),
+            _ => usage(),
+        }
+    }
+    let Some(dir) = dir else { usage() };
+    let dir = Path::new(&dir);
     let info = places(dir);
     corpus(dir, &info);
-    for name in names {
+    for name in &names {
         term(dir, name, &info);
     }
     timing();

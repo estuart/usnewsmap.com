@@ -40,11 +40,11 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 # shellcheck source=scripts/lib/env.sh
 . scripts/lib/env.sh
-[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh $ENV_NAME first"
+[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh --env $ENV_NAME first"
 
 TENANT=$(aget AZURE_TENANT_ID)
 SAVED=$(aget USNM_OCR_NODE_GROUP)
-[ -n "$TENANT" ] || die "$ENV_FILE has no AZURE_TENANT_ID; run scripts/provision.sh $ENV_NAME"
+[ -n "$TENANT" ] || die "$ENV_FILE has no AZURE_TENANT_ID; run scripts/provision.sh --env $ENV_NAME"
 az account show -o none 2> /dev/null || die "run: az login --tenant $TENANT"
 # az ad works in the current account's tenant.
 current_tenant=$(az account show --query tenantId -o tsv 2> /dev/null || true)
@@ -73,7 +73,7 @@ if [ -n "$SAVED" ]; then
 else
   ids=$(az ad group list --filter "displayName eq '$GROUP_NAME'" --query '[].id' -o tsv)
   [ -z "$ids" ] ||
-    die "a group named $GROUP_NAME already exists ($(echo "$ids" | tr '\n' ' ')) and USNM_OCR_NODE_GROUP is empty. Check its members and its owners, who can add members (az ad group member list --group <id>; az ad group owner list --group <id>); if it's this environment's, scripts/settings.sh $ENV_NAME USNM_OCR_NODE_GROUP <id>, otherwise delete or rename it"
+    die "a group named $GROUP_NAME already exists ($(echo "$ids" | tr '\n' ' ')) and USNM_OCR_NODE_GROUP is empty. Check its members and its owners, who can add members (az ad group member list --group <id>; az ad group owner list --group <id>); if it's this environment's, scripts/settings.sh --env $ENV_NAME --key USNM_OCR_NODE_GROUP --value <id>, otherwise delete or rename it"
   if [ "$DRY_RUN" = true ]; then
     echo "would create security group $GROUP_NAME and set USNM_OCR_NODE_GROUP to its id"
   else
@@ -82,7 +82,7 @@ else
       --query id -o tsv) || die "can't create $GROUP_NAME (you need the right to create security groups)"
     echo "created $GROUP_NAME: $GROUP_ID"
     # Saved straight away, so a run that stops after this picks the group up.
-    scripts/settings.sh "$ENV_NAME" USNM_OCR_NODE_GROUP "$GROUP_ID"
+    scripts/settings.sh --env "$ENV_NAME" --key USNM_OCR_NODE_GROUP --value "$GROUP_ID"
     echo "set USNM_OCR_NODE_GROUP to $GROUP_ID"
   fi
 fi
@@ -105,4 +105,4 @@ else
 fi
 
 echo "Grant the group the node roles by provisioning (needs Owner on the subscription):"
-echo "  scripts/provision.sh $ENV_NAME"
+echo "  scripts/provision.sh --env $ENV_NAME"

@@ -92,7 +92,7 @@ jobs:
       - name: Install Quickwit
         run: scripts/ci/install-quickwit.sh
       - name: Load fixtures, serve them from a read-only searcher
-        run: echo "QUICKWIT_URL=$(scripts/quickwit-fixtures.sh "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
+        run: echo "QUICKWIT_URL=$(scripts/quickwit-fixtures.sh --workdir "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
       - run: cargo test -p usnm-search --test quickwit_parity --locked
       # The pipeline runs its own writer node (QUICKWIT_BIN) and releases into it,
       # with the environment the official Quickwit image sets (the ingest image
@@ -168,7 +168,7 @@ jobs:
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
       - name: The API image serves the API and the site
-        run: scripts/ci/check-api-image.sh usnewsmap-api:check
+        run: scripts/ci/check-api-image.sh --image usnewsmap-api:check
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -178,7 +178,7 @@ jobs:
           cache-from: type=gha,scope=ingest
           cache-to: type=gha,scope=ingest,mode=max
       - name: The ingest image runs
-        run: scripts/ci/check-ingest-image.sh usnm-ingest-check
+        run: scripts/ci/check-ingest-image.sh --image usnm-ingest-check
       # PR builds have no registry, so Dockerfile.ingest's default base is
       # upstream's image; it must be the one infra/quickwit-image.json pins.
       - name: Dockerfile.ingest's default Quickwit is the pinned upstream image
@@ -199,7 +199,7 @@ jobs:
           docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD/ja-ocr:/t:ro" -w /t --entrypoint python3 usnm-ja-ocr-check \
             -m unittest discover -v -p 'test_*.py'
       - name: The Japanese OCR image reads Japanese
-        run: scripts/ci/check-ja-ocr-image.sh usnm-ja-ocr-check
+        run: scripts/ci/check-ja-ocr-image.sh --image usnm-ja-ocr-check
 
   # The on-prem OCR worker for the nodes (12 Step 2): built on AlmaLinux 9,
   # so it links against EL9's glibc (2.34) and runs on EL9 and RHEL 10.
@@ -345,7 +345,8 @@ jobs:
 
   infra:
     name: infra (bicep lint, build)
-    # Also the shared-key scan, so every change but documentation runs it.
+    # Also the shared-key scan and the named-arguments check (#277), so every
+    # change but documentation runs them.
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -361,6 +362,10 @@ jobs:
         run: scripts/ci/lint-bicep.sh
       - name: No shared-key authentication (ADR-0009)
         run: scripts/ci/no-shared-keys.sh
+      - name: Scripts and CLIs take named arguments, not positional ones (#277)
+        run: |
+          scripts/ci/no-positional-args.py
+          python3 -m unittest -v scripts/ci/test_no_positional_args.py
       - name: The search cluster report's tests pass
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # Against a stub az: the dev experiment marker, the guard-rail budget's
@@ -462,11 +467,11 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Build the site
-        run: scripts/ci/web-e2e.sh build
+        run: scripts/ci/web-e2e.sh --step build
       - name: Start the API on the synthetic fixtures
         run: scripts/ci/start-api-fixtures.sh
       - name: Run the end-to-end suite
-        run: scripts/ci/web-e2e.sh test
+        run: scripts/ci/web-e2e.sh --step test
         env:
           CI: "1"
       - if: failure()
@@ -507,7 +512,7 @@ jobs:
             echo "This merge changes \`infra/\` beyond what a deploy applies. From an up-to-date \`main\`, run:"
             echo
             echo '```sh'
-            for e in $envs; do echo "scripts/provision.sh $e"; done
+            for e in $envs; do echo "scripts/provision.sh --env $e"; done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

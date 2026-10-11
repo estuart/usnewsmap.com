@@ -163,4 +163,4 @@ provision
 
 step "Done"
 echo "$ENV_NAME runs $TAG for experiment #$EXPERIMENT. API: $(aget API_URL)"
-echo "Check it with scripts/dev-status.sh; tear it down when the results are saved: scripts/teardown.sh $ENV_NAME"
+echo "Check it with scripts/dev-status.sh; tear it down when the results are saved: scripts/teardown.sh --env $ENV_NAME"

@@ -5,15 +5,32 @@
 # (crates/usnm-search/tests/quickwit_parity.rs) and for running the API with
 # USNM_BACKEND=quickwit locally.
 #
-#   scripts/quickwit-fixtures.sh [workdir]      # prints the searcher URL
-#   kill "$(cat workdir/quickwit.pid)"          # stops it
+#   scripts/quickwit-fixtures.sh [--workdir DIR]    # prints the searcher URL
+#   kill "$(cat DIR/quickwit.pid)"                  # stops it
+#
+# Without --workdir it works in a new temporary directory.
 #
 # QUICKWIT_BIN   path to the quickwit binary (default: quickwit on PATH)
 # QUICKWIT_PORT  REST port (default 7280)
 set -euo pipefail
 
+usage() { sed -n '2,14s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+# The positional form (`quickwit-fixtures.sh DIR`) works for one release,
+# with a warning (#277).
+if [ $# -eq 1 ] && [[ $1 != -* ]]; then
+  echo "warning: \`scripts/quickwit-fixtures.sh DIR\` is deprecated; use --workdir (#277)" >&2
+  set -- --workdir "$1"
+fi
+work=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --workdir) [ $# -ge 2 ] || usage; work=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
 root="$(cd "$(dirname "$0")/.." && pwd)"
-work="${1:-$(mktemp -d)}"
+[ -n "$work" ] || work=$(mktemp -d)
 bin="${QUICKWIT_BIN:-quickwit}"
 port="${QUICKWIT_PORT:-7280}"
 url="http://127.0.0.1:${port}"
@@ -96,7 +113,7 @@ for index in pages-base-fixture pages-delta-fixture-1; do
     "$root/infra/quickwit/pages-index.yaml" |
     curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
       "$url/api/v1/indexes" > /dev/null
-  cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-core --example add_text_cg -- 1 \
+  cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-core --example add_text_cg -- --common-grams-version 1 \
     < "$root/fixtures/data/indexes/${index}.jsonl" > "$work/${copy}.jsonl"
   curl -sf -XPOST "$url/api/v1/${copy}/ingest?commit=force" \
     --data-binary @"$work/${copy}.jsonl" |
@@ -109,12 +126,12 @@ for pair in pages-base-fixture:partitioned pages-delta-fixture-1:tagged; do
   index="${pair%%:*}-decades"
   layout="${pair##*:}"
   cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-ingest --example decade_fixture -- \
-    template "$layout" < "$root/infra/quickwit/pages-index.yaml" |
+    --template "$layout" < "$root/infra/quickwit/pages-index.yaml" |
     sed -e "s|\${INDEX_ID}|${index}|" -e "s|\${INDEX_URI}|file://${work}/indexes/${index}|" |
     curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
       "$url/api/v1/indexes" > /dev/null
   cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-ingest --example decade_fixture -- \
-    docs < "$root/fixtures/data/indexes/${pair%%:*}.jsonl" > "$work/${index}.jsonl"
+    --docs < "$root/fixtures/data/indexes/${pair%%:*}.jsonl" > "$work/${index}.jsonl"
   curl -sf -XPOST "$url/api/v1/${index}/ingest?commit=force" \
     --data-binary @"$work/${index}.jsonl" |
     grep -q '"num_rejected_docs": 0' || { echo "ingest of ${index} rejected documents" >&2; exit 1; }

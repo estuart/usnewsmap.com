@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gather the search cluster experiment's results into a Markdown report.
 
-    scripts/qwcluster-report.py <env> [--since 2d] [--out report.md] [--from-file lines.txt]
+    scripts/qwcluster-report.py --env <env> [--since 2d] [--out report.md] [--from-file lines.txt]
 
 Reads, for the environment's settings (scripts/settings.sh):
 
@@ -85,7 +85,7 @@ ContainerAppConsoleLogs
 
 
 def settings(env, key):
-    out = subprocess.run([os.path.join(ROOT, "scripts/settings.sh"), env, key],
+    out = subprocess.run([os.path.join(ROOT, "scripts/settings.sh"), "--env", env, "--key", key],
                          check=True, capture_output=True, text=True)
     return out.stdout.strip()
 
@@ -849,11 +849,21 @@ def finish(md, out):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("env")
+    ap.add_argument("--env", help="the environment (required)")
     ap.add_argument("--since", default="2d", help="how far back to read the logs (30m, 6h, 2d)")
     ap.add_argument("--out", help="also write the report here")
     ap.add_argument("--from-file", help="read the reports from a captured log stream of `dump`")
+    # The positional form (`qwcluster-report.py ENV`) works for one release,
+    # with a warning (#277).
+    ap.add_argument("legacy_env", nargs="?", help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.legacy_env is not None:
+        if args.env is not None:
+            ap.error("give the environment once, as --env")
+        print("warning: a positional environment is deprecated; use --env (#277)", file=sys.stderr)
+        args.env = args.legacy_env
+    if args.env is None:
+        ap.error("--env is required")
     report(args.env, args.since, args.out, args.from_file)
 
 

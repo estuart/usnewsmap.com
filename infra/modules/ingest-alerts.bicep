@@ -276,7 +276,7 @@ var rules = [
   {
     name: 'ingest-job-failed'
     displayName: 'Ingest or backfill job failed'
-    description: 'An ingest or backfill replica exited with an error in the last 15 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Next: scripts/logs.sh <env> job-executions 1d for how each replica ended, and errors-by-batch 1d for the warnings before it. Fix the cause, then start the job again; the next run picks up where this one stopped.'
+    description: 'An ingest or backfill replica exited with an error in the last 15 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Next: scripts/logs.sh --env <env> --query-name job-executions --span 1d for how each replica ended, and errors-by-batch 1d for the warnings before it. Fix the cause, then start the job again; the next run picks up where this one stopped.'
     severity: 2
     frequency: 'PT5M'
     // Azure accepts only 5, 10, 15, 30, 45, 60 min and up; the query itself reports the last 15 min,
@@ -288,7 +288,7 @@ var rules = [
   {
     name: 'jaocr-job-failed'
     displayName: 'Japanese OCR or audit job failed'
-    description: 'A replica of the Japanese OCR job (caj-usnm-jaocr) or its one-off audit job (caj-usnm-jaone) died or printed a traceback in the last 15 minutes; Execution and Reason say which and why. It touches no published index. Next: scripts/ja-ocr/quality-rows.sh <env> <execution> or the job\'s console logs for its last lines; fix the cause and start the run again (OCR resumes from its claims; audits rerun).'
+    description: 'A replica of the Japanese OCR job (caj-usnm-jaocr) or its one-off audit job (caj-usnm-jaone) died or printed a traceback in the last 15 minutes; Execution and Reason say which and why. It touches no published index. Next: scripts/ja-ocr/quality-rows.sh --env <env> --execution <execution> or the job\'s console logs for its last lines; fix the cause and start the run again (OCR resumes from its claims; audits rerun).'
     severity: 3
     frequency: 'PT5M'
     window: 'PT30M'
@@ -298,7 +298,7 @@ var rules = [
   {
     name: 'ingest-not-progressing'
     displayName: 'Ingest not progressing'
-    description: 'The ingest job keeps stopping at the titles-sync deadline: Condition says how. "not started again": the last stop was 3 or more hours ago and no execution has run since; start the job (and check whatever restarts it). "no titles progress": 3 stops in a row left as many titles as the first; LoC may be refusing title records. Next: scripts/logs.sh <env> ingest-endings 2d for each stop and the titles left, and /v1/status (titles.pipeline.awaiting_sync).'
+    description: 'The ingest job keeps stopping at the titles-sync deadline: Condition says how. "not started again": the last stop was 3 or more hours ago and no execution has run since; start the job (and check whatever restarts it). "no titles progress": 3 stops in a row left as many titles as the first; LoC may be refusing title records. Next: scripts/logs.sh --env <env> --query-name ingest-endings --span 2d for each stop and the titles left, and /v1/status (titles.pipeline.awaiting_sync).'
     severity: 3
     frequency: 'PT1H'
     window: 'P2D'
@@ -308,7 +308,7 @@ var rules = [
   {
     name: 'release-stalled'
     displayName: 'Release stalled'
-    description: 'A release is building an index but has logged no progress for 10 minutes; Execution and Detail say which version and where it stopped. Next: scripts/logs.sh <env> release-progress for the last lines (disk, memory, Quickwit retries) and job-executions to see if the replica is still running.'
+    description: 'A release is building an index but has logged no progress for 10 minutes; Execution and Detail say which version and where it stopped. Next: scripts/logs.sh --env <env> --query-name release-progress for the last lines (disk, memory, Quickwit retries) and job-executions to see if the replica is still running.'
     severity: 2
     frequency: 'PT15M'
     window: 'P2D'
@@ -318,7 +318,7 @@ var rules = [
   {
     name: 'backfill-stalled'
     displayName: 'Backfill stalled'
-    description: 'Backfill workers have run for the last hour but none has curated a batch in it (and LoC is not rate limiting). Next: scripts/logs.sh <env> curation-throughput for the recent work, curate-replicas for each worker\'s stage, and errors-by-batch 2h for repeated failures on the same batches.'
+    description: 'Backfill workers have run for the last hour but none has curated a batch in it (and LoC is not rate limiting). Next: scripts/logs.sh --env <env> --query-name curation-throughput for the recent work, curate-replicas for each worker\'s stage, and errors-by-batch 2h for repeated failures on the same batches.'
     severity: 2
     frequency: 'PT15M'
     window: 'PT2H'
@@ -328,7 +328,7 @@ var rules = [
   {
     name: 'backfill-replica-silent'
     displayName: 'Backfill replica silent'
-    description: 'A backfill replica that is still running has logged nothing for 15 minutes; a working one logs curate progress every minute. Replica and Detail say which and its last line. Next: scripts/logs.sh <env> curate-replicas for each replica\'s last stage and heartbeat; stop the execution if it is stuck (its batch lease expires and another worker retries it).'
+    description: 'A backfill replica that is still running has logged nothing for 15 minutes; a working one logs curate progress every minute. Replica and Detail say which and its last line. Next: scripts/logs.sh --env <env> --query-name curate-replicas for each replica\'s last stage and heartbeat; stop the execution if it is stuck (its batch lease expires and another worker retries it).'
     severity: 2
     frequency: 'PT5M'
     window: 'P1D'
@@ -390,7 +390,7 @@ var ocrSyncRules = [
   {
     name: 'usnm-ocrsync-failed-alert-${nameSuffix}'
     displayName: 'OCR pickup failed'
-    description: 'An execution of the OCR pickup job (usnm-ocrsync-caj) failed in the last 15 minutes; Execution and Reason say which and why. Nothing published changes, and the next hourly run continues. Next: the job\'s console logs for its last lines (scripts/logs.sh <env> job-executions 1d); fix the cause, then start the job again or wait for the schedule.'
+    description: 'An execution of the OCR pickup job (usnm-ocrsync-caj) failed in the last 15 minutes; Execution and Reason say which and why. Nothing published changes, and the next hourly run continues. Next: the job\'s console logs for its last lines (scripts/logs.sh --env <env> --query-name job-executions --span 1d); fix the cause, then start the job again or wait for the schedule.'
     severity: 3
     frequency: 'PT5M'
     window: 'PT30M'

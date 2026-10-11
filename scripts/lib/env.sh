@@ -199,7 +199,7 @@ experiment_marker() {
   [ "${NO_EXPERIMENT_CHECK:-}" = true ] && return 0
   exp=$(aget USNM_EXPERIMENT) || return 1
   if [ -z "$exp" ]; then
-    echo "error: dev exists only during an experiment: first scripts/settings.sh dev USNM_EXPERIMENT <issue number> (or scripts/stand-up.sh)" >&2
+    echo "error: dev exists only during an experiment: first scripts/settings.sh --env dev --key USNM_EXPERIMENT --value <issue number> (or scripts/stand-up.sh)" >&2
     return 1
   fi
   [[ $exp =~ ^[0-9]+$ ]] || { echo "error: USNM_EXPERIMENT is an issue number, not \"$exp\"" >&2; return 1; }

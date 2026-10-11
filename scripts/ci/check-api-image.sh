@@ -1,9 +1,25 @@
 #!/usr/bin/env bash
-# The API image ($1) starts on its baked fixtures and serves both the API and
+# The API image (--image) starts on its baked fixtures and serves both the API and
 # the site: the app shell with its security headers, a precompressed hashed
 # asset, robots.txt and the sitemap, a 404 for an unknown path, and /v1.
 set -euo pipefail
-id=$(docker run -d -p 127.0.0.1:18080:8080 "$1")
+usage() { echo "usage: scripts/ci/check-api-image.sh --image IMAGE" >&2; exit 2; }
+# The positional form (`check-api-image.sh IMAGE`) works for one
+# release, with a warning (#277).
+if [ $# -eq 1 ] && [[ $1 != -* ]]; then
+  echo "warning: \`scripts/ci/check-api-image.sh IMAGE\` is deprecated; use --image (#277)" >&2
+  set -- --image "$1"
+fi
+image=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --image) [ $# -ge 2 ] || usage; image=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
+[ -n "$image" ] || usage
+id=$(docker run -d -p 127.0.0.1:18080:8080 "$image")
 trap 'docker logs "$id" | tail -n 50; docker rm -f "$id" > /dev/null' EXIT
 base=http://127.0.0.1:18080
 for _ in $(seq 1 30); do

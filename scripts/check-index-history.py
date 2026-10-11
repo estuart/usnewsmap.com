@@ -5,7 +5,7 @@ can't say: every object's keys are sorted ascending and unique (as
 scripts/reconstruct-index-history.py writes them, like the other keyed data
 files), and each run's image was pushed before the run started.
 
-    scripts/check-index-history.py [file]    (default: ops/index-history.json)
+    scripts/check-index-history.py [--path FILE]    (default: ops/index-history.json)
 
 Run it on the reconstruction's output before replacing the file (see
 scripts/reconstruct-index-history.py). Needs fastjsonschema
@@ -13,6 +13,7 @@ scripts/reconstruct-index-history.py). Needs fastjsonschema
 this script or the reconstruction changes. Exits 1 listing every problem.
 """
 
+import argparse
 import json
 import re
 import sys
@@ -79,7 +80,18 @@ def problems(path: Path, validate) -> list[str]:
 
 def main() -> int:
     validate = fastjsonschema.compile(json.loads(SCHEMA.read_text(encoding="utf-8")))
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else HISTORY
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--path", type=Path, help="the history to check (default ops/index-history.json)")
+    # The positional form (`check-index-history.py FILE`) works for one
+    # release, with a warning (#277).
+    ap.add_argument("legacy_path", nargs="?", type=Path, help=argparse.SUPPRESS)
+    a = ap.parse_args()
+    if a.legacy_path is not None:
+        if a.path is not None:
+            ap.error("give the file once, as --path")
+        print("warning: a positional file is deprecated; use --path (#277)", file=sys.stderr)
+        a.path = a.legacy_path
+    path = a.path or HISTORY
     found = problems(path, validate)
     for p in found:
         print(f"{path.name}: {p}", file=sys.stderr)

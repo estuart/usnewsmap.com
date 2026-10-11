@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pick a sample of Japanese pages from loc.gov and download their scans (#128).
 
-    scripts/ja-ocr/sample.py OUT_DIR [--pages 100] [--seed 128]
+    scripts/ja-ocr/sample.py --out-dir OUT_DIR [--pages 100] [--seed 128]
 
 Walks the titles loc.gov lists as Japanese, spreads issues across each
 title's years, and reads LoC's own OCR (ALTO) for every page of a chosen
@@ -95,13 +95,23 @@ def classify(alto: str) -> tuple[str, int, float]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("out", type=Path)
+    ap.add_argument("--out-dir", dest="out", type=Path, help="where to write the sample (required)")
+    # The positional form (`sample.py OUT_DIR`) works for one release, with a
+    # warning (#277).
+    ap.add_argument("legacy_out", nargs="?", type=Path, help=argparse.SUPPRESS)
     ap.add_argument("--pages", type=int, default=100)
     ap.add_argument("--seed", type=int, default=128)
     ap.add_argument("--issues-per-title", type=int, default=4)
     ap.add_argument("--pages-per-issue", type=int, default=2)
     ap.add_argument("--titles", nargs="+", help="only these LCCNs (default: every Japanese title)")
     a = ap.parse_args()
+    if a.legacy_out is not None:
+        if a.out is not None:
+            ap.error("give OUT_DIR once, as --out-dir")
+        print("warning: a positional OUT_DIR is deprecated; use --out-dir (#277)", file=sys.stderr)
+        a.out = a.legacy_out
+    if a.out is None:
+        ap.error("--out-dir is required")
     rnd = random.Random(a.seed)
     for d in ("images", "alto"):
         (a.out / d).mkdir(parents=True, exist_ok=True)
