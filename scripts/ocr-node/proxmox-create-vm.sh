@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Create a VM for an on-prem OCR node (#296) on a Proxmox host: AlmaLinux 9
-# by default, or RHEL 10 (or another EL image) from a local qcow2 file.
+# by default, or RHEL 10 from Red Hat's KVM Guest Image, a qcow2 file on the
+# host. node-setup.sh onboards only those two.
 # Run on the Proxmox host as root (copy it there first); then run
 # scripts/ocr-node/onboard.sh from your machine (docs/operations.md,
 # "On-prem OCR nodes"):
