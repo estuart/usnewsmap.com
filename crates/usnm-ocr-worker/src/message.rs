@@ -146,6 +146,36 @@ impl OcrMessage {
         Ok(key)
     }
 
+    /// The rules messages were checked by before 12 Step 7, for messages
+    /// kept in v1 dead letters: a batch of 1 to 128 `[a-z0-9_]` and any
+    /// three lower-case letters as the language.
+    pub fn validate_v1(&self) -> Result<PageKey, MessageError> {
+        if self.v != 1 {
+            return Err(MessageError::Version(self.v));
+        }
+        let key = self.key()?;
+        let b = &self.batch;
+        if b.is_empty()
+            || b.len() > 128
+            || !b
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+        {
+            return Err(MessageError::Batch(b.clone()));
+        }
+        let l = &self.language;
+        if l.len() != 3 || !l.bytes().all(|c| c.is_ascii_lowercase()) {
+            return Err(MessageError::Language(l.clone()));
+        }
+        if let Some(s) = self.score {
+            if !s.is_finite() || !(0.0..=1.0).contains(&s) {
+                return Err(MessageError::Score(s));
+            }
+        }
+        self.queued_at()?;
+        Ok(key)
+    }
+
     /// The JSON, base64-encoded, as it goes on the queue.
     pub fn encode(&self) -> String {
         let json = serde_json::to_string(self).expect("serializable");
@@ -303,7 +333,16 @@ impl DeadLetter {
             return Err(e("message_id"));
         }
         if let Some(m) = &self.message {
-            m.validate().map_err(|_| e("message"))?;
+            // A v1 dead letter holds a message checked by v1's looser rules
+            // (any batch of `[a-z0-9_]`, any three lower-case letters).
+            let ok = if self.v == 1 {
+                m.validate_v1().is_ok()
+            } else {
+                m.validate().is_ok()
+            };
+            if !ok {
+                return Err(e("message"));
+            }
         }
         let error_ok = self.error.chars().count() <= MAX_ERROR_CHARS
             && !self.error.chars().any(char::is_control);
@@ -566,6 +605,15 @@ mod tests {
         let v1 = r#"{"v":1,"from":"ocr-bulk","message_id":"m1","message":null,"error":"received 6 times","dequeue_count":6,"node":"node1","at":"2026-10-10T12:00:00+00:00"}"#;
         let d = decode_dead_letter(v1).unwrap();
         assert_eq!((d.v, d.cause), (1, None));
+        // A v1 dead letter's message was checked by v1's rules.
+        let legacy = v1.replace(
+            r#""message":null"#,
+            r#""message":{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"b","language":"zzz","reason":"bulk","queued_at":"2026-10-10T12:00:00Z"}"#,
+        );
+        assert_eq!(
+            decode_dead_letter(&legacy).unwrap().message.unwrap().batch,
+            "b"
+        );
         let v2_without_cause = v1.replace(r#""v":1"#, r#""v":2"#);
         assert!(decode_dead_letter(&v2_without_cause).is_err());
         let extra = v1.replace(r#""v":1,"#, r#""v":1,"q":"cross of gold","#);

@@ -327,7 +327,11 @@ resource locCappedAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if
           timeAggregation: 'Count'
           operator: 'GreaterThan'
           threshold: 0
-          dimensions: [{ name: 'Node', operator: 'Include', values: ['*'] }]
+          dimensions: [
+            { name: 'Node', operator: 'Include', values: ['*'] }
+            { name: 'Server', operator: 'Include', values: ['*'] }
+            { name: 'Status', operator: 'Include', values: ['*'] }
+          ]
           failingPeriods: {
             numberOfEvaluationPeriods: 1
             minFailingPeriodsToAlert: 1

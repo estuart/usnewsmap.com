@@ -196,12 +196,13 @@ impl Worker {
             if *stop.borrow() {
                 break;
             }
-            // While loc.gov holds this node's requests past a new page's
-            // budget, a page taken now would only wait, be abandoned and
-            // spend one of its receives; take none until the hold is short
-            // enough.
+            // While loc.gov holds this node's requests for more than half a
+            // new page's budget, a page taken now would mostly wait, and
+            // could be abandoned and spend one of its receives; take none
+            // until at least half the budget is left after the hold, for
+            // the fetch and the OCR.
             if let Some(until) = self.scans.held_until() {
-                let resume = until.checked_sub(self.cfg.budget());
+                let resume = until.checked_sub(self.cfg.budget() / 2);
                 if let Some(resume) = resume.filter(|r| *r > tokio::time::Instant::now()) {
                     drop(permit);
                     tracing::info_span!("ocr_hold").in_scope(|| {
