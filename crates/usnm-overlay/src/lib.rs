@@ -245,6 +245,140 @@ pub fn read_part(bytes: Bytes) -> anyhow::Result<Vec<OverlayPage>> {
     Ok(out)
 }
 
+/// A row of a part an OCR node wrote, with every column (13 §13.8.4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeRow {
+    pub key: PageKey,
+    pub batch: String,
+    pub ocr_source: String,
+    pub ocr_engine: String,
+    /// On a node's row, the queue reason (`bulk` or `user`).
+    pub loc_text: String,
+    pub text_status: String,
+    pub text: Option<String>,
+    pub text_chars: i32,
+    pub text_sha256: [u8; 32],
+    pub image_url: String,
+    /// Microseconds since the Unix epoch, by the node's clock.
+    pub ocred_at: i64,
+}
+
+/// The most rows [`read_node_part`] reads; a node's part has one.
+pub const MAX_NODE_PART_ROWS: i64 = 16;
+/// The most bytes a node's part may say its columns hold once decompressed.
+pub const MAX_NODE_PART_UNCOMPRESSED: i64 = 4 * 1024 * 1024;
+
+/// Read a part an OCR node wrote, strictly, for the pickup's checks
+/// (`usnm-ingest ocr-sync`, 12 §12.5 Step 8). Unlike [`read_part`], which
+/// the release uses on parts the cloud wrote, it refuses anything but
+/// exactly the 16 columns of [`schema`] by name, type and order; a null in
+/// any column but `text`; a `page_key` or `doc_id` that isn't the row's
+/// page; more than [`MAX_NODE_PART_ROWS`] rows; and a file whose metadata
+/// says its columns hold more than [`MAX_NODE_PART_UNCOMPRESSED`] bytes
+/// decompressed, before decoding any page of it.
+pub fn read_node_part(bytes: Bytes) -> anyhow::Result<Vec<NodeRow>> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+    let meta = builder.metadata().file_metadata();
+    if meta.num_rows() > MAX_NODE_PART_ROWS || meta.num_rows() < 0 {
+        bail!("{} rows, over {MAX_NODE_PART_ROWS}", meta.num_rows());
+    }
+    let mut uncompressed = 0i64;
+    for rg in builder.metadata().row_groups() {
+        for c in rg.columns() {
+            uncompressed = uncompressed.saturating_add(c.uncompressed_size().max(0));
+        }
+    }
+    if uncompressed > MAX_NODE_PART_UNCOMPRESSED {
+        bail!("{uncompressed} bytes decompressed, over {MAX_NODE_PART_UNCOMPRESSED}");
+    }
+    let want = schema();
+    let got = builder.schema();
+    if got.fields().len() != want.fields().len() {
+        bail!(
+            "{} columns, not the overlay's {}",
+            got.fields().len(),
+            want.fields().len()
+        );
+    }
+    for (g, w) in got.fields().iter().zip(want.fields().iter()) {
+        if g.name() != w.name() || g.data_type() != w.data_type() {
+            bail!(
+                "column `{}` ({}) where the overlay has `{}` ({})",
+                g.name(),
+                g.data_type(),
+                w.name(),
+                w.data_type()
+            );
+        }
+    }
+    let reader = builder
+        .with_batch_size(MAX_NODE_PART_ROWS as usize)
+        .build()?;
+    let mut out = Vec::new();
+    for batch in reader {
+        let batch = batch?;
+        for (i, f) in want.fields().iter().enumerate() {
+            if f.name() != "text" && batch.column(i).null_count() > 0 {
+                bail!("column `{}` has a null", f.name());
+            }
+        }
+        macro_rules! col {
+            ($i:expr, $t:ty) => {
+                batch
+                    .column($i)
+                    .as_any()
+                    .downcast_ref::<$t>()
+                    .with_context(|| format!("column {} has an unexpected type", $i))?
+            };
+        }
+        let doc_id = col!(0, StringArray);
+        let page_key = col!(1, StringArray);
+        let lccn = col!(2, StringArray);
+        let date = col!(3, Date32Array);
+        let edition = col!(4, Int16Array);
+        let seq = col!(5, Int16Array);
+        let batch_name = col!(6, StringArray);
+        let source = col!(7, StringArray);
+        let engine = col!(8, StringArray);
+        let loc_text = col!(9, StringArray);
+        let status = col!(10, StringArray);
+        let text = col!(11, LargeStringArray);
+        let chars = col!(12, arrow_array::Int32Array);
+        let sha = col!(13, FixedSizeBinaryArray);
+        let image = col!(14, StringArray);
+        let at = col!(15, TimestampMicrosecondArray);
+        let unsigned = |v: i16| u16::try_from(v).context("negative edition or seq");
+        for i in 0..batch.num_rows() {
+            let key = PageKey::new(
+                lccn.value(i),
+                from_unix_days(date.value(i)),
+                unsigned(edition.value(i))?,
+                unsigned(seq.value(i))?,
+            )?;
+            if key.doc_id() != doc_id.value(i) || key.to_string() != page_key.value(i) {
+                bail!("row {i}: doc_id or page_key doesn't match its page `{key}`");
+            }
+            out.push(NodeRow {
+                key,
+                batch: batch_name.value(i).to_owned(),
+                ocr_source: source.value(i).to_owned(),
+                ocr_engine: engine.value(i).to_owned(),
+                loc_text: loc_text.value(i).to_owned(),
+                text_status: status.value(i).to_owned(),
+                text: (!text.is_null(i)).then(|| text.value(i).to_owned()),
+                text_chars: chars.value(i),
+                text_sha256: sha
+                    .value(i)
+                    .try_into()
+                    .context("text_sha256 is not 32 bytes")?,
+                image_url: image.value(i).to_owned(),
+                ocred_at: at.value(i),
+            });
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +394,84 @@ mod tests {
             image_url: "https://tile.loc.gov/image-services/iiif/service:ndnp:x".into(),
             ocred_at: DateTime::from_timestamp(1_791_000_000, 123_000).unwrap(),
         }
+    }
+
+    #[test]
+    fn reads_a_node_part_strictly() {
+        let text = "Die Zeitung erscheint jeden Sonnabend in Lincoln.";
+        let bytes = Bytes::from(write_part(&[row(text)]).unwrap());
+        let rows = read_node_part(bytes).unwrap();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.key.doc_id(), "sn83045462_1890-05-03_ed-2_seq-7");
+        assert_eq!(r.text.as_deref(), Some(text));
+        assert_eq!(r.text_chars, text.chars().count() as i32);
+        assert_eq!(
+            r.text_sha256.as_slice(),
+            Sha256::digest(text.as_bytes()).as_slice()
+        );
+        assert_eq!(r.image_url, row(text).image_url);
+        assert_eq!(r.loc_text, "bulk");
+
+        // Columns out of order, an extra one, one missing, a wrong type.
+        let base = schema();
+        let write = |schema: SchemaRef, cols: Vec<ArrayRef>| {
+            let mut buf = Vec::new();
+            let mut w = ArrowWriter::try_new(&mut buf, schema.clone(), None).unwrap();
+            w.write(&RecordBatch::try_new(schema, cols).unwrap())
+                .unwrap();
+            w.close().unwrap();
+            Bytes::from(buf)
+        };
+        let good = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(
+            write_part(&[row(text)]).unwrap(),
+        ))
+        .unwrap()
+        .build()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+        let mut fields: Vec<Field> = base.fields().iter().map(|f| f.as_ref().clone()).collect();
+        let mut cols: Vec<ArrayRef> = good.columns().to_vec();
+        // Extra column.
+        let mut f2 = fields.clone();
+        let mut c2 = cols.clone();
+        f2.push(Field::new("q", DataType::Utf8, true));
+        c2.push(Arc::new(StringArray::from(vec!["cross of gold"])));
+        assert!(read_node_part(write(Arc::new(Schema::new(f2)), c2)).is_err());
+        // Missing column.
+        let (f3, c3) = (fields[..15].to_vec(), cols[..15].to_vec());
+        assert!(read_node_part(write(Arc::new(Schema::new(f3)), c3)).is_err());
+        // Swapped order.
+        fields.swap(7, 8);
+        cols.swap(7, 8);
+        assert!(read_node_part(write(Arc::new(Schema::new(fields)), cols)).is_err());
+        // A null outside `text`.
+        let mut cols: Vec<ArrayRef> = good.columns().to_vec();
+        cols[14] = Arc::new(StringArray::from(vec![None::<&str>]));
+        assert!(read_node_part(write(base.clone(), cols)).is_err());
+        // A null text is allowed.
+        let mut cols: Vec<ArrayRef> = good.columns().to_vec();
+        cols[11] = Arc::new(LargeStringArray::from(vec![None::<&str>]));
+        assert_eq!(
+            read_node_part(write(base.clone(), cols)).unwrap()[0].text,
+            None
+        );
+        // A doc_id that isn't its page's.
+        let mut cols: Vec<ArrayRef> = good.columns().to_vec();
+        cols[0] = Arc::new(StringArray::from(vec!["sn83045462_1890-05-03_ed-2_seq-8"]));
+        assert!(read_node_part(write(base.clone(), cols)).is_err());
+        let mut cols: Vec<ArrayRef> = good.columns().to_vec();
+        cols[1] = Arc::new(StringArray::from(vec!["sn83045462/1890-05-03/ed-2/seq-8"]));
+        assert!(read_node_part(write(base.clone(), cols)).is_err());
+        // Too many rows.
+        let many: Vec<OverlayRow> = (0..17).map(|_| row(text)).collect();
+        assert!(read_node_part(Bytes::from(write_part(&many).unwrap())).is_err());
+        // Too much text once decompressed.
+        let big = "x".repeat(5 * 1024 * 1024);
+        assert!(read_node_part(Bytes::from(write_part(&[row(&big)]).unwrap())).is_err());
+        assert!(read_node_part(Bytes::from_static(b"not parquet")).is_err());
     }
 
     #[test]
