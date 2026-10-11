@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Which parts of CI a change needs, as step outputs rust/web/image/fixtures/
-# ops/code/markdown/ocr_worker=true|false (ocr_worker: the OCR worker's EL9
-# build, its Tesseract image and, on main, its release; code: anything but
+# ops/code/markdown/ocr_worker/page_language=true|false (ocr_worker: the OCR
+# worker's EL9 build, its Tesseract image and, on main, its release;
+# page_language: the page-language detector's test on text of known
+# language; code: anything but
 # documentation changed, so the infrastructure checks and the shared-key scan run; markdown: a Markdown
 # file changed, so Prettier checks its format), and provision=true|false:
 # whether it changes the Azure stack beyond what a deploy applies (the API
@@ -22,7 +24,7 @@ out=${GITHUB_OUTPUT:-/dev/stdout}
 provision=false
 ops=false
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -77,7 +79,12 @@ fixtures='^fixtures/'
 # The OCR worker's release: the worker, the crates it uses, the workspace's
 # build files, its Tesseract image and the release script.
 ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-contract|usnm-core|usnm-overlay|usnm-store|usnm-telemetry)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|ocr/engines/tesseract/|scripts/ci/ocr-worker-release\.sh$)'
-for part in rust quickwit web image fixtures ocr_worker; do
+# The page-language detector's test on text of known language (05 §5.5.8):
+# the detector, its word lists and the language table it reads them by, its
+# crate's manifest and the lock file, the samples and their test, and the
+# scripts that write the lists and the samples.
+page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
+for part in rust quickwit web image fixtures ocr_worker page_language; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"

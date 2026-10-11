@@ -11,3 +11,5 @@ It mimics the shapes the real pipeline will produce ([04](../docs/design/04-data
 Regenerate with `python3 fixtures/generate.py` (deterministic).
 
 `skew-vectors.json` is separate: inputs and expected scores for the relative-rate scoring ([doc 11](../docs/design/11-term-geographic-skew.md)), shared by `crates/usnm-core/tests/skew_vectors.rs` and `web/src/engine/skew.test.ts`. Its synthetic cases are generated; `cross_of_gold` and `klondike` are reduced from public API responses for that doc (counts per place index and bucket, no names). Regenerate with `UPDATE_SKEW_VECTORS=1 cargo test -p usnm-core --test skew_vectors` (add `SKEW_RECORDED_DIR` to re-read the recorded searches).
+
+`page-language/` is separate too, and not synthetic: real text of known language, from Wikipedia (CC BY-SA 4.0) and Wikisource (public domain in the US), for the page-language detector's ground-truth test (`crates/usnm-core/tests/page_language_samples.rs`, [05 §5.5.8](../docs/design/05-search-and-storage.md)). Its [README](page-language/README.md) has the sources, their licences and how to regenerate it.
