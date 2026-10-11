@@ -490,11 +490,18 @@ The data account is reachable only through its private endpoint, so run `searche
 
 Production keeps no batch archives (ADR-0006): LoC is the source of record. The archival account keeps everything we download from outside Azure, so re-curation, benchmarks and other environments never download it again: LoC's batch archives and batch lists now, other sources later. Benchmarks are one use.
 
-**The account** (`infra/archive/`) is its own deployment stack, `usnm-archive`, in its own group, `rg-usnm-archive`, outside every environment's stack. An environment's provision or teardown can't delete it. It is StorageV2, Entra only (no keys, no SAS), with no public network access, versioning, 14-day soft delete, a lifecycle rule that moves `raw/` and `sets/` to the Cold tier, and a `CanNotDelete` lock. Its stack detaches what leaves the template rather than deleting it, and denies deletes outside the stack except of the lock and of private endpoint connections. Deploy it once:
+**The account** (`infra/archive/`) is its own deployment stack, `usnm-archive`, in its own group, `rg-usnm-archive`, outside every environment's stack. An environment's provision or teardown can't delete it. It is StorageV2, Entra only (no keys, no SAS), with no public network access, versioning, 14-day soft delete, a lifecycle rule that moves `raw/` and `sets/` to the Cold tier, and a `CanNotDelete` lock. Its stack detaches what leaves the template rather than deleting it, and denies deletes outside the stack except of the lock and of private endpoint connections.
+
+**Policy keeps it that way.** The group, `rg-usnm-archive`, has the same guard-rail assignments as an environment's groups (`usnm-deny-*`, `usnm-audit-*`), with public network access denied and no public accounts, so policy denies turning shared keys or public network access back on (ADR-0009). The definitions come from the `usnm-guardrails` stack, which `deploy` creates or updates first, as an environment's provision does. While the account exists, the last environment's teardown keeps that stack. The diagnostic settings audit has an exemption for the account (`usnm-archive-no-diagnostics`, a waiver): its logs have nowhere to go, since every Log Analytics workspace belongs to an environment and goes with its teardown. Once a workspace that outlives the environments exists, the account should send its blob writes and deletes there, and the exemption goes.
+
+Check what a deploy would change, then deploy:
 
 ```sh
+scripts/archive-store.sh what-if --subscription <id>    # changes nothing
 scripts/archive-store.sh deploy --subscription <id>     # prints the account's resource id
 ```
+
+`what-if` shows the guard-rail definitions' changes, then the account's. Until the definitions exist, the account's what-if can fail on its assignments; `deploy` creates them first.
 
 **An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, `id-usnm-qwbench` also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting (or tear the environment down) this way. `scripts/teardown.sh` refuses while the setting is on.
 

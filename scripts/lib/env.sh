@@ -17,14 +17,9 @@ valid_env_name() {
   [ "$1" != guardrails ] || { echo "error: \"guardrails\" is reserved" >&2; exit 2; }
 }
 valid_env_name "$ENV_NAME"
-# The stack commands need az 2.61+ (--action-on-unmanage); older versions
-# stop at the first deployment with "unrecognized arguments".
-# grep reads the help to the end: with -q it could quit early, and pipefail
-# would count az's SIGPIPE as a failure.
-need_stack_az() {
-  az stack sub create --help 2> /dev/null | grep -- --action-on-unmanage > /dev/null ||
-    die "az $(az version --query '"azure-cli"' -o tsv 2> /dev/null) is too old for deployment stacks; upgrade to 2.61 or later"
-}
+# need_stack_az, GUARDRAILS_STACK and deploy_guardrails.
+# shellcheck source=scripts/lib/guardrails.sh
+. scripts/lib/guardrails.sh
 ENV_FILE=".azure/$ENV_NAME/.env"
 # A settings file that doesn't parse stops every script up front, before
 # anything reads a setting as empty and falls back to a default.
@@ -81,30 +76,8 @@ adel() {
 # resource groups). Resources dropped from the template are deleted; deny
 # settings stop anyone deleting a managed resource outside the stack.
 STACK="usnm-$ENV_NAME"
-# The guard-rail policy definitions every environment in the subscription
-# assigns: one stack of their own, so no two stacks manage the same resource.
-GUARDRAILS_STACK=usnm-guardrails
 # The region, with the same default as infra/main.bicepparam.
 stack_location() { local l; l=$(aget AZURE_LOCATION) || return 1; echo "${l:-eastus2}"; }
-deploy_guardrails() {
-  # A stack's location is fixed when it's created; environments in other
-  # regions reuse it.
-  local location
-  # Only "not found" means a first deployment; other errors stop here.
-  if ! location=$(az stack sub show -n "$GUARDRAILS_STACK" --query location -o tsv 2>&1); then
-    grep -qiE 'NotFound|could not be found' <<< "$location" || {
-      echo "error: can't check $GUARDRAILS_STACK: $location" >&2
-      return 1
-    }
-    location=$(stack_location) || return 1
-  fi
-  az stack sub create --name "$GUARDRAILS_STACK" --location "$location" \
-    --template-file infra/guardrails.bicep \
-    --action-on-unmanage deleteResources \
-    --deny-settings-mode denyDelete \
-    --description "usnewsmap guard-rail policy definitions, shared by every environment in the subscription" \
-    --yes --only-show-errors -o none
-}
 deploy_stack() (
   # Export exactly the settings infra/main.bicepparam reads, when they have
   # a value; an unset one takes its default there. Each is read on its own
@@ -202,8 +175,10 @@ ocr_vault_recover() {
 provision() {
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
   ocr_vault_recover || die "not provisioning $ENV_NAME"
+  local location
+  location=$(stack_location) || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
-    deploy_guardrails && deploy_stack && save_outputs && return 0
+    deploy_guardrails "$location" && deploy_stack && save_outputs && return 0
     [ "$attempt" = 3 ] && die "provisioning failed three times"
     echo "retrying in 60s"
     sleep 60

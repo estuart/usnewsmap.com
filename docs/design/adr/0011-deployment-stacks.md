@@ -43,4 +43,4 @@ Azure **deployment stacks** track the resources a template deploys. They can del
 - **Resources the template doesn't declare are neither protected nor cleaned up.** Examples are the managed certificates bootstrap binds and anything created in the portal.
 - **No what-if.** Deployment stacks don't support what-if yet.
 - **Every deployment re-applies the whole template.** azd skipped deployments when nothing had changed.
-- **Two environments in one subscription share `usnm-guardrails`.** Either environment's deployment updates it, and it stays until the last environment's teardown. Its location is the first environment's region.
+- **Two environments in one subscription share `usnm-guardrails`.** Either environment's deployment updates it, and it stays until the last environment's teardown. The archival account's group (`usnm-archive`) assigns the definitions too, so while it exists the stack stays (#276). Its location is the first environment's region.
