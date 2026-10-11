@@ -325,6 +325,15 @@ mod tests {
     }
 
     #[test]
+    fn checks_rows_it_leaves_out() {
+        let mut bad = row("sn1_1890-05-03_ed-1_seq-2", "nbu_gage", 0.5);
+        bad.item_url = "https://evil.example/".into();
+        let good = row("sn2_1890-05-03_ed-1_seq-1", "nbu_gage", 0.5);
+        let bytes = Bytes::from(encode(&[good, bad]).unwrap());
+        assert!(decode_where(bytes, |r| r.lccn == "sn2").is_err());
+    }
+
+    #[test]
     fn refuses_a_row_that_doesnt_match_its_key_or_another_file() {
         let mut r = row("sn1_1890-05-03_ed-1_seq-2", "nbu_gage", 0.5);
         r.item_url = "https://evil.example/".into();
