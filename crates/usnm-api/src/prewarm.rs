@@ -26,10 +26,14 @@
 //!
 //! Computations run one at a time on the warm-up's own slot: searches are
 //! CPU-bound, and on a 2-vCPU searcher two at once each took twice as long
-//! (06 §6.5). After a start, a computation waits while every visitor slot is
-//! taken, so the warm-up doesn't add a third search to visitors' two. Each
-//! has `config.prewarm_query_timeout` (the searcher's own limit per call
-//! still applies), all within `config.prewarm_budget` before a publish, or
+//! (06 §6.5). After a start, a computation starts only while no visitor's
+//! search is running or queued: once started it keeps the searcher busy
+//! until it ends, and a visitor who arrives meanwhile shares the searcher
+//! with it. A publish doesn't wait: the old version serves visitors
+//! meanwhile, and a run that waited for them through a busy spell could spend
+//! its budget and swap in a version it hadn't warmed. Each computation has
+//! `config.prewarm_query_timeout` (the searcher's own limit per call still
+//! applies), all within `config.prewarm_budget` before a publish, or
 //! `config.prewarm_startup_budget` after a start. Nothing here fails: a
 //! warm-up that times out or errors is logged and the version serves anyway.
 //!
@@ -63,7 +67,7 @@ const MAX_BODY: usize = 64 * 1024 * 1024;
 /// cube, which is computed from reference data.
 pub const LOADS_AT_ONCE: usize = 8;
 
-/// How often a computation waiting for a free visitor slot looks again.
+/// How often a computation waiting for visitors' searches looks again.
 const GIVE_WAY_POLL: Duration = Duration::from_millis(200);
 
 /// The home page's example searches, shared with the web app.
@@ -159,7 +163,8 @@ pub struct Report {
     pub cached: usize,
     /// Searches the run computed (or tried to), whatever came of them.
     pub computed: usize,
-    /// Time computations waited for a free visitor slot (after a start).
+    /// Time computations waited for visitors' searches to end (after a
+    /// start).
     pub gave_way: Duration,
     pub elapsed: Duration,
 }
@@ -514,11 +519,15 @@ impl Run<'_> {
         }
     }
 
-    /// Wait while every visitor slot is taken (within the budget), so the
-    /// warm-up's search doesn't slow visitors' down further.
+    /// Wait while a visitor's search is running or queued (within the
+    /// budget), so the warm-up starts a search only on an idle searcher. The
+    /// warm-up's own searches run on its own slot and don't count.
     async fn give_way(&mut self) {
+        if self.state.flights.visitor_searches() == 0 {
+            return;
+        }
         let started = Instant::now();
-        while self.state.flights.free_slots() == 0 {
+        while self.state.flights.visitor_searches() > 0 {
             let left = self.deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;

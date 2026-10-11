@@ -117,6 +117,8 @@ pub struct Flights {
     /// Slots for visitors' search computations and the queue for them,
     /// under one lock, so the queue alone decides who gets a freed slot.
     slots: Mutex<Slots>,
+    /// How many slots `slots` has in all.
+    search_slots: usize,
     /// The warm-up's own slot, so visitors' searches can't starve it (it
     /// runs one query at a time anyway).
     pub(crate) warm_up_slot: Arc<Semaphore>,
@@ -149,12 +151,14 @@ impl Slots {
 
 impl Flights {
     pub(crate) fn new(search_slots: usize, max_queue: usize) -> Self {
+        let search_slots = search_slots.max(1);
         Self {
             running: Mutex::new(HashMap::new()),
             slots: Mutex::new(Slots {
-                free: search_slots.max(1),
+                free: search_slots,
                 waiting: BTreeMap::new(),
             }),
+            search_slots,
             warm_up_slot: Arc::new(Semaphore::new(1)),
             next_ticket: AtomicU64::new(0),
             max_queue,
@@ -234,6 +238,13 @@ impl Flights {
     /// Searches waiting for a slot now.
     pub fn queued(&self) -> usize {
         self.slots().waiting.len()
+    }
+
+    /// Visitors' searches running or waiting for a slot now. The warm-up's
+    /// own slot isn't one of these, so its searches don't count.
+    pub fn visitor_searches(&self) -> usize {
+        let slots = self.slots();
+        self.search_slots.saturating_sub(slots.free) + slots.waiting.len()
     }
 }
 
@@ -387,6 +398,27 @@ mod tests {
         assert_eq!(flights.free_slots(), 0, "the failed send freed nothing");
         drop(place);
         assert_eq!(flights.free_slots(), 1, "the place freed it, once");
+    }
+
+    #[tokio::test]
+    async fn visitor_searches_count_the_running_and_the_queued_not_the_warm_up() {
+        let flights = Flights::new(2, 8);
+        assert_eq!(flights.visitor_searches(), 0);
+        let _warm_up = flights.warm_up_slot.clone().acquire_owned().await.unwrap();
+        assert_eq!(flights.visitor_searches(), 0, "the warm-up's slot");
+        let first = flights.slot(&Spot::default()).await.unwrap();
+        assert_eq!(flights.visitor_searches(), 1);
+        let second = flights.slot(&Spot::default()).await.unwrap();
+        let spot = Spot::default();
+        let wait = flights.slot(&spot);
+        tokio::pin!(wait);
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        assert_eq!(flights.visitor_searches(), 3, "two running, one queued");
+        drop(first);
+        let third = wait.await.unwrap();
+        assert_eq!(flights.visitor_searches(), 2);
+        drop((second, third));
+        assert_eq!(flights.visitor_searches(), 0);
     }
 
     #[tokio::test]
