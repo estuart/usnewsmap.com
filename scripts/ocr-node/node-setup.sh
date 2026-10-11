@@ -4,7 +4,8 @@
 #
 #   node-setup.sh --subscription ID --resource-group NAME --location REGION \
 #     --name ARC_NAME --exchange-account NAME [--app-insights CONNECTION_STRING] \
-#     [--tags K=V,K=V] [--identity-key-store default|tpm] [--force-unsupported] < credentials
+#     [--tags K=V,K=V] [--identity-key-store default|tpm] [--scratch-size SIZE] \
+#     [--force-unsupported] < credentials
 #
 # Reads up to five lines from stdin. The first three are the onboarding
 # service principal: tenant id, app id, secret. onboard.sh makes that
@@ -22,7 +23,12 @@
 # BaseOS, AppStream and CodeReady Builder (for EPEL).
 # Keeps the journal on disk; installs python3, podman, chrony, cron and
 # rsyslog, and htop, iftop and screen from EPEL;
-# creates the `usnm` system user; installs the Azure Connected Machine
+# creates the `usnm` system user; sets up the engine runtime of ADR-0016
+# (13 §13.3): the engine account `usnmeng` with lingering, subordinate ids
+# and cgroup delegation, its Podman API socket at
+# /run/usnm-ocr/podman.sock shared with usnm through the group `usnmocr`,
+# and the engines' scratch, a tmpfs of --scratch-size (default 2G) at
+# /run/usnm-ocr/scratch; installs the Azure Connected Machine
 # agent and, BEFORE it connects, locks it down: no extension but the Azure
 # Monitor Linux Agent (it stops if any other is installed), no guest
 # configuration, no incoming connections;
@@ -39,13 +45,15 @@
 # node too: it applies the lockdown and the unit as they are now.
 #
 # AlmaLinux 9 or RHEL 10 (Arc supports both; it doesn't support Fedora),
-# unless --force-unsupported.
+# unless --force-unsupported, which also lets it go on with SELinux not
+# enforcing.
 set -euo pipefail
-usage() { sed -n '5,7s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '5,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
 SUBSCRIPTION="" GROUP="" LOCATION="" NAME="" EXCHANGE="" CONN="" TAGS="" FORCE=false KEY_STORE=default
+SCRATCH_SIZE=2G
 while [ $# -gt 0 ]; do
   case "$1" in
     --subscription) SUBSCRIPTION=${2:-}; shift 2 ;;
@@ -56,12 +64,14 @@ while [ $# -gt 0 ]; do
     --app-insights) CONN=${2:-}; shift 2 ;;
     --tags) TAGS=${2:-}; shift 2 ;;
     --identity-key-store) KEY_STORE=${2:-}; shift 2 ;;
+    --scratch-size) SCRATCH_SIZE=${2:-}; shift 2 ;;
     --force-unsupported) FORCE=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
   esac
 done
 case "$KEY_STORE" in default|tpm) ;; *) echo "error: --identity-key-store is default or tpm" >&2; usage ;; esac
+[[ $SCRATCH_SIZE =~ ^[1-9][0-9]*[MG]$ ]] || die "--scratch-size: a size such as 2G or 1536M"
 for pair in SUBSCRIPTION:subscription GROUP:resource-group LOCATION:location NAME:name \
   EXCHANGE:exchange-account; do
   var=${pair%%:*}
@@ -157,7 +167,9 @@ step "Installing packages"
 # Azure Monitor Agent reads syslog through rsyslog and needs python3 and
 # which; Microsoft also lists initscripts, which RHEL 10 may not ship. The
 # Connected Machine agent schedules its automatic upgrades with cron.
-dnf -y -q install python3 podman chrony curl cronie rsyslog which
+# acl (setfacl), and semanage from policycoreutils-python-utils, for the
+# engine runtime.
+dnf -y -q install python3 podman chrony curl cronie rsyslog which acl policycoreutils-python-utils
 dnf -y -q install initscripts > /dev/null 2>&1 || echo "warning: no initscripts package; the Azure Monitor Agent lists it as a prerequisite"
 # On a Proxmox VM, the guest agent reports the address and shuts the VM
 # down cleanly. AlmaLinux's cloud-init installs it; an image that can't
@@ -246,19 +258,39 @@ else
   useradd --system --home-dir /var/lib/usnm --create-home --shell /sbin/nologin usnm
   echo "created usnm"
 fi
+# usnm needs no subordinate ids: it never runs podman itself (the engine
+# runtime below). Nodes set up before kept the ones they were given.
+
 # Rootless podman maps a container's users onto subordinate ids; a system
-# user gets none, so give usnm 65,536 after the highest range in use.
-for f in /etc/subuid /etc/subgid; do
-  if ! grep -q '^usnm:' "$f" 2> /dev/null; then
-    start=$(awk -F: 'BEGIN { m = 100000 } { e = $2 + $3; if (e > m) m = e } END { print m }' "$f" 2> /dev/null || echo 100000)
-    if [ "$f" = /etc/subuid ]; then
-      usermod --add-subuids "$start-$((start + 65535))" usnm
-    else
-      usermod --add-subgids "$start-$((start + 65535))" usnm
+# user gets none, so this gives $1 65,536 after the highest range in use.
+add_subids() {
+  local f start
+  for f in /etc/subuid /etc/subgid; do
+    if ! grep -q "^$1:" "$f" 2> /dev/null; then
+      start=$(awk -F: 'BEGIN { m = 100000 } { e = $2 + $3; if (e > m) m = e } END { print m }' "$f" 2> /dev/null || echo 100000)
+      if [ "$f" = /etc/subuid ]; then
+        usermod --add-subuids "$start-$((start + 65535))" "$1"
+      else
+        usermod --add-subgids "$start-$((start + 65535))" "$1"
+      fi
+      echo "$1: ${f#/etc/} $start-$((start + 65535))"
     fi
-    echo "usnm: ${f#/etc/} $start-$((start + 65535))"
+  done
+}
+
+# Writes $2 to the file $1 (root's, mode 0644) if it differs; returns 1 if
+# it was already so.
+put_conf() {
+  if [ "$(cat "$1" 2> /dev/null)" = "$2" ]; then
+    echo "$1: unchanged"
+    return 1
   fi
-done
+  mkdir -p "$(dirname "$1")"
+  printf '%s\n' "$2" > "$1.new"
+  chmod 0644 "$1.new"
+  mv -f "$1.new" "$1"
+  echo "$1: written"
+}
 
 # A directory on tmpfs for the installer and the secret; removed on exit.
 WORK=$(mktemp -d /run/usnm-onboard.XXXXXX)
@@ -427,6 +459,179 @@ step "Giving usnm the agent's token access"
 getent group himds > /dev/null || die "no himds group; is the agent installed?"
 usermod -aG himds usnm
 
+step "The engine runtime (ADR-0016)"
+# Engines run as usnmeng, a second system user with its own subordinate
+# ids and its own rootless podman. It isn't in himds, so nothing it runs
+# can read the Arc agent's token challenge. Its user manager (lingering
+# on) runs the Podman API service, with the socket at
+# /run/usnm-ocr/podman.sock, mode 0660, group usnmocr; the worker (usnm,
+# also in usnmocr) runs engine containers through it with
+# `podman --remote`, so it never needs user namespaces and its unit can
+# set NoNewPrivileges (13 §13.3). Engines' scratch is a size-capped tmpfs
+# at /run/usnm-ocr/scratch, owned by usnm: memory used by files on a tmpfs
+# is charged to the cgroup of the process that writes them, so an
+# engine's output counts against its own memory limit and can't fill the
+# disk. scripts/ocr-node/engine-spike.sh checks all of it.
+SOCK=/run/usnm-ocr/podman.sock
+SCRATCH=/run/usnm-ocr/scratch
+unitfile=/etc/systemd/system/usnm-ocr-worker.service
+# A worker unit from before this owned /run/usnm-ocr as its runtime
+# directory and removed it on every stop. It couldn't run an engine
+# anyway; it's stopped here and started again with the new unit below.
+was_active=false
+if grep -qx 'RuntimeDirectory=usnm-ocr' "$unitfile" 2> /dev/null; then
+  if systemctl is-active --quiet usnm-ocr-worker.service; then
+    systemctl stop usnm-ocr-worker.service
+    was_active=true
+    echo "stopped usnm-ocr-worker.service (its old unit owns /run/usnm-ocr)"
+  fi
+fi
+getent group usnmocr > /dev/null || { groupadd --system usnmocr; echo "created group usnmocr"; }
+if id usnmeng > /dev/null 2>&1; then
+  echo "usnmeng exists"
+else
+  useradd --system --user-group --home-dir /var/lib/usnmeng --create-home --shell /sbin/nologin usnmeng
+  echo "created usnmeng"
+fi
+usermod -aG usnmocr usnmeng
+usermod -aG usnmocr usnm
+if id -nG usnmeng | tr ' ' '\n' | grep -qx himds; then
+  gpasswd -d usnmeng himds
+fi
+add_subids usnmeng
+ENG_UID=$(id -u usnmeng)
+USNM_UID=$(id -u usnm)
+OCR_GID=$(getent group usnmocr | cut -d: -f3)
+
+# usnmeng's container storage, labelled like /var/lib/containers (podman's
+# advice for storage outside the usual places): its home is under
+# /var/lib, where SELinux's home directory rules don't reach.
+store=/var/lib/usnmeng/.local/share/containers
+install -d -o usnmeng -g usnmeng -m 0700 /var/lib/usnmeng/.local /var/lib/usnmeng/.local/share "$store"
+# The engines' isolation rests on SELinux labels (13 §13.3).
+selinux=$(getenforce 2> /dev/null || echo Disabled)
+if [ "$selinux" != Enforcing ]; then
+  [ "$FORCE" = true ] || die "SELinux is $selinux; the engine runtime needs it enforcing (setenforce 1, and SELINUX=enforcing in /etc/selinux/config)"
+  echo "warning: SELinux is $selinux, not enforcing; continuing (--force-unsupported)"
+fi
+if [ "$selinux" != Disabled ]; then
+  if semanage fcontext -l -C | grep -qF "$store = /var/lib/containers"; then
+    echo "$store is labelled like /var/lib/containers"
+  else
+    semanage fcontext -a -e /var/lib/containers "$store"
+    echo "$store: labelled like /var/lib/containers"
+  fi
+  restorecon -R "$store"
+fi
+
+# cgroup delegation: systemd gives user managers only the memory and pids
+# controllers; engines' --cpus needs cpu too. For usnmeng's manager only.
+# A change restarts that manager, which stops any engine running.
+delegate=/etc/systemd/system/user@$ENG_UID.service.d/50-usnm-delegate.conf
+restart_user=false
+if put_conf "$delegate" $'# Written by scripts/ocr-node/node-setup.sh (ADR-0016).\n[Service]\nDelegate=cpu cpuset io memory pids'; then
+  restart_user=true
+fi
+
+# /run/usnm-ocr: usnmeng's, setgid usnmocr, so the socket its user manager
+# makes there gets the group; usnm can go through it but not write there.
+# The scratch tmpfs is mounted inside.
+put_conf /etc/tmpfiles.d/usnm-ocr.conf $'# Written by scripts/ocr-node/node-setup.sh (ADR-0016).\nd /run/usnm-ocr 2750 usnmeng usnmocr -' || true
+systemd-tmpfiles --create /etc/tmpfiles.d/usnm-ocr.conf
+mount_unit=$(systemd-escape --path --suffix=mount "$SCRATCH")
+remount=false
+# Not ordered before local-fs.target like other local mounts, so it can
+# come after systemd-tmpfiles-setup has made /run/usnm-ocr.
+if put_conf "/etc/systemd/system/$mount_unit" "# Written by scripts/ocr-node/node-setup.sh (ADR-0016).
+[Unit]
+Description=usnewsmap OCR engine scratch
+DefaultDependencies=no
+After=systemd-tmpfiles-setup.service
+Conflicts=umount.target
+Before=umount.target
+
+[Mount]
+What=tmpfs
+Where=$SCRATCH
+Type=tmpfs
+Options=size=$SCRATCH_SIZE,mode=0750,uid=$USNM_UID,gid=$OCR_GID,nosuid,nodev,noexec
+
+[Install]
+WantedBy=multi-user.target"; then
+  remount=true
+fi
+
+# The Podman API service in usnmeng's user manager. The units are in
+# /etc/systemd/user, where only root can change them, and run for usnmeng
+# alone.
+api_changed=false
+put_conf /etc/systemd/user/usnm-podman.socket "# Written by scripts/ocr-node/node-setup.sh (ADR-0016).
+[Unit]
+Description=Podman API socket for the OCR worker
+ConditionUser=usnmeng
+
+[Socket]
+ListenStream=$SOCK
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target" && api_changed=true
+put_conf /etc/systemd/user/usnm-podman.service "# Written by scripts/ocr-node/node-setup.sh (ADR-0016).
+[Unit]
+Description=Podman API service for the OCR worker
+Requires=usnm-podman.socket
+After=usnm-podman.socket
+ConditionUser=usnmeng
+
+[Service]
+Type=exec
+KillMode=process
+Delegate=true
+ExecStart=/usr/bin/podman --log-level=info system service" && api_changed=true
+systemctl daemon-reload
+systemctl --global enable usnm-podman.socket > /dev/null 2>&1
+if [ "$remount" = true ] && mountpoint -q "$SCRATCH"; then
+  # Only the size and owners change; a remount keeps the files. The
+  # security flags are repeated so the remount can't drop them.
+  mount -o "remount,size=$SCRATCH_SIZE,mode=0750,uid=$USNM_UID,gid=$OCR_GID,nosuid,nodev,noexec" "$SCRATCH"
+fi
+systemctl enable --now "$mount_unit" > /dev/null
+loginctl enable-linger usnmeng
+if [ "$restart_user" = true ] && systemctl is-active --quiet "user@$ENG_UID.service"; then
+  systemctl restart "user@$ENG_UID.service"
+fi
+for _ in $(seq 1 30); do
+  systemctl is-active --quiet "user@$ENG_UID.service" && break
+  sleep 1
+done
+systemctl is-active --quiet "user@$ENG_UID.service" || die "usnmeng's user manager (user@$ENG_UID.service) didn't start"
+systemctl --user -M usnmeng@ daemon-reload
+if [ "$api_changed" = true ]; then
+  systemctl --user -M usnmeng@ stop usnm-podman.service > /dev/null 2>&1 || true
+  systemctl --user -M usnmeng@ restart usnm-podman.socket
+else
+  systemctl --user -M usnmeng@ start usnm-podman.socket
+fi
+[ -S "$SOCK" ] || die "no socket at $SOCK"
+[ "$(stat -c %U:%G:%a "$SOCK")" = usnmeng:usnmocr:660 ] ||
+  die "$SOCK is $(stat -c %U:%G:%a "$SOCK"), not usnmeng:usnmocr:660"
+cg=/sys/fs/cgroup/user.slice/user-$ENG_UID.slice/user@$ENG_UID.service/cgroup.controllers
+for c in cpu memory pids; do
+  grep -qw "$c" "$cg" || die "the $c controller isn't delegated to usnmeng ($cg: $(cat "$cg"))"
+done
+# The socket as usnm sees it, with podman's own view of the controllers.
+rt=$(mktemp -d /run/usnm-ocr-check.XXXXXX)
+chown usnm:usnm "$rt"
+chmod 0700 "$rt"
+seen=$(cd / && runuser -u usnm -- env HOME=/var/lib/usnm XDG_RUNTIME_DIR="$rt" \
+  podman --remote --url "unix://$SOCK" info --format '{{.Host.CgroupControllers}}' 2>&1) || seen="error: $seen"
+rm -rf "$rt"
+case "$seen" in
+  *cpu*memory*pids*) echo "usnm reaches usnmeng's podman at $SOCK; controllers $seen" ;;
+  *) die "usnm can't use usnmeng's podman at $SOCK: $seen" ;;
+esac
+echo "scratch: $(findmnt -no SOURCE,OPTIONS "$SCRATCH")"
+
 step "The worker's settings and unit"
 # /etc/usnm/ocr-worker.env holds the worker's settings as environment
 # variables: the exchange account's URLs, the node id, the pages in flight
@@ -459,7 +664,6 @@ ENV
 unit_src="$(dirname "$0")/usnm-ocr-worker.service"
 [ -r "$unit_src" ] || die "no $unit_src; onboard.sh copies it beside node-setup.sh"
 want_unit=$(cat "$unit_src")
-unitfile=/etc/systemd/system/usnm-ocr-worker.service
 changed=false
 # Writes $2 to $1 (owner root, group $3, mode $4) if it differs; a new file
 # is put in place with one rename.
@@ -489,6 +693,9 @@ systemctl daemon-reload
 if [ "$changed" = true ] && systemctl is-active --quiet usnm-ocr-worker.service; then
   systemctl restart usnm-ocr-worker.service
   echo "restarted usnm-ocr-worker.service"
+elif [ "$was_active" = true ]; then
+  systemctl start usnm-ocr-worker.service
+  echo "started usnm-ocr-worker.service again"
 fi
 if [ -x /usr/local/bin/usnm-ocr-worker ]; then
   echo "usnm-ocr-worker.service: $(systemctl is-enabled usnm-ocr-worker.service 2> /dev/null || true)," \

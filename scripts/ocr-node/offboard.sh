@@ -16,7 +16,10 @@
 #      it (without --host, deleting the machine in step 4 removes the
 #      extension's resource; the node is gone or unreachable);
 #   3. with --host, over ssh with sudo: stops and disables
-#      usnm-ocr-worker.service, stops the extension manager and removes any
+#      usnm-ocr-worker.service, removes the engine runtime (ADR-0016: the
+#      engine account usnmeng with its containers, images and subordinate
+#      ids, its Podman API units, the cgroup delegation, the scratch tmpfs
+#      and the group usnmocr), stops the extension manager and removes any
 #      extension still installed (`azcmagent extension remove --all`) and,
 #      if the agent is configured (connected or not), runs
 #      `azcmagent disconnect --force-local-only`,
@@ -192,8 +195,34 @@ step "Node"
 # The agent is cleared whenever it's configured (it has a resource name),
 # whether it shows Connected or not: one that can't reach Azure shows
 # Disconnected but still holds the machine's settings.
+# The engine runtime that node-setup.sh sets up (ADR-0016), removed on the
+# node.
+# shellcheck disable=SC2016 # expanded on the node
+ENGINE_REMOVE='if id usnmeng > /dev/null 2>&1; then
+  uid=$(id -u usnmeng)
+  systemctl --user -M usnmeng@ stop usnm-podman.socket usnm-podman.service 2> /dev/null || true
+  loginctl disable-linger usnmeng || true
+  loginctl terminate-user usnmeng 2> /dev/null || true
+  systemctl stop "user@$uid.service" 2> /dev/null || true
+  rm -f "/etc/systemd/system/user@$uid.service.d/50-usnm-delegate.conf"
+  rmdir "/etc/systemd/system/user@$uid.service.d" 2> /dev/null || true
+  semanage fcontext -d -e /var/lib/containers /var/lib/usnmeng/.local/share/containers 2> /dev/null || true
+  userdel --remove usnmeng 2> /dev/null || userdel usnmeng
+  rm -rf /var/lib/usnmeng
+  sed -i "/^usnmeng:/d" /etc/subuid /etc/subgid
+  echo "removed usnmeng"
+fi
+systemctl --global disable usnm-podman.socket 2> /dev/null || true
+rm -f /etc/systemd/user/usnm-podman.socket /etc/systemd/user/usnm-podman.service
+scratch=$(systemd-escape --path --suffix=mount /run/usnm-ocr/scratch)
+systemctl disable --now "$scratch" 2> /dev/null || true
+rm -f "/etc/systemd/system/$scratch" /etc/tmpfiles.d/usnm-ocr.conf
+rm -rf /run/usnm-ocr
+systemctl daemon-reload
+if getent group usnmocr > /dev/null; then groupdel usnmocr && echo "removed group usnmocr"; fi'
 # shellcheck disable=SC2016 # expanded on the node
 REMOTE='systemctl disable --now usnm-ocr-worker.service 2> /dev/null || true
+'"$ENGINE_REMOVE"'
 if ! command -v azcmagent > /dev/null; then
   echo "no Connected Machine agent"
 else
@@ -217,6 +246,7 @@ fi'
 if [ -z "$HOST" ]; then
   echo "no --host; if the node still exists, run on it as root:"
   echo "  systemctl disable --now usnm-ocr-worker.service"
+  printf '%s\n' "$ENGINE_REMOVE" | while IFS= read -r line; do echo "  $line"; done
   echo "  systemctl stop extd"
   echo "  azcmagent extension remove --all"
   echo "  azcmagent disconnect --force-local-only"

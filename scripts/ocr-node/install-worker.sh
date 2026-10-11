@@ -25,7 +25,8 @@
 #      of members in the nodes' Entra group; --nodes must match it.
 #   3. over ssh with sudo (scripts/ocr-node/install-worker-node.sh): puts
 #      the binary in /usr/local/lib/usnm-ocr-worker/<release>/, loads the
-#      Tesseract image into usnm's podman storage, installs the env file
+#      Tesseract image into the engine account's (usnmeng's) podman
+#      storage through its Podman API socket, installs the env file
 #      and the unit, points /usr/local/bin/usnm-ocr-worker at the release
 #      and restarts the unit if it was running.
 #   4. the unit stays disabled unless --enable: then the node reads a
@@ -104,6 +105,7 @@ CURRENT=$(fact current)
 echo "$HOST: $(fact nproc) CPUs; current release: ${CURRENT:-none}; installed: $(fact installed)"
 echo "usnm-ocr-worker.service: $(fact unit)"
 [ -n "$(fact usnm)" ] && [ -n "$(fact podman)" ] || die "no usnm user or no podman on $HOST; run scripts/ocr-node/onboard.sh first"
+[ "$(fact engine_socket)" = yes ] || die "no engine runtime (/run/usnm-ocr/podman.sock) on $HOST; run scripts/ocr-node/onboard.sh again"
 
 if [ "$ROLLBACK" = true ]; then
   step "Rollback"
