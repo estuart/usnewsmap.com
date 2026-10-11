@@ -298,6 +298,24 @@ mod pages {
             Ok(())
         }
 
+        /// A list, set or map of `n` elements needs at least a byte each.
+        fn room_for(&self, n: u64) -> anyhow::Result<()> {
+            if n > (self.b.len().saturating_sub(self.at)) as u64 {
+                bail!("a collection longer than the bytes left");
+            }
+            Ok(())
+        }
+
+        /// Skip one element of a list, set or map: a bool there is a byte
+        /// of its own, not part of a field header.
+        fn element(&mut self, t: u8, depth: usize) -> anyhow::Result<()> {
+            if t == 1 || t == 2 {
+                self.skip(1)
+            } else {
+                self.value(t, depth)
+            }
+        }
+
         /// Skip one value of compact type `t`.
         fn value(&mut self, t: u8, depth: usize) -> anyhow::Result<()> {
             if depth > MAX_DEPTH {
@@ -318,24 +336,20 @@ mod pages {
                         15 => self.varint()?,
                         n => u64::from(n),
                     };
-                    let et = h & 0x0f;
+                    self.room_for(n)?;
                     for _ in 0..n {
-                        // A bool in a list is a byte of its own.
-                        if et == 1 || et == 2 {
-                            self.skip(1)?;
-                        } else {
-                            self.value(et, depth + 1)?;
-                        }
+                        self.element(h & 0x0f, depth + 1)?;
                     }
                     Ok(())
                 }
                 11 => {
                     let n = self.varint()?;
+                    self.room_for(n)?;
                     if n > 0 {
                         let kv = self.byte()?;
                         for _ in 0..n {
-                            self.value(kv >> 4, depth + 1)?;
-                            self.value(kv & 0x0f, depth + 1)?;
+                            self.element(kv >> 4, depth + 1)?;
+                            self.element(kv & 0x0f, depth + 1)?;
                         }
                     }
                     Ok(())
@@ -681,6 +695,13 @@ mod tests {
         let negative = [0x15, 0x00, 0x15, 0x01, 0x15, 0x00, 0x00];
         assert!(pages::declared_bytes(&negative, 0, 7).is_err());
         assert!(pages::declared_bytes(&forged, 0, len + 1).is_err());
+        // An unknown field holding a map<bool, bool> of 2^62 entries in a
+        // few bytes: refused at once, not looped over.
+        let mut map = vec![0x15, 0x00, 0x15, 0x08, 0x15, 0x08, 0xfb]; // field 15: map
+        map.extend([
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f, 0x11, 1, 1, 0x00,
+        ]);
+        assert!(pages::declared_bytes(&map, 0, map.len() as i64).is_err());
     }
 
     #[test]

@@ -236,39 +236,44 @@ impl ObjectStore for LocalStore {
         Ok(out)
     }
 
+    /// Reads from one open handle, so the ETag and size checked are the
+    /// file's whose bytes are read, and reads at most `max_bytes` + 1.
     async fn get_if_match(
         &self,
         path: &str,
         etag: &str,
         max_bytes: u64,
     ) -> Result<Option<Vec<u8>>, StoreError> {
+        use std::io::Read;
         validate_path(path)?;
         let full = self.root.join(path);
-        let m = match tokio::fs::metadata(&full).await {
-            Ok(m) => m,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(io(&full, e)),
-        };
-        if local_etag(&m) != etag {
-            return Ok(None);
-        }
-        if m.len() > max_bytes.min(MAX_OBJECT_BYTES) {
-            return Err(StoreError::TooLarge(path.into()));
-        }
-        let body = match tokio::fs::read(&full).await {
-            Ok(b) => b,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(io(&full, e)),
-        };
-        // Written again while it was read: not the bytes the ETag named.
-        match tokio::fs::metadata(&full).await {
-            Ok(after) if local_etag(&after) == etag && after.len() == body.len() as u64 => {
-                Ok(Some(body))
+        let etag = etag.to_owned();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let file = match std::fs::File::open(&full) {
+                Ok(f) => f,
+                Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(io(&full, e)),
+            };
+            let m = file.metadata().map_err(|e| io(&full, e))?;
+            if local_etag(&m) != etag {
+                return Ok(None);
             }
-            Ok(_) => Ok(None),
-            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(io(&full, e)),
-        }
+            let max = max_bytes.min(MAX_OBJECT_BYTES);
+            if m.len() > max {
+                return Err(StoreError::TooLarge(path));
+            }
+            let mut body = Vec::new();
+            file.take(max + 1)
+                .read_to_end(&mut body)
+                .map_err(|e| io(&full, e))?;
+            if body.len() as u64 > max {
+                return Err(StoreError::TooLarge(path));
+            }
+            Ok(Some(body))
+        })
+        .await
+        .map_err(|e| StoreError::Io(e.to_string()))?
     }
 
     /// Moves the file aside first (atomic), then compares the ETag of the
