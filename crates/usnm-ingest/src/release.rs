@@ -43,6 +43,7 @@ use crate::activity::Reporter;
 use crate::american_stories;
 use crate::build_info;
 use crate::catalog::{Catalog, Place, Title};
+use crate::congress;
 use crate::curated::{read_part, CuratedRow};
 use crate::decade_order::DecadeOrder;
 use crate::dedup::{self, Plan};
@@ -131,6 +132,39 @@ pub struct Release {
     /// nothing is read and the documents are as before; a delta still
     /// carries the published version's `ocr_local_pages.bin` forward.
     pub ocr_local: bool,
+    /// Search the Congress pages the fetch jobs curated under `congress/`
+    /// (#229, 04 §4.10): the version gets a Congress index set
+    /// (`congress-…`), `congress.json`, `congress/baselines.json` and a
+    /// `congress` block in `current.json`. The set is rebuilt when the
+    /// curated units changed since the published version (or its analyzer
+    /// did), else kept; a release with no new batches still publishes for a
+    /// changed set. Off: nothing is read, and the version has no Congress set;
+    /// a published set is removed then (or when no curated pages with text
+    /// are left), by a release of its own if there are no new batches.
+    pub congress: bool,
+}
+
+/// What a release does with the Congress set (`Release::congress`).
+enum CongressPlan {
+    /// No set: the setting is off, or there are no Congress pages with text.
+    Off,
+    /// Build a new index from these units.
+    Build(congress::release::Listing),
+    /// Keep the published version's index, block and files.
+    Keep {
+        index: String,
+        block: Value,
+        files: Vec<(&'static str, Vec<u8>)>,
+    },
+}
+
+/// The Congress set a version ends up with.
+struct CongressOut {
+    index: String,
+    /// This run wrote the index (not kept from the published version).
+    built: bool,
+    block: Value,
+    files: Vec<(&'static str, Vec<u8>)>,
 }
 
 /// What the release reads of `ocr-local` (`Release::ocr_local`).
@@ -353,6 +387,8 @@ struct PublishedPointer {
     /// `page_language`: every main index of the version has the page
     /// languages, and its snapshot their baselines (05 §5.5.8).
     page_language: Option<u32>,
+    /// `congress`: the Congress index set (#229), as published.
+    congress: Option<Value>,
 }
 
 /// How long the writer lock lasts without renewal, and how often it's renewed.
@@ -681,6 +717,18 @@ impl Release {
             tracing::info!("no curated batches; nothing to release");
             return Ok(None);
         }
+        // The Congress pages (#229): listed once, from their counts.
+        let congress_plan = self
+            .congress_plan(previous.as_ref(), pointer.as_ref(), analyzer, switching)
+            .await?;
+        let congress_builds = matches!(congress_plan, CongressPlan::Build(_));
+        // The published version has a Congress set this one won't (the
+        // setting turned off, or no curated pages with text left): a change
+        // to publish even without new batches, or `current.json` would keep
+        // naming the set.
+        let congress_removed = matches!(congress_plan, CongressPlan::Off)
+            && pointer.as_ref().is_some_and(|p| p.congress.is_some());
+        let congress_changes = congress_builds || congress_removed;
         // Our own OCR of the Japanese pages (04 §4.8): its own index, rebuilt
         // at every release from the pages of the version's batches.
         let batch_names: BTreeSet<&str> =
@@ -722,9 +770,21 @@ impl Release {
         // counts: a run with nothing to release returns without it.
         if nothing_new
             && !latin_pending
+            && !congress_changes
             && !self.overlay_releasable(previous.as_ref(), &overlay).await?
         {
             return Ok(None);
+        }
+        if nothing_new && congress_builds {
+            tracing::info!(
+                "no newly curated batches; releasing the changed Congress pages on the same indexes"
+            );
+        }
+        if nothing_new && congress_removed {
+            tracing::info!(
+                "no newly curated batches; releasing the same indexes without the published \
+                 Congress set"
+            );
         }
         let curated_keys = {
             let mut wanted: BTreeSet<String> = overlay
@@ -774,7 +834,7 @@ impl Release {
         // records `latin.rule` and later runs skip the curated parts. The
         // run records the Japanese index as the index it wrote, so there
         // must be one.
-        if overlay_only && latin_pending {
+        if overlay_only && latin_pending && !congress_changes {
             if !overlay.pages.iter().any(ocr_ja::JaPage::indexable) {
                 tracing::info!(
                     "no newly curated batches and no Latin text of ours to add, and the \
@@ -998,9 +1058,20 @@ impl Release {
         };
 
         let (version, index_id) = self.next_names(full).await?;
-        // An overlay-only release adds no main index: the run's new index is the Japanese one.
+        // An overlay-only release adds no main index: the run's new index is
+        // the Japanese one, or with no Japanese pages to index, the Congress
+        // one. A release that only removes the Congress set writes none, and
+        // its run names none (empty) rather than an index that doesn't exist.
         let new_index = if overlay_only {
-            ocr_ja::index_id(&version)
+            if overlay.pages.iter().any(ocr_ja::JaPage::indexable) {
+                ocr_ja::index_id(&version)
+            } else if congress_builds {
+                congress::index_id(&version)
+            } else if congress_removed {
+                String::new()
+            } else {
+                ocr_ja::index_id(&version)
+            }
         } else {
             indexes.push(index_id.clone());
             index_id.clone()
@@ -1021,6 +1092,8 @@ impl Release {
             page_language,
             split_docs,
             analyzer,
+            congress: !matches!(congress_plan, CongressPlan::Off),
+            congress_index: congress_builds,
         };
         let mut run = IndexRun {
             id: version.clone(),
@@ -1109,11 +1182,17 @@ impl Release {
                 .await?;
             // What it built in the end: the Japanese index can come out empty.
             built.ja_index = ja.is_some();
+            let congress_out = self
+                .congress_set(lease, sink, &version, &congress_plan, analyzer)
+                .await?;
             report.step(Step::Publishing).await;
             // What every index of the version is made of, for the log and
             // the manifest: how many splits a cold search opens (05 §5.5.1).
+            // A kept Congress index is listed too, so prune keeps it for
+            // this version.
             let mut laid_out = indexes.clone();
             laid_out.extend(ja.iter().map(|(id, _)| id.clone()));
+            laid_out.extend(congress_out.iter().map(|c| c.index.clone()));
             let layout = sink.layout(&laid_out).await?;
             for l in &layout {
                 l.log();
@@ -1136,14 +1215,15 @@ impl Release {
                     stories_record,
                     &local_files,
                     moves.as_ref(),
+                    congress_out.as_ref(),
                     &build_info::record(&built),
                     analyzer,
                 )
                 .await?;
-            Ok::<_, anyhow::Error>((docs, bounds, ja, added))
+            Ok::<_, anyhow::Error>((docs, bounds, ja, added, congress_out))
         }
         .await;
-        let (docs, (from, to), ja, added) = match outcome {
+        let (docs, (from, to), ja, added, congress_out) = match outcome {
             Ok(v) => v,
             Err(e) => {
                 run.status = RunStatus::Failed;
@@ -1217,6 +1297,11 @@ impl Release {
                 "pages": pages,
             });
         }
+        // The Congress index set (#229), searched with `source=congress`
+        // only, with the same analyzer as the main indexes.
+        if let Some(c) = &congress_out {
+            pointer["congress"] = c.block.clone();
+        }
         self.reference
             .put(
                 "current.json",
@@ -1286,6 +1371,7 @@ impl Release {
             decades: feature("decades"),
             text_layout: feature("text_layout"),
             page_language: feature("page_language"),
+            congress: pointer.get("congress").filter(|c| c.is_object()).cloned(),
         };
         Ok(Some((run, published)))
     }
@@ -1843,6 +1929,157 @@ impl Release {
         Ok((docs, record, replaced, (local_tally, local_replaced)))
     }
 
+    /// What this release does with the Congress set (#229): nothing without
+    /// the setting or Congress pages with text; keep the published set when
+    /// it was built by this rule from the same units with this analyzer on
+    /// this engine; otherwise build a new one.
+    async fn congress_plan(
+        &self,
+        previous: Option<&IndexRun>,
+        pointer: Option<&PublishedPointer>,
+        analyzer: Analyzer,
+        switching: bool,
+    ) -> anyhow::Result<CongressPlan> {
+        let published = pointer.and_then(|p| p.congress.as_ref());
+        if !self.congress {
+            if published.is_some() {
+                tracing::warn!(
+                    "the published version has a Congress index set and --congress is off: \
+                     this version leaves it out"
+                );
+            }
+            return Ok(CongressPlan::Off);
+        }
+        let listing = congress::release::Listing::load(self.curated.as_ref()).await?;
+        tracing::info!(
+            units = listing.units.len(),
+            indexable = listing.indexable(),
+            left_out = ?listing.left_out,
+            "Congress pages"
+        );
+        if listing.indexable() == 0 {
+            if published.is_some() {
+                tracing::warn!(
+                    "no curated Congress pages with text, and the published version has a \
+                     Congress index set: this version leaves it out"
+                );
+            }
+            tracing::info!("no curated Congress pages with text; the version has no Congress set");
+            return Ok(CongressPlan::Off);
+        }
+        let grams = usnm_core::common_grams::version(analyzer);
+        // An index of another engine (a backend switch) is never kept.
+        if let (Some(prev), Some(block), false) = (previous, published, switching) {
+            let path = format!("{}/{}", prev.index_version, congress::release::FILE);
+            if let Some(record) = self.reference.get(&path).await? {
+                let parsed: Value = serde_json::from_slice(&record).context(path.clone())?;
+                if congress::release::unchanged(&parsed, &listing, grams)?
+                    && block["common_grams"] == json!(grams)
+                {
+                    let bpath = format!(
+                        "{}/{}",
+                        prev.index_version,
+                        congress::release::BASELINES_FILE
+                    );
+                    let baselines = self
+                        .reference
+                        .get(&bpath)
+                        .await?
+                        .with_context(|| format!("`{bpath}` is missing"))?;
+                    let index = parsed["index"]
+                        .as_str()
+                        .with_context(|| format!("`{path}` names no index"))?
+                        .to_owned();
+                    tracing::info!(%index, "the Congress pages are unchanged; keeping the published set");
+                    return Ok(CongressPlan::Keep {
+                        index,
+                        block: block.clone(),
+                        files: vec![
+                            (congress::release::FILE, record),
+                            (congress::release::BASELINES_FILE, baselines),
+                        ],
+                    });
+                }
+            }
+        }
+        Ok(CongressPlan::Build(listing))
+    }
+
+    /// The version's Congress set: kept, or built from scratch into
+    /// `congress-{stamp}-{n}` from each unit's parts (checked against its
+    /// counts), one document per page with text.
+    async fn congress_set(
+        &self,
+        lease: &WriterLease,
+        sink: &mut dyn IndexSink,
+        version: &str,
+        plan: &CongressPlan,
+        analyzer: Analyzer,
+    ) -> anyhow::Result<Option<CongressOut>> {
+        let listing = match plan {
+            CongressPlan::Off => return Ok(None),
+            CongressPlan::Keep {
+                index,
+                block,
+                files,
+            } => {
+                return Ok(Some(CongressOut {
+                    index: index.clone(),
+                    built: false,
+                    block: block.clone(),
+                    files: files.clone(),
+                }))
+            }
+            CongressPlan::Build(listing) => listing,
+        };
+        let id = congress::index_id(version);
+        sink.create_with(&id, congress::TEMPLATE).await?;
+        let mut n = 0u64;
+        for (unit, counts) in &listing.units {
+            for part in &counts.parts {
+                lease.check()?;
+                let rows = congress::curated::read_checked(self.curated.as_ref(), part)
+                    .await
+                    .with_context(|| format!("{}/{}", unit.series, unit.unit))?;
+                for r in rows.iter().filter(|r| r.indexable()) {
+                    sink.add(&congress::congress_doc(&r.to_page(), analyzer))
+                        .await?;
+                    n += 1;
+                }
+            }
+        }
+        anyhow::ensure!(
+            n == listing.indexable(),
+            "the Congress parts hold {n} pages with text; their counts say {}",
+            listing.indexable()
+        );
+        tokio::select! {
+            r = sink.finish(n) => r?,
+            () = lease.lost() => lease.check()?,
+        }
+        tracing::info!(index = %id, docs = n, units = listing.units.len(), "built the Congress index");
+        let grams = usnm_core::common_grams::version(analyzer);
+        let baselines = listing.baselines();
+        let block = json!({
+            "indexes": [id],
+            "common_grams": grams,
+            "series": congress::release::series_block(&baselines),
+        });
+        let record = congress::release::record(listing, &id, n, grams);
+        Ok(Some(CongressOut {
+            index: id,
+            built: true,
+            block,
+            files: vec![
+                (congress::release::FILE, serde_json::to_vec(&record)?),
+                (
+                    congress::release::BASELINES_FILE,
+                    serde_json::to_vec(&baselines)?,
+                ),
+            ],
+        }))
+    }
+
     /// Whether a release with no newly curated batches and no Latin text
     /// to add publishes the overlay on the published main indexes (04
     /// §4.8): when our Japanese OCR has changed and has a page to index.
@@ -1976,6 +2213,7 @@ impl Release {
         stories: Option<(&american_stories::Source, &american_stories::Record)>,
         local: &LocalFiles,
         moves: Option<&Moves>,
+        congress: Option<&CongressOut>,
         build: &Value,
         analyzer: Analyzer,
     ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
@@ -2166,6 +2404,10 @@ impl Release {
                 serde_json::to_vec(record)?,
             ));
         }
+        // The Congress set's units and baselines (#229), when it has one.
+        if let Some(c) = congress {
+            snapshot_files.extend(c.files.iter().map(|(n, b)| (*n, b.clone())));
+        }
         let mut files = Vec::new();
         for (name, body) in snapshot_files {
             files.push(json!({
@@ -2199,6 +2441,13 @@ impl Release {
         }
         if let Some(m) = moves {
             manifest["page_languages"] = m.summary();
+        }
+        if let Some(c) = congress {
+            manifest["built_from"]["congress"] = json!({
+                "index": c.index,
+                "built": c.built,
+                "series": c.block["series"],
+            });
         }
         // What built it (#161), with the index templates in full.
         manifest["build"] = build.clone();

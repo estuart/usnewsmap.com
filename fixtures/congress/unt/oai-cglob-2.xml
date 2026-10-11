@@ -1,0 +1,145 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="/digital/media/oai/oai2.xsl"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd">
+  <responseDate>2026-10-11T18:44:44Z</responseDate>
+  <request verb="ListRecords" metadataPrefix="untl" resumptionToken="fixture/page2">https://digital.library.unt.edu/oai/</request>
+  <ListRecords>
+    <record>
+      <header>
+        <identifier>info:ark/67531/metadc30905</identifier>
+        <datestamp>2025-10-08T18:16:09Z</datestamp>
+        <setSpec>partner:UNTGD</setSpec>
+        <setSpec>collection:CGLOB</setSpec>
+        <setSpec>access_rights:public</setSpec>
+      </header>
+      <metadata>
+        <untl:metadata xmlns:untl="http://digital2.library.unt.edu/untl/">
+          <untl:title qualifier="addedtitle">The Congressional Globe: Containing Sketches of the Debates and Proceedings of the First Session of the Twenty-Fourth Congress. Volume II-III</untl:title>
+          <untl:title qualifier="officialtitle">The Congressional Globe, Volume 2-3: Twenty-Fourth Congress, First Session</untl:title>
+          <untl:title qualifier="addedtitle">Index to the Congressional Globe, First Session, Twenty-Fourth Congress</untl:title>
+          <untl:title qualifier="serialtitle">Congressional Globe</untl:title>
+          <untl:title qualifier="seriestitle">24th Congress</untl:title>
+          <untl:title qualifier="sorttitle">Congressional Globe, Congress 24, Session 1</untl:title>
+          <untl:creator qualifier="aut">
+            <untl:name>United States. Congress.</untl:name>
+            <untl:type>org</untl:type>
+          </untl:creator>
+          <untl:publisher>
+            <untl:info>1795-1864</untl:info>
+            <untl:location>Washington D.C.</untl:location>
+            <untl:name>John C. Rives</untl:name>
+          </untl:publisher>
+          <untl:publisher>
+            <untl:location>Washington D.C.</untl:location>
+            <untl:name>George A. Bailey</untl:name>
+          </untl:publisher>
+          <untl:date qualifier="creation">1836</untl:date>
+          <untl:language>eng</untl:language>
+          <untl:description qualifier="content">The Congressional Globe contains the records for sessions of the U.S. Congress including summaries of proceedings, letters, speeches, and some legislation for the Senate and House of Representatives.</untl:description>
+          <untl:description qualifier="physical">XLIV, 616 p. ; 25 cm.</untl:description>
+          <untl:subject qualifier="LCSH">Law</untl:subject>
+          <untl:subject qualifier="LCSH">United States -- Politics and government</untl:subject>
+          <untl:subject qualifier="LCGFT">Periodicals</untl:subject>
+          <untl:subject qualifier="KWD">United States Congress</untl:subject>
+          <untl:subject qualifier="KWD">Congressional documents</untl:subject>
+          <untl:subject qualifier="KWD">minutes</untl:subject>
+          <untl:subject qualifier="KWD">records</untl:subject>
+          <untl:coverage qualifier="placeName">United States</untl:coverage>
+          <untl:coverage qualifier="date">1835-12-07/1836-07-04</untl:coverage>
+          <untl:relation qualifier="version-of">Index to the Congressional Globe, First Session, Twenty-Fourth Congress, ark:/67531/metadc29282</untl:relation>
+          <untl:collection>CGLOB</untl:collection>
+          <untl:institution>UNTGD</untl:institution>
+          <untl:rights qualifier="note">The contents of UNT Digital Library (digital content including images, text, and sound and video recordings) are made publicly available by the collection-holding partners for use in research, teaching, and private study. For the full terms of use, see https://digital.library.unt.edu/terms-of-use/</untl:rights>
+          <untl:resourceType>text_book</untl:resourceType>
+          <untl:format>text</untl:format>
+          <untl:identifier qualifier="itemURL">https://digital.library.unt.edu/ark:/67531/metadc30905/</untl:identifier>
+          <untl:identifier qualifier="OCLC">1716190</untl:identifier>
+          <untl:identifier qualifier="UNTCAT">b2454563</untl:identifier>
+          <untl:identifier qualifier="GOVNO">X 72 - X 180</untl:identifier>
+          <untl:identifier qualifier="LCCN">12-36437</untl:identifier>
+          <untl:identifier qualifier="LCCN">sn 85-18374</untl:identifier>
+          <untl:identifier qualifier="thumbnailURL">https://digital.library.unt.edu/ark:/67531/metadc30905/small/</untl:identifier>
+          <untl:identifier qualifier="ARK">ark:/67531/metadc30905</untl:identifier>
+          <untl:identifier qualifier="iiif-manifest">https://digital.library.unt.edu/ark:/67531/metadc30905/manifest/</untl:identifier>
+          <untl:note qualifier="nonDisplay">comment: Descriptive metadata by nathan.hall 2011-01-26.</untl:note>
+          <untl:meta qualifier="meta-id">metadc30905</untl:meta>
+          <untl:meta qualifier="system">DC</untl:meta>
+          <untl:meta qualifier="ark">ark:/67531/metadc30905</untl:meta>
+          <untl:meta qualifier="metadataCreationDate">2011-01-31, 07:30:42</untl:meta>
+          <untl:meta qualifier="metadataCreator">acpmaker</untl:meta>
+          <untl:meta qualifier="metadataModifier">marreguin</untl:meta>
+          <untl:meta qualifier="metadataModificationDate">2025-10-08, 18:16:09</untl:meta>
+          <untl:meta qualifier="hidden">False</untl:meta>
+        </untl:metadata>
+      </metadata>
+    </record>
+    <record>
+      <header>
+        <identifier>info:ark/67531/metadc30907</identifier>
+        <datestamp>2025-10-08T18:16:24Z</datestamp>
+        <setSpec>partner:UNTGD</setSpec>
+        <setSpec>collection:CGLOB</setSpec>
+        <setSpec>access_rights:public</setSpec>
+      </header>
+      <metadata>
+        <untl:metadata xmlns:untl="http://digital2.library.unt.edu/untl/">
+          <untl:title qualifier="addedtitle">Appendix to the Congressional Globe, for the First Session, Twenty-Fourth Congress: Containing Speeches and Important State Papers</untl:title>
+          <untl:title qualifier="officialtitle">The Congressional Globe: Twenty-Fourth Congress, First Session, Appendix</untl:title>
+          <untl:title qualifier="serialtitle">Congressional Globe</untl:title>
+          <untl:title qualifier="seriestitle">24th Congress</untl:title>
+          <untl:title qualifier="sorttitle">Congressional Globe, Congress 24, Session 1x</untl:title>
+          <untl:creator qualifier="aut">
+            <untl:name>United States. Congress.</untl:name>
+            <untl:type>org</untl:type>
+          </untl:creator>
+          <untl:publisher>
+            <untl:info>1795-1864</untl:info>
+            <untl:location>Washington D.C.</untl:location>
+            <untl:name>John C. Rives</untl:name>
+          </untl:publisher>
+          <untl:publisher>
+            <untl:location>Washington D.C.</untl:location>
+            <untl:name>George A. Bailey</untl:name>
+          </untl:publisher>
+          <untl:date qualifier="creation">1836</untl:date>
+          <untl:language>eng</untl:language>
+          <untl:description qualifier="content">The Congressional Globe contains the records for sessions of the U.S. Congress including summaries of proceedings, letters, speeches, and some legislation for the Senate and House of Representatives.</untl:description>
+          <untl:description qualifier="physical">ix, 786 p. ; 25 cm.</untl:description>
+          <untl:subject qualifier="LCSH">Law</untl:subject>
+          <untl:subject qualifier="LCSH">United States -- Politics and government</untl:subject>
+          <untl:subject qualifier="LCGFT">Periodicals</untl:subject>
+          <untl:subject qualifier="KWD">United States Congress</untl:subject>
+          <untl:subject qualifier="KWD">Congressional documents</untl:subject>
+          <untl:subject qualifier="KWD">minutes</untl:subject>
+          <untl:subject qualifier="KWD">records</untl:subject>
+          <untl:coverage qualifier="placeName">United States</untl:coverage>
+          <untl:coverage qualifier="date">1835-12-07/1836-07-04</untl:coverage>
+          <untl:collection>CGLOB</untl:collection>
+          <untl:institution>UNTGD</untl:institution>
+          <untl:rights qualifier="note">The contents of UNT Digital Library (digital content including images, text, and sound and video recordings) are made publicly available by the collection-holding partners for use in research, teaching, and private study. For the full terms of use, see https://digital.library.unt.edu/terms-of-use/</untl:rights>
+          <untl:resourceType>text_book</untl:resourceType>
+          <untl:format>text</untl:format>
+          <untl:identifier qualifier="itemURL">https://digital.library.unt.edu/ark:/67531/metadc30907/</untl:identifier>
+          <untl:identifier qualifier="OCLC">1716190</untl:identifier>
+          <untl:identifier qualifier="UNTCAT">b2454563</untl:identifier>
+          <untl:identifier qualifier="GOVNO">X 72 - X 180</untl:identifier>
+          <untl:identifier qualifier="LCCN">12-36437</untl:identifier>
+          <untl:identifier qualifier="LCCN">sn 85-18374</untl:identifier>
+          <untl:identifier qualifier="thumbnailURL">https://digital.library.unt.edu/ark:/67531/metadc30907/small/</untl:identifier>
+          <untl:identifier qualifier="ARK">ark:/67531/metadc30907</untl:identifier>
+          <untl:identifier qualifier="iiif-manifest">https://digital.library.unt.edu/ark:/67531/metadc30907/manifest/</untl:identifier>
+          <untl:note qualifier="nonDisplay">comment: Descriptive metadata by nathan.hall 2011-01-26.</untl:note>
+          <untl:meta qualifier="meta-id">metadc30907</untl:meta>
+          <untl:meta qualifier="system">DC</untl:meta>
+          <untl:meta qualifier="ark">ark:/67531/metadc30907</untl:meta>
+          <untl:meta qualifier="metadataCreationDate">2011-01-31, 07:30:42</untl:meta>
+          <untl:meta qualifier="metadataCreator">acpmaker</untl:meta>
+          <untl:meta qualifier="metadataModifier">marreguin</untl:meta>
+          <untl:meta qualifier="metadataModificationDate">2025-10-08, 18:16:24</untl:meta>
+          <untl:meta qualifier="hidden">False</untl:meta>
+        </untl:metadata>
+      </metadata>
+    </record>
+    <resumptionToken cursor="2" completeListSize="4"/>
+  </ListRecords>
+</OAI-PMH>

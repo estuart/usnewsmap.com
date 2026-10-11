@@ -284,4 +284,36 @@ Without the setting nothing is read, the documents are byte for byte what they w
 
 The Congressional Globe (UNT's page OCR), the Serial Set (GovInfo, no key) and the Annals of Congress and Register of Debates (the Library of Congress's scans on Congress.gov, with our own OCR) are planned as a second corpus, searched apart from the newspapers (05 §5.5.6, 06 §6.3.10). The sources, sizes, fetch plans and the design are on #229.
 
-Phase 0 has the shapes only: the curated page (`usnm_ingest::congress::CongressPage`) and the engine document built from it (`congress_doc`). The fetch jobs, the curated Parquet layout, the Congress baselines and the release step that builds the index come with the first source, the Globe.
+Phase 0 added the shapes: the page a release indexes (`usnm_ingest::congress::CongressPage`) and its engine document (`congress_doc`). Phase 1 adds the first source, the Globe, and the release step.
+
+**The Globe from UNT** (`usnm-ingest congress-globe`, `congress::globe`). It runs as the manual job `usnm-cong-caj-<env>` ([operations](../operations.md#congress-pages)):
+
+1. **List.** OAI-PMH `ListRecords` on UNT's `CGLOB` collection in its `untl` format: 112 items, each with its official and sort titles (`Congressional Globe, Congress 25, Session 2`, `Session 1x` for an appendix volume, `Part 2`), its date range and its page extent.
+2. **De-duplicate sessions.** Only one pair of items holds the same pages. `metadc30905` and `metadc30907` (the 24th Congress's first session and its appendix in the 25 cm set) are both in `metadc29282` (the 30 cm set, `xliv, 616, ix, 769 p.`), so the two are left out (`globe::SUPERSEDED`). The five other pairs that share a sort title are different parts of one session catalogued under one title: their extents differ (`942 p.` and `[942] p.`, `xxxv, 1120 p.` and `xiv, 457 p.`), so both stay. A new pair with the same session, part and extent is logged.
+3. **Fetch.** Each item's IIIF manifest lists its pages; each page's OCR is a list of word annotations with boxes (`/ark:/67531/{id}/m1/{seq}/annotations/ocr/`, about 0.7 MB). One request at a time, 3 seconds apart (UNT's `Crawl-delay`), with a User-Agent that names the site and the issue; 429, 5xx and failed or cut-off requests back off (up to 10 minutes, at least `Retry-After`, seconds or a date). With a raw store (`USNM_RAW_URL`, the archive) every response is kept there zstd-compressed under `raw/congress/unt/` (`oai/`, `{id}/manifest.json.zst`, `{id}/ocr/{seq}.json.zst`, a 404 as an empty body) and read back instead of UNT. An item stopped at the deadline writes nothing and the next run resumes it from those copies. The Cosmos lock `congress-globe` keeps two runs apart.
+4. **Read a page** (`congress::parse`). Lines come from the word boxes in UNT's reading order. A word lower or higher by more than half its height, or left of the last, starts a line; one above the line's top starts a column. Most punctuation is gone from UNT's words, so the rules read tokens:
+   - **Day heading:** a weekday (exact, or close: `TftuasDAY`), then month, day and year, and nothing else on the line. A weekday spelled in full must be that date's weekday.
+   - **Chamber heading:** `SENATE`, `IN SENATE` or `HOUSE OF REPRESENTATIVES` in capitals (`OP` for `OF` included), or a chamber then a date (`In Senate, March 3, 1838`, an appendix speech's heading).
+   - **Appendix:** a page whose first four lines start `APPENDIX TO THE CONG…` (the title page, or the running head), after a page number at most. From there to the item's end the pages are appendix. An item whose sort or official title says appendix is appendix throughout.
+   - **Printed page:** the canvas label when it is a number (the 25 cm set's manifests), else a number alone at either end of the first line when that line is a number alone or a running head with `GLOBE`. Otherwise none.
+   - **Members:** `Mr. NAME` in capitals (`McKAY`, `DeGRAFF` allowed), with `of {State}` when printed. They aren't matched to congress-legislators ids yet (`how` is `surname_state` or `unresolved`, and `bioguide` is empty). A state the text names goes into `states` with `via: speaker`.
+5. **Date it** (#229 design §5, `globe::Dating`):
+   - **Heading:** a page takes its first day heading (`heading`, or `appendix_heading` in the appendix).
+   - **Carried:** a page without one takes the last one before it in the item (`carried`).
+   - **Session:** a page before any heading takes the item's first day, or its last in the appendix (`session`).
+   - **Checks:** a heading is used only within the item's dates, give or take 7 days. In the debates it may go back at most 3 days from the one before, since further back is likelier a misread digit.
+   - **Chamber:** carried the same way. Entering the appendix drops the carried date and chamber.
+6. **Write** (`congress::curated`). Each item's pages go in one attempt: `curated/congress/globe/{id}/{attempt}/part-0000.parquet`, then `counts.json` (pages by day, text status, `date_from`, appendix pages, the parts with sha256), written last. Attempts are create-only and numbered from `0001`. A run skips items with a finished attempt unless `--refetch`.
+   - **Columns:** design §7's, the state data included (`states`, `places`, `speakers` as JSON).
+   - **Ids and links:** doc ids are `unt-{id}_p{seq}`; links go to `https://digital.library.unt.edu/ark:/67531/{id}/m1/{seq}/`.
+   - **Citations:** `Cong. Globe, 25th Cong., 2nd Sess. 300`, or `Cong. Globe App., …` in the appendix, the page left off when it isn't known.
+   - **Text:** normalized as LoC's is (§4.5); short and empty pages are counted but not indexed.
+
+**Release** (`--congress`, `USNM_CONGRESS`; off by default, `congress::release`):
+
+- **Units.** It reads each unit's newest finished `counts.json`, leaving superseded units out.
+- **Rebuild or keep.** When the units, the rule (`congress::VERSION`) or the analyzer differ from the published version's `congress.json`, it builds `congress-{stamp}-{n}` from scratch with `infra/quickwit/congress-index.yaml`: one document per page with text, each part checked against its counts. Otherwise the version keeps the published index and carries its files forward. A release with no new batches still publishes for a changed set: the run's new index is then the Congress index, or the Japanese one when it has pages.
+- **Snapshot.** `congress.json` holds the units with their sha256, the index and pages indexed. `congress/baselines.json` is `{series: [[day, pages], …]}`, every page printed, kept apart from the newspapers' baselines. The manifest lists both, and its `indexes` layout includes the Congress index, so prune keeps it for that version.
+- **`current.json`.** It gets `congress: {indexes, common_grams, series: [{series, pages, from, to}]}`, which the API reads (06 §6.3.10).
+- **Build record.** It has `features.congress` and, when the run wrote the index, the template.
+- **Off.** Without the setting nothing is read, and the version has no Congress set. The same holds when no curated unit has a page with text. Leaving out a set the published version has is a change to publish: with no new batches, the release keeps the main indexes (and rebuilds the Japanese one, as every release does) and drops the `congress` block and files. Its run's new index is then the Japanese index, or empty when there are no Japanese pages. Prune deletes the old Congress index once no kept version names it, so it stays while that version is the rollback.

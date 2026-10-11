@@ -4,6 +4,8 @@
 //! no LoC text and makes no keep-or-drop decision; a cloud job checks the
 //! parts and the release decides.
 
+/// Scans read from the prefetch cache before LoC (#368).
+pub mod cache;
 pub mod engine;
 pub mod loc;
 /// Fetching scans ahead of the workers (#368).

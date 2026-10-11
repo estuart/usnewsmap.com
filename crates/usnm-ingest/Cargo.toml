@@ -30,6 +30,8 @@ flate2.workspace = true
 futures.workspace = true
 opentelemetry.workspace = true
 parquet.workspace = true
+# The OAI-PMH listing of the Congressional Globe (congress::globe, #229).
+quick-xml.workspace = true
 reqwest = { workspace = true, features = ["stream", "http2"] }
 rustix.workspace = true
 serde.workspace = true

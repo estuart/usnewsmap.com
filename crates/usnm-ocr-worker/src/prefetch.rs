@@ -96,8 +96,12 @@ pub const WORST_ENGLISH: [&str; 5] = [
 /// A page's fetch group, lowest first: German before the 1920s, the worst
 /// English batches, Czech, Serbian, Russian, then everything else (the
 /// order the maintainer set for a fetch that can't hold every page).
+/// The damage tables give MARC codes (`ger`, `cze`); ISO 639-3 (`deu`,
+/// `ces`) is accepted too.
 pub fn priority(r: &ManifestRow) -> u8 {
-    match r.lang_or_und() {
+    let lang = r.lang_or_und();
+    let iso = usnm_core::lang::marc_to_iso3(lang).unwrap_or(lang);
+    match iso {
         "deu" if r.decade() < 1920 => 0,
         _ if WORST_ENGLISH.contains(&r.batch.as_str()) => 1,
         "ces" => 2,
@@ -135,18 +139,40 @@ pub fn tag(size: ImageSize) -> String {
 
 /// Where a page's scan goes.
 pub fn scan_path(out: &Path, row: &ManifestRow, size: ImageSize) -> PathBuf {
+    page_path(
+        out,
+        &row.batch,
+        &row.lccn,
+        row.date,
+        row.edition,
+        row.seq,
+        size,
+    )
+}
+
+/// Where the scan of page `seq` of an issue goes, under `out`.
+pub fn page_path(
+    out: &Path,
+    batch: &str,
+    lccn: &str,
+    date: chrono::NaiveDate,
+    edition: u16,
+    seq: u16,
+    size: ImageSize,
+) -> PathBuf {
     let ext = match size {
         ImageSize::Full => "jpg".to_owned(),
         ImageSize::Pct(p) => format!("pct{p}.jpg"),
     };
-    out.join(&row.batch)
-        .join(&row.lccn)
-        .join(row.date.format("%Y-%m-%d").to_string())
-        .join(row.edition.to_string())
-        .join(format!("{}.{ext}", row.seq))
+    out.join(batch)
+        .join(lccn)
+        .join(date.format("%Y-%m-%d").to_string())
+        .join(edition.to_string())
+        .join(format!("{seq}.{ext}"))
 }
 
-fn sidecar_path(scan: &Path) -> PathBuf {
+/// The sidecar beside a scan.
+pub fn sidecar_path(scan: &Path) -> PathBuf {
     let mut p = scan.as_os_str().to_owned();
     p.push(".json");
     PathBuf::from(p)
@@ -211,7 +237,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn sha256(bytes: &[u8]) -> String {
+/// A sha256 as lowercase hex.
+pub fn sha256(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }
 
@@ -873,6 +900,22 @@ mod tests {
             rows.push(row("sn2", 1700 + y * 10, 1, "eng"));
         }
         assert_eq!(sample(&rows, 150).len(), 150);
+    }
+
+    #[test]
+    fn priority_reads_marc_and_iso_codes() {
+        let mut r = row("sn1", 1890, 1, "ger");
+        assert_eq!(priority(&r), 0);
+        r.lang = Some("deu".into());
+        assert_eq!(priority(&r), 0);
+        r.date = NaiveDate::from_ymd_opt(1925, 1, 1).unwrap();
+        assert_eq!(priority(&r), 5);
+        for (code, want) in [("cze", 2), ("ces", 2), ("srp", 3), ("rus", 4), ("eng", 5)] {
+            assert_eq!(priority(&row("sn1", 1890, 1, code)), want, "{code}");
+        }
+        let mut r = row("sn1", 1890, 1, "eng");
+        r.batch = "nn_kant".into();
+        assert_eq!(priority(&r), 1);
     }
 
     #[test]
