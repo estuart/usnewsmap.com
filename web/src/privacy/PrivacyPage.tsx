@@ -29,7 +29,7 @@ export default function PrivacyPage() {
         <h2>Page views</h2>
         <p>When you open a page on this site, your browser sends the site's server a short page-view record with:</p>
         <ul>
-          <li>the page's name and title (search, pipeline status, privacy or page not found), never your search;</li>
+          <li>the page's name and title (search, dataset details, privacy or page not found), never your search;</li>
           <li>
             the site that linked you here, cut down to its domain (for example https://www.google.com), or "direct" if
             there was none;
@@ -37,9 +37,9 @@ export default function PrivacyPage() {
           <li>any utm_source, utm_medium and utm_campaign tags in the link you followed.</li>
         </ul>
         <p>
-          The server adds the page's fixed address (such as https://usnewsmap.com/status, with no search in it) and your
-          browser family (such as Firefox) and device type (desktop, mobile or tablet), worked out from your browser's
-          user agent. The user agent itself is not kept. The server then passes the record to Microsoft Azure
+          The server adds the page's fixed address (such as https://usnewsmap.com/datasets, with no search in it) and
+          your browser family (such as Firefox) and device type (desktop, mobile or tablet), worked out from your
+          browser's user agent. The user agent itself is not kept. The server then passes the record to Microsoft Azure
           Application Insights with your IP address. Azure uses the address to look up an approximate location (city,
           region and country), then stores 0.0.0.0 in its place. There is no user ID, session ID or other identifier
           that links page views to each other or to you.
@@ -108,7 +108,7 @@ export default function PrivacyPage() {
         </p>
       </main>
       <footer className="credits">
-        <a href="/">Search</a> · <a href="/status">Pipeline status</a>
+        <a href="/">Search</a> · <a href="/datasets">Dataset details</a>
       </footer>
     </div>
   );

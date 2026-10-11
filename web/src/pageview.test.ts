@@ -65,9 +65,9 @@ describe("report", () => {
     });
     expect(JSON.stringify(first)).not.toContain("zebrasecret");
     expect(JSON.stringify(first)).not.toContain("GA");
-    expect(report("status", false, landing("https://t.co/abc", "?utm_source=x"))).toEqual({
-      route: "status",
-      title: "Pipeline status · US News Map",
+    expect(report("datasets", false, landing("https://t.co/abc", "?utm_source=x"))).toEqual({
+      route: "datasets",
+      title: "Dataset details · US News Map",
       referrer_origin: "internal",
     });
     expect(report("privacy", true, landing("", "")).referrer_origin).toBe("");
@@ -99,7 +99,7 @@ describe("send", () => {
   it("falls back to fetch with keepalive when sendBeacon refuses or is missing", () => {
     const fetch = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
     vi.stubGlobal("fetch", fetch);
-    const body = { route: "status" as const, title: "t", referrer_origin: "internal" };
+    const body = { route: "datasets" as const, title: "t", referrer_origin: "internal" };
     send(body, { sendBeacon: () => false });
     send(body, {} as Pick<Navigator, "sendBeacon">);
     expect(fetch).toHaveBeenCalledTimes(2);

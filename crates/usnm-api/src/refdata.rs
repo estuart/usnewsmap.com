@@ -15,7 +15,7 @@ use usnm_core::params::{ParamError, RawParams, SearchRequest, Source};
 use usnm_core::query::Node;
 use usnm_core::text::{Analyzer, Analyzers};
 use usnm_core::text_layout::TextLayout;
-use usnm_core::time::{day_number, BucketSpec};
+use usnm_core::time::{date_from_day, day_number, BucketSpec};
 use usnm_search::IndexSet;
 use usnm_state::ocr_local::{OcrLocalPages, OCR_LOCAL_PAGES_FILE};
 use usnm_state::state::{
@@ -168,6 +168,9 @@ pub struct RefData {
     pub pages: u64,
     /// Pages published per place (each place's baselines summed).
     pub place_pages: HashMap<String, u64>,
+    /// Pages published per year, oldest first, years without pages left out
+    /// (the baselines summed by year).
+    pub year_pages: Vec<(i32, u64)>,
     /// Pages published per title, from the snapshot's `title_pages.json`;
     /// `None` for snapshots written before releases recorded it.
     pub title_pages: Option<HashMap<String, u64>>,
@@ -177,6 +180,11 @@ pub struct RefData {
     /// Copies of pages that also ship in another batch, left out of `pages`
     /// (04 §4.7); `None` for snapshots that don't record them.
     pub duplicate_pages: Option<u64>,
+    /// What the release that made this version took from American Stories
+    /// for the main index it built (the manifest's
+    /// `built_from.american_stories`, 04 §4.9); `None` when it built none
+    /// with that text.
+    pub american_stories_built: Option<AmericanStoriesBuilt>,
     /// Copies of duplicated pages that an index of the version holds but
     /// searches must not see, from the snapshot's `duplicates.json`.
     pub hidden: Vec<HiddenCopy>,
@@ -220,6 +228,24 @@ struct Manifest {
 #[derive(Debug, Deserialize)]
 struct BuiltFrom {
     batches: Vec<BuiltFromBatch>,
+    #[serde(default)]
+    american_stories: Option<AmericanStoriesBuilt>,
+}
+
+/// The manifest's `built_from.american_stories`: what a release took from
+/// American Stories for the one main index it built, not for the indexes it
+/// kept (a delta's base).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct AmericanStoriesBuilt {
+    /// Years of American Stories' text the release could read.
+    #[serde(default)]
+    pub years: u64,
+    /// Documents of the new index with American Stories' text.
+    #[serde(default)]
+    pub docs: u64,
+    /// Of those, documents with no text of LoC's.
+    #[serde(default)]
+    pub only_american_stories: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,7 +272,7 @@ impl RefData {
     /// against the snapshot manifest.
     pub async fn load_for(store: &dyn ObjectStore, current: Current) -> Result<Self, String> {
         let dir = &current.reference;
-        let manifest: Manifest = parse(
+        let mut manifest: Manifest = parse(
             &format!("{dir}/manifest.json"),
             &fetch(store, &format!("{dir}/manifest.json")).await?,
         )?;
@@ -299,6 +325,10 @@ impl RefData {
             .as_ref()
             .map(|b| b.batches.iter().map(|b| b.batch.clone()).collect())
             .unwrap_or_default();
+        let american_stories_built = manifest
+            .built_from
+            .as_mut()
+            .and_then(|b| b.american_stories.take());
         let published_batches = manifest.built_from.map(|b| {
             b.batches
                 .into_iter()
@@ -333,6 +363,7 @@ impl RefData {
         .map_err(|e| e.to_string())??;
         refdata.published_batches = published_batches;
         refdata.duplicate_pages = manifest.duplicate_pages;
+        refdata.american_stories_built = american_stories_built;
         // A copy of ours that the version hides isn't what its hits show.
         if !refdata.ja_latin.is_empty() {
             let hidden_ours: std::collections::HashSet<(&str, &str)> = hidden
@@ -427,6 +458,13 @@ impl RefData {
             .map(|(id, series)| (id.clone(), series.iter().map(|&(_, n)| u64::from(n)).sum()))
             .collect();
         let pages = place_pages.values().sum();
+        let mut years: std::collections::BTreeMap<i32, u64> = std::collections::BTreeMap::new();
+        for &(day, n) in baselines.values().flatten() {
+            *years
+                .entry(chrono::Datelike::year(&date_from_day(day)))
+                .or_default() += u64::from(n);
+        }
+        let year_pages = years.into_iter().filter(|&(_, n)| n > 0).collect();
         // Queries are folded as each index was built (#168): only a version
         // newer than this API's can't be.
         if let Some(v) = current
@@ -469,9 +507,11 @@ impl RefData {
             language_baselines: None,
             pages,
             place_pages,
+            year_pages,
             title_pages: None,
             published_batches: None,
             duplicate_pages: None,
+            american_stories_built: None,
             hidden: Vec::new(),
             ja_latin: HashMap::new(),
             ocr_local: OcrLocalPages::default(),

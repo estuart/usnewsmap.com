@@ -34,7 +34,7 @@ pub const MAX_ORIGIN: usize = 253;
 /// `not-found` is any other path, so it has no URL.
 pub const ROUTES: [(&str, Option<&str>); 4] = [
     ("search", Some("/")),
-    ("status", Some("/status")),
+    ("datasets", Some("/datasets")),
     ("privacy", Some("/privacy")),
     ("not-found", None),
 ];
@@ -127,7 +127,8 @@ fn too_large() -> ApiError {
 
 fn validate(b: Beacon, site_host: &str) -> Result<Valid, String> {
     let Some(&(route, path)) = ROUTES.iter().find(|(r, _)| *r == b.route) else {
-        return Err("route must be one of search, status, privacy, not-found".to_owned());
+        let names: Vec<&str> = ROUTES.iter().map(|(r, _)| *r).collect();
+        return Err(format!("route must be one of {}", names.join(", ")));
     };
     // Before trimming, which would hide leading or trailing ones.
     for (key, value) in [
@@ -413,7 +414,8 @@ mod tests {
             "home",
             "Search",
             "search?q=gold",
-            "/status",
+            "/datasets",
+            "status",
         ] {
             assert!(validate(beacon(route), "usnewsmap.com").is_err(), "{route}");
         }

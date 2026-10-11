@@ -5,13 +5,15 @@
 //!   image build wrote next to each one.
 //! - Paths that look like app routes (no file extension, not under
 //!   `/assets/`) get `index.html`, so client-side routes survive a reload.
-//!   The app's own pages (`/`, `/status`, `/privacy`) are 200; any other
+//!   The app's own pages (`/`, `/datasets`, `/privacy`) are 200; any other
 //!   such path gets the same shell with a 404, and the app shows a not-found
 //!   page. Missing files are a plain 404. `/privacy` gets its own title,
 //!   canonical link and `og:url` in the shell, since it is indexed.
+//! - `/status`, the dataset details page's old path, is redirected (301) to
+//!   `/datasets` with its query, so existing links keep working.
 //! - Hashed assets are cached for a year; `index.html` is revalidated on
 //!   every load so a release shows up at once.
-//! - Search permalinks (`/?q=…`) and `/status` carry `X-Robots-Tag: noindex`,
+//! - Search permalinks (`/?q=…`) and `/datasets` carry `X-Robots-Tag: noindex`,
 //!   so crawlers that don't run the app see it too.
 //! - Requests for `www.` + the site's host are redirected to the host itself.
 
@@ -115,8 +117,19 @@ fn decoded_len(segment: &str) -> usize {
 fn is_app_page(path: &str) -> bool {
     matches!(
         path.trim_end_matches('/'),
-        "" | "/status" | "/privacy" | "/index.html"
+        "" | "/datasets" | "/privacy" | "/index.html"
     )
+}
+
+/// The dataset details page's path before it was renamed (#294).
+const OLD_DATASETS_PATH: &str = "/status";
+
+/// Where a request for `/status` goes: `/datasets`, keeping the query.
+fn datasets_redirect(uri: &Uri) -> Option<String> {
+    (uri.path().trim_end_matches('/') == OLD_DATASETS_PATH).then(|| match uri.query() {
+        Some(q) => format!("/datasets?{q}"),
+        None => "/datasets".to_owned(),
+    })
 }
 
 /// The shell for `path`: the privacy page's head names that page, not the
@@ -166,6 +179,16 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
     }
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    if let Some(location) = datasets_redirect(req.uri()) {
+        return match HeaderValue::from_str(&location) {
+            Ok(location) => (
+                StatusCode::MOVED_PERMANENTLY,
+                [(header::LOCATION, location)],
+            )
+                .into_response(),
+            Err(_) => (StatusCode::BAD_REQUEST, "bad request").into_response(),
+        };
     }
     let status = if is_app_page(path) {
         StatusCode::OK
@@ -227,10 +250,11 @@ async fn cache_control(req: Request, next: Next) -> Response {
 }
 
 /// Pages that shouldn't appear in search results: search permalinks
-/// (`/?q=…`), which are endless variations on the home page, and `/status`.
+/// (`/?q=…`), which are endless variations on the home page, and the
+/// dataset details page, which changes often (and its old path, `/status`).
 fn noindex(uri: &Uri) -> bool {
     match uri.path().trim_end_matches('/') {
-        "/status" => true,
+        "/datasets" | OLD_DATASETS_PATH => true,
         "" | "/index.html" => uri
             .query()
             .is_some_and(|q| form_urlencoded::parse(q.as_bytes()).any(|(k, _)| k == "q")),
@@ -290,8 +314,8 @@ mod tests {
         for path in [
             "/",
             "//",
-            "/status",
-            "/status/",
+            "/datasets",
+            "/datasets/",
             "/privacy",
             "/privacy/",
             "/index.html",
@@ -303,6 +327,9 @@ mod tests {
             "/search/gold",
             "/statuses",
             "/does-not-exist",
+            "/status",
+            "/status/",
+            "/datasets/x",
             "/status/x",
             "/privacy/x",
             "/index.html/x",
@@ -335,6 +362,8 @@ mod tests {
         let yes = [
             "/?q=gold",
             "/?from=1896-06-01&q=%22cross+of+gold%22",
+            "/datasets",
+            "/datasets/?x=1",
             "/status",
             "/status/?x=1",
         ];
@@ -353,6 +382,17 @@ mod tests {
         ];
         for uri in no {
             assert!(!noindex(&uri.parse().unwrap()), "{uri}");
+        }
+    }
+
+    #[test]
+    fn the_old_status_path_redirects_to_datasets() {
+        let to = |uri: &str| datasets_redirect(&uri.parse().unwrap());
+        assert_eq!(to("/status").as_deref(), Some("/datasets"));
+        assert_eq!(to("/status/").as_deref(), Some("/datasets"));
+        assert_eq!(to("/status?x=1&y=2").as_deref(), Some("/datasets?x=1&y=2"));
+        for uri in ["/datasets", "/status/x", "/statuses", "/", "/v1/status"] {
+            assert_eq!(to(uri), None, "{uri}");
         }
     }
 }

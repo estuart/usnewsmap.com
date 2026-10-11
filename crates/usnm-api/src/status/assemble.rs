@@ -75,6 +75,90 @@ pub struct Published {
     pub by_language: ByLanguage,
     /// The Japanese pages we OCR (#139), when the version has their index.
     pub ja: Option<crate::refdata::JaIndexes>,
+    /// Pages by year of publication, oldest first; years without pages are
+    /// left out.
+    pub by_year: Vec<YearPages>,
+    /// The texts searched besides LoC's OCR, as the version holds them.
+    pub sources: Sources,
+}
+
+/// One year's published pages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct YearPages {
+    pub year: i32,
+    pub pages: u64,
+}
+
+/// The texts the version searches besides LoC's own OCR, each `None` when
+/// the version has none of it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Sources {
+    /// American Stories' text (04 §4.9).
+    pub american_stories: Option<AmericanStories>,
+    /// Our OCR's Latin-script text of Japanese titles' pages, in the main
+    /// index (#203, 04 §4.8).
+    pub ja_latin: Option<JaLatinPages>,
+    /// Our own OCR's text in place of LoC's (12 §12.5 Step 9).
+    pub ocr_local: Option<OcrLocalSummary>,
+}
+
+/// American Stories' text in the version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AmericanStories {
+    /// Searches cover it (`USNM_AMERICAN_STORIES_SEARCH` leaves it on, or
+    /// the version shares one field with LoC's text).
+    pub searched: bool,
+    /// Pages with its text, and of those pages with no text of LoC's, when
+    /// the release that made the version built its only main index (no
+    /// deltas): the manifest records the index it built, so a delta's
+    /// count leaves out its base. `None` otherwise.
+    pub pages: Option<u64>,
+    pub only_pages: Option<u64>,
+    /// Years of its text the release could read, under the same condition.
+    pub years: Option<u64>,
+}
+
+/// Pages whose main-index document holds our OCR's Latin-script text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JaLatinPages {
+    pub pages: u64,
+    /// Why our OCR read them (`missing`, `empty`, `short`, `garbled`,
+    /// `mixed`), most pages first.
+    pub by_reason: Vec<ReasonPages>,
+    /// By newspaper, most pages first.
+    pub by_title: Vec<TitleOcrPages>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReasonPages {
+    pub reason: String,
+    pub pages: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TitleOcrPages {
+    pub lccn: String,
+    /// The catalog's name; the LCCN when the catalog lacks it.
+    pub name: String,
+    pub pages: u64,
+}
+
+/// Pages whose main-index document holds our own OCR's text in place of
+/// LoC's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OcrLocalSummary {
+    pub pages: u64,
+    /// By engine, most pages first.
+    pub by_engine: Vec<EnginePages>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EnginePages {
+    /// `ocr_source`, e.g. `usnm-tesseract`.
+    pub source: String,
+    /// The short engine key.
+    pub engine: String,
+    pub pages: u64,
 }
 
 /// One state's (or territory's) share of the published pages.
@@ -230,6 +314,94 @@ pub fn published(rd: &RefData) -> Published {
         by_state: by_state(rd),
         by_language: by_language(rd),
         ja: c.ja.clone(),
+        by_year: rd
+            .year_pages
+            .iter()
+            .map(|&(year, pages)| YearPages { year, pages })
+            .collect(),
+        sources: sources(rd),
+    }
+}
+
+/// The texts the version searches besides LoC's, from its reference data.
+pub fn sources(rd: &RefData) -> Sources {
+    let american_stories = rd.has_american_stories().then(|| {
+        // The manifest counts the main index its release built: the whole
+        // version's only when that is its one main index.
+        let whole = rd
+            .american_stories_built
+            .as_ref()
+            .filter(|_| rd.current.indexes.len() == 1);
+        AmericanStories {
+            searched: rd.searches_american_stories(),
+            pages: whole.map(|b| b.docs),
+            only_pages: whole.map(|b| b.only_american_stories),
+            years: whole.map(|b| b.years),
+        }
+    });
+    let ja_latin = (!rd.ja_latin.is_empty()).then(|| {
+        let mut reasons: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut titles: BTreeMap<&str, u64> = BTreeMap::new();
+        for (doc_id, p) in &rd.ja_latin {
+            *reasons.entry(p.loc_text.as_str()).or_default() += 1;
+            let lccn = doc_id.split('_').next().unwrap_or(doc_id);
+            *titles.entry(lccn).or_default() += 1;
+        }
+        let mut by_reason: Vec<ReasonPages> = reasons
+            .into_iter()
+            .map(|(r, pages)| ReasonPages {
+                reason: r.to_owned(),
+                pages,
+            })
+            .collect();
+        by_reason.sort_by(|a, b| b.pages.cmp(&a.pages).then_with(|| a.reason.cmp(&b.reason)));
+        let mut by_title: Vec<TitleOcrPages> = titles
+            .into_iter()
+            .map(|(lccn, pages)| TitleOcrPages {
+                lccn: lccn.to_owned(),
+                name: rd
+                    .titles
+                    .get(lccn)
+                    .map_or_else(|| lccn.to_owned(), |t| t.name.clone()),
+                pages,
+            })
+            .collect();
+        by_title.sort_by(|a, b| b.pages.cmp(&a.pages).then_with(|| a.lccn.cmp(&b.lccn)));
+        JaLatinPages {
+            pages: rd.ja_latin.len() as u64,
+            by_reason,
+            by_title,
+        }
+    });
+    let ocr_local = (!rd.ocr_local.is_empty()).then(|| {
+        let mut per = vec![0u64; rd.ocr_local.engines.len()];
+        for e in &rd.ocr_local.entries {
+            if let Some(n) = per.get_mut(usize::from(e.engine)) {
+                *n += 1;
+            }
+        }
+        let mut by_engine: Vec<EnginePages> = rd
+            .ocr_local
+            .engines
+            .iter()
+            .zip(per)
+            .filter(|(_, pages)| *pages > 0)
+            .map(|(e, pages)| EnginePages {
+                source: e.source.clone(),
+                engine: e.engine.clone(),
+                pages,
+            })
+            .collect();
+        by_engine.sort_by(|a, b| b.pages.cmp(&a.pages).then_with(|| a.engine.cmp(&b.engine)));
+        OcrLocalSummary {
+            pages: rd.ocr_local.len() as u64,
+            by_engine,
+        }
+    });
+    Sources {
+        american_stories,
+        ja_latin,
+        ocr_local,
     }
 }
 
@@ -1038,6 +1210,124 @@ mod tests {
             .map(|(t, _)| (t.lccn.clone(), t))
             .collect();
         rd
+    }
+
+    #[tokio::test]
+    async fn pages_by_year_add_up_to_the_versions_pages() {
+        let rd = fixture_refdata().await;
+        let p = published(&rd);
+        assert!(!p.by_year.is_empty());
+        assert_eq!(p.by_year.iter().map(|y| y.pages).sum::<u64>(), p.pages);
+        assert!(p.by_year.windows(2).all(|w| w[0].year < w[1].year));
+        assert!(p.by_year.iter().all(|y| y.pages > 0));
+        assert_eq!(p.by_year.first().unwrap().year, 1895);
+        // The fixture searches LoC's text alone.
+        assert_eq!(
+            p.sources,
+            Sources {
+                american_stories: None,
+                ja_latin: None,
+                ocr_local: None
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn sources_count_the_texts_besides_locs() {
+        use usnm_state::ocr_local::{Engine, Entry};
+        use usnm_state::state::JaLatinPage;
+        let mut rd = fixture_refdata().await;
+        let lccn = rd.titles.keys().min().unwrap().clone();
+        let name = rd.titles[&lccn].name.clone();
+        let page = |reason: &str| JaLatinPage {
+            batch: "b".into(),
+            loc_text: reason.into(),
+            ocr_source: "usnm-ndlocr".into(),
+            ocr_engine: "ndlocr-lite".into(),
+        };
+        rd.ja_latin = HashMap::from([
+            (format!("{lccn}_1942-01-01_ed-1_seq-1"), page("missing")),
+            (format!("{lccn}_1942-01-01_ed-1_seq-2"), page("missing")),
+            ("sn99999999_1942-01-01_ed-1_seq-1".into(), page("mixed")),
+        ]);
+        let engine = |source: &str, engine: &str| Engine {
+            source: source.into(),
+            engine: engine.into(),
+        };
+        let entry = |hash: u64, engine: u8| Entry {
+            hash,
+            engine,
+            batch: 0,
+        };
+        rd.ocr_local = usnm_state::ocr_local::OcrLocalPages {
+            engines: vec![
+                engine("usnm-a", "a/1 x"),
+                engine("usnm-b", "b/1 y"),
+                engine("usnm-c", "c/1 z"),
+            ],
+            entries: vec![entry(1, 1), entry(2, 1), entry(3, 0)],
+        };
+        rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+        rd.american_stories_built = Some(crate::refdata::AmericanStoriesBuilt {
+            years: 3,
+            docs: 900,
+            only_american_stories: 12,
+        });
+        let s = sources(&rd);
+        let ja = s.ja_latin.unwrap();
+        assert_eq!(ja.pages, 3);
+        let reasons: Vec<_> = ja
+            .by_reason
+            .iter()
+            .map(|r| (r.reason.as_str(), r.pages))
+            .collect();
+        assert_eq!(reasons, [("missing", 2), ("mixed", 1)]);
+        assert_eq!(
+            ja.by_title,
+            [
+                TitleOcrPages {
+                    lccn: lccn.clone(),
+                    name,
+                    pages: 2
+                },
+                // Not in the catalog: named by its LCCN.
+                TitleOcrPages {
+                    lccn: "sn99999999".into(),
+                    name: "sn99999999".into(),
+                    pages: 1
+                }
+            ]
+        );
+        let local = s.ocr_local.unwrap();
+        assert_eq!(local.pages, 3);
+        // Most pages first; an engine with no pages is left out.
+        let engines: Vec<_> = local
+            .by_engine
+            .iter()
+            .map(|e| (e.engine.as_str(), e.pages))
+            .collect();
+        assert_eq!(engines, [("b/1 y", 2), ("a/1 x", 1)]);
+        // The fixture has a delta: the manifest's count isn't the version's.
+        assert_eq!(
+            s.american_stories,
+            Some(AmericanStories {
+                searched: true,
+                pages: None,
+                only_pages: None,
+                years: None
+            })
+        );
+        rd.current.indexes.truncate(1);
+        rd.american_stories_search = false;
+        assert_eq!(
+            sources(&rd).american_stories,
+            Some(AmericanStories {
+                searched: false,
+                pages: Some(900),
+                only_pages: Some(12),
+                years: Some(3)
+            })
+        );
     }
 
     #[tokio::test]

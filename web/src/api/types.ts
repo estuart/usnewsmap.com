@@ -460,6 +460,71 @@ export interface Activity {
   next_run: string | null;
 }
 
+/** One year's published pages. */
+export interface YearPages {
+  year: number;
+  pages: number;
+}
+
+/** The texts a version searches besides LoC's OCR; each null when it has none. */
+export interface Sources {
+  /** American Stories' text (Dell et al. 2023). */
+  american_stories: {
+    /** Searches cover it; false when the server's setting leaves it out. */
+    searched: boolean;
+    /**
+     * Pages with its text, and of those with none of LoC's, and the years
+     * read: only when the version's main index was built in one go (no
+     * deltas), else null.
+     */
+    pages: number | null;
+    only_pages: number | null;
+    years: number | null;
+  } | null;
+  /** Japanese titles' pages whose main-index text is our OCR's Latin-script text (#203). */
+  ja_latin: {
+    pages: number;
+    /** Why our OCR read them: missing, empty, short, garbled or mixed. */
+    by_reason: { reason: string; pages: number }[];
+    by_title: { lccn: string; name: string; pages: number }[];
+  } | null;
+  /** Pages whose main-index text is our own OCR in place of LoC's. */
+  ocr_local: {
+    pages: number;
+    by_engine: { source: string; engine: string; pages: number }[];
+  } | null;
+}
+
+/** `GET /v1/versions` (schema 1): every index version the pipeline built (06 §6.3.8). */
+export interface Versions {
+  schema: number;
+  generated_at: string;
+  available: boolean;
+  reason?: string;
+  read_at: string | null;
+  serving: string;
+  versions: VersionItem[];
+}
+
+export interface VersionItem {
+  index_version: string;
+  serving: boolean;
+  full: boolean;
+  status: RunStatus;
+  indexes: string[];
+  new_index: string;
+  batches: number | null;
+  docs: number;
+  pages: number;
+  duplicate_pages: number;
+  started_at: string;
+  published_at: string | null;
+  previous_version: string | null;
+  /** What built it: `features` holds the feature versions (05 §5.5). */
+  build: { features?: Record<string, number | null> } | null;
+  build_source: "recorded" | "reconstructed" | null;
+}
+
 /** `GET /v1/status` (schema 1): the ingest pipeline's status. */
 export interface OcrCount {
   pages: number;
@@ -546,6 +611,10 @@ export interface Status {
     by_language?: ByLanguage;
     /** The Japanese index built from our own OCR; null or absent when the version has none. */
     ja?: { indexes: string[]; fold: number; pages: number } | null;
+    /** Pages by year, oldest first, years without pages left out. Absent from older APIs. */
+    by_year?: YearPages[];
+    /** The texts searched besides LoC's OCR. Absent from older APIs. */
+    sources?: Sources;
   };
   /** Added after schema 1 shipped; older APIs leave it out. */
   activity?: Section<Activity>;

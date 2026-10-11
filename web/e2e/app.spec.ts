@@ -213,7 +213,7 @@ test("exact phrase applies to plain words, like a quoted phrase", async ({ page 
 
 test("the API serves the site: app routes, security headers, cached assets", async ({ page, request }) => {
   test.skip(!process.env.PW_BASE_URL, "only when the API serves the build (CI)");
-  const shell = await request.get("/status/");
+  const shell = await request.get("/datasets/");
   expect(shell.status()).toBe(200);
   expect(shell.headers()["content-type"]).toContain("text/html");
   expect(shell.headers()["cache-control"]).toBe("no-cache");
@@ -269,29 +269,47 @@ test("the search options open with an extra tap on phones", async ({ page, isMob
   await expect(page.getByLabel("Match")).toBeVisible();
 });
 
-test("the status page shows the published version without the pipeline state", async ({ page }) => {
+test("the dataset details show the published version without the pipeline state", async ({ page }) => {
   const errors = watchErrors(page);
   await page.goto("/");
-  await page.getByRole("link", { name: "Pipeline status" }).click();
-  await expect(page).toHaveURL(/\/status$/);
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pipeline status");
+  await page.getByRole("link", { name: "Dataset details" }).click();
+  await expect(page).toHaveURL(/\/datasets$/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Dataset details");
+  await expect(page).toHaveTitle("Dataset details · US News Map");
+  // What's in the index comes first, from the fixtures' numbers.
+  await expect(page.getByRole("heading", { level: 2 })).toHaveText([
+    "What's in the index",
+    "The datasets",
+    "Pages we read ourselves",
+    "Languages",
+    "Places",
+    "In progress",
+    "Versions",
+    "Technical details",
+  ]);
+  await expect(page.getByText(/^The site searches 1,872 newspaper pages from 6 newspapers/)).toBeVisible();
+  await expect(page.getByRole("img", { name: "Pages by decade: all 1,872 are from the 1890s." })).toBeVisible();
+  // The fixtures search the Library of Congress text alone.
+  await expect(page.getByText("Not yet: the search index the site uses now doesn't have its text.")).toBeVisible();
   // CI's API serves the fixtures with no Cosmos: the reference sections
   // work and the pipeline sections say so.
-  await expect(page.getByRole("heading", { level: 2, name: "Right now" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Right now" })).toBeVisible();
   await expect(page.getByText("What the pipeline is doing right now isn't available on this server.")).toBeVisible();
-  await expect(page.getByRole("heading", { level: 2, name: "Searchable now: 1,872 pages" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Searchable now: 1,872 pages" })).toBeVisible();
   await expect(
     page.getByRole("list").filter({ hasText: "Downloaded and processed" }).getByRole("listitem"),
   ).toHaveCount(4);
-  // No OCR report on the fixture API: no OCR section.
-  await expect(page.getByRole("heading", { name: "OCR experiments" })).toBeHidden();
+  // No OCR report on the fixture API: no Japanese progress line.
+  await expect(page.getByText(/Japanese pages read/)).toBeHidden();
   // Operator details start collapsed.
   await expect(page.getByRole("heading", { name: "Index builds (releases)" })).toBeHidden();
   await page.getByText("Show the pipeline's own numbers and terms").click();
   await expect(page.getByRole("heading", { name: "Index builds (releases)" })).toBeVisible();
-  await expect(page.getByText("fixture-v1", { exact: true })).toBeVisible();
+  const technical = page.getByRole("region", { name: "Technical details" });
+  await expect(technical.getByText("fixture-v1", { exact: true })).toBeVisible();
   await expect(page.getByText("1 of 8 deltas used", { exact: false }).first()).toBeVisible();
-  await expect(page.getByText(/^Not available\./)).toHaveCount(4);
+  // The four pipeline sections, and the versions.
+  await expect(page.getByText(/^Not available\./)).toHaveCount(5);
   await expect(page.getByRole("link", { name: "/v1/status" })).toHaveAttribute("href", "/v1/status");
   await page.getByText("Raw response", { exact: true }).last().click();
   await expect(page.locator(".status-json")).toContainText('"schema": 1');
@@ -305,7 +323,7 @@ test("the status page shows the published version without the pipeline state", a
   expect(doc.activity.available).toBe(false);
 });
 
-test("the status page says what the pipeline is doing right now", async ({ page }) => {
+test("the dataset details say what the pipeline is doing right now", async ({ page }) => {
   const errors = watchErrors(page);
   // The fixture API's document, with the pipeline sections of a full
   // rebuild paused on loc.gov's rate limit while it looks up newspapers.
@@ -393,7 +411,9 @@ test("the status page says what the pipeline is doing right now", async ({ page 
     },
   };
   await page.route("**/v1/status", (route) => route.fulfill({ json: doc }));
+  // The old path still works: the API redirects it.
   await page.goto("/status");
+  await expect(page).toHaveURL(/\/datasets$/);
   const line = page.locator(".status-now__line");
   await expect(line).toHaveText(
     /^Looking up newspaper details from the Library of Congress: 342 of 3,464 done \(9\.9%\)\. Paused until (?:[A-Z][a-z]{2} \d{1,2} at )?\d{1,2}:\d\d [AP]M \S+ because loc\.gov asked us to slow down\.$/,
@@ -405,7 +425,7 @@ test("the status page says what the pipeline is doing right now", async ({ page 
     ),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { level: 2, name: "Searchable now: 1,872 of 23,794,152 downloaded pages (under 0.1%)" }),
+    page.getByRole("heading", { level: 3, name: "Searchable now: 1,872 of 23,794,152 downloaded pages (under 0.1%)" }),
   ).toBeVisible();
 
   // Four steps; the current one is marked, and its state is in words.
@@ -417,8 +437,8 @@ test("the status page says what the pipeline is doing right now", async ({ page 
   await expect(current).toContainText("Paused");
   await expect(steps.nth(0)).toContainText("Done");
   await expect(steps.nth(2)).toContainText("Waiting");
-  // The Japanese OCR is its own section, not a step.
-  await expect(page.getByRole("heading", { level: 2, name: "OCR experiments" })).toBeVisible();
+  // The Japanese OCR is with its dataset, not a step.
+  await expect(page.getByRole("heading", { level: 3, name: "Our OCR of the Japanese-language pages" })).toBeVisible();
   await expect(page.getByText(/^Reading Japanese pages: 3,300 of 11,000 done \(30%\), about [45] h/)).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "3,300 of 11,000 Japanese pages read" })).toBeVisible();
 
@@ -436,9 +456,9 @@ test("the status page says what the pipeline is doing right now", async ({ page 
   expect(errors).toEqual([]);
 });
 
-test("the status page lists published pages by state and by language", async ({ page }) => {
+test("the dataset details list published pages by state and by language", async ({ page }) => {
   const errors = watchErrors(page);
-  await page.goto("/status");
+  await page.goto("/datasets");
   // The fixtures: six places in six states, 312 pages each; four titles in
   // English (one of them also German), one German and one Spanish.
   const states = page.getByRole("table", { name: "Published pages by state", includeHidden: true });
@@ -557,7 +577,7 @@ test("the footer credits link to the NEH and Library of Congress newspaper progr
 });
 
 test("every footer link is underlined, since it sits in running text (#212)", async ({ page }) => {
-  // axe's link-in-text-block caught "Pipeline status" and "Privacy" on the
+  // axe's link-in-text-block caught the status page's link and "Privacy" on the
   // live site at 400 px but not on the fixtures, whose footer text is
   // shorter; so check the cue itself, then axe at that width.
   await page.setViewportSize({ width: 400, height: 800 });
