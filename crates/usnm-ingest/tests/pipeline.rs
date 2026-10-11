@@ -618,6 +618,7 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
         "titles.json",
         "places.json",
         "title_pages.json",
+        "title_dates.json",
     ] {
         let want: Value =
             serde_json::from_slice(&std::fs::read(fixtures().join("fixture-v1").join(f)).unwrap())
@@ -692,6 +693,12 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
     let title_pages = refdata.title_pages.as_ref().unwrap();
     assert_eq!(title_pages.len(), 6);
     assert_eq!(title_pages.values().sum::<u64>(), refdata.pages);
+    // And each title's first and last page, within the version's bounds.
+    let title_dates = refdata.title_dates.as_ref().unwrap();
+    assert_eq!(title_dates.len(), 6);
+    let first = title_dates.values().map(|d| d.first).min().unwrap();
+    assert_eq!(first.to_string(), current["bounds"]["from"]);
+    assert!(title_dates.values().all(|d| d.first <= d.last));
 
     // A full release (compaction) rebuilds one base with every page.
     let p3 = e.release(15, true).await.unwrap();
@@ -2184,6 +2191,7 @@ async fn pages_in_two_batches_are_kept_once() {
     for f in [
         "baselines.json",
         "title_pages.json",
+        "title_dates.json",
         "language_baselines.json",
     ] {
         let want: Value =
@@ -3674,6 +3682,7 @@ async fn american_stories_text_is_indexed_beside_locs() {
     for f in [
         "baselines.json",
         "title_pages.json",
+        "title_dates.json",
         "language_baselines.json",
     ] {
         let want: Value =

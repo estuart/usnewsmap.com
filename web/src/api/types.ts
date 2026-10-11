@@ -124,6 +124,13 @@ export interface TitleEntry {
   last_year: number | null;
   /** Pages in the version; null on a version that doesn't count pages per title. */
   pages: number | null;
+  /**
+   * Dates ("1895-01-05") of the title's first and last pages in the version, not its
+   * years of publication; null (or absent, from an older API) on a version that doesn't
+   * record them.
+   */
+  first_page_date?: string | null;
+  last_page_date?: string | null;
   /** Catalog language codes, such as "eng". */
   languages: string[];
 }

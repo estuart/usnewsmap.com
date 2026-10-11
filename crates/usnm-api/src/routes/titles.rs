@@ -7,6 +7,7 @@ use std::sync::Arc;
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::Uri;
 use axum::response::Response;
+use chrono::NaiveDate;
 use serde::Serialize;
 use usnm_core::params::RawParams;
 
@@ -38,10 +39,15 @@ struct TitleOut {
     /// The place's name, as `/v1/places` has it.
     place: Option<String>,
     state: String,
+    /// Years of publication in LoC's record: the paper's whole run.
     first_year: Option<u16>,
     last_year: Option<u16>,
     /// Pages in the version; `null` for a snapshot without `title_pages.json`.
     pages: Option<u64>,
+    /// The dates of the title's first and last pages in the version; `null`
+    /// for a snapshot without `title_dates.json`.
+    first_page_date: Option<NaiveDate>,
+    last_page_date: Option<NaiveDate>,
     languages: Vec<String>,
 }
 
@@ -53,6 +59,7 @@ struct Links {
 }
 
 fn title_out(rd: &RefData, t: &Title) -> TitleOut {
+    let dates = rd.title_dates.as_ref().and_then(|d| d.get(&t.lccn));
     TitleOut {
         lccn: t.lccn.clone(),
         title: t.name.clone(),
@@ -65,6 +72,8 @@ fn title_out(rd: &RefData, t: &Title) -> TitleOut {
             .title_pages
             .as_ref()
             .map(|p| p.get(&t.lccn).copied().unwrap_or(0)),
+        first_page_date: dates.map(|d| d.first),
+        last_page_date: dates.map(|d| d.last),
         languages: t.languages.clone(),
     }
 }

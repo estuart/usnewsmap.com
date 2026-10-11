@@ -55,8 +55,8 @@ use crate::sink::{Decades, IndexSink, MainLayout};
 use crate::source::hex;
 use crate::state::{
     Curated, IndexRun, JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, RunBatch, RunStatus,
-    State, Step, DUPLICATES_FILE, JA_LATIN_FILE, LANGUAGE_BASELINES_FILE, RUN_BATCHES_FILE,
-    TITLE_PAGES_FILE,
+    State, Step, TitleDates, DUPLICATES_FILE, JA_LATIN_FILE, LANGUAGE_BASELINES_FILE,
+    RUN_BATCHES_FILE, TITLE_DATES_FILE, TITLE_PAGES_FILE,
 };
 
 pub use crate::state::{MAX_DELTAS, WRITER_LOCK};
@@ -1957,9 +1957,9 @@ impl Release {
         Ok(Some((id, n)))
     }
 
-    /// Write `{version}/` (titles, places, baselines, pages per title, the
-    /// batch list, the hidden duplicate copies, manifest last) and return the
-    /// version's date bounds. A page in more than one batch counts once.
+    /// Write `{version}/` (titles, places, baselines, pages per title and
+    /// their first and last dates, the batch list, the hidden duplicate
+    /// copies, manifest last) and return the version's date bounds. A page in more than one batch counts once.
     /// The manifest also records `layout`, the splits of each index, when
     /// the engine has splits.
     #[allow(clippy::too_many_arguments)]
@@ -1983,6 +1983,8 @@ impl Release {
         // Every page counted once, by its title: the same pages as the
         // baselines, which sum them by place instead.
         let mut title_pages: BTreeMap<String, u64> = BTreeMap::new();
+        // And each title's first and last day with a page.
+        let mut title_days = TitleDays::default();
         // The same pages again, by the languages their title lists.
         let mut by_language: BTreeMap<Vec<String>, BTreeMap<String, BTreeMap<u32, u32>>> =
             BTreeMap::new();
@@ -2000,8 +2002,11 @@ impl Release {
                         .entry(title.place_id.clone())
                         .or_default()
                 });
-                let total = title_pages.entry(lccn).or_default();
+                let total = title_pages.entry(lccn.clone()).or_default();
                 for (day, pages) in days {
+                    if pages > 0 {
+                        title_days.add(&lccn, day);
+                    }
                     *series.entry(day).or_default() += pages;
                     if let Some(s) = language_series.as_mut() {
                         *s.entry(day).or_default() += pages;
@@ -2049,6 +2054,7 @@ impl Release {
                 .entry(day)
                 .or_default() += 1;
             *title_pages.entry(p.key.lccn.clone()).or_default() += 1;
+            title_days.add(&p.key.lccn, day);
             if let Some(set) = language_set(title) {
                 *by_language
                     .entry(set)
@@ -2090,6 +2096,7 @@ impl Release {
             ("places.json", serde_json::to_vec(&places)?),
             ("baselines.json", serde_json::to_vec(&baselines)?),
             (TITLE_PAGES_FILE, serde_json::to_vec(&title_pages)?),
+            (TITLE_DATES_FILE, serde_json::to_vec(&title_days.dates())?),
             (
                 LANGUAGE_BASELINES_FILE,
                 serde_json::to_vec(&language_baselines)?,
@@ -2382,6 +2389,41 @@ async fn drain(
     }
 }
 
+/// Each title's first and last day with a published page, as day numbers
+/// (`usnm_core::time::day_number`).
+#[derive(Debug, Default)]
+struct TitleDays(BTreeMap<String, (u32, u32)>);
+
+impl TitleDays {
+    fn add(&mut self, lccn: &str, day: u32) {
+        match self.0.get_mut(lccn) {
+            Some((first, last)) => {
+                *first = (*first).min(day);
+                *last = (*last).max(day);
+            }
+            None => {
+                self.0.insert(lccn.to_owned(), (day, day));
+            }
+        }
+    }
+
+    /// `{lccn: {first, last}}`, as `title_dates.json` has it.
+    fn dates(&self) -> BTreeMap<&str, TitleDates> {
+        self.0
+            .iter()
+            .map(|(lccn, &(first, last))| {
+                (
+                    lccn.as_str(),
+                    TitleDates {
+                        first: date_from_day(first),
+                        last: date_from_day(last),
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
 /// The languages a title lists, sorted and without repeats; `None` when it
 /// lists none (no language filter matches its pages).
 fn language_set(title: &Title) -> Option<Vec<String>> {
@@ -2425,6 +2467,24 @@ mod tests {
         );
         t.languages = vec![];
         assert_eq!(language_set(&t), None);
+    }
+
+    #[test]
+    fn title_days_keep_each_titles_first_and_last_page() {
+        let day = |y, m, d| day_number(NaiveDate::from_ymd_opt(y, m, d).unwrap());
+        let mut days = TitleDays::default();
+        days.add("sn2", day(1890, 5, 1));
+        days.add("sn1", day(1900, 1, 2));
+        days.add("sn1", day(1883, 6, 30));
+        days.add("sn1", day(1922, 12, 31));
+        days.add("sn1", day(1901, 1, 1));
+        assert_eq!(
+            serde_json::to_value(days.dates()).unwrap(),
+            json!({
+                "sn1": {"first": "1883-06-30", "last": "1922-12-31"},
+                "sn2": {"first": "1890-05-01", "last": "1890-05-01"},
+            })
+        );
     }
 
     /// A sink that never answers, like a writer that stopped taking pages.

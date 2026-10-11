@@ -659,9 +659,15 @@ async fn titles_list_every_newspaper_versioned_like_places() {
             "first_year": 1892,
             "last_year": 1897,
             "pages": 312,
+            "first_page_date": "1895-01-05",
+            "last_page_date": "1897-12-25",
             "languages": ["eng", "ger"],
         })
     );
+    // The dates of its pages are the version's, apart from the years of
+    // publication: every fixture title has pages from 1895 to 1897.
+    assert_eq!(titles[0]["first_year"], 1891);
+    assert_eq!(titles[0]["first_page_date"], "1895-01-05");
     // An open-ended run ("1896-current") has no last year.
     assert_eq!(titles[5]["first_year"], 1896);
     assert!(titles[5]["last_year"].is_null());
@@ -2696,6 +2702,50 @@ async fn a_snapshot_without_pages_per_title_still_loads() {
     std::fs::write(&path, text).unwrap();
     let err = RefData::load(&store).await.unwrap_err();
     assert!(err.contains("title_pages.json does not match"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A snapshot from before releases recorded each title's page dates still
+/// loads, and its titles list them as `null`; one whose file doesn't match
+/// its manifest doesn't load.
+#[tokio::test]
+async fn a_snapshot_without_title_dates_still_loads() {
+    let dir = temp_data_dir("no-title-dates");
+    let store = LocalStore::new(&dir);
+    std::fs::remove_file(dir.join("fixture-v1/title_dates.json")).unwrap();
+    let manifest = dir.join("fixture-v1/manifest.json");
+    let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    m["files"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|f| f["path"] != "title_dates.json");
+    std::fs::write(&manifest, m.to_string()).unwrap();
+    let rd = RefData::load(&store).await.unwrap();
+    assert!(rd.title_dates.is_none());
+    assert!(rd.title_pages.is_some());
+    let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+    let (status, _, body) = get(&s, "/v1/titles").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let titles = body["titles"].as_array().unwrap();
+    assert_eq!(titles.len(), 6);
+    assert!(titles
+        .iter()
+        .all(|t| t["first_page_date"].is_null() && t["last_page_date"].is_null()));
+    assert!(titles.iter().all(|t| t["pages"].is_u64()));
+    let (_, _, one) = get(&s, "/v1/titles/sn99000001").await;
+    assert!(one["first_page_date"].is_null() && one["last_page_date"].is_null());
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Listed in the manifest but altered: the version doesn't load.
+    let dir = temp_data_dir("bad-title-dates");
+    let store = LocalStore::new(&dir);
+    let path = dir.join("fixture-v1/title_dates.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replacen("1895-01-05", "1895-01-06", 1);
+    std::fs::write(&path, text).unwrap();
+    let err = RefData::load(&store).await.unwrap_err();
+    assert!(err.contains("title_dates.json does not match"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

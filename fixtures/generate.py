@@ -298,6 +298,7 @@ def main():
     as_rng = random.Random(1865)
     OUT.mkdir(parents=True, exist_ok=True)
     titles, docs_base, docs_delta, baselines, title_pages, by_language = [], [], [], {}, {}, {}
+    title_dates = {}
     for pid, ordinal, name, state, *_ in PLACES:
         lccn = f"sn99{ordinal:06d}"
         languages = LANGUAGES.get(pid, ["eng"])
@@ -354,6 +355,11 @@ def main():
         baselines[pid] = sorted(counts.items())
         by_language.setdefault(tuple(sorted(set(languages))), {})[pid] = sorted(counts.items())
         title_pages[lccn] = sum(counts.values())
+        # The title's first and last days with a page, as the release records them.
+        title_dates[lccn] = {
+            "first": (EPOCH + timedelta(days=min(counts))).isoformat(),
+            "last": (EPOCH + timedelta(days=max(counts))).isoformat(),
+        }
 
     snap = OUT / VERSION
     snap.mkdir(exist_ok=True)
@@ -378,9 +384,12 @@ def main():
     (snap / "language_baselines.json").write_text(json.dumps(language_baselines) + "\n")
     # Pages per title (the status page's pages by language), keys sorted.
     (snap / "title_pages.json").write_text(json.dumps(title_pages, indent=1, sort_keys=True) + "\n")
+    # Each title's first and last page date, keys sorted.
+    (snap / "title_dates.json").write_text(json.dumps(title_dates, indent=1, sort_keys=True) + "\n")
     # The API verifies every reference file against this manifest (04 §4.3).
     files = []
-    for name in ("baselines.json", "language_baselines.json", "places.json", "title_pages.json", "titles.json"):
+    for name in ("baselines.json", "language_baselines.json", "places.json", "title_dates.json", "title_pages.json",
+                 "titles.json"):
         data = (snap / name).read_bytes()
         files.append({"path": name, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
     manifest = {"index_version": VERSION, "files": files}

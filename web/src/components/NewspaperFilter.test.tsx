@@ -12,7 +12,8 @@ import {
   newspaperSummary,
   paperFilterNames,
   titleDetail,
-  years,
+  pagesDetail,
+  published,
 } from "./NewspaperFilter";
 import { SearchBar } from "./SearchBar";
 
@@ -27,6 +28,8 @@ const paper = (lccn: string, title: string, place: string, state: string, pages:
   first_year: 1871,
   last_year: 1922,
   pages,
+  first_page_date: "1880-01-03",
+  last_page_date: "1910-06-30",
   languages: ["eng"],
   ...extra,
 });
@@ -70,14 +73,32 @@ describe("finding newspapers (07 §7.13)", () => {
   });
 
   it("describes a paper by place, years, languages and pages", () => {
-    expect(titleDetail(TITLES[4]!)).toBe("New Orleans, LA · 1871–1922 · French, English · 20,000 pages");
-    expect(years({ first_year: 1850, last_year: null })).toBe("1850–");
-    expect(years({ first_year: 1898, last_year: 1898 })).toBe("1898");
-    expect(years({ first_year: null, last_year: null })).toBe("");
-    expect(titleDetail({ ...TITLES[0]!, place: null, pages: null, first_year: null, last_year: null })).toBe(
-      "NE · English",
+    expect(titleDetail(TITLES[4]!)).toBe(
+      "New Orleans, LA · published 1871–1922 · French, English · 20,000 pages from 1880 to 1910",
     );
+    expect(published({ first_year: 1850, last_year: null })).toBe("published from 1850");
+    expect(published({ first_year: null, last_year: 1922 })).toBe("published until 1922");
+    expect(published({ first_year: 1898, last_year: 1898 })).toBe("published 1898");
+    expect(published({ first_year: null, last_year: null })).toBe("");
+    const unknown = { pages: null, first_year: null, last_year: null, first_page_date: null, last_page_date: null };
+    expect(titleDetail({ ...TITLES[0]!, place: null, ...unknown })).toBe("NE · English");
     expect(locTitleUrl("sn84026749")).toBe("https://www.loc.gov/item/sn84026749/");
+  });
+
+  it("tells the years of a paper's pages apart from its years of publication", () => {
+    const dated = { first_page_date: "1885-03-02", last_page_date: "1910-12-31" };
+    expect(pagesDetail({ pages: 12345, ...dated })).toBe("12,345 pages from 1885 to 1910");
+    expect(pagesDetail({ pages: 1, first_page_date: "1898-05-01", last_page_date: "1898-05-01" })).toBe(
+      "1 page from 1898",
+    );
+    expect(pagesDetail({ pages: null, ...dated })).toBe("pages from 1885 to 1910");
+    // A version that doesn't record the dates: null, or absent from an older API.
+    expect(pagesDetail({ pages: 12345, first_page_date: null, last_page_date: null })).toBe("12,345 pages");
+    expect(pagesDetail({ pages: 12345 })).toBe("12,345 pages");
+    expect(pagesDetail({ pages: null })).toBe("");
+    expect(titleDetail({ ...TITLES[5]!, first_page_date: null, last_page_date: null })).toBe(
+      "San Francisco, CA · published from 1871 · English · 30,000 pages",
+    );
   });
 
   it("summarises the choice", () => {

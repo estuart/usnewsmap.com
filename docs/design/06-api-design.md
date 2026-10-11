@@ -356,7 +356,7 @@ Matching pages per day for up to 20 places, so the site can work out their exact
 
 ### 6.3.11 `GET /v1/titles` and `GET /v1/titles/{lccn}` (#274)
 
-The newspapers in the published version, from its reference snapshot alone ([04 §4.3](04-data-sources-and-ingestion.md)): `titles.json` joined with `places.json` and `title_pages.json`. The site's newspaper filter loads the list once per version and searches it in the browser ([07 §7.13](07-frontend-design.md#713-newspaper-filter)); there are about 3,000 titles.
+The newspapers in the published version, from its reference snapshot alone ([04 §4.3](04-data-sources-and-ingestion.md)): `titles.json` joined with `places.json`, `title_pages.json` and `title_dates.json`. The site's newspaper filter loads the list once per version and searches it in the browser ([07 §7.13](07-frontend-design.md#713-newspaper-filter)); there are about 3,000 titles.
 
 ```jsonc
 // GET /v1/titles?v=pages-v20261001-1
@@ -372,6 +372,8 @@ The newspapers in the published version, from its reference snapshot alone ([04 
       "first_year": 1902,
       "last_year": 1939,
       "pages": 254311,
+      "first_page_date": "1902-01-01",
+      "last_page_date": "1939-07-31",
       "languages": ["eng"],
     },
     …
@@ -380,7 +382,8 @@ The newspapers in the published version, from its reference snapshot alone ([04 
 ```
 
 - `titles` is every title of the snapshot, by LCCN. A release writes only titles with pages in the version (04 §4.3), so each has some. `title` is the catalog's name, and `place` the name of the place at `place_id`, as `/v1/places` has it (`null` if the snapshot lacks the place). `languages` are the catalog's codes, as `lang` takes them (§6.3.1), in the catalog's order.
-- `first_year` and `last_year` are the years of publication in LoC's title record (its `dates`, such as "1902-1939"), as `geocode` reads them (04 §4.6): the paper's whole run, not the years of its pages in this version. Either is `null` when the record gives none; `last_year` is `null` for an open end ("1896-current"). The dates of a title's own pages aren't in the snapshot: the baselines count pages per place, and `title_pages.json` per title without dates. Recording them is a change to the release.
+- `first_year` and `last_year` are the years of publication in LoC's title record (its `dates`, such as "1902-1939"), as `geocode` reads them (04 §4.6): the paper's whole run, not the years of its pages in this version. Either is `null` when the record gives none; `last_year` is `null` for an open end ("1896-current").
+- `first_page_date` and `last_page_date` are the dates of the title's first and last pages in this version, from `title_dates.json` (04 §4.3): the same pages `pages` counts, so they fall inside the version's bounds and usually inside the years of publication (LoC's record can be wrong). Both are `null` for every title on a snapshot published before releases wrote that file; such a snapshot still loads, as one without `title_pages.json` does.
 - `pages` is the title's pages in the version, from `title_pages.json`; `null` for every title on a snapshot published before that file.
 - **One title.** `/v1/titles/{lccn}` answers the same fields for one title, at the top level beside `index_version`, and `links.loc`, its page at the Library of Congress (`https://www.loc.gov/item/{lccn}/`), where its issues can be browsed by date.
 - **Errors.** Both take only `v`; any other parameter answers 400 `/errors/bad-parameter`. An `lccn` that isn't one the version has answers 404 `/errors/not-found`, as does one that isn't shaped like an LCCN (1 to 16 lowercase letters and digits, the `lccn` parameter's rule). A stale `v` is redirected (307) before the title is looked up, so a link to a title an older version had learns that the version changed rather than getting a 404 at once.
