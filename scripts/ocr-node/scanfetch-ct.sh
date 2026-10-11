@@ -7,7 +7,7 @@
 # pve-ocr-storage.sh; safe to run again.
 #
 #   scanfetch-ct.sh --create [--ctid 211] [--hostname usnm-scanfetch]
-#     [--storage ssd] [--bridge vmbr0] [--cores 2] [--memory 1024]
+#     [--storage ssd] [--bridge vmbr0] [--cores 2] [--memory 4096] [--swap 512]
 #     [--template local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst]
 #     [--data /tank/ocr]
 #   scanfetch-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7> [--ctid 211]
@@ -32,7 +32,7 @@ die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '2,28s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-CTID=211 NAME=usnm-scanfetch STORAGE=ssd BRIDGE=vmbr0 CORES=2 MEMORY=1024
+CTID=211 NAME=usnm-scanfetch STORAGE=ssd BRIDGE=vmbr0 CORES=2 MEMORY=4096 SWAP=512
 TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst DATA=/tank/ocr
 CREATE=false INSTALL=false CONFIGURE=false ENABLE=false RELEASE=""
 MANIFEST="" RESOLUTION=full ORDER=priority MAX_BYTES="" CONCURRENCY=2
@@ -51,6 +51,7 @@ while [ $# -gt 0 ]; do
     --bridge) BRIDGE=${2:-}; shift 2 ;;
     --cores) CORES=${2:-}; shift 2 ;;
     --memory) MEMORY=${2:-}; shift 2 ;;
+    --swap) SWAP=${2:-}; shift 2 ;;
     --template) TEMPLATE=${2:-}; shift 2 ;;
     --data) DATA=${2:-}; shift 2 ;;
     --release) RELEASE=${2:-}; shift 2 ;;
@@ -68,6 +69,7 @@ while [ $# -gt 0 ]; do
 done
 $CREATE || $INSTALL || $CONFIGURE || usage
 [[ $CTID =~ ^[0-9]+$ ]] || die "--ctid: a number"
+[[ $MEMORY =~ ^[0-9]+$ && $SWAP =~ ^[0-9]+$ ]] || die "--memory and --swap: MB"
 [ "$(id -u)" = 0 ] || die "run as root on the Proxmox host"
 command -v pct > /dev/null || die "no pct here: run on the Proxmox host"
 in_ct() { pct exec "$CTID" -- "$@"; }
@@ -78,14 +80,16 @@ if $CREATE; then
   if ! pct status "$CTID" > /dev/null 2>&1; then
     pct create "$CTID" "$TEMPLATE" \
       --hostname "$NAME" --unprivileged 1 --features nesting=1 \
-      --cores "$CORES" --memory "$MEMORY" --swap 0 \
+      --cores "$CORES" --memory "$MEMORY" --swap "$SWAP" \
       --rootfs "$STORAGE:4" --onboot 1 --ostype debian \
       --net0 "name=eth0,bridge=$BRIDGE,ip=dhcp,firewall=0" \
       --mp0 "$DATA/scans,mp=/tank/ocr/scans" \
       --mp1 "$DATA/manifests,mp=/tank/ocr/manifests,ro=1" \
       --description "usnewsmap scan prefetch (#368): the only LoC fetcher while it runs. scripts/ocr-node/scanfetch-ct.sh"
   else
-    echo "CT $CTID exists; leaving its configuration as it is"
+    # Memory and swap apply live; the rest of an existing CT is left as it is.
+    pct set "$CTID" --memory "$MEMORY" --swap "$SWAP"
+    echo "CT $CTID exists; memory $MEMORY MB, swap $SWAP MB, the rest left as it is"
   fi
   pct status "$CTID" | grep -q running || pct start "$CTID"
   for _ in $(seq 30); do

@@ -839,8 +839,14 @@ pub async fn run(
         .await
         .with_context(|| format!("reading {}", opts.manifest.display()))?;
     let manifest_sha256 = sha256(&bytes);
-    let rows = prefetch::decode(Bytes::from(bytes)).context("reading the manifest")?;
-    let manifest_pages = rows.len();
+    // Only the rows of the sets asked for are held (about 250 bytes a row).
+    let mut manifest_pages = 0usize;
+    let sets = opts.sets;
+    let rows = prefetch::decode_where(Bytes::from(bytes), |r| {
+        manifest_pages += 1;
+        sets.has(set_of(r))
+    })
+    .context("reading the manifest")?;
     let rows = select(rows, &opts);
     // The status is named for the resolution of the set the run starts with.
     let status_tag = tag(if opts.sets == Sets::Buffer {
