@@ -413,12 +413,26 @@ impl Engine for Tesseract {
             )
             .into());
         }
+        // What Tesseract said, for a run that exits 0 but writes nothing.
+        let said = || {
+            let files: Vec<String> = std::fs::read_dir(work)
+                .map(|d| {
+                    d.filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            format!(
+                "scratch holds {files:?}; tesseract said: {}",
+                tail(&String::from_utf8_lossy(&out.stderr), 400)
+            )
+        };
         let text = tokio::fs::read_to_string(base.with_extension("txt"))
             .await
-            .context("tesseract wrote no text")?;
+            .with_context(|| format!("tesseract wrote no text ({})", said()))?;
         let alto = tokio::fs::read(base.with_extension("xml"))
             .await
-            .context("tesseract wrote no ALTO")?;
+            .with_context(|| format!("tesseract wrote no ALTO ({})", said()))?;
         Ok(EngineOutput {
             text,
             alto,
