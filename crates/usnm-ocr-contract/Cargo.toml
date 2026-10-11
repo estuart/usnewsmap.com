@@ -1,15 +1,20 @@
 [package]
 name = "usnm-ocr-contract"
 version = "0.1.0"
-description = "US News Map on-prem OCR wire formats: queue messages and dead letters (#296; 13 §13.2)"
+description = "US News Map on-prem OCR wire formats: queue messages, dead letters and the scan prefetch manifest (#296; 13 §13.2)"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 usnm-core.workspace = true
+anyhow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
 base64.workspace = true
+bytes.workspace = true
 chrono.workspace = true
+parquet.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

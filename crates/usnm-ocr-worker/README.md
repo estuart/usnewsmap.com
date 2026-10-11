@@ -28,6 +28,22 @@ usnm-ocr-worker check-engine --tesseract-image sha256:<image id>
 usnm-ocr-worker --version
 ```
 
+## Prefetching scans
+
+`prefetch` fetches the scans a manifest lists (`usnm-ingest ocr-prefetch-manifest`, #368) onto local disk with the same LoC client and pacing as `run`, so a node's engines can read them later without asking LoC again. It runs in the scan-fetch container on pve-big (`scripts/ocr-node/scanfetch-ct.sh`, 12 §12.2.4).
+
+```sh
+# Fetch every page, German before the 1920s first, stopping at 2.5 TB on disk.
+usnm-ocr-worker prefetch --manifest /tank/ocr/manifests/<version>/manifest.parquet \
+  --out /tank/ocr/scans --resolution full --max-total-bytes 2500000000000
+
+# About 300 pages stratified by language and decade, scaled to 50%, then a projection.
+usnm-ocr-worker prefetch --manifest <manifest> --out <dir> --sample 300 --resolution scaled:50
+usnm-ocr-worker prefetch-estimate --manifest <manifest> --index <dir>/index-pct50.jsonl
+```
+
+Scans go to `<out>/<batch>/<lccn>/<date>/<edition>/<seq>.jpg` (`<seq>.pct<n>.jpg` when scaled), each with a sidecar `<file>.json` holding the tile.loc.gov URL, the fetch time, the size and the sha256. A run skips scans that match their sidecar, so it resumes where it stopped and can be pointed at a newer manifest. Other flags: `--limit`, `--order priority|issue`, `--concurrency` (2; the pages share the gaps), `--lock-file` (default `<out>/.prefetch.lock`; one fetching process at a time), `--progress-every` (100), `--api-gap-ms` and `--tile-gap-ms`. It writes `status-<res>.json`, `index-<res>.jsonl` and `failures-<res>.jsonl` in `<out>`, logs progress as JSON lines, and stops after 20 pages fail in a row.
+
 `--queue-url` and `--out-url` also take a directory, so the whole loop runs locally with no Azure at all. Other `run` flags: `--api-gap-ms` (3500) and `--tile-gap-ms` (1000) set the gaps between loc.gov API and image requests, `--visibility-secs` (1800) sets how long a taken message stays hidden, and `--shutdown-grace-secs` (60) sets how long in-flight pages get after SIGTERM. The Tesseract flags are `--tesseract-bin` or `--tesseract-image` (with `--podman-bin`, and `--podman-url` with `--scratch-dir`, `--engine-memory-mib` (1536), `--engine-cpus` (1) and `--engine-pids` (64)), `--psm` (3), `--dpi` (300), `--threads-per-page` (1) and `--page-timeout-secs` (600).
 
 These `run` flags can also come from the environment, which is how the node's unit sets them (`/etc/usnm/ocr-worker.env`, written by `scripts/ocr-node/install-worker.sh`): `USNM_OCR_QUEUE_URL`, `USNM_OCR_OUT_URL`, `USNM_OCR_NODE_ID`, `USNM_OCR_CONCURRENCY`, `USNM_OCR_API_GAP_MS`, `USNM_OCR_TILE_GAP_MS`, `USNM_OCR_VISIBILITY_SECS`, and for the engine `USNM_OCR_TESSERACT_IMAGE`, `USNM_OCR_PODMAN_URL`, `USNM_OCR_SCRATCH_DIR`, `USNM_OCR_ENGINE_MEMORY_MIB`, `USNM_OCR_ENGINE_CPUS` and `USNM_OCR_ENGINE_PIDS` (the unit sets the socket and the scratch directory). A flag on the command line wins. `--shutdown-grace-secs` and `--once` are command-line only: the unit's `TimeoutStopSec` is set for the default grace.

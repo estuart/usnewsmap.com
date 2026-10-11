@@ -1,0 +1,1168 @@
+//! `usnm-ocr-worker prefetch` (#368): fetch the scans a manifest lists
+//! (`usnm_ocr_contract::prefetch`) onto a node's disk ahead of the workers,
+//! so every engine reads the same local scan and LoC serves each image
+//! once.
+//!
+//! **Fetching** goes through [`LocClient`], the worker's own client: the
+//! same User-Agent, 3.5 s between loc.gov API requests and 1 s between
+//! image requests (shared by every page in flight in this process),
+//! `Retry-After` honoured on 429 and 503 and a 403 held the same way, at
+//! most an hour. Nothing works around a block: after
+//! [`Options::max_failures_in_a_row`] pages fail in a row the run stops.
+//! A lock file in the output directory keeps it to one fetching process.
+//!
+//! **Layout**: `<out>/<batch>/<lccn>/<date>/<edition>/<seq>.<ext>`, where
+//! `<ext>` is `jpg` for a full scan and `pct<n>.jpg` for one scaled to n%,
+//! with a sidecar `<file>.json` ([`Sidecar`]) holding the LoC URL, the
+//! fetch time, the size and the sha256. The scan is written to a `.part`
+//! file, synced and renamed, then the sidecar the same way, so a scan
+//! counts only once its sidecar is there. Each fetch is also appended to
+//! `<out>/index-<tag>.jsonl`, and each failure to `<out>/failures-<tag>.jsonl`
+//! (`<tag>` is `full` or `pct<n>`).
+//!
+//! **Resuming**: a page whose scan and sidecar are there, with the size and
+//! sha256 the sidecar records, is skipped; anything else is fetched again.
+//!
+//! **Status**: `<out>/status-<tag>.json` ([`Status`]), rewritten every
+//! [`Options::progress_every`] pages and every 30 s, with a log line
+//! (JSON on stdout, so journald under systemd) at each one. Logs name
+//! pages by doc_id.
+
+use std::collections::BTreeMap;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyhow::{bail, Context};
+use bytes::Bytes;
+use chrono::{DateTime, SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio::sync::{watch, Semaphore};
+use tokio::time::Instant;
+use usnm_ocr_contract::prefetch::{self, ManifestRow};
+
+use crate::loc::{image_url, FetchError, ImageSize, LocClient, USER_AGENT};
+
+/// What to fetch.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// The manifest (`manifest.parquet`).
+    pub manifest: PathBuf,
+    /// The root the scans go under.
+    pub out: PathBuf,
+    pub size: ImageSize,
+    /// Only the first this many pages (after `sample`).
+    pub limit: Option<usize>,
+    /// A sample of about this many pages, stratified by language and decade.
+    pub sample: Option<usize>,
+    /// Pages in flight at once (they share the pacers).
+    pub concurrency: usize,
+    /// A status write and log line every this many pages.
+    pub progress_every: u64,
+    /// Stop after this many pages fail in a row.
+    pub max_failures_in_a_row: u32,
+    /// The order pages are fetched in.
+    pub order: Order,
+    /// Stop starting pages once the scans of this run's pages that are
+    /// on disk (already there or fetched) add up to this many bytes.
+    pub max_total_bytes: Option<u64>,
+    /// The lock that keeps it to one fetching process; default
+    /// `<out>/.prefetch.lock`. Runs into different directories that must
+    /// not overlap (a sample beside the bulk fetch) share one.
+    pub lock_file: Option<PathBuf>,
+}
+
+/// The order pages are fetched in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    /// The manifest's (issue) order.
+    Issue,
+    /// By [`priority`] group, then issue order within each.
+    Priority,
+}
+
+/// The base names of the worst English batches (ADR-0015).
+pub const WORST_ENGLISH: [&str; 5] = [
+    "nn_kant",
+    "txdn_japan",
+    "nn_bentham",
+    "nn_carson",
+    "kyu_frenchie",
+];
+
+/// A page's fetch group, lowest first: German before the 1920s, the worst
+/// English batches, Czech, Serbian, Russian, then everything else (the
+/// order the maintainer set for a fetch that can't hold every page).
+pub fn priority(r: &ManifestRow) -> u8 {
+    match r.lang_or_und() {
+        "deu" if r.decade() < 1920 => 0,
+        _ if WORST_ENGLISH.contains(&r.batch.as_str()) => 1,
+        "ces" => 2,
+        "srp" => 3,
+        "rus" => 4,
+        _ => 5,
+    }
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            manifest: PathBuf::new(),
+            out: PathBuf::new(),
+            size: ImageSize::Full,
+            limit: None,
+            sample: None,
+            concurrency: 2,
+            progress_every: 100,
+            max_failures_in_a_row: 20,
+            order: Order::Priority,
+            max_total_bytes: None,
+            lock_file: None,
+        }
+    }
+}
+
+/// The tag of a size in file names: `full` or `pct50`.
+pub fn tag(size: ImageSize) -> String {
+    match size {
+        ImageSize::Full => "full".into(),
+        ImageSize::Pct(p) => format!("pct{p}"),
+    }
+}
+
+/// Where a page's scan goes.
+pub fn scan_path(out: &Path, row: &ManifestRow, size: ImageSize) -> PathBuf {
+    let ext = match size {
+        ImageSize::Full => "jpg".to_owned(),
+        ImageSize::Pct(p) => format!("pct{p}.jpg"),
+    };
+    out.join(&row.batch)
+        .join(&row.lccn)
+        .join(row.date.format("%Y-%m-%d").to_string())
+        .join(row.edition.to_string())
+        .join(format!("{}.{ext}", row.seq))
+}
+
+fn sidecar_path(scan: &Path) -> PathBuf {
+    let mut p = scan.as_os_str().to_owned();
+    p.push(".json");
+    PathBuf::from(p)
+}
+
+/// What is recorded beside each scan, and in the index.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sidecar {
+    pub doc_id: String,
+    pub batch: String,
+    pub batch_version: u16,
+    /// The image URL fetched, on tile.loc.gov.
+    pub loc_url: String,
+    pub iiif_base: String,
+    /// `full` or `scaled:<n>`.
+    pub resolution: String,
+    pub fetched_at: DateTime<Utc>,
+    pub bytes: u64,
+    pub sha256: String,
+    /// The image request's time, sent to last byte.
+    pub download_ms: u64,
+    pub user_agent: String,
+}
+
+/// `status-<tag>.json`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Status {
+    /// `running`, `done`, `budget` (`--max-total-bytes` reached),
+    /// `stopped` (asked to) or `failed`.
+    pub state: String,
+    pub version: String,
+    pub pid: u32,
+    pub started_at: String,
+    pub updated_at: String,
+    pub manifest: String,
+    pub manifest_sha256: String,
+    pub resolution: String,
+    pub out: String,
+    /// Pages this run works through (after `--sample` and `--limit`).
+    pub pages: u64,
+    /// Pages finished: already there, fetched or failed.
+    pub finished: u64,
+    pub already_there: u64,
+    pub fetched: u64,
+    pub failed_permanent: u64,
+    pub failed_transient: u64,
+    pub bytes_fetched: u64,
+    /// This run's pages on disk: already there plus fetched.
+    pub bytes_on_disk: u64,
+    pub max_total_bytes: Option<u64>,
+    pub elapsed_secs: u64,
+    pub fetched_per_hour: f64,
+    pub eta_secs: Option<u64>,
+    /// Seconds loc.gov still holds our requests for, if it asked us to wait.
+    pub loc_hold_secs: Option<u64>,
+    pub last_doc_id: String,
+    pub error: Option<String>,
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
+fn now_rfc3339() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+/// A stable 64-bit order for a doc_id (the first 8 bytes of its sha256).
+fn rank(doc_id: &str) -> u64 {
+    let d = Sha256::digest(doc_id.as_bytes());
+    u64::from_be_bytes(d[..8].try_into().expect("8 bytes"))
+}
+
+/// About `n` rows stratified by (language, decade): one from each stratum
+/// (the largest strata first, when `n` is smaller than their number), the
+/// rest shared in proportion to the strata's sizes (largest remainders),
+/// never more than a stratum holds. Within a stratum the rows with the
+/// lowest [`rank`] are taken, so the same manifest gives the same sample.
+/// Returned in issue order.
+pub fn sample(rows: &[ManifestRow], n: usize) -> Vec<ManifestRow> {
+    let mut strata: BTreeMap<(String, i32), Vec<&ManifestRow>> = BTreeMap::new();
+    for r in rows {
+        strata
+            .entry((r.lang_or_und().to_owned(), r.decade()))
+            .or_default()
+            .push(r);
+    }
+    let mut keys: Vec<(String, i32)> = strata.keys().cloned().collect();
+    // Largest first; ties in key order.
+    keys.sort_by(|a, b| strata[b].len().cmp(&strata[a].len()).then(a.cmp(b)));
+    let mut take: BTreeMap<(String, i32), usize> = BTreeMap::new();
+    if n <= keys.len() {
+        for k in keys.iter().take(n) {
+            take.insert(k.clone(), 1);
+        }
+    } else {
+        for k in &keys {
+            take.insert(k.clone(), 1);
+        }
+        let total = rows.len() as f64;
+        let rest = (n - keys.len()) as f64;
+        let mut shares: Vec<(f64, &(String, i32))> = Vec::new();
+        let mut given = 0usize;
+        for k in &keys {
+            let want = rest * strata[k].len() as f64 / total;
+            let whole = (want.floor() as usize).min(strata[k].len() - 1);
+            *take.get_mut(k).expect("set above") += whole;
+            given += whole;
+            shares.push((want - want.floor(), k));
+        }
+        shares.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(b.1)));
+        let mut left = (n - keys.len()).saturating_sub(given);
+        // Round after round in remainder order, until the sample is full or
+        // every stratum is.
+        while left > 0 {
+            let mut gave = false;
+            for (_, k) in &shares {
+                if left == 0 {
+                    break;
+                }
+                let t = take.get_mut(*k).expect("set above");
+                if *t < strata[*k].len() {
+                    *t += 1;
+                    left -= 1;
+                    gave = true;
+                }
+            }
+            if !gave {
+                break;
+            }
+        }
+    }
+    let mut out: Vec<ManifestRow> = Vec::new();
+    for (k, rows) in &mut strata {
+        rows.sort_by_key(|r| (rank(&r.doc_id), r.doc_id.clone()));
+        let t = take.get(k).copied().unwrap_or(0);
+        out.extend(rows.iter().take(t).map(|r| (*r).clone()));
+    }
+    prefetch::sort(&mut out);
+    out
+}
+
+/// The size of the scan at `scan`, if it and its sidecar are there and
+/// agree (size and sha256).
+async fn verified(scan: &Path, row: &ManifestRow, size: ImageSize) -> Option<u64> {
+    let side = tokio::fs::read(sidecar_path(scan)).await.ok()?;
+    let side = serde_json::from_slice::<Sidecar>(&side).ok()?;
+    if side.doc_id != row.doc_id || side.resolution != size.to_string() {
+        return None;
+    }
+    let b = tokio::fs::read(scan).await.ok()?;
+    (b.len() as u64 == side.bytes && sha256(&b) == side.sha256).then_some(side.bytes)
+}
+
+/// Write `body` to `path` through a synced `.part` file and a rename.
+async fn write_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<()> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let dir = path.parent().context("no parent directory")?;
+        std::fs::create_dir_all(dir)?;
+        let mut part = path.as_os_str().to_owned();
+        part.push(".part");
+        let part = PathBuf::from(part);
+        let mut f = std::fs::File::create(&part)?;
+        f.write_all(&body)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&part, &path)?;
+        Ok(())
+    })
+    .await?
+}
+
+/// An append-only JSON Lines file, shared by the tasks.
+struct Lines(Mutex<std::fs::File>);
+
+impl Lines {
+    fn open(path: &Path) -> anyhow::Result<Self> {
+        Ok(Self(Mutex::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .with_context(|| format!("opening {}", path.display()))?,
+        )))
+    }
+
+    fn push(&self, v: &impl Serialize) -> anyhow::Result<()> {
+        let mut line = serde_json::to_vec(v)?;
+        line.push(b'\n');
+        let mut f = self.0.lock().expect("lines lock");
+        f.write_all(&line)?;
+        Ok(())
+    }
+}
+
+/// A failure line.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Failure {
+    pub doc_id: String,
+    /// `permanent` (LoC said no, or lists no image) or `transient`.
+    pub kind: String,
+    pub error: String,
+    pub at: String,
+}
+
+#[derive(Default)]
+struct Counts {
+    finished: AtomicU64,
+    already_there: AtomicU64,
+    fetched: AtomicU64,
+    failed_permanent: AtomicU64,
+    failed_transient: AtomicU64,
+    bytes_fetched: AtomicU64,
+    /// Bytes of scans found already there.
+    bytes_there: AtomicU64,
+    in_a_row: AtomicU32,
+}
+
+struct Run {
+    opts: Options,
+    loc: Arc<LocClient>,
+    counts: Counts,
+    status: Mutex<Status>,
+    status_path: PathBuf,
+    status_write: Mutex<()>,
+    index: Lines,
+    failures: Lines,
+    started: Instant,
+    /// Set when the run must stop taking pages: (state, error).
+    stop: Mutex<Option<(String, Option<String>)>>,
+}
+
+impl Run {
+    fn snapshot(&self, state: &str) -> Status {
+        let c = &self.counts;
+        let mut s = self.status.lock().expect("status lock").clone();
+        s.state = state.to_owned();
+        s.updated_at = now_rfc3339();
+        s.finished = c.finished.load(Ordering::SeqCst);
+        s.already_there = c.already_there.load(Ordering::SeqCst);
+        s.fetched = c.fetched.load(Ordering::SeqCst);
+        s.failed_permanent = c.failed_permanent.load(Ordering::SeqCst);
+        s.failed_transient = c.failed_transient.load(Ordering::SeqCst);
+        s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
+        s.bytes_on_disk = s.bytes_fetched + c.bytes_there.load(Ordering::SeqCst);
+        let secs = self.started.elapsed().as_secs_f64();
+        s.elapsed_secs = secs as u64;
+        let worked = s.finished.saturating_sub(s.already_there);
+        s.fetched_per_hour = if secs >= 1.0 {
+            (s.fetched as f64 * 3600.0 / secs * 10.0).round() / 10.0
+        } else {
+            0.0
+        };
+        s.eta_secs = (worked > 0 && secs >= 1.0)
+            .then(|| (s.pages.saturating_sub(s.finished) as f64 * secs / worked as f64) as u64);
+        s.loc_hold_secs = self
+            .loc
+            .held_until()
+            .map(|t| t.saturating_duration_since(Instant::now()).as_secs());
+        s
+    }
+
+    fn write_status(&self, state: &str) {
+        // One write at a time: the ticker and the page tasks share the
+        // `.tmp` file.
+        let _one = self.status_write.lock().expect("status write lock");
+        let s = self.snapshot(state);
+        let write = || -> anyhow::Result<()> {
+            let mut tmp = self.status_path.as_os_str().to_owned();
+            tmp.push(".tmp");
+            let tmp = PathBuf::from(tmp);
+            std::fs::write(&tmp, serde_json::to_vec_pretty(&s)?)?;
+            std::fs::rename(&tmp, &self.status_path)?;
+            Ok(())
+        };
+        if let Err(e) = write() {
+            tracing::warn!(error = %e, "can't write the status file");
+        }
+        tracing::info!(
+            state,
+            finished = s.finished,
+            pages = s.pages,
+            already_there = s.already_there,
+            fetched = s.fetched,
+            failed_permanent = s.failed_permanent,
+            failed_transient = s.failed_transient,
+            bytes_fetched = s.bytes_fetched,
+            fetched_per_hour = s.fetched_per_hour,
+            eta_secs = s.eta_secs,
+            loc_hold_secs = s.loc_hold_secs,
+            "prefetch progress"
+        );
+    }
+
+    fn stop_with(&self, state: &str, error: Option<String>) {
+        let mut stop = self.stop.lock().expect("stop lock");
+        if stop.is_none() {
+            *stop = Some((state.to_owned(), error));
+        }
+    }
+
+    fn stopping(&self) -> bool {
+        self.stop.lock().expect("stop lock").is_some()
+    }
+
+    async fn page(&self, row: ManifestRow) -> anyhow::Result<()> {
+        let size = self.opts.size;
+        let path = scan_path(&self.opts.out, &row, size);
+        let c = &self.counts;
+        if let Some(n) = verified(&path, &row, size).await {
+            c.already_there.fetch_add(1, Ordering::SeqCst);
+            c.bytes_there.fetch_add(n, Ordering::SeqCst);
+            // A page that is done breaks a run of failures too.
+            c.in_a_row.store(0, Ordering::SeqCst);
+            return Ok(());
+        }
+        let key = row.key()?;
+        match self.loc.scan_at(&key, size).await {
+            Ok(scan) => {
+                let side = Sidecar {
+                    doc_id: row.doc_id.clone(),
+                    batch: row.batch.clone(),
+                    batch_version: row.batch_version,
+                    loc_url: image_url(&scan.iiif_base, size),
+                    iiif_base: scan.iiif_base.clone(),
+                    resolution: size.to_string(),
+                    fetched_at: Utc::now(),
+                    bytes: scan.jpeg.len() as u64,
+                    sha256: sha256(&scan.jpeg),
+                    download_ms: u64::try_from(scan.download.as_millis()).unwrap_or(u64::MAX),
+                    user_agent: USER_AGENT.to_owned(),
+                };
+                write_atomic(&path, scan.jpeg.to_vec()).await?;
+                write_atomic(&sidecar_path(&path), serde_json::to_vec_pretty(&side)?).await?;
+                self.index.push(&side)?;
+                c.fetched.fetch_add(1, Ordering::SeqCst);
+                c.bytes_fetched.fetch_add(side.bytes, Ordering::SeqCst);
+                c.in_a_row.store(0, Ordering::SeqCst);
+            }
+            Err(e) => {
+                let (kind, msg) = match &e {
+                    FetchError::Permanent(m) => ("permanent", m.clone()),
+                    FetchError::Transient(m) => ("transient", m.clone()),
+                };
+                tracing::warn!(doc_id = row.doc_id, kind, error = msg, "prefetch failed");
+                self.failures.push(&Failure {
+                    doc_id: row.doc_id.clone(),
+                    kind: kind.into(),
+                    error: msg.chars().take(300).collect(),
+                    at: now_rfc3339(),
+                })?;
+                if kind == "permanent" {
+                    c.failed_permanent.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    c.failed_transient.fetch_add(1, Ordering::SeqCst);
+                }
+                let n = c.in_a_row.fetch_add(1, Ordering::SeqCst) + 1;
+                if n >= self.opts.max_failures_in_a_row {
+                    self.stop_with(
+                        "failed",
+                        Some(format!(
+                            "{n} pages failed in a row (the last: {msg}); stopping rather than pressing on"
+                        )),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Hold the lock file for the life of the process, so only one prefetch
+/// fetches at a time.
+fn lock(path: &Path) -> anyhow::Result<std::fs::File> {
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    rustix::fs::flock(&f, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(|_| {
+        anyhow::anyhow!(
+            "another prefetch holds {}: one fetching process at a time",
+            path.display()
+        )
+    })?;
+    Ok(f)
+}
+
+/// The rows a run works through: the manifest, sampled, ordered, then
+/// limited.
+pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
+    let mut rows = match opts.sample {
+        Some(n) => sample(&rows, n),
+        None => rows,
+    };
+    if opts.order == Order::Priority {
+        // By issue, so an issue's pages stay together and its item JSON is
+        // asked for once (even when its pages came from different batches):
+        // each issue goes in its best page's group, then issue and page
+        // order within the group.
+        let mut best: std::collections::HashMap<(String, chrono::NaiveDate, u16), u8> =
+            std::collections::HashMap::new();
+        for r in &rows {
+            let e = best
+                .entry((r.lccn.clone(), r.date, r.edition))
+                .or_insert(u8::MAX);
+            *e = (*e).min(priority(r));
+        }
+        rows.sort_by_cached_key(|r| {
+            let issue = (r.lccn.clone(), r.date, r.edition);
+            (best[&issue], issue, r.seq)
+        });
+    }
+    if let Some(l) = opts.limit {
+        rows.truncate(l);
+    }
+    rows
+}
+
+/// Fetch the manifest's scans until done, stopped by `stop`, or too many
+/// pages fail in a row. Returns the final status.
+pub async fn run(
+    opts: Options,
+    loc: Arc<LocClient>,
+    mut stop: watch::Receiver<bool>,
+) -> anyhow::Result<Status> {
+    std::fs::create_dir_all(&opts.out)
+        .with_context(|| format!("creating {}", opts.out.display()))?;
+    let lock_path = opts
+        .lock_file
+        .clone()
+        .unwrap_or_else(|| opts.out.join(".prefetch.lock"));
+    let _lock = lock(&lock_path)?;
+    let bytes = tokio::fs::read(&opts.manifest)
+        .await
+        .with_context(|| format!("reading {}", opts.manifest.display()))?;
+    let manifest_sha256 = sha256(&bytes);
+    let rows = prefetch::decode(Bytes::from(bytes)).context("reading the manifest")?;
+    let manifest_pages = rows.len();
+    let rows = select(rows, &opts);
+    let t = tag(opts.size);
+    let run = Arc::new(Run {
+        loc,
+        counts: Counts::default(),
+        status: Mutex::new(Status {
+            version: env!("CARGO_PKG_VERSION").into(),
+            pid: std::process::id(),
+            started_at: now_rfc3339(),
+            manifest: opts.manifest.display().to_string(),
+            manifest_sha256,
+            resolution: opts.size.to_string(),
+            out: opts.out.display().to_string(),
+            pages: rows.len() as u64,
+            max_total_bytes: opts.max_total_bytes,
+            ..Status::default()
+        }),
+        status_path: opts.out.join(format!("status-{t}.json")),
+        status_write: Mutex::new(()),
+        index: Lines::open(&opts.out.join(format!("index-{t}.jsonl")))?,
+        failures: Lines::open(&opts.out.join(format!("failures-{t}.jsonl")))?,
+        started: Instant::now(),
+        stop: Mutex::new(None),
+        opts,
+    });
+    tracing::info!(
+        manifest_pages,
+        pages = rows.len(),
+        resolution = %run.opts.size,
+        concurrency = run.opts.concurrency,
+        out = %run.opts.out.display(),
+        "prefetch starting"
+    );
+    run.write_status("running");
+    // A status write every 30 s, so a long hold still shows.
+    let ticker = {
+        let run = Arc::clone(&run);
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(Duration::from_secs(30));
+            every.tick().await;
+            loop {
+                every.tick().await;
+                run.write_status("running");
+            }
+        })
+    };
+    let slots = Arc::new(Semaphore::new(run.opts.concurrency.max(1)));
+    let mut tasks = tokio::task::JoinSet::new();
+    let every = run.opts.progress_every.max(1);
+    for row in rows {
+        if run.stopping() {
+            break;
+        }
+        let permit = tokio::select! {
+            p = Arc::clone(&slots).acquire_owned() => p.expect("semaphore open"),
+            _ = stop.wait_for(|s| *s) => {
+                run.stop_with("stopped", None);
+                break;
+            }
+        };
+        if run.stopping() {
+            break;
+        }
+        if let Some(max) = run.opts.max_total_bytes {
+            let c = &run.counts;
+            let on_disk =
+                c.bytes_fetched.load(Ordering::SeqCst) + c.bytes_there.load(Ordering::SeqCst);
+            if on_disk >= max {
+                run.stop_with("budget", None);
+                break;
+            }
+        }
+        let run = Arc::clone(&run);
+        tasks.spawn(async move {
+            let doc_id = row.doc_id.clone();
+            let result = run.page(row).await;
+            if let Err(e) = &result {
+                run.stop_with("failed", Some(format!("{doc_id}: {e:#}")));
+            }
+            let n = run.counts.finished.fetch_add(1, Ordering::SeqCst) + 1;
+            run.status.lock().expect("status lock").last_doc_id = doc_id;
+            if n.is_multiple_of(every) {
+                run.write_status("running");
+            }
+            drop(permit);
+        });
+        // Collect what's finished as we go, so the set stays small.
+        while let Some(r) = tasks.try_join_next() {
+            r?;
+        }
+    }
+    while let Some(r) = tasks.join_next().await {
+        r?;
+    }
+    // Stopped before the last write, so it can't put `running` back.
+    ticker.abort();
+    let _ = ticker.await;
+    let (state, error) = run
+        .stop
+        .lock()
+        .expect("stop lock")
+        .clone()
+        .unwrap_or_else(|| ("done".into(), None));
+    run.status.lock().expect("status lock").error = error.clone();
+    run.write_status(&state);
+    let status = run.snapshot(&state);
+    if state == "failed" {
+        bail!(error.unwrap_or_else(|| "prefetch failed".into()));
+    }
+    Ok(status)
+}
+
+/// What a sample says about the whole manifest.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Estimate {
+    pub resolution: String,
+    pub manifest_pages: u64,
+    /// Issues in the manifest: one loc.gov API request each.
+    pub manifest_issues: u64,
+    pub sampled_pages: u64,
+    pub sample_bytes_mean: f64,
+    pub sample_bytes_median: f64,
+    pub sample_bytes_p90: f64,
+    pub sample_download_ms_median: f64,
+    /// Σ over (language, decade) strata of the stratum's pages times its
+    /// sampled mean; strata with no sampled page use the sample's mean.
+    pub projected_bytes: f64,
+    /// Strata with no sampled page, and their pages.
+    pub unsampled_strata: u64,
+    pub unsampled_pages: u64,
+    /// The API requests alone at their gap.
+    pub api_hours: f64,
+    /// The image requests at max(gap, mean download time / concurrency),
+    /// for concurrency 1 and 2.
+    pub image_hours_c1: f64,
+    pub image_hours_c2: f64,
+    /// By stratum: (pages in the manifest, sampled, sampled mean bytes).
+    pub strata: BTreeMap<String, (u64, u64, f64)>,
+}
+
+fn quantile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let i = ((sorted.len() - 1) as f64 * q).round() as usize;
+    sorted[i]
+}
+
+/// Project the whole manifest's size and fetch time from a sample's index
+/// lines. `api_gap` and `tile_gap` are the pacing the full run would use.
+pub fn estimate(
+    manifest: &[ManifestRow],
+    index: &[Sidecar],
+    api_gap: Duration,
+    tile_gap: Duration,
+) -> anyhow::Result<Estimate> {
+    let by_id: BTreeMap<&str, &ManifestRow> =
+        manifest.iter().map(|r| (r.doc_id.as_str(), r)).collect();
+    let stratum = |r: &ManifestRow| format!("{}/{}s", r.lang_or_und(), r.decade());
+    let mut sampled: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut sizes = Vec::new();
+    let mut downloads = Vec::new();
+    let mut resolution = String::new();
+    // The latest line per page, if a page was fetched twice.
+    let mut latest: BTreeMap<&str, &Sidecar> = BTreeMap::new();
+    for s in index {
+        latest.insert(&s.doc_id, s);
+    }
+    for s in latest.values() {
+        let Some(r) = by_id.get(s.doc_id.as_str()) else {
+            continue;
+        };
+        if resolution.is_empty() {
+            resolution = s.resolution.clone();
+        } else if resolution != s.resolution {
+            bail!("the index mixes {resolution} and {}", s.resolution);
+        }
+        sampled.entry(stratum(r)).or_default().push(s.bytes as f64);
+        sizes.push(s.bytes as f64);
+        downloads.push(s.download_ms as f64);
+    }
+    if sizes.is_empty() {
+        bail!("no index line names a page of the manifest");
+    }
+    sizes.sort_by(f64::total_cmp);
+    downloads.sort_by(f64::total_cmp);
+    let mean = sizes.iter().sum::<f64>() / sizes.len() as f64;
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut issues = std::collections::BTreeSet::new();
+    for r in manifest {
+        *counts.entry(stratum(r)).or_default() += 1;
+        issues.insert((r.lccn.as_str(), r.date, r.edition));
+    }
+    let mut e = Estimate {
+        resolution,
+        manifest_pages: manifest.len() as u64,
+        manifest_issues: issues.len() as u64,
+        sampled_pages: sizes.len() as u64,
+        sample_bytes_mean: mean,
+        sample_bytes_median: quantile(&sizes, 0.5),
+        sample_bytes_p90: quantile(&sizes, 0.9),
+        sample_download_ms_median: quantile(&downloads, 0.5),
+        ..Estimate::default()
+    };
+    for (k, n) in &counts {
+        let (m, got) = match sampled.get(k) {
+            Some(v) => (v.iter().sum::<f64>() / v.len() as f64, v.len() as u64),
+            None => {
+                e.unsampled_strata += 1;
+                e.unsampled_pages += n;
+                (mean, 0)
+            }
+        };
+        e.projected_bytes += *n as f64 * m;
+        e.strata.insert(k.clone(), (*n, got, m));
+    }
+    let dl = downloads.iter().sum::<f64>() / downloads.len() as f64 / 1000.0;
+    let per = |c: f64| tile_gap.as_secs_f64().max(dl / c);
+    e.api_hours = e.manifest_issues as f64 * api_gap.as_secs_f64() / 3600.0;
+    e.image_hours_c1 = e.manifest_pages as f64 * per(1.0) / 3600.0;
+    e.image_hours_c2 = e.manifest_pages as f64 * per(2.0) / 3600.0;
+    Ok(e)
+}
+
+/// Read index lines (JSON Lines of [`Sidecar`]).
+pub fn read_index(text: &str) -> anyhow::Result<Vec<Sidecar>> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .enumerate()
+        .map(|(i, l)| serde_json::from_str(l).with_context(|| format!("index line {}", i + 1)))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loc::LocConfig;
+    use chrono::NaiveDate;
+    use std::sync::atomic::AtomicUsize;
+    use usnm_core::ids::PageKey;
+
+    fn row(lccn: &str, y: i32, seq: u16, lang: &str) -> ManifestRow {
+        let key = PageKey::new(lccn, NaiveDate::from_ymd_opt(y, 5, 3).unwrap(), 1, seq).unwrap();
+        ManifestRow::new(&key, "batch_x", 1, Some(lang.into()), "detected", 0.5)
+    }
+
+    #[test]
+    fn samples_every_stratum_and_the_rest_in_proportion() {
+        let mut rows = Vec::new();
+        for i in 1..=80 {
+            rows.push(row("sn1", 1885, i, "deu"));
+        }
+        for i in 1..=15 {
+            rows.push(row("sn2", 1912, i, "eng"));
+        }
+        for i in 1..=5 {
+            rows.push(row("sn3", 1907, i, "srp"));
+        }
+        let s = sample(&rows, 20);
+        assert_eq!(s.len(), 20);
+        let n = |l: &str| s.iter().filter(|r| r.lang_or_und() == l).count();
+        // One each, then 17 shared 80:15:5 (13.6, 2.55, 0.85; the two
+        // largest remainders get the last two).
+        assert_eq!((n("deu"), n("eng"), n("srp")), (15, 3, 2));
+        assert_eq!(sample(&rows, 20), s, "the same sample every time");
+        // Fewer than the strata: the largest ones.
+        let s = sample(&rows, 2);
+        assert_eq!((n2(&s, "deu"), n2(&s, "eng"), n2(&s, "srp")), (1, 1, 0));
+        // More than there are: everything.
+        assert_eq!(sample(&rows, 500).len(), 100);
+    }
+
+    #[test]
+    fn fills_the_sample_when_small_strata_are_full() {
+        // One 100-row stratum and 100 one-row strata: 150 asked, 150 given.
+        let mut rows: Vec<ManifestRow> = (1..=100).map(|i| row("sn1", 1885, i, "deu")).collect();
+        for y in 0..100 {
+            rows.push(row("sn2", 1700 + y * 10, 1, "eng"));
+        }
+        assert_eq!(sample(&rows, 150).len(), 150);
+    }
+
+    #[test]
+    fn priority_order_keeps_an_issue_together() {
+        let mut rows = vec![
+            row("sn1", 1890, 1, "eng"),
+            row("sn1", 1890, 2, "deu"),
+            row("sn2", 1890, 1, "deu"),
+            row("sn3", 1890, 1, "ces"),
+        ];
+        // The German page came from another batch, which sorts first.
+        rows[1].batch = "aaa_other".into();
+        prefetch::sort(&mut rows);
+        let picked = select(rows, &Options::default());
+        let ids: Vec<String> = picked.iter().map(|r| r.doc_id.clone()).collect();
+        // sn1's English page goes with its German one, in the German group.
+        assert_eq!(
+            ids,
+            [
+                "sn1_1890-05-03_ed-1_seq-1",
+                "sn1_1890-05-03_ed-1_seq-2",
+                "sn2_1890-05-03_ed-1_seq-1",
+                "sn3_1890-05-03_ed-1_seq-1"
+            ]
+        );
+    }
+
+    fn n2(s: &[ManifestRow], l: &str) -> usize {
+        s.iter().filter(|r| r.lang_or_und() == l).count()
+    }
+
+    #[test]
+    fn lays_scans_out_by_batch_title_issue_and_page() {
+        let r = row("sn83045462", 1890, 7, "deu");
+        let p = scan_path(Path::new("/tank/ocr-scans"), &r, ImageSize::Full);
+        assert_eq!(
+            p,
+            Path::new("/tank/ocr-scans/batch_x/sn83045462/1890-05-03/1/7.jpg")
+        );
+        let p = scan_path(Path::new("/t"), &r, ImageSize::Pct(50));
+        assert_eq!(
+            p,
+            Path::new("/t/batch_x/sn83045462/1890-05-03/1/7.pct50.jpg")
+        );
+        assert_eq!(
+            sidecar_path(&p),
+            Path::new("/t/batch_x/sn83045462/1890-05-03/1/7.pct50.jpg.json")
+        );
+    }
+
+    #[test]
+    fn projects_by_stratum() {
+        let manifest: Vec<ManifestRow> = (1..=10)
+            .map(|i| row("sn1", 1885, i, "deu"))
+            .chain((1..=10).map(|i| row("sn2", 1912, i, "eng")))
+            .chain((1..=4).map(|i| row("sn3", 1907, i, "srp")))
+            .collect();
+        let line = |r: &ManifestRow, bytes: u64| Sidecar {
+            doc_id: r.doc_id.clone(),
+            batch: r.batch.clone(),
+            batch_version: 1,
+            loc_url: String::new(),
+            iiif_base: String::new(),
+            resolution: "full".into(),
+            fetched_at: Utc::now(),
+            bytes,
+            sha256: String::new(),
+            download_ms: 3000,
+            user_agent: USER_AGENT.into(),
+        };
+        let index = vec![
+            line(&manifest[0], 4_000_000),
+            line(&manifest[1], 2_000_000),
+            line(&manifest[10], 1_000_000),
+        ];
+        let e = estimate(
+            &manifest,
+            &index,
+            Duration::from_millis(3500),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        // deu: 10 × 3 MB; eng: 10 × 1 MB; srp unsampled: 4 × the mean (7/3 MB).
+        let want = 30e6 + 10e6 + 4.0 * 7e6 / 3.0;
+        assert!(
+            (e.projected_bytes - want).abs() < 1.0,
+            "{}",
+            e.projected_bytes
+        );
+        assert_eq!((e.unsampled_strata, e.unsampled_pages), (1, 4));
+        assert_eq!(e.manifest_issues, 3);
+        // 3 s downloads: 3 s a page alone, 1.5 s with two in flight.
+        assert!((e.image_hours_c1 - 24.0 * 3.0 / 3600.0).abs() < 1e-9);
+        assert!((e.image_hours_c2 - 24.0 * 1.5 / 3600.0).abs() < 1e-9);
+        assert!((e.api_hours - 3.0 * 3.5 / 3600.0).abs() < 1e-9);
+    }
+
+    /// A stand-in loc.gov with one issue of three pages. The image server
+    /// answers its first request 429 with `Retry-After: 2`, serves page 3's
+    /// image as missing (404), and records when each image request came.
+    async fn fake_loc(
+        times: Arc<Mutex<Vec<std::time::Instant>>>,
+        hits: Arc<AtomicUsize>,
+    ) -> String {
+        use axum::http::StatusCode as S;
+        use axum::response::IntoResponse;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let jp2 = |n: &str| {
+            format!("https://tile.loc.gov/storage-services/service/ndnp/x/batch_x/data/sn1/1/1890050301/{n}.jp2")
+        };
+        let item = serde_json::json!({"resources": [{"files": [
+            [{"mimetype": "image/jp2", "url": jp2("0001")}],
+            [{"mimetype": "image/jp2", "url": jp2("0002")}],
+            [{"mimetype": "image/jp2", "url": jp2("0003")}],
+        ]}]});
+        let app = axum::Router::new()
+            .route(
+                "/item/sn1/1890-05-03/ed-1/",
+                axum::routing::get(move || {
+                    let item = item.clone();
+                    async move { axum::Json(item) }
+                }),
+            )
+            .route(
+                "/iiif/{service}/full/{size}/0/default.jpg",
+                axum::routing::get(
+                    move |axum::extract::Path((service, size)): axum::extract::Path<(
+                        String,
+                        String,
+                    )>,
+                          headers: axum::http::HeaderMap| {
+                        let times = times.clone();
+                        let hits = hits.clone();
+                        async move {
+                            assert!(headers["user-agent"]
+                                .to_str()
+                                .unwrap()
+                                .starts_with("usnewsmap-ocr-worker/"));
+                            times.lock().unwrap().push(std::time::Instant::now());
+                            if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                                return (S::TOO_MANY_REQUESTS, [("retry-after", "2")])
+                                    .into_response();
+                            }
+                            if service.ends_with("0003") {
+                                return S::NOT_FOUND.into_response();
+                            }
+                            format!("jpeg {service} {size}")
+                                .into_bytes()
+                                .into_response()
+                        }
+                    },
+                ),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        root
+    }
+
+    fn client(root: &str, tile_gap: Duration) -> Arc<LocClient> {
+        Arc::new(
+            LocClient::new(LocConfig {
+                api_gap: Duration::from_millis(10),
+                tile_gap,
+                attempts: 3,
+                backoff: Duration::from_millis(10),
+                api_root: root.to_owned(),
+                iiif_root: format!("{root}/iiif/"),
+            })
+            .unwrap(),
+        )
+    }
+
+    async fn manifest(dir: &Path) -> PathBuf {
+        let rows: Vec<ManifestRow> = (1..=3).map(|i| row("sn1", 1890, i, "deu")).collect();
+        let p = dir.join("manifest.parquet");
+        std::fs::write(&p, prefetch::encode(&rows).unwrap()).unwrap();
+        p
+    }
+
+    #[tokio::test]
+    async fn fetches_paced_honours_retry_after_and_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let times = Arc::new(Mutex::new(Vec::new()));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let root = fake_loc(times.clone(), hits.clone()).await;
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: manifest(dir.path()).await,
+            out: out.clone(),
+            size: ImageSize::Pct(50),
+            concurrency: 2,
+            progress_every: 1,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let t0 = std::time::Instant::now();
+        let s = run(
+            opts.clone(),
+            client(&root, Duration::from_millis(300)),
+            rx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            t0.elapsed() >= Duration::from_secs(2),
+            "waited out Retry-After"
+        );
+        assert_eq!(s.state, "done");
+        assert_eq!((s.fetched, s.failed_permanent, s.already_there), (2, 1, 0));
+        // Every image request after the first waited for the hold, and they
+        // were at least the gap apart.
+        let t = times.lock().unwrap().clone();
+        assert_eq!(t.len(), 4);
+        assert!(t[1] - t[0] >= Duration::from_secs(2));
+        for w in t[1..].windows(2) {
+            assert!(
+                w[1] - w[0] >= Duration::from_millis(290),
+                "{:?}",
+                w[1] - w[0]
+            );
+        }
+        let r = row("sn1", 1890, 1, "deu");
+        let scan = scan_path(&out, &r, ImageSize::Pct(50));
+        let body = std::fs::read(&scan).unwrap();
+        assert!(String::from_utf8_lossy(&body).ends_with("0001 pct:50"));
+        let side: Sidecar =
+            serde_json::from_slice(&std::fs::read(sidecar_path(&scan)).unwrap()).unwrap();
+        assert_eq!(side.sha256, sha256(&body));
+        assert_eq!(side.bytes, body.len() as u64);
+        assert!(side.loc_url.ends_with(":0001/full/pct:50/0/default.jpg"));
+        assert_eq!(side.resolution, "scaled:50");
+        let index =
+            read_index(&std::fs::read_to_string(out.join("index-pct50.jsonl")).unwrap()).unwrap();
+        assert_eq!(index.len(), 2);
+        let failures = std::fs::read_to_string(out.join("failures-pct50.jsonl")).unwrap();
+        assert!(failures.contains("sn1_1890-05-03_ed-1_seq-3") && failures.contains("permanent"));
+        let status: Status =
+            serde_json::from_slice(&std::fs::read(out.join("status-pct50.json")).unwrap()).unwrap();
+        assert_eq!(status.state, "done");
+
+        // Again: the two scans are there and verified, so only page 3 is asked for.
+        let before = hits.load(Ordering::SeqCst);
+        let s = run(
+            opts.clone(),
+            client(&root, Duration::from_millis(10)),
+            rx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!((s.already_there, s.fetched, s.failed_permanent), (2, 0, 1));
+        assert_eq!(hits.load(Ordering::SeqCst), before + 1);
+
+        // A scan that no longer matches its sidecar is fetched again.
+        std::fs::write(&scan, b"changed").unwrap();
+        let s = run(opts, client(&root, Duration::from_millis(10)), rx)
+            .await
+            .unwrap();
+        assert_eq!((s.already_there, s.fetched), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn one_process_at_a_time_and_a_run_of_failures_stops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("scans");
+        std::fs::create_dir_all(&out).unwrap();
+        let path = out.join(".prefetch.lock");
+        let held = lock(&path).unwrap();
+        // flock is per open file description, so a second open file is refused.
+        assert!(lock(&path).is_err());
+        drop(held);
+        // Nothing listens here: every page fails, transiently.
+        let opts = Options {
+            manifest: manifest(dir.path()).await,
+            out: out.clone(),
+            concurrency: 1,
+            max_failures_in_a_row: 2,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let err = run(
+            opts,
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("failed in a row"), "{err}");
+        let status: Status =
+            serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap()).unwrap();
+        assert_eq!(status.state, "failed");
+        assert_eq!(status.failed_transient, 2);
+    }
+}
