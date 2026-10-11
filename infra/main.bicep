@@ -74,6 +74,9 @@ param partitionDecade bool = false
 @description('Search the next full rebuild\'s texts, LoC\'s and American Stories\', in one field (#283, 05 §5.5.7), so a search looks each word up once. Only a full base takes it; deltas follow the published version, and a full rebuild without it searches a field per text again (docs/operations.md, "Full rebuild").')
 param singleTextField bool = false
 
+@description('Give the next full rebuild\'s pages their own languages, found from their words (#289, 05 §5.5.6): lang= then filters by page language and the counts by language count pages. Only a full base takes it; deltas follow the published version, and a full rebuild without it filters by title language again (docs/operations.md, "Full rebuild").')
+param pageLanguage bool = false
+
 @description('Add a memory-optimized E4 workload profile (4 vCPU / 32 GiB, no minimum nodes) for full index rebuilds (#172). The environment pays the Dedicated plan management fee while it exists: turn it on for a rebuild, off afterwards (docs/operations.md, "Full rebuild").')
 param dedicatedProfile bool = false
 
@@ -640,6 +643,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     ocrLocal: ocrLocal
     partitionDecade: partitionDecade
     singleTextField: singleTextField
+    pageLanguage: pageLanguage
     workers: backfillWorkers
     backfillCron: backfillCron
     scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''

@@ -252,6 +252,12 @@ enum Command {
         /// Only a full base takes it; deltas follow the published version.
         #[arg(long)]
         single_text_field: bool,
+        /// Give a full base's pages their own languages, found from their
+        /// words (#289, 05 §5.5.6), and the version page-language baselines,
+        /// so `lang=` filters by them. Only a full base takes it; deltas
+        /// follow the published version.
+        #[arg(long)]
+        page_language: bool,
         #[command(flatten)]
         target: IndexTarget,
     },
@@ -486,6 +492,9 @@ enum Command {
         /// As for `release`.
         #[arg(long)]
         single_text_field: bool,
+        /// As for `release`.
+        #[arg(long)]
+        page_language: bool,
         /// As `curate --max-runtime-secs`, counted from the start of `run`:
         /// batches still queued then wait for the next run, and what was
         /// curated is released. Leave room for titles-sync and the release
@@ -698,6 +707,7 @@ async fn release(
     ocr_local: bool,
     partition_decade: bool,
     single_text_field: bool,
+    page_language: bool,
     titles_left: Option<String>,
     t: &IndexTarget,
     report: &Reporter,
@@ -716,6 +726,7 @@ async fn release(
         ocr_local,
         partition_decade,
         single_text_field,
+        page_language,
     };
     // Held from before the writer node starts until after it stops, and
     // released on every path.
@@ -1263,6 +1274,7 @@ async fn command(
             ocr_local,
             partition_decade,
             single_text_field,
+            page_language,
             target,
         } => {
             release(
@@ -1275,6 +1287,7 @@ async fn command(
                 *ocr_local,
                 *partition_decade,
                 *single_text_field,
+                *page_language,
                 None,
                 target,
                 report,
@@ -1291,6 +1304,7 @@ async fn command(
             ocr_local,
             partition_decade,
             single_text_field,
+            page_language,
             curate_max_runtime_secs,
             titles_max_runtime_secs,
             target,
@@ -1337,6 +1351,7 @@ async fn command(
                 *ocr_local,
                 *partition_decade,
                 *single_text_field,
+                *page_language,
                 titles_left,
                 target,
                 report,
@@ -1446,6 +1461,7 @@ mod tests {
             "--ocr-local",
             "--partition-decade",
             "--single-text-field",
+            "--page-language",
             "--titles-max-runtime-secs",
             "28800",
             "--index-dir",
@@ -1460,6 +1476,7 @@ mod tests {
             ocr_local,
             partition_decade,
             single_text_field,
+            page_language,
             ..
         } = cli.command
         else {
@@ -1473,9 +1490,10 @@ mod tests {
                 ja_latin,
                 ocr_local,
                 partition_decade,
-                single_text_field
+                single_text_field,
+                page_language
             ),
-            (Some(28800), true, true, true, true, true, true)
+            (Some(28800), true, true, true, true, true, true, true)
         );
     }
 
@@ -1590,6 +1608,7 @@ mod tests {
             ocr_local,
             partition_decade,
             single_text_field,
+            page_language,
             ..
         } = cli.command
         else {
@@ -1600,6 +1619,7 @@ mod tests {
         assert!(!ocr_local, "off unless asked for");
         assert!(!partition_decade, "off unless asked for");
         assert!(!single_text_field, "off unless asked for");
+        assert!(!page_language, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
         assert_eq!(target.min_free_gib, 0);
     }

@@ -68,6 +68,8 @@ param ocrLocal bool = false
 param partitionDecade bool = false
 @description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.7). Only a full base takes it; deltas follow the published version.')
 param singleTextField bool = false
+@description('Give a full rebuild\'s pages their own languages, found from their words, so lang= filters by them (#289, 05 §5.5.6). Only a full base takes it; deltas follow the published version.')
+param pageLanguage bool = false
 @minValue(1)
 @maxValue(32)
 param workers int = 8
@@ -243,7 +245,8 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             jaLatin ? ['--ja-latin'] : [],
             ocrLocal ? ['--ocr-local'] : [],
             partitionDecade ? ['--partition-decade'] : [],
-            singleTextField ? ['--single-text-field'] : []
+            singleTextField ? ['--single-text-field'] : [],
+            pageLanguage ? ['--page-language'] : []
           )
           resources: ingestResources
           env: concat(env, rawEnv, scratchEnv, writerTuningEnv, [

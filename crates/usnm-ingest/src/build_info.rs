@@ -48,6 +48,9 @@ pub struct Built {
     /// The text fields (05 §5.5.7): of the main index this run writes, and
     /// of the version's main indexes, which all have the same ones.
     pub text_layout: usnm_core::text_layout::TextLayout,
+    /// The page languages (05 §5.5.6): the main index this run writes has
+    /// the fields, and so do the version's other main indexes.
+    pub page_language: bool,
     /// The analyzer the run's indexes fold words with (#168): the latest for
     /// a full base, the published version's for a delta. The record's
     /// `common_grams` and `ja_fold` name it.
@@ -64,6 +67,7 @@ fn templates(b: &Built) -> Vec<(&'static str, String)> {
         let layout = crate::sink::MainLayout {
             decades: b.decades,
             text: b.text_layout,
+            page_language: b.page_language,
         };
         let pages = crate::sink::main_template(&b.writer, layout)
             .unwrap_or_else(|_| crate::sink::INDEX_TEMPLATE.to_owned());
@@ -120,6 +124,10 @@ pub fn summary(b: &Built) -> Value {
     if b.text_layout != usnm_core::text_layout::TextLayout::Separate {
         features["text_layout"] = json!(b.text_layout.version());
     }
+    // Likewise, as its `page_language`.
+    if b.page_language {
+        features["page_language"] = json!(usnm_core::page_language::VERSION);
+    }
     json!({
         "commit": std::env::var(COMMIT_ENV).ok().filter(|s| !s.is_empty()),
         "ingest": env!("CARGO_PKG_VERSION"),
@@ -147,8 +155,24 @@ mod tests {
             ocr_local: false,
             decades: crate::sink::Decades::Off,
             text_layout: usnm_core::text_layout::TextLayout::Separate,
+            page_language: false,
             analyzer: usnm_core::text::Analyzer::LATEST,
         }
+    }
+
+    #[test]
+    fn records_the_page_languages_and_their_fields() {
+        let off = record(&built(true, false));
+        assert!(off["features"].get("page_language").is_none(), "{off}");
+        let mut b = built(true, false);
+        b.page_language = true;
+        let v = record(&b);
+        assert_eq!(
+            v["features"]["page_language"],
+            usnm_core::page_language::VERSION
+        );
+        let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(yaml.contains("name: page_language_set,"), "{yaml}");
     }
 
     #[test]
