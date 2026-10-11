@@ -50,6 +50,19 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         // Whether searches cover American Stories' text (05 §5.5.4): the
         // version has it and `USNM_AMERICAN_STORIES_SEARCH` leaves it on.
         "american_stories": rd.searches_american_stories(),
+        // The Congress pages (#229), searched with `source=congress`: null
+        // unless the version has a Congress set this API can search and
+        // `USNM_CONGRESS_SEARCH` leaves it on. Every page sits at one
+        // reserved place, Washington, DC, kept apart from DC's newspapers.
+        "congress": rd.congress_index_set().and(c.congress.as_ref()).map(|cg| json!({
+            "series": cg.series,
+            "place": {
+                "id": crate::refdata::CONGRESS_PLACE,
+                "name": crate::refdata::CONGRESS_PLACE_NAME,
+                "lat": 38.8899,
+                "lon": -77.0091,
+            },
+        })),
         "languages": filter_languages(rd),
         "capabilities": snap.backend.capabilities(),
         "limits": {

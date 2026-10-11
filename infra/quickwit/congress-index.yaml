@@ -1,0 +1,79 @@
+# The Congress index set (#229): the Congressional Globe, the Serial Set,
+# the Annals of Congress and the Register of Debates, one document per page.
+# A separate index from the newspapers' (pages-index.yaml), named in
+# current.json under `congress`, so newspaper searches never open it.
+#
+# The fields the shared search code reads (dates, place, state, language,
+# front_page, lccn, sort_key, text, text_cg) are the same as the newspaper
+# template's, so the same aggregations, filters and hits serve both sets.
+# Every Congress page sits at the reserved place `PC001` (Washington, DC),
+# never DC's newspaper place; `lccn` is empty and `front_page` false.
+#
+# Congress fields:
+# - `series`: globe, serialset, annals or register. Filtered with `series=`.
+# - `title`, `citation`, `congress`, `session`, `chamber`, `printed_page`,
+#   `package_id`, `link`: stored for the hit list and its links.
+# - `states`, `state_via`, `speakers`: the state data kept for later maps
+#   (#229 design §6). Indexed so a filter can be added without a rebuild of
+#   anything but this index; not fast and not stored, since nothing
+#   aggregates on them or shows them yet.
+version: 0.9
+index_id: ${INDEX_ID}
+index_uri: ${INDEX_URI}
+doc_mapping:
+  mode: strict
+  timestamp_field: date
+  tokenizers:
+    - name: usnm_text
+      type: simple
+      filters: [remove_long, lower_caser, ascii_folding]
+  field_mappings:
+    - { name: doc_id, type: text, tokenizer: raw, fast: true, stored: true }
+    - { name: text, type: text, tokenizer: usnm_text, record: position, stored: true, fieldnorms: false }
+    - { name: text_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }
+    - { name: date, type: datetime, input_formats: ["%Y-%m-%d"], output_format: "%Y-%m-%d", fast: true, stored: true }
+    - { name: day, type: u64, fast: true, indexed: true, stored: true }
+    - { name: ym, type: u64, fast: true, indexed: true }
+    - { name: year, type: u64, fast: true, indexed: true }
+    - { name: place_id, type: text, tokenizer: raw, fast: true, stored: true }
+    - { name: place_shard, type: u64, fast: true, indexed: true }
+    - { name: lccn, type: text, tokenizer: raw, fast: true, stored: true }
+    - { name: state, type: text, tokenizer: raw, fast: true }
+    - { name: language, type: array<text>, tokenizer: raw, fast: true }
+    - { name: front_page, type: bool, fast: true, indexed: true }
+    - { name: edition, type: u64, stored: true, indexed: false }
+    - { name: seq, type: u64, stored: true, indexed: false }
+    - { name: sort_key, type: u64, fast: true, indexed: false }
+    - { name: batch, type: text, tokenizer: raw }
+    - { name: ocr_source, type: text, tokenizer: raw, stored: true }
+    - { name: ocr_engine, type: text, indexed: false, stored: true }
+    - { name: series, type: text, tokenizer: raw, fast: true, stored: true }
+    - { name: title, type: text, indexed: false, stored: true }
+    - { name: citation, type: text, indexed: false, stored: true }
+    - { name: congress, type: u64, fast: true, indexed: true, stored: true }
+    - { name: session, type: text, tokenizer: raw, stored: true }
+    - { name: chamber, type: text, tokenizer: raw, fast: true, stored: true }
+    - { name: printed_page, type: text, indexed: false, stored: true }
+    - { name: package_id, type: text, tokenizer: raw, stored: true }
+    - { name: link, type: text, indexed: false, stored: true }
+    - { name: states, type: array<text>, tokenizer: raw }
+    - { name: state_via, type: array<text>, tokenizer: raw }
+    - { name: speakers, type: array<text>, tokenizer: raw }
+indexing_settings:
+  commit_timeout_secs: 30
+  docstore_blocksize: 131072
+  # A Congress page has a tenth of a newspaper page's text or less, so far
+  # more of them fit in a split of the same size: about 500,000 pages is
+  # 2 to 2.5 GB (#229 design §1), and the whole set is about 20 splits.
+  split_num_docs_target: 500000
+  merge_policy:
+    type: limit_merge
+    merge_factor: 10
+    max_merge_factor: 12
+    max_merge_ops: 4
+    maturation_period: 7d
+    max_finalize_merge_operations: 5
+  resources:
+    heap_size: 1GiB
+search_settings:
+  default_search_fields: [text]

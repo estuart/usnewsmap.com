@@ -83,3 +83,52 @@ describe("view URL", () => {
     expect(serializeView({ ...DEFAULTS, q: "a b", near: 8 })).toBe("?q=a+b");
   });
 });
+
+describe("Congress source (#229)", () => {
+  it("leaves newspapers out of the URL and the search", () => {
+    const v = parseView("?q=gold");
+    expect(v.source).toBe("news");
+    expect(serializeView(v)).toBe("?q=gold");
+    expect(searchParams(v)).not.toHaveProperty("source");
+    expect(parseView("?q=gold&source=news")).toEqual(v);
+  });
+
+  it("round-trips a Congress search with its series, sorted and known only", () => {
+    const v = parseView("?q=gold&source=congress&series=serialset,globe,record,globe");
+    expect(v.source).toBe("congress");
+    expect(v.series).toEqual(["globe", "serialset"]);
+    expect(serializeView(v)).toBe("?q=gold&source=congress&series=globe%2Cserialset");
+    expect(searchParams(v)).toMatchObject({ source: "congress", series: ["globe", "serialset"], lccn: [] });
+  });
+
+  it("drops what a Congress search can't use", () => {
+    // No newspapers to filter by, and no baselines for a relative rate yet.
+    const v = parseView("?q=gold&source=congress&lccn=sn99000001&norm=skew");
+    expect(v.lccn).toEqual([]);
+    expect(v.norm).toBe("raw");
+    // A series without the Congress source means nothing.
+    expect(parseView("?q=gold&series=globe").series).toEqual([]);
+    expect(parseView("?q=gold&source=senate").source).toBe("news");
+  });
+
+  it("drops the state and language filters, which a Congress search hides", () => {
+    // From a shared link they would filter out every Congress page, unseen.
+    const v = parseView("?q=gold&source=congress&state=GA&lang=ger");
+    expect(v.state).toEqual([]);
+    expect(v.lang).toEqual([]);
+    expect(serializeView(v)).toBe("?q=gold&source=congress");
+    // Set in code, too.
+    const set = { ...v, state: ["GA"], lang: ["ger"] };
+    expect(serializeView(set)).toBe("?q=gold&source=congress");
+    expect(searchParams(set)).toMatchObject({ state: [], lang: [], lccn: [] });
+  });
+
+  it("keeps a newspaper search's parameters, keys and order as before", () => {
+    const v = parseView("?q=gold&state=ga&lang=ger&lccn=sn99000001");
+    expect(serializeView(v)).toBe("?q=gold&state=GA&lang=ger&lccn=sn99000001");
+    // App keys its queries on this JSON, so the examples' cached answers stay valid.
+    expect(JSON.stringify(searchParams(v))).toBe(
+      '{"q":"gold","mode":"phrase","near":5,"from":"","to":"","bucket":"auto","state":["GA"],"lang":["ger"],"lccn":["sn99000001"]}',
+    );
+  });
+});

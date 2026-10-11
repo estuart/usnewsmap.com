@@ -239,6 +239,7 @@ mod tests {
             ocr_source: None,
             ocr_engine: None,
             text_as: None,
+            congress: Default::default(),
             doc_id: format!("sn99{i:06}_x_ed-1_seq-1"),
             day,
             ym: 0,
@@ -270,6 +271,7 @@ mod tests {
             lccns: vec![],
             langs: vec![],
             front_only: false,
+            series: Vec::new(),
         }
     }
 

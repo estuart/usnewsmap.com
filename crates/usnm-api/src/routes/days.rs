@@ -12,7 +12,7 @@ use usnm_core::params::RawParams;
 use usnm_core::time::BucketUnit;
 use usnm_search::plan::{self, PlannedDays};
 
-use super::{cached, no_japanese, uses_fuzzy, with_timeout, Job};
+use super::{cached, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
@@ -81,7 +81,8 @@ pub async fn days(
         ));
     }
     let places = place_ids(raw.get("place"))?;
-    if let Some(p) = places.iter().find(|p| rd.place(p).is_none()) {
+    // Congress pages sit at their own reserved place (#229).
+    if let Some(p) = places.iter().find(|p| !rd.knows_place(p, req.source)) {
         return Err(ApiError::NotFound(format!("unknown place `{p}`")));
     }
 
@@ -96,11 +97,15 @@ pub async fn days(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
+    // After a stale `v` is redirected, which tells the client the version
+    // changed, and before any cache, so a cached Congress response is never
+    // served once the version can't search Congress pages (#229).
+    rd.check_source(&req)?;
     let key = rd.search_key("days", &canonical, &req.query);
     let st = state.clone();
     let compute = async move {
         let rd = &snap.refdata;
-        let indexes = rd.index_set_for(&req.query).ok_or_else(no_japanese)?;
+        let indexes = rd.index_set_for_request(&req)?;
         let t = Instant::now();
         let planned = with_timeout(
             &st,

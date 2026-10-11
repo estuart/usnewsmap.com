@@ -60,6 +60,9 @@ param americanStories bool = false
 @description('Search American Stories\' text on a version built with it (05 §5.5.4). False makes the API search LoC\'s text alone, whatever current.json says, without a release; the provision restarts the API, which warms up again (docs/operations.md, "American Stories\' text").')
 param americanStoriesSearch bool = true
 
+@description('Search the Congress pages (#229) on a version whose current.json names a Congress index set. False makes the API leave them unloaded and answer source=congress with 422, without a release; the provision restarts the API (docs/configuration.md, USNM_CONGRESS_SEARCH).')
+param congressSearch bool = true
+
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
 @description('Lay the next full rebuild\'s base out by decade (#123): every split holds one decade, so a date-limited search skips the others. Only a full base takes it; deltas follow the published version, and a full rebuild without it lays nothing out by decade (docs/operations.md, "Full rebuild").')
@@ -439,6 +442,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     ingestCron: ingestJobs && useAcr ? ingestCron : ''
     americanStoriesSearch: americanStoriesSearch
+    congressSearch: congressSearch
   }
 }
 

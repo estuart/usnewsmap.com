@@ -137,6 +137,10 @@ pub struct Config {
     /// with it (`USNM_AMERICAN_STORIES_SEARCH`, 05 §5.5.4). Off, the API
     /// searches LoC's text alone, whatever `current.json` says.
     pub american_stories_search: bool,
+    /// Whether `source=congress` searches a version's Congress index set
+    /// (`USNM_CONGRESS_SEARCH`, #229). Off, Congress searches answer 422 and
+    /// `/v1/meta` lists no Congress sources, whatever `current.json` says.
+    pub congress_search: bool,
     /// End-to-end tests only, and only with the memory backend: an aggregate
     /// search whose query contains this term waits this long before it runs,
     /// to stand in for a cold search on the real corpus.
@@ -273,6 +277,7 @@ impl Config {
             search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
             searcher_metrics_interval: Duration::from_secs(num("USNM_SEARCHER_METRICS_SECS", 60)?),
             american_stories_search: flag("USNM_AMERICAN_STORIES_SEARCH", true)?,
+            congress_search: flag("USNM_CONGRESS_SEARCH", true)?,
             fixture_slow,
         })
     }

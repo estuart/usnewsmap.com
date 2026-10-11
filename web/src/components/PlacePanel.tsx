@@ -1,6 +1,7 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { ApiError, type SearchParams } from "../api/client";
 import type { HitItem, HitSort } from "../api/types";
+import { CONGRESS_SITES, hitTitle } from "../lib/congress";
 import { AMERICAN_STORIES_BADGE, americanStoriesNote } from "../lib/matchSource";
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
@@ -96,15 +97,18 @@ export function PlacePanel({
   );
 }
 
-/** One page in the list: date, newspaper, snippets and the LoC link. */
+/** One page in the list: date, newspaper (or Congress document), snippets and the viewer link. */
 export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
   const asNote = americanStoriesNote(h);
+  // A Congress page opens in its series' viewer, not LoC's, and the badge's
+  // note is about LoC's newspapers (#229).
+  const site = h.congress ? (CONGRESS_SITES[h.congress.series] ?? "its source") : null;
   return (
     <li className="hit">
       <div className="hit__meta">
-        <time dateTime={h.date}>{formatDate(h.date)}</time> · {h.title ?? h.lccn} · page {h.seq}
+        <time dateTime={h.date}>{formatDate(h.date)}</time> · {hitTitle(h)} · page {h.seq}
         {h.front_page ? " (front page)" : ""}
-        {h.ocr && (
+        {h.ocr && !site && (
           <>
             {" "}
             <span className="badge badge--ocr" title={OCR_NOTE}>
@@ -130,11 +134,15 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
         </p>
       ))}
       {synthetic ? (
-        <p className="hit__demo">Demo page: not a real Library of Congress page.</p>
+        <p className="hit__demo">Demo page: not a real {site ? "Congress" : "Library of Congress"} page.</p>
       ) : (
         h.links.viewer && (
           <a href={h.links.viewer} target="_blank" rel="noopener noreferrer">
-            {h.ocr ? "View the page image at the Library of Congress" : "View page at the Library of Congress"}
+            {site
+              ? `View page at ${site}`
+              : h.ocr
+                ? "View the page image at the Library of Congress"
+                : "View page at the Library of Congress"}
           </a>
         )
       )}

@@ -218,3 +218,17 @@ LoC has no searchable text for its Japanese-language pages, so we read them ours
 Progress of the OCR itself is on the status page's "OCR experiments" section (§7.10).
 
 **Tests.** `lib/japanese.test.ts`, `components/SearchBar.ime.test.tsx` (the note, `aria-describedby`, the IME Enter), `components/PlacePanel.test.tsx` (the badge and link) and `e2e/app.spec.ts` (the note on the fixture API, with axe).
+
+## 7.12 Congress pages (#229)
+
+When `/v1/meta` lists Congress series (`congress`), the search options gain a **Search** switch: Newspapers or Congress. It stays hidden otherwise, so nothing changes on a version without Congress pages. Until `/v1/meta` has loaded, the form keeps the URL's source: a Congress link opened cold searches Congress if submitted early, and opens with its options shown. The view keeps `source=congress` (and a `series` filter) in the URL, and leaves them out for newspapers, so existing links and the examples' cache keys are unchanged (`state/url.ts`, `api/client.ts`).
+
+- Under Congress the state and language filters are hidden (every Congress page is English and placed at Washington for now) and, like the newspaper filter, dropped from the view, its URL and the search, so a shared link's `state` or `lang` can't filter out every Congress page unseen. The dates are bounded by the Congress series' span.
+- The form is named "Search Congress" (else "Search newspapers"). A query in Japanese script gets the note "Japanese text can't be searched in Congress pages." in place of the newspaper one (§7.11): the API answers it with 422.
+- The relative rate falls back to Pages, and its button is disabled with the reason: Congress pages have no baselines yet. The Newspapers table isn't shown, and a search without matches suggests "All words" and wider dates, not removing filters the form hides.
+- Congress pages sit at one place, `PC001`, which comes from `/v1/meta` (`lib/congress.ts`), not `/v1/places`.
+- **Hits.** A Congress page (`congress` on the hit, 06 §6.3.10) is titled by its document or volume, else its citation (`hitTitle`, also in the first mention), never its empty LCCN. Its link names its source: "View page at GovInfo" (Serial Set), "at the UNT Digital Library" (Globe) or "at Congress.gov" (Annals, Register). It never gets the "Our OCR" badge, whose note is about LoC's newspapers.
+
+**Tests.** `state/url.test.ts`, `components/SearchBar.congress.test.tsx` (the form's name, the options count, a Congress link before `/v1/meta` loads), `components/SearchBar.ime.test.tsx` (the Japanese note), `components/PlacePanel.test.tsx`, `components/Mentions.test.tsx`, `lib/congress.test.ts` and `App.test.tsx` (the Newspapers table, the relative rate's button and the no-match notice, with the API mocked).
+
+Still to come with the first source: the series filter's control, the timeline-first view, the Both view and the hit list's grouping of a document's pages (#229 design §3).

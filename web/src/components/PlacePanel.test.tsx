@@ -59,6 +59,61 @@ describe("Hit", () => {
     expect(screen.getByRole("link").textContent).toBe("View page at the Library of Congress");
   });
 
+  it("shows a Congress page with its title and its source's viewer, without the OCR badge (#229)", () => {
+    const congress: HitItem = {
+      doc_id: "GPO-CHRG-SERIALSET-123_p4",
+      date: "1846-05-11",
+      lccn: "",
+      title: "Message from the President on the war with Mexico",
+      place_id: "PC001",
+      edition: 1,
+      seq: 4,
+      front_page: false,
+      snippets: ["the <mark>gold</mark> of California"],
+      congress: { series: "serialset", citation: "H. Exec. Doc. 29-60", congress: 29, session: "1" },
+      links: { viewer: "https://www.govinfo.gov/app/details/SERIALSET-00485_00_00-002-0060-0000/4" },
+    };
+    const cases: [HitItem, string][] = [
+      [congress, "View page at GovInfo"],
+      [{ ...congress, congress: { series: "globe" } }, "View page at the UNT Digital Library"],
+      [{ ...congress, congress: { series: "annals" } }, "View page at Congress.gov"],
+      [{ ...congress, congress: { series: "register" } }, "View page at Congress.gov"],
+    ];
+    for (const [h, label] of cases) {
+      render(
+        <ul>
+          <Hit h={h} synthetic={false} />
+        </ul>,
+      );
+      expect(screen.getByRole("link").textContent).toBe(label);
+      expect(document.querySelectorAll(".badge")).toHaveLength(0);
+      cleanup();
+    }
+    // No title: its citation, never the empty LCCN.
+    render(
+      <ul>
+        <Hit h={{ ...congress, title: null }} synthetic={false} />
+      </ul>,
+    );
+    expect(document.querySelector(".hit__meta")?.textContent).toBe("May 11, 1846 · H. Exec. Doc. 29-60 · page 4");
+    cleanup();
+    // Even with an `ocr` field, the badge's note (about LoC's newspapers) isn't shown.
+    render(
+      <ul>
+        <Hit h={{ ...congress, ocr: { source: "usnm", engine: null } }} synthetic />
+      </ul>,
+    );
+    expect(screen.queryByText(/^Our OCR/)).toBeNull();
+    expect(screen.getByText(/^Demo page/).textContent).toBe("Demo page: not a real Congress page.");
+    cleanup();
+    render(
+      <ul>
+        <Hit h={page} synthetic />
+      </ul>,
+    );
+    expect(screen.getByText(/^Demo page/).textContent).toBe("Demo page: not a real Library of Congress page.");
+  });
+
   it("adds nothing when the page matched in LoC's text, alone or with American Stories'", () => {
     for (const matched_in of [["loc"], ["loc", "american_stories"]] as const) {
       render(

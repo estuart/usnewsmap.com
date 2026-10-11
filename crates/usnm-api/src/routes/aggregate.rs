@@ -17,7 +17,7 @@ use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::plan::{self, Planned};
 
 use super::hits::Item;
-use super::{cached_body, mount_prefix, no_japanese, uses_fuzzy, with_timeout, Ctx, Job};
+use super::{cached_body, mount_prefix, uses_fuzzy, with_timeout, Ctx, Job};
 use crate::error::ApiError;
 use crate::searchlog::{self, Admission, SearchLog};
 use crate::{version, AppState};
@@ -198,6 +198,10 @@ pub(crate) async fn aggregate_in(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
+    // After a stale `v` is redirected, which tells the client the version
+    // changed, and before any cache, so a cached Congress response is never
+    // served once the version can't search Congress pages (#229).
+    snap.refdata.check_source(&req)?;
     let key = cache_key(&snap.refdata, &canonical, &req.query);
     let prefix = mount_prefix(uri.path(), "/aggregate").to_owned();
     let job = Job::search("aggregate", ctx.warm_up, ctx.timeout);
@@ -252,7 +256,7 @@ async fn compute(
     let started = Instant::now();
     let snap = &ctx.snap;
     let rd = &snap.refdata;
-    let indexes = rd.index_set_for(&req.query).ok_or_else(no_japanese)?;
+    let indexes = rd.index_set_for_request(&req)?;
     let mut spec = req.bucket_spec();
     let mut coarsened = false;
     if let Some((term, delay)) = &state.config.fixture_slow {
@@ -341,7 +345,12 @@ async fn compute(
         // as before, rather than no baseline at all.
         (langs, why) = (Vec::new(), BaselineWhy::All);
     }
-    let baseline_exact = f.lccns.is_empty() && !f.front_only && rd.has_baselines_for(&langs);
+    // Congress pages have baselines of their own, per series and day (#229
+    // design §4), which come with the first Congress data; until then a
+    // Congress search answers with page counts only.
+    let congress = req.source.congress();
+    let baseline_exact =
+        !congress && f.lccns.is_empty() && !f.front_only && rd.has_baselines_for(&langs);
     let baseline = baseline_exact.then(|| rd.national_baseline(&spec, &f.states, &langs));
     let baseline_ref = baseline_exact.then(|| {
         let mut s = form_urlencoded::Serializer::new(String::new());
@@ -375,7 +384,11 @@ async fn compute(
         total: Totals {
             hits: agg.summary.total_hits,
             places: place_ids.len(),
-            papers: agg.summary.papers.len(),
+            papers: if congress {
+                0
+            } else {
+                agg.summary.papers.len()
+            },
             days: agg.summary.days,
             baseline_pages: baseline.as_ref().map(|b| b.iter().sum()),
             first_day: agg.summary.first_day,
@@ -395,7 +408,9 @@ async fn compute(
             id: place_ids.iter().map(|s| (*s).to_owned()).collect(),
         },
         papers: {
-            let listed = &agg.summary.papers[..agg.summary.papers.len().min(MAX_PAPERS_LISTED)];
+            // Congress pages belong to no newspaper (their `lccn` is empty).
+            let papers: &[_] = if congress { &[] } else { &agg.summary.papers };
+            let listed = &papers[..papers.len().min(MAX_PAPERS_LISTED)];
             let title = |lccn: &str| rd.titles.get(lccn);
             Papers {
                 lccn: listed.iter().map(|p| p.key.clone()).collect(),

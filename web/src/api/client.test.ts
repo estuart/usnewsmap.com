@@ -177,6 +177,43 @@ describe("api client", () => {
     await expect(api.places("v1")).resolves.toMatchObject({ index_version: "v1" });
   });
 
+  it("treats a refusal after a followed 307 as a version change (#229)", async () => {
+    // fetch follows the API's redirect of a stale `v`; the serving version refuses.
+    const refusedAt = (url: string) => () =>
+      Object.defineProperties(problem(422, "/errors/unsupported"), {
+        redirected: { value: true },
+        url: { value: url },
+      });
+    sequence(refusedAt("https://api.test/v1/aggregate?q=gold&source=congress&v=v2"));
+    const err = await api.aggregate({ q: "gold", source: "congress" }, "v1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(VersionChangedError);
+    expect((err as VersionChangedError).actual).toBe("v2");
+    // A refusal at the pinned version, or not redirected, is the API's answer.
+    sequence(refusedAt("https://api.test/v1/aggregate?q=gold&source=congress&v=v1"));
+    const same = await api.aggregate({ q: "gold", source: "congress" }, "v1").catch((e: unknown) => e);
+    expect(same).toBeInstanceOf(ApiError);
+    sequence(() => problem(422, "/errors/unsupported"));
+    const direct = await api.days({ q: "gold", source: "congress" }, "v1", ["PC001"]).catch((e: unknown) => e);
+    expect(direct).toBeInstanceOf(ApiError);
+    expect((direct as ApiError).version).toBeNull();
+  });
+
+  it("keeps a timeout or rate limit after a followed 307 as the API's answer", async () => {
+    // Already waited out: turning it into a version change would run the search again.
+    const at = (resp: Response) =>
+      Object.defineProperties(resp, {
+        redirected: { value: true },
+        url: { value: "https://api.test/v1/aggregate?q=gold&v=v2" },
+      });
+    for (const failed of [problem(503, "/errors/backend-timeout"), problem(429, "/errors/rate-limited")]) {
+      sequence(() => at(failed));
+      const err = await api.aggregate({ q: "gold" }, "v1").catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err).not.toBeInstanceOf(VersionChangedError);
+      expect((err as ApiError).version).toBe("v2");
+    }
+  });
+
   it("turns problem+json into ApiError", async () => {
     respond(
       { type: "/errors/query-syntax", title: "Query syntax error", status: 400, hint: "h" },
@@ -229,5 +266,16 @@ describe("api client", () => {
     expect(isPlain("pres?dent")).toBe(false);
     expect(isPlain("who was president?")).toBe(true);
     expect(q({ q: "pres?dent lincoln", mode: "phrase" })).toBe("q=pres%3Fdent+lincoln&v=v");
+  });
+});
+
+describe("searchQuery and the Congress source (#229)", () => {
+  it("sends a source only for Congress, with its series", () => {
+    const q = (p: Parameters<typeof searchQuery>[0]) => searchQuery(p, "v").toString();
+    expect(q({ q: "gold", mode: "all", source: "news", series: ["globe"] })).toBe("q=gold&v=v");
+    expect(q({ q: "gold", mode: "all", source: "congress" })).toBe("q=gold&source=congress&v=v");
+    expect(q({ q: "gold", mode: "all", source: "congress", series: ["globe", "serialset"] })).toBe(
+      "q=gold&source=congress&series=globe%2Cserialset&v=v",
+    );
   });
 });

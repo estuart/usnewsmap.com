@@ -23,23 +23,36 @@ const MODES: { value: Mode; label: string }[] = [
 ];
 
 /** How many search options differ from the defaults (shown on the toggle). */
-export function activeOptions(view: Pick<ViewState, "mode" | "from" | "to" | "state" | "lang">): number {
+export function activeOptions(
+  view: Pick<ViewState, "mode" | "from" | "to" | "state" | "lang"> & Partial<Pick<ViewState, "source">>,
+): number {
+  // A Congress search hides the state and language filters and drops them
+  // on submit (#229), so they don't count.
+  const congress = (view.source ?? DEFAULTS.source) === "congress";
   return [
+    congress,
     view.mode !== DEFAULTS.mode,
     view.from !== DEFAULTS.from,
     view.to !== DEFAULTS.to,
-    view.state.length > 0,
-    view.lang.length > 0,
+    !congress && view.state.length > 0,
+    !congress && view.lang.length > 0,
   ].filter(Boolean).length;
 }
 
 /**
  * What a query in Japanese script searches (#139): only the Japanese pages we
- * read ourselves, or nothing yet on a version without them. Null otherwise.
+ * read ourselves, or nothing yet on a version without them, or nothing in
+ * Congress pages (#229). Null otherwise.
  */
-export function japaneseHint(q: string, meta: Pick<Meta, "ja"> | undefined): string | null {
+export function japaneseHint(
+  q: string,
+  meta: Pick<Meta, "ja"> | undefined,
+  source: ViewState["source"] = "news",
+): string | null {
   // Before /v1/meta loads, it isn't known yet whether Japanese search is there.
   if (!hasJapanese(q) || !meta) return null;
+  // The API refuses a Japanese query in Congress pages, which are all English.
+  if (source === "congress") return "Japanese text can't be searched in Congress pages.";
   const ja = meta.ja;
   if (!ja) return "Searching Japanese text isn't available yet. It arrives with the next update.";
   return `Japanese searches cover only the ${ja.pages.toLocaleString("en-US")} Japanese-language pages we read ourselves. The Library of Congress has no searchable text for them.`;
@@ -47,9 +60,39 @@ export function japaneseHint(q: string, meta: Pick<Meta, "ja"> | undefined): str
 
 /** Identity of the search in the URL; remount the form when it changes. */
 export function searchKey(view: ViewState): string {
-  return [view.q, view.mode, view.near, view.from, view.to, view.state.join(), view.lang.join(), view.lccn.join()].join(
-    "|",
-  );
+  return [
+    view.q,
+    view.mode,
+    view.near,
+    view.from,
+    view.to,
+    view.state.join(),
+    view.lang.join(),
+    view.lccn.join(),
+    view.source,
+    view.series.join(),
+  ].join("|");
+}
+
+/**
+ * The dates a search can cover: the newspapers' bounds, or for a Congress
+ * search the span of the Congress series (#229), which runs past the
+ * newspapers at both ends.
+ */
+export function searchBounds(
+  meta: Pick<Meta, "bounds" | "congress"> | undefined,
+  source: ViewState["source"],
+): { from: string; to: string } | undefined {
+  const series = meta?.congress?.series ?? [];
+  if (source === "congress" && series.length > 0) {
+    return {
+      from: series.map((s) => s.from).reduce((a, b) => (a < b ? a : b)),
+      to: series.map((s) => s.to).reduce((a, b) => (a > b ? a : b)),
+    };
+  }
+  const lo = meta?.bounds.from;
+  const hi = meta?.bounds.to;
+  return lo && hi ? { from: lo, to: hi } : undefined;
 }
 
 export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
@@ -71,17 +114,22 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
   // the header is just the search box. They start open when a search already
   // uses one, so an active filter is never hidden. Wider screens always show
   // them (CSS hides the toggle).
-  const [open, setOpen] = useState(() => activeOptions(view) > 0);
+  // The switch shows only once /v1/meta lists Congress pages (#229), and
+  // the options count the source the form will actually search. Until
+  // /v1/meta has loaded the URL's source stands, so a Congress link opened
+  // cold still searches Congress and opens with its options shown.
+  const congressAvailable = (meta?.congress?.series.length ?? 0) > 0;
+  const searchable = (s: ViewState["source"]) => (!meta || congressAvailable ? s : "news");
+  const source = searchable(draft.source);
+  const bounds = searchBounds(meta, source);
+  const [open, setOpen] = useState(() => activeOptions({ ...view, source: searchable(view.source) }) > 0);
   const active = activeOptions({
     ...draft,
+    source,
     from: fromText.trim(),
     to: toText.trim(),
     state: states.split(/[\s,]+/).filter(Boolean),
   });
-
-  const lo = meta?.bounds.from;
-  const hi = meta?.bounds.to;
-  const bounds = lo && hi ? { from: lo, to: hi } : undefined;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -117,11 +165,16 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
         .split(/[\s,]+/)
         .map((s) => s.toUpperCase())
         .filter((s) => /^[A-Z]{2}$/.test(s)),
-      lang: draft.lang,
+      // Congress pages are all English and printed in Washington for now,
+      // and belong to no newspaper: those filters apply to newspapers only.
+      lang: source === "congress" ? [] : draft.lang,
+      ...(source === "congress" ? { state: [], lccn: [] } : {}),
+      source,
+      series: source === "congress" ? draft.series : [],
     });
   };
 
-  const jaHint = japaneseHint(draft.q, meta);
+  const jaHint = japaneseHint(draft.q, meta, source);
   // An input method (IME) uses Enter to confirm a word: that Enter mustn't
   // submit the search. Safari ends the composition before the keydown, so
   // keyCode 229 ("being composed") is checked too.
@@ -136,7 +189,8 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
       className={open ? "search search--open" : "search"}
       role="search"
       onSubmit={submit}
-      aria-label="Search newspapers"
+      // What the form searches: the switch's choice, or newspapers when there is no switch (#229).
+      aria-label={source === "congress" ? "Search Congress" : "Search newspapers"}
     >
       <label className="visually-hidden" htmlFor={`${id}-q`}>
         Word or phrase
@@ -234,17 +288,31 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
           bounds={bounds}
           inputRef={toRef}
         />
-        <label className="search__state">
-          <span>States</span>
-          <input
-            placeholder="e.g. GA, SC"
-            value={states}
-            onChange={(e) => setStates(e.target.value)}
-            pattern="^\s*([A-Za-z]{2}([\s,]+|$))*$"
-            title="Two-letter state codes, separated by commas"
-          />
-        </label>
-        {languages.length > 0 && (
+        {congressAvailable && (
+          <label className="search__source">
+            <span>Search</span>
+            <select
+              value={source}
+              onChange={(e) => setDraft({ ...draft, source: e.target.value as ViewState["source"] })}
+            >
+              <option value="news">Newspapers</option>
+              <option value="congress">Congress</option>
+            </select>
+          </label>
+        )}
+        {source === "news" && (
+          <label className="search__state">
+            <span>States</span>
+            <input
+              placeholder="e.g. GA, SC"
+              value={states}
+              onChange={(e) => setStates(e.target.value)}
+              pattern="^\s*([A-Za-z]{2}([\s,]+|$))*$"
+              title="Two-letter state codes, separated by commas"
+            />
+          </label>
+        )}
+        {source === "news" && languages.length > 0 && (
           <LanguageFilter
             id={id}
             choices={languages}

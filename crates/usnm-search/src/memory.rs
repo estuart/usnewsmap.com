@@ -139,6 +139,12 @@ impl MemoryBackend {
                 && (filters.langs.is_empty()
                     || doc.language.iter().any(|l| filters.langs.contains(l)))
                 && (!filters.front_only || doc.front_page)
+                && (filters.series.is_empty()
+                    || doc
+                        .congress
+                        .series
+                        .as_ref()
+                        .is_some_and(|s| filters.series.contains(s)))
                 && !indexes.hides(&doc.doc_id, &doc.batch)
                 && eval_texts(
                     d.reads(query, &analyzed),
@@ -304,6 +310,7 @@ impl SearchBackend for MemoryBackend {
                         matched_in,
                         ocr_source: d.ocr_source.clone(),
                         ocr_engine: d.ocr_engine.clone(),
+                        congress: d.congress.clone(),
                     }
                 })
                 .collect(),
@@ -537,6 +544,7 @@ mod shard_tests {
             ocr_source: None,
             ocr_engine: None,
             text_as: None,
+            congress: Default::default(),
             doc_id: format!("sn99{i:06}_1896-07-10_ed-1_seq-1"),
             day: 71_000 + i,
             ym: 1896 * 12 + 6,
@@ -570,6 +578,7 @@ mod shard_tests {
             lccns: vec![],
             langs: vec![],
             front_only: false,
+            series: Vec::new(),
         };
         let spec = BucketSpec::new(BucketUnit::Week, from, to);
         let all = b
@@ -613,6 +622,7 @@ mod shard_tests {
             lccns: vec![],
             langs: vec![],
             front_only: false,
+            series: Vec::new(),
         };
         let spec = BucketSpec::new(BucketUnit::Year, from, to);
         let total = |set: &IndexSet, q: &str| {
@@ -692,6 +702,7 @@ mod shard_tests {
             lccns: vec![],
             langs: vec![],
             front_only: false,
+            series: Vec::new(),
         };
         let page = HitsQuery {
             limit: 10,
@@ -756,6 +767,7 @@ mod shard_tests {
             lccns: vec![],
             langs: vec![],
             front_only: false,
+            series: Vec::new(),
         };
         let page = HitsQuery {
             limit: 10,
@@ -822,6 +834,7 @@ mod shard_tests {
             lccns: vec![],
             langs: vec![],
             front_only: false,
+            series: Vec::new(),
         };
         let spec = BucketSpec::new(BucketUnit::Year, from, to);
         let total = |set: IndexSet| {

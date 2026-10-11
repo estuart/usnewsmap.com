@@ -269,3 +269,9 @@ American Stories (Dell et al. 2023, arXiv:2308.12477, CC BY 4.0) re-OCRed most o
 5. `american_stories.json` in the snapshot records every part read for the new main index, with checksums; the manifest has a summary under `built_from.american_stories`.
 
 Without the setting nothing is read, the documents are byte for byte what they were, and `current.json` has no `american_stories`, so the API searches LoC's text alone. Turning it off after a version with the text therefore switches the text off in searches at the next release, without a rebuild; turning it on again rebuilds in full. The text is a snapshot: years the writer finishes after the full base reach the base's pages only at the next full release, and only the pages of later batches pick them up before then. How to turn it on: [operations](../operations.md#american-stories-text).
+
+## 4.10 Congress pages (#229)
+
+The Congressional Globe (UNT's page OCR), the Serial Set (GovInfo, no key) and the Annals of Congress and Register of Debates (the Library of Congress's scans on Congress.gov, with our own OCR) are planned as a second corpus, searched apart from the newspapers (05 §5.5.6, 06 §6.3.10). The sources, sizes, fetch plans and the design are on #229.
+
+Phase 0 has the shapes only: the curated page (`usnm_ingest::congress::CongressPage`) and the engine document built from it (`congress_doc`). The fetch jobs, the curated Parquet layout, the Congress baselines and the release step that builds the index come with the first source, the Globe.

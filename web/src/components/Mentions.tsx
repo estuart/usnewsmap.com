@@ -1,4 +1,5 @@
 import type { HitItem, HitSort } from "../api/types";
+import { hitTitle } from "../lib/congress";
 import { formatDate } from "../lib/time";
 
 interface Props {
@@ -31,7 +32,7 @@ export function Mentions({ first, last, placeName, hrefFor, onOpen }: Props) {
   );
   return (
     <p className="mentions">
-      First mention: {link(first, "oldest")}, <cite>{first.title ?? first.lccn}</cite>, {placeName(first.place_id)}
+      First mention: {link(first, "oldest")}, <cite>{hitTitle(first)}</cite>, {placeName(first.place_id)}
       {last && last.doc_id !== first.doc_id && <> · Last: {link(last, "newest")}</>}
     </p>
   );

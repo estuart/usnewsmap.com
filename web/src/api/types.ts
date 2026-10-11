@@ -41,6 +41,28 @@ export interface Meta {
    * searches only it. Null or absent when the version has none.
    */
   ja?: { indexes: string[]; fold: number; pages: number } | null;
+  /**
+   * The Congress pages (#229), searched with `source=congress`: their series
+   * and the one place they all sit at for now. Null or absent when the
+   * version has none, or the API's setting leaves them off.
+   */
+  congress?: CongressMeta | null;
+}
+
+/** A Congress series in `/v1/meta` (#229). */
+export interface CongressSeriesMeta {
+  series: CongressSeries;
+  pages: number;
+  from: string;
+  to: string;
+}
+
+export type CongressSeries = "annals" | "register" | "globe" | "serialset";
+
+export interface CongressMeta {
+  series: CongressSeriesMeta[];
+  /** Washington, DC, kept apart from DC's newspapers' place. */
+  place: { id: string; name: string; lat: number; lon: number };
 }
 
 export interface MetaLanguage {
@@ -175,7 +197,31 @@ export interface HitItem {
    * Only when the version searches American Stories' text.
    */
   matched_in?: MatchedText[];
+  /**
+   * Set on a Congress page (#229). Its `title` is then the document's or
+   * volume's, its `lccn` empty, `links.viewer` the page in its source's
+   * viewer, and it has no `ocr`.
+   */
+  congress?: HitCongress;
   links: { viewer: string | null };
+}
+
+/** A Congress page's series and citation in `/v1/hits` (#229). */
+export interface HitCongress {
+  series: CongressSeries;
+  /** As printed: "H. Doc. 16-42", "Cong. Globe, 29th Cong., 1st Sess. 1112". */
+  citation?: string;
+  congress?: number;
+  session?: string;
+  /** `house`, `senate` or `joint`. */
+  chamber?: string;
+  /** The page or column numbers as printed ("272", "1041-1042"). */
+  printed_page?: string;
+  /** GovInfo package, UNT item or Congress.gov volume. */
+  package_id?: string;
+  /** Who made the text we search, when it isn't the source's own. */
+  text_source?: string;
+  text_engine?: string;
 }
 
 /** A page's text: LoC's OCR, or American Stories' (Dell et al. 2023). */

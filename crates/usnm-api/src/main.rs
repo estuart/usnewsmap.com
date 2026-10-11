@@ -59,6 +59,7 @@ async fn serve(
     let loader = Loader {
         reference: usnm_store::open(&config.reference_url)?,
         engine,
+        congress_search: config.congress_search,
     };
     let snapshot = initial_snapshot(&loader).await?;
     tracing::info!(

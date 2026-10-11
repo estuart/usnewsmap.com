@@ -232,6 +232,7 @@ select {
 }
 .search__date,
 .search__state,
+.search__source,
 .search__near {
   display: flex;
   align-items: center;
@@ -1149,7 +1150,8 @@ select {
     flex: 1 1 100%;
   }
   .search__date,
-  .search__state {
+  .search__state,
+  .search__source {
     flex: 1 1 45%;
   }
   .search__state input,

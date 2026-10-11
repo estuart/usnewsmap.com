@@ -45,6 +45,10 @@ pub struct Filters {
     /// ISO 639-2 codes, lowercase, sorted.
     pub langs: Vec<String>,
     pub front_only: bool,
+    /// Congress series to search (`globe`, `serialset`, `annals`,
+    /// `register`), sorted; empty means all. Only with [`Source::Congress`]
+    /// (#229).
+    pub series: Vec<String>,
 }
 
 impl Filters {
@@ -56,11 +60,50 @@ impl Filters {
     }
 }
 
+/// Which corpus a search covers (#229): the newspapers (the default,
+/// left out of canonical URLs), the debates and documents of Congress,
+/// or both side by side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    #[default]
+    News,
+    Congress,
+    All,
+}
+
+impl Source {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "news" => Some(Self::News),
+            "congress" => Some(Self::Congress),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::News => "news",
+            Self::Congress => "congress",
+            Self::All => "all",
+        }
+    }
+    /// Whether the search covers Congress pages.
+    pub fn congress(self) -> bool {
+        self != Self::News
+    }
+}
+
+/// The Congress series a `series` filter can name (#229), sorted.
+pub const CONGRESS_SERIES: &[&str] = &["annals", "globe", "register", "serialset"];
+
 /// A validated, canonical search request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchRequest {
     pub query: Node,
     pub filters: Filters,
+    /// The corpus searched; [`Source::News`] unless `source` says otherwise.
+    pub source: Source,
     pub bucket: BucketUnit,
     /// `index_version` the client expects, if any.
     pub version: Option<String>,
@@ -69,6 +112,7 @@ pub struct SearchRequest {
 /// Keys common to all search endpoints; endpoints may accept extra keys.
 const COMMON_KEYS: &[&str] = &[
     "q", "mode", "near", "fuzzy", "from", "to", "state", "lccn", "lang", "front", "bucket", "v",
+    "source", "series",
 ];
 
 /// Raw query-string pairs with duplicate detection.
@@ -188,6 +232,33 @@ impl SearchRequest {
             Some("true") | Some("1") => true,
             Some(_) => return Err(invalid("front", "must be true or false")),
         };
+        let source = match raw.get("source") {
+            None => Source::News,
+            Some(v) => Source::parse(v)
+                .ok_or_else(|| invalid("source", "must be news, congress or all"))?,
+        };
+        let series = list(raw.get("series"), "series", |s| {
+            CONGRESS_SERIES.contains(&s).then(|| s.to_owned())
+        })?;
+        if !series.is_empty() && !source.congress() {
+            return Err(invalid("series", "needs source=congress or source=all"));
+        }
+        // Newspaper-only filters mean nothing for Congress pages, which have
+        // no title and no front page.
+        if source == Source::Congress {
+            if !lccns.is_empty() {
+                return Err(invalid(
+                    "lccn",
+                    "applies to newspapers, not source=congress",
+                ));
+            }
+            if front_only {
+                return Err(invalid(
+                    "front",
+                    "applies to newspapers, not source=congress",
+                ));
+            }
+        }
         let bucket = match raw.get("bucket") {
             None | Some("auto") => BucketUnit::auto(from, to),
             Some(b) => BucketUnit::parse(b)
@@ -202,7 +273,9 @@ impl SearchRequest {
                 lccns,
                 langs,
                 front_only,
+                series,
             },
+            source,
             bucket,
             version: raw.get("v").map(str::to_owned),
         })
@@ -228,6 +301,12 @@ impl SearchRequest {
             s.append_pair("lccn", &f.lccns.join(","));
         }
         s.append_pair("q", &self.query.to_string());
+        if !f.series.is_empty() {
+            s.append_pair("series", &f.series.join(","));
+        }
+        if self.source != Source::News {
+            s.append_pair("source", self.source.as_str());
+        }
         if !f.states.is_empty() {
             s.append_pair("state", &f.states.join(","));
         }
@@ -303,6 +382,48 @@ mod tests {
 
     fn req(q: &str) -> Result<SearchRequest, ParamError> {
         SearchRequest::from_raw(&RawParams::parse(q)?, bounds(), Analyzers::default())
+    }
+
+    #[test]
+    fn source_defaults_to_newspapers_and_stays_out_of_canonical_urls() {
+        let r = req("q=gold&from=1896-01-01&to=1896-12-31").unwrap();
+        assert_eq!(r.source, Source::News);
+        assert!(r.filters.series.is_empty());
+        let explicit = req("q=gold&from=1896-01-01&to=1896-12-31&source=news").unwrap();
+        assert_eq!(explicit.canonical(), r.canonical());
+        assert!(!r.canonical().contains("source"));
+    }
+
+    #[test]
+    fn congress_source_and_series_are_canonical() {
+        let r = req(
+            "q=gold&from=1850-01-01&to=1850-12-31&source=congress&series=serialset,globe,globe",
+        )
+        .unwrap();
+        assert_eq!(r.source, Source::Congress);
+        assert_eq!(r.filters.series, ["globe", "serialset"]);
+        assert_eq!(
+            r.canonical(),
+            "bucket=week&from=1850-01-01&q=gold&series=globe%2Cserialset&source=congress&to=1850-12-31"
+        );
+        let all = req("q=gold&source=all").unwrap();
+        assert_eq!(all.source, Source::All);
+        assert!(all.canonical().contains("source=all"));
+    }
+
+    #[test]
+    fn congress_params_refuse_what_does_not_apply() {
+        let invalid = |q: &str| match req(q) {
+            Err(ParamError::Invalid { name, .. }) => name,
+            other => panic!("{q}: {other:?}"),
+        };
+        assert_eq!(invalid("q=gold&source=senate"), "source");
+        assert_eq!(invalid("q=gold&source=congress&series=record"), "series");
+        assert_eq!(invalid("q=gold&series=globe"), "series");
+        assert_eq!(invalid("q=gold&source=congress&lccn=sn83030214"), "lccn");
+        assert_eq!(invalid("q=gold&source=congress&front=true"), "front");
+        // Under both, newspaper filters still apply to the newspaper half.
+        assert!(req("q=gold&source=all&lccn=sn83030214&series=globe").is_ok());
     }
 
     fn req_with(q: &str, analyzers: Analyzers) -> SearchRequest {

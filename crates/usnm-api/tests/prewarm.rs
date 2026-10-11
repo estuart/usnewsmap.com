@@ -238,6 +238,7 @@ async fn reloading_state(dir: &Path, cfg: Config, backend: Arc<Counting>) -> App
     let loader = Loader {
         reference: Arc::new(LocalStore::new(dir)),
         engine: Engine::Shared(backend),
+        congress_search: cfg.congress_search,
     };
     let snapshot = loader.snapshot().await.unwrap();
     AppState::with_loader(cfg, snapshot, Some(loader))
@@ -688,6 +689,8 @@ fn record(q: &str, day: chrono::NaiveDate) -> usnm_api::searchlog::Record {
         lccn: vec![],
         lang: vec![],
         front: false,
+        corpus: None,
+        series: Vec::new(),
         bucket: "month".into(),
         pages: Some(3),
         index_version: Some("fixture-v1".into()),

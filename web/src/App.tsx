@@ -36,6 +36,7 @@ import { maxWindowExpected, scoreFrame } from "./engine/skewModel";
 import { useSkewModel } from "./engine/useSkew";
 import { skewInfo } from "./lib/skewText";
 import { Brand } from "./components/Brand";
+import { congressFeature } from "./lib/congress";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
@@ -127,7 +128,14 @@ export function App() {
     return prefixSums(aligned, data.places.id.length, count);
   }, [data, coverage.data, count]);
 
-  const features = useMemo(() => new Map((places.data?.features ?? []).map((f) => [f.id, f])), [places.data]);
+  // Congress pages sit at one place of their own, which /v1/meta names
+  // rather than /v1/places, so newspaper places stay as they are (#229).
+  const congressPlace = meta.data?.congress?.place;
+  const features = useMemo(() => {
+    const byId = new Map((places.data?.features ?? []).map((f) => [f.id, f]));
+    if (congressPlace) byId.set(congressPlace.id, congressFeature(congressPlace));
+    return byId;
+  }, [places.data, congressPlace]);
 
   // Relative rate (doc 11): fitted once per search, off the main thread;
   // each frame is then scored from prefix sums.
@@ -303,8 +311,9 @@ export function App() {
   );
   // Under a newspaper filter the view shows Pages, not the relative rate (supportedNorm).
   const onlyPaper = (lccn: string) => setView({ lccn: [lccn], t: "", place: "", sort: "oldest" }, true);
+  // Congress pages belong to no newspaper: the API's list is empty (#229).
   const newspapers =
-    data && data.total.hits > 0 && data.papers ? (
+    view.source !== "congress" && data && data.total.hits > 0 && data.papers ? (
       <NewspaperTable
         rows={papers}
         total={data.total.papers ?? papers.length}
@@ -609,9 +618,12 @@ export function App() {
                   onChange={(n) => setView({ norm: n })}
                   baseline={baselineNote(data?.baseline)}
                   unavailable={
-                    view.lccn.length > 0
-                      ? { skew: "Not for one newspaper: pages published aren't counted per newspaper." }
-                      : undefined
+                    // Both show Pages (supportedNorm); the button says why (#229).
+                    view.source === "congress"
+                      ? { skew: "Not for Congress pages yet: they have no pages-published counts." }
+                      : view.lccn.length > 0
+                        ? { skew: "Not for one newspaper: pages published aren't counted per newspaper." }
+                        : undefined
                   }
                 />
                 <ShareButton />
@@ -652,8 +664,13 @@ export function App() {
               )}
               {data.total.hits === 0 ? (
                 <div className="notice" role="status">
-                  <strong>No pages match.</strong> Try “All words” instead of an exact phrase, widen the dates, or
-                  remove {view.lang.length > 0 ? "language or state filters" : "state filters"}.
+                  <strong>No pages match.</strong>{" "}
+                  {/* A Congress search has no state or language filters to remove (#229). */}
+                  {view.source === "congress"
+                    ? "Try “All words” instead of an exact phrase, or widen the dates."
+                    : `Try “All words” instead of an exact phrase, widen the dates, or remove ${
+                        view.lang.length > 0 ? "language or state filters" : "state filters"
+                      }.`}
                 </div>
               ) : (
                 // Busy is scoped to the stale map or table, not <main>: the status

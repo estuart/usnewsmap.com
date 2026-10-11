@@ -65,10 +65,12 @@ stop() {
 }
 
 start writer
-for index in pages-base-fixture pages-delta-fixture-1 pages-ja-fixture; do
-  # The Japanese pages (#139) have their own mapping.
+for index in pages-base-fixture pages-delta-fixture-1 pages-ja-fixture congress-fixture; do
+  # The Japanese pages (#139) and the Congress pages (#229) have their own
+  # mappings.
   template=pages-index.yaml
   [ "$index" = pages-ja-fixture ] && template=pages-ja-index.yaml
+  [ "$index" = congress-fixture ] && template=congress-index.yaml
   sed -e "s|\${INDEX_ID}|${index}|" -e "s|\${INDEX_URI}|file://${work}/indexes/${index}|" \
     "$root/infra/quickwit/$template" |
     curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
@@ -76,7 +78,7 @@ for index in pages-base-fixture pages-delta-fixture-1 pages-ja-fixture; do
   # The main pages get `text_cg` (05 §5.5.3), and `text_as_cg` where they have
   # American Stories' `text_as` (05 §5.5.4), from the same code as a release.
   docs="$root/fixtures/data/indexes/${index}.jsonl"
-  if [ "$template" = pages-index.yaml ]; then
+  if [ "$template" = pages-index.yaml ] || [ "$template" = congress-index.yaml ]; then
     cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-core --example add_text_cg \
       < "$docs" > "$work/${index}.jsonl"
     docs="$work/${index}.jsonl"

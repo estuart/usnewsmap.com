@@ -41,6 +41,23 @@ describe("SearchBar with Japanese", () => {
     expect(screen.getByRole("searchbox").getAttribute("aria-describedby")).toBeNull();
   });
 
+  it("says a Congress search can't take Japanese text (#229)", () => {
+    const withCongress = {
+      ...meta({ indexes: ["pages-ja-x"], fold: 1, pages: 11058 }),
+      congress: {
+        series: [{ series: "globe", pages: 1, from: "1833-12-02", to: "1873-03-03" }],
+        place: { id: "PC001", name: "Congress", lat: 38.89, lon: -77.01 },
+      },
+    } as Meta;
+    render(<SearchBar view={{ ...DEFAULTS, q: "東京", source: "congress" }} meta={withCongress} onSearch={() => {}} />);
+    const hint = screen.getByRole("note");
+    expect(hint.textContent).toBe("Japanese text can't be searched in Congress pages.");
+    expect(screen.getByRole("searchbox").getAttribute("aria-describedby")).toBe(hint.id);
+    // Back to the newspapers, the newspaper hint as before.
+    fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: "news" } });
+    expect(screen.getByRole("note").textContent).toMatch(/^Japanese searches cover only the 11,058/);
+  });
+
   it("doesn't search on the Enter that confirms an input method's word", () => {
     const onSearch = vi.fn();
     render(<SearchBar view={{ ...DEFAULTS, q: "とうきょう" }} meta={meta(null)} onSearch={onSearch} />);

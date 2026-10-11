@@ -299,6 +299,16 @@ A cold search opens every split of every index it names, even one limited to a s
 
 - **Checked in CI.** The parity tests (`searches_by_decade_match_the_reference_backend`, `searches_by_decade_open_only_their_decades_splits`) check that searches naming their decades return the reference's pages and target only those decades' splits, on the fixtures moved over four decades (`fixtures/decades.rs`), and the pipeline test `releases_a_base_laid_out_by_decade_into_a_quickwit_writer_node` builds a partitioned base and a tagged delta on a real writer.
 
+### 5.5.6 Congress pages (`congress-*`, #229)
+
+The Congressional Globe, the Serial Set, the Annals of Congress and the Register of Debates go in an index set of their own, `infra/quickwit/congress-index.yaml`, named in `current.json` under `congress`. Newspaper searches never open it (the reasons are in #229's design: split count, split size, and releases that don't wait on each other).
+
+- **Same shared fields.** The template keeps every field the shared search code reads (`day`, `ym`, `year`, `place_id`, `place_shard`, `state`, `language`, `front_page`, `lccn`, `sort_key`, `text`, `text_cg`), so the same aggregations, filters and hits serve both sets. It drops the American Stories fields and adds `series` (filtered with `series:IN [...]`), the stored citation fields (`title`, `citation`, `congress`, `session`, `chamber`, `printed_page`, `package_id`, `link`) and the state data kept for later maps (`states`, `state_via`, `speakers`: indexed keyword arrays, not fast or stored).
+- **One engine document per page**, as for newspapers (a report or a debates volume is many pages; grouping them in hits comes later), at the reserved place `PC001` (Washington, DC), with `state` `DC`, `language` `eng`, an empty `lccn` and `front_page` false. `usnm_ingest::congress::congress_doc` builds it from a curated page.
+- **Splits of about 500,000 pages.** A Congress page has a tenth of a newspaper page's text or less, so the set is about 20 splits.
+- **One analyzer.** A query is parsed once, with the main indexes' analyzer, so `congress.common_grams` must equal the main indexes' `common_grams`; otherwise the API refuses Congress searches. A full rebuild that changes the analyzer rebuilds the Congress set too.
+- **Checked.** `congress_searches_match_the_reference_backend` compares Quickwit with the reference backend on the synthetic Congress fixture (`fixtures/data/indexes/congress-fixture.jsonl`), with and without common-word pairs, across series filters.
+
 ## 5.6 Query semantics
 
 The user-facing syntax is simple and matches LoC's modes. The API parses it into an AST (see [06](06-api-design.md)), then translates:

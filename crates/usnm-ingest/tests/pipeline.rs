@@ -2134,6 +2134,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
         lccns: vec![],
         langs: vec![],
         front_only: false,
+        series: Vec::new(),
     };
     let spec = BucketSpec::new(BucketUnit::Year, from, to);
     let every = parse("the OR a OR of OR and").unwrap();
@@ -4001,6 +4002,7 @@ async fn releases_a_base_laid_out_by_decade_into_a_quickwit_writer_node() {
             lccns: vec![],
             langs: vec![],
             front_only: false,
+            series: Vec::new(),
         };
         let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
         let a = backend.summary(&by_decade, &q, &f, &spec).await.unwrap();

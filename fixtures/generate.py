@@ -119,6 +119,73 @@ def ja_docs():
     return docs
 
 
+# Congress fixture pages (#229): one invented page stream per series, in
+# its own era, all at the reserved place PC001 (Washington, DC). Titles are
+# labelled "Fixture" and links go to example.org: none of this is real.
+CONGRESS_SERIES = ["annals", "register", "globe", "serialset"]  # same-day hit order
+CONGRESS_STREAMS = [
+    # series, first day, last day, step in days, pages a day, congress, session, topic words
+    ("annals", date(1820, 2, 1), date(1820, 3, 31), 3, 1, 16, "1",
+     "the senate debated the admission of missouri and the line of the compromise"),
+    ("register", date(1832, 12, 10), date(1833, 3, 2), 4, 1, 22, "2",
+     "the house heard the ordinance of nullification and the tariff of duties"),
+    ("globe", date(1850, 1, 7), date(1850, 9, 30), 7, 2, 31, "1",
+     "the senate took up the fugitive slave bill and the admission of california"),
+    ("serialset", date(1896, 2, 3), date(1897, 11, 29), 28, 3, 54, "1",
+     "the report on free silver and the gold standard was ordered printed"),
+]
+CONGRESS_FILLER = (
+    "mr fixture of the committee moved that the further consideration of the "
+    "resolution be postponed and the yeas and nays were ordered on the motion"
+).split()
+CONGRESS_STATES = ["MO", "SC", "CA", "IL", "NY", "GA"]
+
+
+def ordinal(n):
+    """1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st, 22nd, …"""
+    suffix = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def congress_docs():
+    """The Congress fixture pages, from their own random stream."""
+    rng = random.Random(229)
+    docs = []
+    for series, first, last, step, per_day, congress, session, topic in CONGRESS_STREAMS:
+        d, unit = first, 0
+        while d <= last:
+            unit += 1
+            for seq in range(1, per_day + 1):
+                words = [rng.choice(CONGRESS_FILLER) for _ in range(30)]
+                if rng.random() < 0.6:
+                    at = rng.randrange(len(words))
+                    words[at:at] = topic.split()
+                text = " ".join(words)
+                chamber = rng.choice(["senate", "house"])
+                state = rng.choice(CONGRESS_STATES)
+                doc_id = f"fixture-{series}-{unit:04d}_p{seq}"
+                docs.append({
+                    "doc_id": doc_id,
+                    "day": day_number(d), "ym": d.year * 12 + d.month - 1, "year": d.year,
+                    "date": d.isoformat(),
+                    "place_id": "PC001", "place_shard": 0, "lccn": "", "state": "DC",
+                    "language": ["eng"], "front_page": False, "edition": 1, "seq": seq,
+                    "sort_key": (CONGRESS_SERIES.index(series) << 56) | (unit << 24) | seq,
+                    "text": text,
+                    "series": series,
+                    "title": f"Fixture {series.title()}, {ordinal(congress)} Congress, session {session}",
+                    "citation": f"Fixture {series} {congress}-{session} p. {unit * 10 + seq}",
+                    "congress": congress, "session": session, "chamber": chamber,
+                    "printed_page": str(unit * 10 + seq),
+                    "package_id": f"fixture-{series}-{unit:04d}",
+                    "link": f"https://example.org/fixture/congress/{series}/{unit:04d}#page={seq}",
+                    "ocr_source": "fixture",
+                    "states": [state], "state_via": [f"{state}:title"], "speakers": [],
+                })
+            d += timedelta(days=step)
+    return docs
+
+
 def day_number(d):
     return (d - EPOCH).days
 
@@ -269,7 +336,7 @@ def main():
     snap.mkdir(exist_ok=True)
     (OUT / "indexes").mkdir(exist_ok=True)
     for index_id, docs in (("pages-base-fixture", docs_base), ("pages-delta-fixture-1", docs_delta),
-                           ("pages-ja-fixture", ja_docs())):
+                           ("pages-ja-fixture", ja_docs()), ("congress-fixture", congress_docs())):
         with open(OUT / "indexes" / f"{index_id}.jsonl", "w") as f:
             for doc in docs:
                 f.write(json.dumps(doc) + "\n")

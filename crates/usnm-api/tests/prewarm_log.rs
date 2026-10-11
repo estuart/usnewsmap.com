@@ -62,6 +62,8 @@ fn record(q: &str, day: chrono::NaiveDate) -> Record {
         lccn: vec![],
         lang: vec![],
         front: false,
+        corpus: None,
+        series: Vec::new(),
         bucket: "month".into(),
         pages: Some(3),
         index_version: Some("fixture-v1".into()),

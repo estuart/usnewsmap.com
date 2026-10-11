@@ -37,6 +37,7 @@ fn all_dates() -> Filters {
         lccns: vec![],
         langs: vec![],
         front_only: false,
+        series: Vec::new(),
     }
 }
 

@@ -42,6 +42,8 @@ param appInsightsConnectionString string = ''
 param ingestCron string = ''
 @description('Search American Stories\' text on a version built with it. False sets USNM_AMERICAN_STORIES_SEARCH=false: LoC\'s text alone.')
 param americanStoriesSearch bool = true
+@description('Search the Congress pages on a version with a Congress index set (#229). False sets USNM_CONGRESS_SEARCH=false.')
+param congressSearch bool = true
 @description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
 param customDomains array = []
 
@@ -81,6 +83,7 @@ var scheduleEnv = empty(ingestCron) ? [] : [{ name: 'USNM_INGEST_CRON', value: i
 var americanStoriesEnv = americanStoriesSearch
   ? []
   : [{ name: 'USNM_AMERICAN_STORIES_SEARCH', value: 'false' }]
+var congressEnv = congressSearch ? [] : [{ name: 'USNM_CONGRESS_SEARCH', value: 'false' }]
 // How long a start stays not ready (06 §6.6). In single-revision mode the
 // old revision keeps the traffic until the new one's replicas pass their
 // startup and readiness probes, so the API holds /readyz until its startup
@@ -113,7 +116,7 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, readyEnv)
+  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, readyEnv)
   probes: [
     {
       // A start loads the published version (loadSecs), then warms the

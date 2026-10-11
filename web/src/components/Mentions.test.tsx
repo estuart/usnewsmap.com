@@ -49,6 +49,20 @@ describe("Mentions", () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
+  it("names a Congress page by its title or citation, not its empty LCCN (#229)", () => {
+    const page = {
+      ...hit("c", "1850-01-29", "PC001", null),
+      lccn: "",
+      congress: { series: "globe" as const, citation: "Cong. Globe, 31st Cong., 1st Sess. 244" },
+    };
+    render(
+      <Mentions first={page} last={null} placeName={() => "Congress, DC"} hrefFor={() => "/"} onOpen={() => {}} />,
+    );
+    expect(screen.getByText(/First mention/).textContent).toBe(
+      "First mention: Jan 29, 1850, Cong. Globe, 31st Cong., 1st Sess. 244, Congress, DC",
+    );
+  });
+
   it("leaves out the last mention when it is the same page", () => {
     render(<Mentions first={first} last={first} placeName={(id) => id} hrefFor={() => "/"} onOpen={() => undefined} />);
     expect(screen.queryByText(/Last:/)).toBeNull();
