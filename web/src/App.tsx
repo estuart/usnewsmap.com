@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, sameSearch, VersionChangedError, type SearchParams } from "./api/client";
 import type { Problem } from "./api/types";
@@ -17,6 +17,7 @@ import { PlacePanel } from "./components/PlacePanel";
 import { usePrefetchPlaceHits } from "./components/placeHits";
 import { PlaceTable } from "./components/PlaceTable";
 import { NewspaperTable, paperRows } from "./components/NewspaperTable";
+import { paperFilterNames } from "./components/NewspaperFilter";
 import { languageMix } from "./lib/languages";
 import { Mentions } from "./components/Mentions";
 import { About } from "./components/About";
@@ -65,6 +66,16 @@ export function App() {
     enabled: !!version,
     staleTime: Infinity,
   });
+  // The newspapers' list (07 §7.13) loads once per version, when the
+  // newspaper filter is first opened or the URL names a newspaper.
+  const [wantTitles, setWantTitles] = useState(false);
+  const titles = useQuery({
+    queryKey: ["titles", version],
+    queryFn: ({ signal }) => api.titles(version, signal),
+    enabled: !!version && (wantTitles || view.lccn.length > 0),
+    staleTime: Infinity,
+  });
+  const wantTitlesNow = useCallback(() => setWantTitles(true), []);
 
   // Parsed afresh on every URL change; a stable key keeps queries cached.
   const paramsKey = JSON.stringify(searchParams(view));
@@ -335,8 +346,9 @@ export function App() {
         .filter(Boolean)
         .join(" ") || null
     : null;
-  const filteredPaper =
-    view.lccn.length > 0 ? (papers.find((p) => view.lccn.includes(p.lccn))?.title ?? view.lccn.join(", ")) : null;
+  const paperName = (lccn: string) =>
+    titles.data?.titles.find((t) => t.lccn === lccn)?.title ?? papers.find((p) => p.lccn === lccn)?.title ?? lccn;
+  const filteredPapers = view.lccn.length > 0 ? paperFilterNames(view.lccn, paperName) : null;
 
   const visible = points.filter((p) => p.value > 0);
   const pagesShown = visible.reduce((a, p) => a + p.value, 0);
@@ -522,7 +534,16 @@ export function App() {
     <div className={view.q ? "app" : "app app--empty"}>
       <header className="topbar">
         <Brand />
-        <SearchBar key={searchKey(view)} view={view} meta={meta.data} onSearch={search} busy={agg.isFetching} />
+        <SearchBar
+          key={searchKey(view)}
+          view={view}
+          meta={meta.data}
+          onSearch={search}
+          busy={agg.isFetching}
+          titles={titles.data?.titles}
+          titlesFailed={titles.isError}
+          onWantTitles={wantTitlesNow}
+        />
       </header>
       <About ref={about} />
 
@@ -633,7 +654,12 @@ export function App() {
                     view.source === "congress"
                       ? { skew: "Not for Congress pages yet: they have no pages-published counts." }
                       : view.lccn.length > 0
-                        ? { skew: "Not for one newspaper: pages published aren't counted per newspaper." }
+                        ? {
+                            skew:
+                              view.lccn.length === 1
+                                ? "Not for one newspaper: pages published aren't counted per newspaper."
+                                : "Not for chosen newspapers: pages published aren't counted per newspaper.",
+                          }
                         : undefined
                   }
                 />
@@ -641,9 +667,17 @@ export function App() {
               </div>
 
               {mix && <p className="mix">{mix}</p>}
-              {filteredPaper && (
+              {filteredPapers && (
                 <p className="notice" role="status">
-                  Only pages from <cite>{filteredPaper}</cite>.{" "}
+                  Only pages from{" "}
+                  {filteredPapers.names.map((name, i) => (
+                    <Fragment key={i}>
+                      {i > 0 && (i === filteredPapers.names.length - 1 && !filteredPapers.more ? " and " : ", ")}
+                      <cite>{name}</cite>
+                    </Fragment>
+                  ))}
+                  {filteredPapers.more > 0 && ` and ${filteredPapers.more} more`}
+                  {view.lccn.length === 1 ? ", so the map shows its place only" : ""}.{" "}
                   <button
                     type="button"
                     className="link-button"
@@ -680,7 +714,11 @@ export function App() {
                   {view.source === "congress"
                     ? "Try “All words” instead of an exact phrase, or widen the dates."
                     : `Try “All words” instead of an exact phrase, widen the dates, or remove ${
-                        view.lang.length > 0 ? "language or state filters" : "state filters"
+                        view.lccn.length > 0
+                          ? "newspaper, language or state filters"
+                          : view.lang.length > 0
+                            ? "language or state filters"
+                            : "state filters"
                       }.`}
                 </div>
               ) : (

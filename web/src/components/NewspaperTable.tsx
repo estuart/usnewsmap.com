@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { AggregateResponse } from "../api/types";
+import { locTitleUrl } from "./NewspaperFilter";
 
 /** Rows shown before "Show all". */
 const FIRST = 25;
@@ -76,10 +77,14 @@ export function NewspaperTable({ rows, total, onOnly, filename }: Props) {
               <th scope="row">{r.title}</th>
               <td>{r.place}</td>
               <td className="num">{r.hits.toLocaleString("en-US")}</td>
-              <td>
+              <td className="papers__actions">
                 <button type="button" className="button button--quiet" onClick={() => onOnly(r.lccn)}>
                   Only this newspaper<span className="visually-hidden">: {r.title}</span>
                 </button>
+                {/* Its issues by date, which a search here can't list without a word (07 §7.13). */}
+                <a href={locTitleUrl(r.lccn)} target="_blank" rel="noopener noreferrer">
+                  Issues <span className="visually-hidden">of {r.title}</span> at loc.gov
+                </a>
               </td>
             </tr>
           ))}

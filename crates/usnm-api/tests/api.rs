@@ -379,7 +379,7 @@ async fn cached_keys(state: &Arc<AppState>) -> std::collections::BTreeSet<String
 /// Search responses computed with American Stories' text switched off are
 /// cached under keys of their own, so neither state serves the other's;
 /// with it on the keys are as before the setting, and reference-data
-/// responses (places, coverage) share their keys.
+/// responses (places, titles, coverage) share their keys.
 #[tokio::test]
 async fn search_cache_keys_mark_american_stories_switched_off() {
     let (on, off) = (
@@ -389,7 +389,7 @@ async fn search_cache_keys_mark_american_stories_switched_off() {
     let (_, _, agg) = get(&on, "/v1/aggregate?q=gold").await;
     let coverage = agg["cube"]["baseline_ref"].as_str().unwrap().to_owned();
     let mut uris: Vec<&str> = AMERICAN_STORIES_URIS.to_vec();
-    uris.extend(["/v1/places", coverage.as_str()]);
+    uris.extend(["/v1/places", "/v1/titles", coverage.as_str()]);
     for s in [&on, &off] {
         for uri in &uris {
             let (status, _, body) = get(s, uri).await;
@@ -403,12 +403,13 @@ async fn search_cache_keys_mark_american_stories_switched_off() {
     assert!(on_keys.contains(&format!("fixture-v1|aggregate|{canonical}")));
     assert!(on_keys.iter().all(|k| !k.contains("american_stories")));
     assert!(on_keys.iter().any(|k| k.contains("|places|")));
+    assert!(on_keys.iter().any(|k| k.contains("|titles|")));
     assert!(on_keys.iter().any(|k| k.contains("|coverage|")));
     // Off: the same keys, the searches' marked.
     let expected: std::collections::BTreeSet<String> = on_keys
         .iter()
         .map(|k| {
-            if k.contains("|places|") || k.contains("|coverage|") {
+            if k.contains("|places|") || k.contains("|titles|") || k.contains("|coverage|") {
                 k.clone()
             } else {
                 format!("{k}{}", usnm_api::refdata::AMERICAN_STORIES_OFF_KEY)
@@ -623,6 +624,154 @@ async fn persisted_responses_stay_with_their_american_stories_state() {
         assert!(body["total"]["hits"].as_u64().unwrap() > 0);
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The newspapers of the version (06 §6.3.11): every title in the snapshot,
+/// by LCCN, with its place, years of publication, pages and languages,
+/// cached and versioned like `/v1/places`.
+#[tokio::test]
+async fn titles_list_every_newspaper_versioned_like_places() {
+    let s = state_with(None).await;
+    let (status, headers, body) = get(&s, "/v1/titles").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["index_version"], "fixture-v1");
+    let titles = body["titles"].as_array().unwrap();
+    let lccns: Vec<&str> = titles.iter().map(|t| t["lccn"].as_str().unwrap()).collect();
+    assert_eq!(
+        lccns,
+        [
+            "sn99000001",
+            "sn99000002",
+            "sn99000003",
+            "sn99000004",
+            "sn99000005",
+            "sn99000006"
+        ]
+    );
+    assert_eq!(
+        titles[1],
+        json!({
+            "lccn": "sn99000002",
+            "title": "The Fixture Gazette 2",
+            "place_id": "P00002",
+            "place": "Fixture City B (New York area)",
+            "state": "NY",
+            "first_year": 1892,
+            "last_year": 1897,
+            "pages": 312,
+            "languages": ["eng", "ger"],
+        })
+    );
+    // An open-ended run ("1896-current") has no last year.
+    assert_eq!(titles[5]["first_year"], 1896);
+    assert!(titles[5]["last_year"].is_null());
+    // Every page of the version belongs to one title.
+    let pages: u64 = titles.iter().map(|t| t["pages"].as_u64().unwrap()).sum();
+    let (_, _, meta) = get(&s, "/v1/meta").await;
+    assert_eq!(meta["pages"], pages);
+    assert_eq!(meta["titles"], titles.len());
+
+    // Unversioned: short cache, Content-Location pins the version.
+    assert_eq!(
+        header_str(&headers, header::CACHE_CONTROL),
+        "public, max-age=300"
+    );
+    assert_eq!(
+        header_str(&headers, header::CONTENT_LOCATION),
+        "/v1/titles?v=fixture-v1"
+    );
+    // Pinned: a day, with an ETag.
+    let (status, headers, pinned) = get(&s, "/v1/titles?v=fixture-v1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pinned, body);
+    assert_eq!(
+        header_str(&headers, header::CACHE_CONTROL),
+        "public, max-age=86400"
+    );
+    assert!(header_str(&headers, header::ETAG).starts_with("\"fixture-v1:"));
+    // Another version: redirected to the serving one, never cached.
+    let (status, headers, _) = get(&s, "/v1/titles?v=old-version").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    assert_eq!(
+        header_str(&headers, header::LOCATION),
+        "/v1/titles?v=fixture-v1"
+    );
+    // It takes no other parameter.
+    let (status, _, body) = get(&s, "/v1/titles?q=gold").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["type"], "/errors/bad-parameter");
+}
+
+/// One newspaper: the list's entry with its page at the Library of
+/// Congress; 404 for a title the version doesn't have, after a stale
+/// version is redirected.
+#[tokio::test]
+async fn one_title_with_its_link_or_not_found() {
+    let s = state_with(None).await;
+    let (_, _, list) = get(&s, "/v1/titles").await;
+    let (status, headers, body) = get(&s, "/v1/titles/sn99000003").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut want = list["titles"][2].clone();
+    want["index_version"] = json!("fixture-v1");
+    want["links"] = json!({"loc": "https://www.loc.gov/item/sn99000003/"});
+    assert_eq!(body, want);
+    assert_eq!(body["languages"], json!(["spa"]));
+    assert_eq!(
+        header_str(&headers, header::CONTENT_LOCATION),
+        "/v1/titles/sn99000003?v=fixture-v1"
+    );
+    let (status, headers, _) = get(&s, "/v1/titles/sn99000003?v=fixture-v1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_str(&headers, header::CACHE_CONTROL),
+        "public, max-age=86400"
+    );
+    assert!(header_str(&headers, header::ETAG).starts_with("\"fixture-v1:"));
+    // A stale version is redirected first, even for a title this one lacks.
+    for lccn in ["sn99000003", "sn12345678"] {
+        let (status, headers, _) = get(&s, &format!("/v1/titles/{lccn}?v=old-version")).await;
+        assert_eq!(status, StatusCode::TEMPORARY_REDIRECT, "{lccn}");
+        assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+        assert_eq!(
+            header_str(&headers, header::LOCATION),
+            format!("/v1/titles/{lccn}?v=fixture-v1")
+        );
+    }
+    // Unknown, or not an LCCN at all: not found, as problem details.
+    for path in [
+        "/v1/titles/sn12345678",
+        "/v1/titles/sn12345678?v=fixture-v1",
+        "/v1/titles/SN99000003",
+        "/v1/titles/sn99000003x1234567",
+        "/v1/titles/sn%2099000003",
+    ] {
+        let (status, headers, body) = get(&s, path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(
+            header_str(&headers, header::CONTENT_TYPE),
+            "application/problem+json"
+        );
+        assert_eq!(body["type"], "/errors/not-found", "{path}");
+    }
+    let (status, _, _) = get(&s, "/v1/titles/sn99000003?q=gold").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// A snapshot without `title_pages.json` (published before releases wrote
+/// it) still lists its titles, with their pages unknown.
+#[tokio::test]
+async fn titles_without_pages_per_title() {
+    let mut rd = refdata().await;
+    rd.title_pages = None;
+    let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+    let (status, _, body) = get(&s, "/v1/titles").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let titles = body["titles"].as_array().unwrap();
+    assert_eq!(titles.len(), 6);
+    assert!(titles.iter().all(|t| t["pages"].is_null()));
+    let (_, _, one) = get(&s, "/v1/titles/sn99000001").await;
+    assert!(one["pages"].is_null());
 }
 
 #[tokio::test]

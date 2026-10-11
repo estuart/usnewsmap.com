@@ -1,11 +1,14 @@
 // The archival account (infra/archive/main.bicep): Entra only (no
 // keys, no SAS), no public network access (private endpoints from the
 // environments that use it), versioning and 14-day soft delete, archives at
-// the Cold tier, and a delete lock.
+// the Cold tier, a delete lock, and an exemption from the diagnostic
+// settings audit.
 
 param location string
 param tags object
 param name string
+@description('The group\'s assignment of the guard-rail diagnostic settings audit (usnm-audit-diagnostic-settings).')
+param diagnosticsAssignmentId string
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: name
@@ -88,6 +91,24 @@ resource lock 'Microsoft.Authorization/locks@2020-05-01' = {
   properties: {
     level: 'CanNotDelete'
     notes: 'The archival account outlives every environment. scripts/archive-store.sh lifts this to remove an environment\'s private endpoint.'
+  }
+}
+
+// The diagnostic settings audit would flag the account's services: their
+// logs have nowhere to go. Every Log Analytics workspace belongs to an
+// environment and goes with its teardown, and this account outlives them all.
+// Waived, scoped to this account, until a workspace that outlives the
+// environments exists; then send blob writes and deletes there
+// (storage-diagnostics.bicep) and drop this. Only the audit is waived: the
+// deny policies still apply.
+resource diagnosticsExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-preview' = {
+  scope: account
+  name: 'usnm-archive-no-diagnostics'
+  properties: {
+    policyAssignmentId: diagnosticsAssignmentId
+    exemptionCategory: 'Waiver'
+    displayName: 'Archival account: no diagnostic settings'
+    description: 'No Log Analytics workspace outlives the environments, and this account outlives them all, so its resource logs have nowhere to go. Remove when a long-lived workspace exists and the account sends blob writes and deletes to it (docs/operations.md, "Archival storage").'
   }
 }
 

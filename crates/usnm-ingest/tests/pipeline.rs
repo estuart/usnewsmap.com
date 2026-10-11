@@ -1076,6 +1076,146 @@ async fn a_writer_seals_an_index_that_received_no_documents() {
     node.stop().await.unwrap();
 }
 
+/// `prune` against a real writer node (#245): four versions, a rebuild
+/// that stopped after creating its index, and an index of another name.
+/// The dry run lists the indexes of the versions before the rollback and
+/// the stopped rebuild, with their sizes, and deletes nothing; `--delete`
+/// deletes exactly those, and the serving version still searches.
+/// Runs when `QUICKWIT_BIN` is set.
+#[tokio::test]
+async fn prune_deletes_what_no_kept_version_names_from_a_writer_node() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use usnm_ingest::prune;
+    use usnm_ingest::release::{lock_writer, unlock_writer};
+    use usnm_ingest::sink::{IndexSink, MainLayout, QuickwitNode, QuickwitSink};
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let a = e.root.join("batch_fx_early_ver01.tar.gz");
+    let b = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&a, &early, true, true);
+    write_archive(&b, &late, false, true);
+
+    let qw = e.root.join("qw");
+    std::fs::create_dir_all(&qw).unwrap();
+    let meta = format!("file://{}/meta", qw.display());
+    let root = format!("file://{}/indexes", qw.display());
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7409, &meta, &root)
+        .await
+        .unwrap();
+
+    // A base, a delta on it, then two full bases.
+    for (day, full, batch) in [
+        (1, false, Some(("batch_fx_early_ver01", &a))),
+        (8, false, Some(("batch_fx_late_ver01", &b))),
+        (15, true, None),
+        (22, true, None),
+    ] {
+        if let Some((name, path)) = batch {
+            source::enqueue(&e.state, &[listed(name, path, None)])
+                .await
+                .unwrap();
+            e.worker("w").run(None).await.unwrap();
+        }
+        let r = e.releaser(day, full);
+        let mut sink = QuickwitSink::new(&node.url, &root)
+            .unwrap()
+            .watching(&node)
+            .merges(quick_merges());
+        r.run(&mut sink).await.unwrap().unwrap();
+    }
+    // A rebuild stopped after it created its index, and an index of another name.
+    let mut sink = QuickwitSink::new(&node.url, &root).unwrap();
+    sink.create("pages-base-20261029-1", MainLayout::default())
+        .await
+        .unwrap();
+    sink.create("other-index", MainLayout::default())
+        .await
+        .unwrap();
+    drop(sink);
+
+    let http = reqwest::Client::new();
+    let reference: &dyn ObjectStore = e.reference.as_ref();
+    let lease = lock_writer(&e.state, "pruner").await.unwrap();
+    let dry = prune::prune(&e.state, reference, &node.url, false, &lease)
+        .await
+        .unwrap();
+    assert_eq!(dry.kept.serving, "pages-v20261022-1");
+    assert_eq!(dry.kept.rollback.as_deref(), Some("pages-v20261015-1"));
+    let gone = [
+        "pages-base-20261001-1",
+        "pages-base-20261029-1",
+        "pages-delta-20261008-1",
+    ];
+    let ids: Vec<&str> = dry.candidates.iter().map(|c| c.index_id.as_str()).collect();
+    assert_eq!(ids, gone);
+    for c in &dry.candidates {
+        // The stopped rebuild has no splits; the versions' indexes do.
+        assert_eq!(c.bytes > 0, c.index_id != "pages-base-20261029-1", "{c:?}");
+    }
+    assert_eq!(
+        dry.total_bytes,
+        dry.candidates.iter().map(|c| c.bytes).sum::<u64>()
+    );
+    // Left alone: the node's own telemetry indexes (`otel-…`) too.
+    assert!(
+        dry.other.contains(&"other-index".to_owned()),
+        "{:?}",
+        dry.other
+    );
+    assert!(!dry.other.iter().any(|i| prune::is_ours(i)));
+    let before = prune::list_indexes(&http, &node.url).await.unwrap();
+
+    let done = prune::prune(&e.state, reference, &node.url, true, &lease)
+        .await
+        .unwrap();
+    unlock_writer(&e.state, "pruner", lease).await.unwrap();
+    assert_eq!(done.deleted, gone);
+    let after = prune::list_indexes(&http, &node.url).await.unwrap();
+    let expected: Vec<String> = before
+        .into_iter()
+        .filter(|i| !gone.contains(&i.as_str()))
+        .collect();
+    assert_eq!(after, expected);
+    assert!(after.contains(&"pages-base-20261015-1".to_owned()));
+    assert!(after.contains(&"pages-base-20261022-1".to_owned()));
+    // Quickwit deleted the split files with the index; the kept ones are there.
+    let split_files = |id: &str| {
+        std::fs::read_dir(qw.join("indexes").join(id))
+            .map(|d| {
+                d.flatten()
+                    .filter(|f| f.path().extension().is_some_and(|x| x == "split"))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    assert_eq!(split_files("pages-base-20261001-1"), 0);
+    assert_eq!(split_files("pages-delta-20261008-1"), 0);
+    assert!(split_files("pages-base-20261022-1") > 0);
+    // The serving version and its rollback still search every page.
+    let fixture_docs = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .map(|f| loc_fixture(f).len() as u64)
+        .sum::<u64>();
+    for index in ["pages-base-20261022-1", "pages-base-20261015-1"] {
+        let v: Value = http
+            .post(format!("{}/api/v1/{index}/search", node.url))
+            .json(&serde_json::json!({"query": "*", "max_hits": 0}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["num_hits"].as_u64(), Some(fixture_docs), "{index}: {v}");
+    }
+    node.stop().await.unwrap();
+}
+
 /// A real LoC bulk OCR archive (see `tests/data/README.md`): the layout,
 /// compression and checksum as LoC publishes them.
 #[tokio::test]

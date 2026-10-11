@@ -1,0 +1,27 @@
+// What `usnm-ingest prune` kept, listed and deleted (#245): "prune keeps"
+// (the serving version, its rollback and the indexes they name), one
+// "prune candidate" per index no kept version names, with its published
+// splits' size, "prune plan" with the total (DryRun true without
+// --delete), then "deleted index" for each one deleted and "pruned".
+// Lines that could carry the managed identity endpoint's secret are dropped.
+ContainerAppConsoleLogs
+| where ContainerName == "ingest"
+| where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+| where Log has_any ("prune keeps", "prune candidate", "prune plan", "deleted index", "pruned")
+| extend j = parse_json(Log)
+| extend Message = tostring(j.fields.message)
+| where Message in ("prune keeps", "prune candidate", "prune plan", "deleted index", "pruned")
+| project
+    TimeGenerated,
+    Message,
+    Index = tostring(j.fields.index),
+    Splits = tolong(j.fields.splits),
+    Docs = tolong(j.fields.docs),
+    Gib = round(todouble(coalesce(j.fields.bytes, j.fields.total_bytes)) / 1073741824.0, 2),
+    Candidates = tolong(j.fields.candidates),
+    Deleted = tolong(j.fields.deleted),
+    DryRun = tobool(j.fields.dry_run),
+    Serving = tostring(j.fields.serving),
+    Rollback = tostring(j.fields.rollback),
+    Kept = tostring(j.fields.indexes)
+| order by TimeGenerated asc
