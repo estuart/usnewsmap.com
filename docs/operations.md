@@ -131,7 +131,7 @@ scripts/settings.sh prod SEARCHER_APP          # usnm-searcher-ca-prod
 
 The provision creates the searcher app and its role first, then rolls the API onto a revision without the sidecar. The old revision, with its sidecar, serves until the new one has loaded and warmed up against the new searcher. The searcher's first revision can start before its role has reached Blob and restart once or twice.
 
-**Deploys with it on.** CI's publish (`scripts/ci/roll-api.sh`) finds the searcher app from the API's `USNM_QUICKWIT_URL`. When `searcher.yaml` changed, it applies it to the searcher app, waits for its new revision, then rolls the API, whose start warms the new searcher; otherwise it leaves the searcher app alone. A new Quickwit image still moves with a provision, and restarts the searcher alone. The API sees the restart in the searcher's metrics within a minute (its counters start again from 0) and runs its start's warm-up again while it stays ready: `trigger` is `searcher_restart` in `scripts/logs.sh prod warm-up 2d`. Like a start's, that run reads what the response caches hold and computes only the rest, so the searcher's own caches mostly fill on visitors' first searches.
+**Deploys with it on.** CI's publish (`scripts/ci/roll-api.sh`) finds the searcher app from the API's `USNM_QUICKWIT_URL`. When `searcher.yaml` changed, it applies it to the searcher app, waits for its new revision, then rolls the API, whose start warms the new searcher; otherwise it leaves the searcher app alone. A new Quickwit image still moves with a provision, and restarts the searcher alone. The API sees the restart in the searcher's metrics within a minute (its counters start again from 0) and runs its start's warm-up again while it stays ready: `trigger` is `searcher_restart` in `scripts/logs.sh prod warm-up 2d`. When another warm-up is running then (a start's or a publish's), that run comes after it, and a publish in the meantime waits for it; the API's log says `the searcher restarted during a warm-up; warming it again after that one`. Like a start's, that run reads what the response caches hold and computes only the rest, so the searcher's own caches mostly fill on visitors' first searches.
 
 **What to measure**, a week with it against a week without, leaving out days with a release or a new index version:
 
@@ -173,7 +173,7 @@ If your `az` session expires during the build, ACR still finishes it. Once it ha
 
 ## Cache warm-up
 
-Each API start, and each publish before it swaps the new version in, warms the caches with the home page's examples and the most frequent logged searches (06 §6.5). One line per run:
+Each API start, and each publish before it swaps the new version in, warms the caches with the home page's examples and the most frequent logged searches (06 §6.5), as does a searcher restart under a running API (`searcher_restart`, [the searcher app](#searcher-app)). They run one at a time: one that starts during another waits for its turn, and none is dropped. One line per run:
 
 ```sh
 scripts/logs.sh prod warm-up 2d                # per run: examples warm, cached, computed, skipped, ms

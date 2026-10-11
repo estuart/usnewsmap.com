@@ -42,6 +42,12 @@
 //! ([`Trigger::SearcherRestart`]): the searcher has lost its caches, and
 //! nothing else would warm them. It reads and computes as a start does, and
 //! stays ready meanwhile: the API itself is warm.
+//!
+//! Warm-ups run one at a time, whatever started them (`WarmUps` in the
+//! crate root): one that starts while another runs waits for its turn, first
+//! come first served, and none is dropped. A restart seen during another
+//! warm-up runs after it, since that run may have searched the searcher
+//! before it restarted; restarts seen while one waits share it.
 
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
