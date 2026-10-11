@@ -741,10 +741,7 @@ async fn list(
         opts.base, opts.set
     );
     let mut items = Vec::new();
-    for page in 0.. {
-        if page >= 1000 {
-            bail!("OAI-PMH listing ran past 1,000 pages");
-        }
+    for page in 0..1000 {
         let body = fetch
             .get(&url)
             .await?
@@ -767,10 +764,10 @@ async fn list(
                     form_urlencoded_byte(&t)
                 );
             }
-            None => break,
+            None => return Ok(items),
         }
     }
-    Ok(items)
+    bail!("OAI-PMH listing ran past 1,000 pages")
 }
 
 /// Percent-encode a resumption token for a query string.
@@ -1443,7 +1440,8 @@ mod tests {
         let hits = Arc::new(std::sync::Mutex::new(Vec::<tokio::time::Instant>::new()));
         let h = hits.clone();
         tokio::spawn(async move {
-            for n in 0.. {
+            // The three connections the fetch should need; a fourth is refused.
+            for n in 0..3 {
                 let (mut sock, _) = listener.accept().await.unwrap();
                 let mut req = [0u8; 4096];
                 let _ = sock.read(&mut req).await;
