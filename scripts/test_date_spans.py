@@ -19,15 +19,17 @@ def rec(start, end, corpus=None, version="pages-v1", query="invented words"):
     return r
 
 
-def run(records, by, program=None):
+def run(records, by, program=None, bounds=None):
     args = ["jq", "-r", "--arg", "by", by]
+    if bounds is not None:
+        args += ["--argjson", "bounds", json.dumps(bounds)]
     args += [program] if program else ["-f", str(JQ)]
     out = subprocess.run(args, input=json.dumps(records), capture_output=True, text=True, check=True)
     return out.stdout
 
 
-def table(records, by):
-    rows = [line.split("\t") for line in run(records, by).splitlines()]
+def table(records, by, bounds=None):
+    rows = [line.split("\t") for line in run(records, by, bounds=bounds).splitlines()]
     return rows[0], {k: (int(n), share) for k, n, share in rows[1:]}
 
 
@@ -104,6 +106,27 @@ class DateSpans(unittest.TestCase):
         recs = [rec("1896-01-01", "1896-12-31", query="invented-term-xyzzy")]
         for by in ("span", "decades"):
             self.assertNotIn("xyzzy", run(recs, by))
+
+    def test_whole_range_from_the_served_bounds(self):
+        # Every search in the window is for 1896: none is the whole range,
+        # which the widest-search fallback would have claimed.
+        bounds = {"news": {"from": "1736-01-01", "to": "1963-12-31"},
+                  "congress": {"from": "1774-01-01", "to": "1994-12-31"}}
+        narrow = [rec("1896-01-01", "1896-12-31"), rec("1896-03-01", "1896-03-31")]
+        self.assertEqual(table(narrow, "span", bounds)[1]["whole range"], (0, "0%"))
+        self.assertEqual(table(narrow, "span")[1]["whole range"], (1, "50%"))
+        # An older version's wider default still covers the bounds; Congress
+        # uses its own, and a corpus with no bounds falls back.
+        records = [
+            rec("1700-01-01", "1963-12-31", version="pages-v0"),
+            rec("1736-01-01", "1963-12-31"),
+            rec("1774-01-01", "1994-12-31", corpus="congress"),
+            rec("1774-01-01", "1875-12-31", corpus="congress"),
+            rec("1900-01-01", "1910-12-31", corpus="other"),
+        ]
+        got = table(records, "span", bounds)[1]
+        self.assertEqual(got["whole range"], (4, "80%"))
+        self.assertEqual(got["over 10 years"], (1, "20%"))
 
     def test_empty(self):
         _, got = table([], "span")

@@ -88,9 +88,24 @@ jq -r '["searches", "query"],
 echo
 # Aggregates only (scripts/lib/date-spans.jq): whether date-limited searches
 # are common enough to build the next full base by decade (USNM_PARTITION_DECADE).
+# "Whole range" compares each search with the corpus bounds the site serves
+# (/v1/meta); without them it falls back to the widest search of each version.
+bounds='{}'
+site=$(aget SITE_URL)
+if [ -n "$site" ] && meta=$(curl -fsS --max-time 20 "${site%/}/v1/meta" 2> /dev/null) &&
+  bounds=$(jq -c '{news: .bounds}
+    + (if (.congress.series // []) | length > 0
+       then {congress: {from: (.congress.series | map(.from) | min),
+                        to: (.congress.series | map(.to) | max)}} else {} end)' <<< "$meta"); then
+  echo "Whole range: the bounds $site/v1/meta serves now ($(jq -r '[.news.from, .news.to] | join(" to ")' <<< "$bounds") for newspapers)"
+else
+  bounds='{}'
+  echo "warning: couldn't read the corpus bounds from ${site:-the site}/v1/meta; \"whole range\" is each version's widest search, which overcounts it when no one searched the whole range" >&2
+fi
+echo
 echo "Searches by date span"
-jq -r --arg by span -f scripts/lib/date-spans.jq "$records" | table
+jq -r --arg by span --argjson bounds "$bounds" -f scripts/lib/date-spans.jq "$records" | table
 echo
 echo "Searches by decade partitions touched (pre-1820 is one)"
-jq -r --arg by decades -f scripts/lib/date-spans.jq "$records" | table
+jq -r --arg by decades --argjson bounds "$bounds" -f scripts/lib/date-spans.jq "$records" | table
 echo "($(jq length "$records") searches, ${#files[@]} files)" >&2

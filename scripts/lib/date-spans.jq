@@ -4,10 +4,15 @@
 # `--arg by decades` by partitions touched. Output: tab-separated rows of
 # aggregates only: no query text ever reaches it.
 #
-# A record's `from` and `to` are already clamped to the corpus, so a search
-# over the whole range (the site's default) has the earliest `from` and the
-# latest `to` of its index version and corpus: those are counted as "whole
-# range" in both tables, whatever their span. Spans count inclusive days: "a
+# "Whole range" (the site's default) compares a record's `from` and `to`, which
+# the API clamps to the corpus, with the corpus bounds in `--argjson bounds`:
+# `{"news": {"from", "to"}, "congress": {"from", "to"}}`, from the site's
+# /v1/meta (searches.sh). A search from at or before the bounds' `from` to at
+# or after their `to` is whole range. A corpus with no bounds given (none
+# passed, or a corpus meta doesn't list) falls back to the earliest `from` and
+# latest `to` among its records of the same index version, which overcounts
+# whole range when no one searched the whole range: searches.sh says so when
+# it falls back. Spans count inclusive days: "a
 # year or less" is up to 366 days (one calendar year), "1-10 years" up to
 # 3,653 (one calendar decade).
 #
@@ -37,10 +42,14 @@ def table($first; $order):
     ($order[] | [., $n[.] // 0, share($n[.] // 0; $total)])
   | map(tostring) | @tsv;
 
-map(select((.from | type) == "string" and (.to | type) == "string"))
+($ARGS.named.bounds // {}) as $bounds
+| map(select((.from | type) == "string" and (.to | type) == "string"))
 | group_by([.index_version, .corpus])
-| map((map(.from) | min) as $lo | (map(.to) | max) as $hi
-      | map(. + {whole: (.from == $lo and .to == $hi),
+| map((.[0].corpus // "news") as $corpus
+      | ($bounds[$corpus] // null) as $b
+      | (if $b then $b.from else map(.from) | min end) as $lo
+      | (if $b then $b.to else map(.to) | max end) as $hi
+      | map(. + {whole: (.from <= $lo and .to >= $hi),
                  days: ((.to | day_number) - (.from | day_number) + 1),
                  decades: (((.to | partition) - (.from | partition)) / 10 + 1)}))
 | add // []
