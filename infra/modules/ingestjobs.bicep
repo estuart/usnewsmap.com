@@ -418,7 +418,7 @@ resource congressFetch 'Microsoft.App/jobs@2025-01-01' = if (congressJob) {
       registries: [{ server: registryServer, identity: ingestIdentityId }]
       triggerType: 'Manual'
       // One replica: UNT asks for one request every 3 seconds, and the
-      // Cosmos lock `ops/congress-globe` refuses a second execution anyway.
+      // Cosmos lock `congress-globe` refuses a second execution anyway.
       manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
       replicaTimeout: replicaTimeoutSecs
       // Started again by hand; a retry would only repeat a failure.

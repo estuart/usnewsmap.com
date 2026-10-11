@@ -476,7 +476,7 @@ enum Command {
     /// UNT's crawl delay and write a curated attempt per item. Items with a
     /// finished attempt are skipped. With USNM_RAW_URL every response is
     /// kept there and read back on a later run. Holds the
-    /// `ops/congress-globe` lock. Prints what it did as JSON.
+    /// `congress-globe` lock. Prints what it did as JSON.
     CongressGlobe {
         /// Only these items (`metadc29274`), comma separated.
         #[arg(long, value_delimiter = ',')]

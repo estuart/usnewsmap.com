@@ -478,6 +478,7 @@ impl State {
 
     /// Take the single-writer lock (08 §8.4.1). Fails if another live holder has it.
     pub async fn lock(&self, name: &str, owner: &str, ttl: Duration) -> anyhow::Result<()> {
+        check_lock_name(name)?;
         // A lost ETag race just means re-reading: it may have been this
         // owner's own concurrent renewal, which is fine.
         for _ in 0..5 {
@@ -643,6 +644,7 @@ impl State {
     }
 
     pub async fn unlock(&self, name: &str, owner: &str) -> anyhow::Result<()> {
+        check_lock_name(name)?;
         if let Some(held) = self.docs.get(OPS, name, name).await? {
             if held.doc["owner"].as_str() == Some(owner) {
                 let doc = serde_json::json!({
@@ -653,6 +655,18 @@ impl State {
         }
         Ok(())
     }
+}
+
+/// A lock's name is its item id in `ops`, which Cosmos puts in the document
+/// path, so it can't hold `/`, `\`, `?` or `#`. The in-memory store takes
+/// any id, so this check is what keeps tests honest.
+fn check_lock_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() || name.contains(['/', '\\', '?', '#']) {
+        bail!(
+            "lock name `{name}` is not a valid Cosmos id (empty, or holds `/`, `\\`, `?` or `#`)"
+        );
+    }
+    Ok(())
 }
 
 /// An `ops/activity` item as another execution's `previous`: its own
@@ -745,6 +759,21 @@ mod tests {
             x.unwrap();
             y.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn lock_names_that_cosmos_cannot_hold_are_refused() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        for name in ["ops/congress-globe", "a\\b", "a?b", "a#b", ""] {
+            assert!(
+                s.lock(name, "a", Duration::hours(1)).await.is_err(),
+                "{name:?}"
+            );
+            assert!(s.unlock(name, "a").await.is_err(), "{name:?}");
+        }
+        s.lock("congress-globe", "a", Duration::hours(1))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

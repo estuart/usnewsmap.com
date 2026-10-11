@@ -81,7 +81,8 @@ pub const SUPERSEDED: &[(&str, &str, &str)] = &[
 ];
 
 /// The Cosmos lock that keeps two fetches from running at once.
-pub const LOCK: &str = "ops/congress-globe";
+/// An item id in the `ops` container, so no `/` (like `quickwit-writer`).
+pub const LOCK: &str = "congress-globe";
 
 /// One Globe item, from its OAI record.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -577,7 +578,19 @@ impl Fetch for Http {
                 let sent = self.client.get(url).send().await;
                 *last = Some(tokio::time::Instant::now());
                 let retry_after = match sent {
-                    Ok(r) if r.status().is_success() => return Ok(Some(r.bytes().await?.to_vec())),
+                    // The body can fail after the headers (a dropped
+                    // connection): an attempt like a failed send.
+                    Ok(r) if r.status().is_success() => {
+                        let body = r.bytes().await;
+                        *last = Some(tokio::time::Instant::now());
+                        match body {
+                            Ok(b) => return Ok(Some(b.to_vec())),
+                            Err(e) => {
+                                tracing::warn!(url, error = %e, attempt, "reading the response failed");
+                                None
+                            }
+                        }
+                    }
                     Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => return Ok(None),
                     Ok(r)
                         if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
@@ -592,8 +605,9 @@ impl Fetch for Http {
                         r.headers()
                             .get(reqwest::header::RETRY_AFTER)
                             .and_then(|v| v.to_str().ok())
-                            .and_then(|v| v.trim().parse::<u64>().ok())
-                            .map(Duration::from_secs)
+                            .and_then(|v| {
+                                usnm_core::retry_after::parse(v, std::time::SystemTime::now())
+                            })
                     }
                     Ok(r) => bail!("`{url}` answered {}", r.status()),
                     Err(e) => {
@@ -1416,6 +1430,51 @@ mod tests {
         }
         // The retry waited longer than the crawl delay.
         assert!(v[3].1 - v[2].1 >= Duration::from_secs(2), "{v:?}");
+    }
+
+    /// A 503 whose `Retry-After` is a date, then a 200 whose body is cut
+    /// short, then the page: both failures are retried, the first after
+    /// the date.
+    #[tokio::test]
+    async fn http_retries_a_cut_body_and_honours_a_dated_retry_after() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(std::sync::Mutex::new(Vec::<tokio::time::Instant>::new()));
+        let h = hits.clone();
+        tokio::spawn(async move {
+            for n in 0.. {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut req = [0u8; 4096];
+                let _ = sock.read(&mut req).await;
+                h.lock().unwrap().push(tokio::time::Instant::now());
+                let reply = match n {
+                    0 => {
+                        let at = Utc::now() + chrono::Duration::seconds(5);
+                        format!(
+                            "HTTP/1.1 503 Service Unavailable\r\nretry-after: {}\r\n\
+                             content-length: 0\r\nconnection: close\r\n\r\n",
+                            at.format("%a, %d %b %Y %H:%M:%S GMT")
+                        )
+                    }
+                    1 => "HTTP/1.1 200 OK\r\ncontent-length: 10\r\nconnection: close\r\n\r\nok"
+                        .to_owned(),
+                    _ => "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok"
+                        .to_owned(),
+                };
+                sock.write_all(reply.as_bytes()).await.unwrap();
+                let _ = sock.shutdown().await;
+            }
+        });
+        let http = Http::new(Duration::from_millis(10)).unwrap();
+        let got = http.get(&format!("http://{addr}/p")).await.unwrap();
+        assert_eq!(got.unwrap(), b"ok");
+        let v = hits.lock().unwrap();
+        assert_eq!(v.len(), 3, "{v:?}");
+        // The date is whole seconds, so at least 4 s away; the doubling alone is 2 s.
+        assert!(v[1] - v[0] >= Duration::from_millis(3500), "{v:?}");
+        // The cut body counts as an attempt: the next wait doubles again.
+        assert!(v[2] - v[1] >= Duration::from_secs(4), "{v:?}");
     }
 
     #[test]
