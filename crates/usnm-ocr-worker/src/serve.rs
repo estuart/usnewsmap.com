@@ -80,6 +80,20 @@ fn under(root: &Path, rel: &str) -> Option<PathBuf> {
     p.starts_with(root).then_some(p)
 }
 
+/// A manifest version's directory: one safe segment, rebuilt from its
+/// checked characters, directly under `root`.
+fn under_manifests(root: &Path, version: &str) -> Option<PathBuf> {
+    if !usnm_store::is_safe_segment(version) {
+        return None;
+    }
+    let clean: String = version
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .collect();
+    let dir = root.join(clean);
+    (dir.parent() == Some(root)).then_some(dir)
+}
+
 fn sidecar(scan: &Path) -> PathBuf {
     let mut p = scan.as_os_str().to_owned();
     p.push(".json");
@@ -183,12 +197,15 @@ async fn put_manifest(
     UrlPath((version, file)): UrlPath<(String, String)>,
     body: Bytes,
 ) -> Response {
-    if !usnm_store::is_safe_segment(&version)
-        || !matches!(file.as_str(), "manifest.parquet" | "summary.json")
-    {
+    // The file name is one of two constants, never the request's string.
+    let file: &'static str = match file.as_str() {
+        "manifest.parquet" => "manifest.parquet",
+        "summary.json" => "summary.json",
+        _ => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let Some(dir) = under_manifests(&opts.manifests, &version) else {
         return StatusCode::BAD_REQUEST.into_response();
-    }
-    let dir = opts.manifests.join(&version);
+    };
     let write = async {
         tokio::fs::create_dir_all(&dir).await?;
         let tmp = dir.join(format!(".{file}.part"));
