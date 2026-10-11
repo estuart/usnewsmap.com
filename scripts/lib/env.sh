@@ -3,8 +3,11 @@
 # repository root as the working directory. Needs az signed in to the
 # environment's subscription for the stack functions, and a die() function.
 #
-# An environment's settings live in .azure/$ENV_NAME/.env as KEY="value"
-# lines (the layout azd used, so older environments carry over).
+# An environment's settings are KEY="value" lines (the layout azd used, so
+# older environments carry over) in one file: $USNM_SETTINGS_HOME/<env>/.env
+# (default ~/.config/usnewsmap/<env>/.env) when that directory exists, so
+# every checkout reads the same settings, otherwise the checkout's own
+# .azure/<env>/.env (#275).
 #
 # The name becomes part of resource names (the registry allows only
 # lowercase letters and digits), the stack's name and the settings path.
@@ -25,7 +28,16 @@ need_stack_az() {
   az stack sub create --help 2> /dev/null | grep -- --action-on-unmanage > /dev/null ||
     die "az $(az version --query '"azure-cli"' -o tsv 2> /dev/null) is too old for deployment stacks; upgrade to 2.61 or later"
 }
-ENV_FILE=".azure/$ENV_NAME/.env"
+# A copy in a checkout can be stale: once the shared directory exists (a
+# teardown leaves it, holding the kept file), the checkout's copy is ignored.
+SETTINGS_HOME=${USNM_SETTINGS_HOME:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/usnewsmap}
+if [ -d "$SETTINGS_HOME/$ENV_NAME" ]; then
+  ENV_FILE="$SETTINGS_HOME/$ENV_NAME/.env"
+  [ ! -f ".azure/$ENV_NAME/.env" ] ||
+    echo "note: $ENV_NAME's settings are $ENV_FILE; ignoring this checkout's .azure/$ENV_NAME/.env (delete it)" >&2
+else
+  ENV_FILE=".azure/$ENV_NAME/.env"
+fi
 # A settings file that doesn't parse stops every script up front, before
 # anything reads a setting as empty and falls back to a default.
 # shellcheck source=/dev/null
@@ -86,10 +98,17 @@ STACK="usnm-$ENV_NAME"
 GUARDRAILS_STACK=usnm-guardrails
 # The region, with the same default as infra/main.bicepparam.
 stack_location() { local l; l=$(aget AZURE_LOCATION) || return 1; echo "${l:-eastus2}"; }
+# One parameter of a stack, by name in any case (a stack can change it, as
+# with outputs below). $1 is the stack's
+# "[keys(parameters), values(parameters)[].value]" as tsv: two rows.
+stack_param() {
+  awk -F'\t' -v want="$2" 'NR == 1 { n = split($0, k, "\t") }
+    NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) if (tolower(k[i]) == tolower(want)) print v[i] }' <<< "$1"
+}
 deploy_guardrails() {
   # A stack's location is fixed when it's created; environments in other
   # regions reuse it.
-  local location
+  local location params="" emails kept start=""
   # Only "not found" means a first deployment; other errors stop here.
   if ! location=$(az stack sub show -n "$GUARDRAILS_STACK" --query location -o tsv 2>&1); then
     grep -qiE 'NotFound|could not be found' <<< "$location" || {
@@ -97,9 +116,26 @@ deploy_guardrails() {
       return 1
     }
     location=$(stack_location) || return 1
+  else
+    params=$(az stack sub show -n "$GUARDRAILS_STACK" \
+      --query "[keys(parameters || \`{}\`), values(parameters || \`{}\`)[].value]" -o tsv) || {
+      echo "error: can't read the parameters of $GUARDRAILS_STACK" >&2
+      return 1
+    }
   fi
+  # The budget on dev's groups (#275) mails this environment's alert
+  # recipients, or keeps the ones it has when this environment has none, so
+  # provisioning an environment without recipients doesn't delete it. A
+  # budget's start date can't change and can't be in a past month, so it's
+  # this month for a new budget and the stack's own value after that.
+  emails=$(aget USNM_ALERT_EMAILS) || return 1
+  kept=$(stack_param "$params" devBudgetEmails)
+  [ -z "$kept" ] || start=$(stack_param "$params" devBudgetStart)
+  [ -n "$emails" ] || emails=$kept
+  [ -n "$start" ] || start=$(date -u +%Y-%m-01)
   az stack sub create --name "$GUARDRAILS_STACK" --location "$location" \
     --template-file infra/guardrails.bicep \
+    --parameters devBudgetEmails="$emails" devBudgetStart="$start" \
     --action-on-unmanage deleteResources \
     --deny-settings-mode denyDelete \
     --description "usnewsmap guard-rail policy definitions, shared by every environment in the subscription" \
@@ -197,9 +233,36 @@ ocr_vault_recover() {
     az keyvault recover --name "$v" -o none || return 1
   done <<< "$out"
 }
+# dev exists only while an experiment runs (#275; docs/operations.md, "Dev
+# environment lifecycle"), so its provision needs USNM_EXPERIMENT, the
+# experiment's issue number. The template tags rg-usnm-<env> with it and
+# with USNM_EXPERIMENT_STARTED, set here: the group's own `started` while
+# its `experiment` is the same, otherwise now. teardown.sh's provision sets
+# NO_EXPERIMENT_CHECK, since it only takes the environment apart.
+experiment_marker() {
+  local exp out tagged started=""
+  [ "$ENV_NAME" = dev ] || return 0
+  exp=$(aget USNM_EXPERIMENT) || return 1
+  if [ -z "$exp" ]; then
+    [ "${NO_EXPERIMENT_CHECK:-}" = true ] && return 0
+    echo "error: dev exists only during an experiment: first scripts/settings.sh dev USNM_EXPERIMENT <issue number> (or scripts/stand-up.sh)" >&2
+    return 1
+  fi
+  [[ $exp =~ ^[0-9]+$ ]] || { echo "error: USNM_EXPERIMENT is an issue number, not \"$exp\"" >&2; return 1; }
+  if out=$(az group show -n "rg-usnm-$ENV_NAME" --query "[tags.experiment, tags.started]" -o tsv 2>&1); then
+    IFS=$'\t' read -r tagged started <<< "$out"
+    [ "$tagged" = "$exp" ] || started=""
+  elif ! grep -qiE 'ResourceGroupNotFound|could not be found' <<< "$out"; then
+    echo "error: can't read the tags of rg-usnm-$ENV_NAME: $out" >&2
+    return 1
+  fi
+  [ -n "$started" ] || started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  aset USNM_EXPERIMENT_STARTED "$started"
+}
 # New roles and permissions take a minute or two to apply everywhere, so a
 # deployment that depends on one can fail once; it's idempotent, so retry.
 provision() {
+  experiment_marker || die "not provisioning $ENV_NAME"
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
   ocr_vault_recover || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do

@@ -525,6 +525,43 @@ for f in chunk-*; do curl -sf -XPOST "$QW/api/v1/$INDEX/ingest" --data-binary @"
 
 Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.tar` gives `{batch}/{archive}` and `{batch}/manifest.json`, the layout of `raw/`.
 
+## Dev environment lifecycle
+
+**The rule** (#275): `dev` (`usnm-dev`, `rg-usnm-dev`) holds no resources unless a focused experiment is running. Stand it up for the experiment, and tear it down completely once the results are saved. Scaling to zero isn't enough: with no replicas running it still costs about $2 a day, about $60 a month. That's the 4 private endpoints ($0.24 a day each), the Container Apps environment's load balancer (about $0.45 to $0.60 a day) and public IP ($0.12), the registry (ACR Basic, about $0.17), the NFS share (64 GiB, about $0.21), 3 private DNS zones (about $0.05) and storage (Cost Management, October 2026).
+
+**The marker.** Provisioning `dev` needs `USNM_EXPERIMENT`, the experiment's issue number. It tags `rg-usnm-dev` with `experiment` and `started` (UTC), which stays the same while the experiment does. `scripts/dev-status.sh` lists the stack, what's in `rg-usnm-dev`, `rg-usnm-dev-spot` and `ME_cae-usnm-dev_*`, the tag and its age, and what those groups have cost since the experiment started. It exits 1 if anything is there without the tag, and warns when the tag is older than 7 days. The guard-rail stack, which stays up between experiments, holds a budget on dev's three groups, `budget-usnm-dev-groups`, that mails the alert recipients at $5 of actual spend in a month. It needs no `dev`, only an environment with `USNM_ALERT_EMAILS` provisioned since the budget was added.
+
+**Stand it up:**
+
+```sh
+scripts/settings.sh dev USNM_SEARCH_CLUSTER true      # the experiment's own settings, if any, first
+scripts/stand-up.sh --env dev --experiment 240 [--archive]
+```
+
+`scripts/stand-up.sh` starts from the settings the last teardown kept (`.env.deleted-<time>`, beside the settings file), or new ones. It provisions `dev` without images (registry, data, network, identities: about 7 minutes), copies the pinned Quickwit image into the registry, builds the checkout's API and ingest images there with `az acr build` (tag `exp-<commit>`; the Japanese OCR image too with `USNM_JA_OCR_JOB`), sets `USNM_IMAGE_TAG` and `USNM_USE_ACR`, and provisions again. `--archive` sets `USNM_ARCHIVE_ACCOUNT` from the `usnm-archive` stack. It never creates a GitHub Environment or adds `dev` to `USNM_DEPLOY_ENVIRONMENTS`, so no push to main rolls it: an experiment runs a branch's images. It refuses `prod`, and a checkout with uncommitted changes. To run a newer commit, run it again. `scripts/bootstrap.sh dev` would also work, but it wires `dev` to deploy from main.
+
+**Data**, depending on the experiment:
+
+- **Search experiments:** load a packaged set (`sets/loc-1pct-v1/docs.ndjson.zst`, [Sample sets](#sample-sets)) straight into Quickwit. No curation, no titles-sync, no LoC traffic.
+- **Curation or release experiments:** enqueue the set's batches. With `USNM_ARCHIVE_ACCOUNT` set, curation reads them from `raw/` without LoC's download pacing. The 1% (30 batches, 23.8 GB) is roughly 2 worker-hours of bzip2, so under an hour on the backfill job's 4 workers. A release also needs the title catalog. Titles-sync is paced against LoC and can take up to 8 hours, and its output (`reference/raw/titles.json`) is in dev's own data account, so it goes at teardown.
+
+**Cost of standing up:** two provisions and two or three `az acr build` runs, a few cents. Reading the 1% set back from Cold is about $0.71 ($0.03 per GB retrieved) plus about $0.24 of private endpoint processing. Then the idle floor (about $2 a day) and whatever the experiment runs. **Time:** about 40 to 60 minutes to a running environment with images. Data takes minutes for a set, about an hour to curate the 1% from the archive, and up to 8 hours more if a release needs a fresh titles-sync.
+
+**Tear it down** once the results are saved (reports copied out of `qw-bench/runs/`, logs queried):
+
+```sh
+scripts/teardown.sh dev
+scripts/dev-status.sh                                  # expect: dev holds nothing
+```
+
+With `USNM_ARCHIVE_ACCOUNT` set, `teardown.sh` first detaches `dev` from the archival account. It lifts the account's delete lock, clears `USNM_ARCHIVE_ACCOUNT` and `USNM_SEARCH_CLUSTER` (the settings that grant roles there) and provisions, so the stack deletes its endpoint and roles itself. It then checks that no role assignment in the account's group belongs to one of dev's identities and that no endpoint connection from dev's groups remains, and puts the lock back (`scripts/archive-store.sh deploy`) whatever happened. The account and its data are never changed. Run it again if it stops partway: it picks up where it stopped. Then it removes `dev` from `USNM_DEPLOY_ENVIRONMENTS` if it's there, waiting for any deploy (`ci` on main) that could still roll it; detaches the stack and deletes `rg-usnm-dev` and `rg-usnm-dev-spot` (the `ME_` group goes with the Container Apps environment), the custom roles and any role assignment the stack made outside them; keeps `usnm-guardrails` while another environment (or `usnm-archive`) uses it; deletes the GitHub Environment `dev` if there is one; and keeps the settings file as `.env.deleted-<time>`, without the experiment marker. `az deployment group delete -g rg-usnm-archive -n archive-grant-dev` removes the stale deployment record, if wanted.
+
+Log Analytics keeps the workspace soft-deleted for 14 days at no cost, and a stand-up within that window recovers it. Storage account names are reusable straight away, and the resource names come back the same, since the suffix is `uniqueString(subscription, env)`. Dev's data goes with it: Cosmos batch state, curated parts, indexes and `qw-bench`. The archive keeps what was downloaded from LoC. With `USNM_OCR` on, the Document Intelligence account would need a purge before it could be recreated; it's off in dev.
+
+**Cost of tearing down:** nothing billed. **Time:** about 25 to 40 minutes, mostly the group delete, plus about 10 minutes for the archive's provision.
+
+**Settings.** Keep dev's settings in one place, `~/.config/usnewsmap/dev/.env` ([infra/README.md](../infra/README.md#settings-and-the-deployment-stack)), rather than in each worktree's `.azure/dev/.env`, where a stale copy can provision dev with old settings.
+
 ## Search cluster experiment
 
 An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1% sample: indexing with 1 and 2 indexers, then searching with 1, 2 and 3 searchers. It runs in its own environment (`dev`), never in prod (the template ignores the setting there), and everything it adds sits behind `USNM_SEARCH_CLUSTER`. With the setting off, the stack is exactly what it was (the module is `if (searchCluster && useAcr && env != 'prod')`).
@@ -612,7 +649,7 @@ Start each step once the previous execution has ended (`az containerapp job exec
 
 **Report lines.** Container Apps keeps about 16 KiB of a console line. A bench report therefore goes out as several `qwcluster report` lines (`bench`, one `bench_pass` per pass, `bench_probe`, `bench_profile`), which `scripts/qwcluster-report.py` puts back together by label. Images before this change logged a whole run on one line, and a run with `--probe` passed the limit (October 2026); the report salvages such a line's passes, and takes its Quickwit version from the run's `bench root` line, but its probe and profile are only in `qw-bench` (`runs/{label}/bench.json`). `J dump` with a current image logs those stored reports again, in parts.
 
-**Idle and teardown.** `USNM_SEARCH_CLUSTER_NODES 0` and a provision remove the node apps but keep the containers and the bench job, so nothing is billed but storage. `USNM_SEARCH_CLUSTER ""` and a provision remove everything the setting added, both containers included. Clear `USNM_LOG_DAILY_CAP_GB` afterwards.
+**Idle and teardown.** `USNM_SEARCH_CLUSTER_NODES 0` and a provision remove the node apps but keep the containers and the bench job, so nothing is billed but storage. `USNM_SEARCH_CLUSTER ""` and a provision remove everything the setting added, both containers included. Clear `USNM_LOG_DAILY_CAP_GB` afterwards. Once the experiment's results are saved, tear `dev` down ([Dev environment lifecycle](#dev-environment-lifecycle)).
 
 **Threads.** Every node runs one main-runtime thread and one search-pool thread per vCPU (`QW_TOKIO_RUNTIME_NUM_THREADS`, `RAYON_NUM_THREADS`), as the API's sidecar does with 4 and 4 at 3.75 vCPU (#251): 2 and 2 at the default 2 vCPU. Before October 2026 the nodes ran Quickwit's own default, a third of the CPUs rounded up for the main runtime (one thread at 2 vCPU), so the earlier benches had a single thread for downloads and split opening. `USNM_SEARCH_CLUSTER_RUNTIME_THREADS` and `USNM_SEARCH_CLUSTER_SEARCH_THREADS` override the counts (0: one per vCPU).
 

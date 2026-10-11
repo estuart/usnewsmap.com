@@ -363,6 +363,10 @@ jobs:
         run: scripts/ci/no-shared-keys.sh
       - name: The search cluster report's tests pass
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
+      # Against a stub az: the dev experiment marker, the guard-rail budget's
+      # parameters, the settings location and scripts/dev-status.sh (#275).
+      - name: The environment scripts' tests pass
+        run: python3 -m unittest -v scripts/test_env_scripts.py
       # The workbooks are loaded as text, so Bicep doesn't parse them.
       - name: The workbook definitions parse and name the workspace placeholder
         run: |

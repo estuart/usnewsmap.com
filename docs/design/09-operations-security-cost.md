@@ -134,7 +134,7 @@ L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas
 - `maxReplicas: 2` on the only always-on app
 - Log Analytics daily cap
 - Curated data kept in Cool storage; raw archives not retained
-- `dev` scales to zero
+- `dev` exists only during an experiment: stood up for it and torn down afterwards, with a $5-a-month budget alert on its groups ([Dev environment lifecycle](../operations.md#dev-environment-lifecycle))
 - Spot compute only for offline jobs
 - A tag policy (`project=usnm`, `env=`) enables cost-by-environment views
 

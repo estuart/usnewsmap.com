@@ -30,6 +30,7 @@ scripts/ci/lint-bicep.sh
 scripts/ci/no-shared-keys.sh
 scripts/ci/check-workbooks.py
 python3 -m unittest scripts/ci/test_check_workbooks.py
+python3 -m unittest scripts/test_env_scripts.py
 bicep build infra/main.bicep --stdout > /dev/null
 bicep build infra/guardrails.bicep --stdout > /dev/null
 AZURE_ENV_NAME=ci bicep build-params infra/main.bicepparam --stdout > /dev/null

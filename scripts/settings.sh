@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read or change an environment's settings (.azure/<env>/.env).
+# Read or change an environment's settings (scripts/lib/env.sh says where).
 #
 #   scripts/settings.sh prod                 # all of them
 #   scripts/settings.sh prod API_URL         # one
