@@ -386,6 +386,13 @@ async fn a_pilot_is_one_group_within_its_budget() {
     let r = fx.seed(&batches).await.unwrap();
     assert_eq!(r.queued, 4);
     assert!(r.units.iter().all(|u| u.batch == "bb_eng"));
+    // A batch version that isn't the published one is refused.
+    let stale = Options {
+        batches: vec!["bb_eng_ver02".into()],
+        ..batches
+    };
+    let err = fx.seed(&stale).await.unwrap_err();
+    assert!(format!("{err:#}").contains("publishes bb_eng_ver01"));
 }
 
 #[tokio::test]

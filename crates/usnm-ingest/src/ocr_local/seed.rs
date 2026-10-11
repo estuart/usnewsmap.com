@@ -22,8 +22,10 @@
 //! seq), so the worker's issue cache hits. Each batch's units are worked
 //! out once per batch version and set of filters, and kept under
 //! `ocr-local/seed/rank/<key>/`, so a run stopped by its deadline goes on
-//! where it stopped and later runs read them back. Units a plan has
-//! finished are listed under `ocr-local/seed/plans/<plan>/done/`.
+//! where it stopped and later runs read them back; a change to a title's
+//! languages gets new ones. Units a plan has finished are listed under
+//! `ocr-local/seed/plans/<plan>/done/<filters>/`, so changing the filters
+//! looks at every unit again.
 //!
 //! **Skips.** Titles that list Japanese, titles in the `ocr-ja` overlay and
 //! pages in `ja_latin.json`; pages the ledger has (imported, outstanding or
@@ -414,12 +416,38 @@ fn units_of(
         .collect()
 }
 
-fn rank_path(key: &str, batch: &str, version: u16) -> String {
-    format!("{ROOT}/seed/rank/{key}/{batch}_ver{version:02}.json")
+/// A batch's rank file. `titles` tags the title languages its units were
+/// worked out with, so a release that corrects a title's languages gets
+/// new units for the same batch version.
+fn rank_path(key: &str, batch: &RunBatch, titles: &HashMap<String, Vec<String>>) -> String {
+    let mut lccns: Vec<&String> = batch.curated.lccns.iter().collect();
+    lccns.sort();
+    let mut h = Sha256::new();
+    for l in lccns {
+        h.update(l.as_bytes());
+        h.update(b"=");
+        for lang in titles.get(l).map(Vec::as_slice).unwrap_or_default() {
+            h.update(lang.as_bytes());
+            h.update(b",");
+        }
+        h.update(b";");
+    }
+    let tag = &crate::source::hex(&h.finalize())[..12];
+    format!(
+        "{ROOT}/seed/rank/{key}/{}_ver{:02}-{tag}.json",
+        batch.batch, batch.curated.version
+    )
 }
 
-fn done_dir(plan: &str) -> String {
-    format!("{ROOT}/seed/plans/{plan}/done")
+/// Where a plan's finished units are listed, per set of filters: units
+/// finished under other filters may have pages these make eligible.
+fn done_dir(plan: &str, opts: &Options) -> String {
+    let skip = if opts.skip_american_stories {
+        "-as"
+    } else {
+        ""
+    };
+    format!("{ROOT}/seed/plans/{plan}/done/{}{skip}", opts.rank_key())
 }
 
 /// A unit a plan has nothing more to queue from.
@@ -493,10 +521,7 @@ async fn rank(
     let key = opts.rank_key();
     let filter = Filter::new(opts);
     let curated = cache.curated;
-    let paths: Vec<String> = batches
-        .iter()
-        .map(|b| rank_path(&key, &b.batch, b.curated.version))
-        .collect();
+    let paths: Vec<String> = batches.iter().map(|b| rank_path(&key, b, titles)).collect();
     let stored: Vec<Option<Vec<u8>>> = futures::stream::iter(paths.iter())
         .map(|p| curated.get(p))
         .buffered(RANK_READS)
@@ -671,10 +696,10 @@ async fn ja_overlay_titles(curated: &dyn ObjectStore) -> anyhow::Result<HashSet<
         .collect())
 }
 
-/// A plan's finished units.
-async fn load_done(curated: &dyn ObjectStore, plan: &str) -> anyhow::Result<HashSet<DoneUnit>> {
+/// A plan's finished units under these filters.
+async fn load_done(curated: &dyn ObjectStore, opts: &Options) -> anyhow::Result<HashSet<DoneUnit>> {
     let mut out = HashSet::new();
-    for path in curated.list(&done_dir(plan)).await? {
+    for path in curated.list(&done_dir(&opts.plan, opts)).await? {
         let Some(body) = curated.get(&path).await? else {
             continue;
         };
@@ -763,12 +788,20 @@ pub(super) async fn seed(
     let published = ocr_damage::version_batches(stores.reference, &version, &[]).await?;
     let by_name: HashMap<&str, &RunBatch> =
         published.iter().map(|b| (b.batch.as_str(), b)).collect();
-    let wanted = opts.batch_set();
-    for b in &wanted {
-        if !by_name.contains_key(b.as_str()) {
+    // A `name_verNN` filter must name the version that is published.
+    for b in &opts.batches {
+        let base = base_batch(b);
+        let Some(p) = by_name.get(base) else {
             bail!("seed batch {b} isn't in the published version {version}");
+        };
+        if base != b && *b != format!("{base}_ver{:02}", p.curated.version) {
+            bail!(
+                "seed batch {b}: {version} publishes {base}_ver{:02}",
+                p.curated.version
+            );
         }
     }
+    let wanted = opts.batch_set();
     let mut seeded: Vec<&RunBatch> = published
         .iter()
         .filter(|b| wanted.is_empty() || wanted.contains(&b.batch))
@@ -918,7 +951,7 @@ pub(super) async fn seed(
             );
             slots = 0;
         }
-        let done = load_done(curated, &opts.plan).await?;
+        let done = load_done(curated, opts).await?;
         let ja_titles = ja_overlay_titles(curated).await?;
         let ja_latin: JaLatin = match stores
             .reference
@@ -1109,7 +1142,7 @@ pub(super) async fn seed(
         if let Some(l) = lease {
             l.check()?;
         }
-        let path = format!("{}/{run}.json", done_dir(&opts.plan));
+        let path = format!("{}/{run}.json", done_dir(&opts.plan, opts));
         if !curated
             .put_new(&path, serde_json::to_vec(&done_now)?, "application/json")
             .await?
