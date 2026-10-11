@@ -869,3 +869,17 @@ scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
 ```
 
 **Alerts** (with alert emails), severity 3: `usnm-ocrsync-failed-alert-<env>` when an execution fails, and `usnm-ocrsync-backlog-alert-<env>` when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
+
+## Our OCR in releases (#296)
+
+With `USNM_OCR_LOCAL` (the ingest job's `--ocr-local`), a release weighs the text `ocr-sync` took into `curated/ocr-local/` against LoC's on the pages of the batches it indexes, and uses ours where rule v1 prefers it ([12 §12.5 Step 9](design/12-onprem-ocr-pipeline.md)). It is off by default, and with it off a release reads nothing from `ocr-local` and its documents and snapshot files don't change. `id-usnm-ingest` already has Blob Data Contributor on `curated`, so the setting needs no new grant.
+
+```sh
+scripts/settings.sh prod USNM_OCR_LOCAL true
+scripts/provision.sh prod
+```
+
+- The weekly delta applies it to the batches it indexes. Published batches take it only at a [full rebuild](#full-rebuild) with the setting on. Each release logs `our OCR in ocr-local` (parts, titles, revocations) and, when the version has published batches, `pages of ocr-local that would replace LoC's text in published batches`, an estimate from the scores `ocr-sync` stored. `ocr-sync --report` ([above](#ocr-pickup-ocr-sync-296)) gives the same kind of estimate without a release.
+- Records: `reference/<version>/ocr_local.json` (the rule and metric versions, a parts summary, pages considered, replaced and kept by reason, language and engine, and the revocations applied), `ocr_local_pages.bin` (the pages that hold our text), the manifest's `built_from.ocr_local` and the build record's `features.ocr_local`. The API marks hits on those pages "Our OCR", with a viewer link that has no highlight. On a page the Japanese overlay also has, the Japanese overlay wins.
+- To take a node's or engine's output out, write a create-only `curated/ocr-local/revoked/<stamp>.json` with `reason`, `reference` and at least one of `node`, `engine`, `run`, `from` and `to`; every field given must match. Matching rows are left out from the next release that indexes their batches, so text already published stays until a full rebuild. A file the release can't read stops the release.
+- Clearing the setting stops new replacements. A delta carries the published version's `ocr_local_pages.bin` forward either way; the next full rebuild without the setting goes back to LoC's text everywhere.

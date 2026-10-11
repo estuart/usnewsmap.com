@@ -65,6 +65,9 @@ param congressSearch bool = true
 
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
+
+@description('Weigh our own OCR from curated/ocr-local (the on-prem nodes\' output, #296) against LoC\'s text: on the pages of the batches a release indexes, ours replaces LoC\'s where rule v1 prefers it (12 §12.5 Step 9). Published batches take it at the next full release (docs/operations.md, "Our OCR in releases").')
+param ocrLocal bool = false
 @description('Lay the next full rebuild\'s base out by decade (#123): every split holds one decade, so a date-limited search skips the others. Only a full base takes it; deltas follow the published version, and a full rebuild without it lays nothing out by decade (docs/operations.md, "Full rebuild").')
 param partitionDecade bool = false
 
@@ -633,6 +636,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     full: ingestFull
     americanStories: americanStories
     jaLatin: jaLatin
+    ocrLocal: ocrLocal
     partitionDecade: partitionDecade
     singleTextField: singleTextField
     workers: backfillWorkers
