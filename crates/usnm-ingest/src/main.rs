@@ -159,6 +159,12 @@ enum Command {
         /// version holds yet; without it, a full release leaves them out.
         #[arg(long)]
         ja_latin: bool,
+        /// Weigh our own OCR from `ocr-local` against LoC's text (12 §12.5
+        /// Step 9): on the pages of the batches this release indexes, ours
+        /// replaces LoC's where rule v1 prefers it. Published batches take
+        /// it at the next full release.
+        #[arg(long)]
+        ocr_local: bool,
         /// Lay a full base out by decade (#123, 05 §5.5.5), so date-limited
         /// searches skip the other decades' splits. Only a full base takes
         /// it; deltas follow the published version.
@@ -359,6 +365,9 @@ enum Command {
         /// As for `release`.
         #[arg(long)]
         ja_latin: bool,
+        /// As for `release`.
+        #[arg(long)]
+        ocr_local: bool,
         /// As for `release`.
         #[arg(long)]
         partition_decade: bool,
@@ -574,6 +583,7 @@ async fn release(
     synthetic: bool,
     american_stories: bool,
     ja_latin: bool,
+    ocr_local: bool,
     partition_decade: bool,
     single_text_field: bool,
     titles_left: Option<String>,
@@ -591,6 +601,7 @@ async fn release(
         titles_left,
         american_stories,
         ja_latin,
+        ocr_local,
         partition_decade,
         single_text_field,
     };
@@ -1038,6 +1049,7 @@ async fn command(
             synthetic,
             american_stories,
             ja_latin,
+            ocr_local,
             partition_decade,
             single_text_field,
             target,
@@ -1049,6 +1061,7 @@ async fn command(
                 *synthetic,
                 *american_stories,
                 *ja_latin,
+                *ocr_local,
                 *partition_decade,
                 *single_text_field,
                 None,
@@ -1064,6 +1077,7 @@ async fn command(
             synthetic,
             american_stories,
             ja_latin,
+            ocr_local,
             partition_decade,
             single_text_field,
             curate_max_runtime_secs,
@@ -1109,6 +1123,7 @@ async fn command(
                 *synthetic,
                 *american_stories,
                 *ja_latin,
+                *ocr_local,
                 *partition_decade,
                 *single_text_field,
                 titles_left,
@@ -1217,6 +1232,7 @@ mod tests {
             "--full",
             "--american-stories",
             "--ja-latin",
+            "--ocr-local",
             "--partition-decade",
             "--single-text-field",
             "--titles-max-runtime-secs",
@@ -1230,6 +1246,7 @@ mod tests {
             full,
             american_stories,
             ja_latin,
+            ocr_local,
             partition_decade,
             single_text_field,
             ..
@@ -1243,10 +1260,11 @@ mod tests {
                 full,
                 american_stories,
                 ja_latin,
+                ocr_local,
                 partition_decade,
                 single_text_field
             ),
-            (Some(28800), true, true, true, true, true)
+            (Some(28800), true, true, true, true, true, true)
         );
     }
 
@@ -1302,6 +1320,7 @@ mod tests {
             target,
             american_stories,
             ja_latin,
+            ocr_local,
             partition_decade,
             single_text_field,
             ..
@@ -1311,6 +1330,7 @@ mod tests {
         };
         assert!(!american_stories, "off unless asked for");
         assert!(!ja_latin, "off unless asked for");
+        assert!(!ocr_local, "off unless asked for");
         assert!(!partition_decade, "off unless asked for");
         assert!(!single_text_field, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);

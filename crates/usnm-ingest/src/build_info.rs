@@ -38,6 +38,9 @@ pub struct Built {
     /// The release writes our Japanese OCR's Latin text for the pages LoC
     /// ships without text (`--ja-latin`, #203).
     pub ja_latin: bool,
+    /// The release weighs our own OCR from `ocr-local` against LoC's text
+    /// (`--ocr-local`, 12 §12.5 Step 9) by rule v1.
+    pub ocr_local: bool,
     /// The decade layout (05 §5.5.5): of the main index this run writes,
     /// and of the version's main indexes, which all have the `decade` field
     /// or none does.
@@ -106,6 +109,9 @@ pub fn summary(b: &Built) -> Value {
     if b.ja_latin {
         features["ja_latin"] = json!(crate::ocr_ja::LATIN_VERSION);
     }
+    if b.ocr_local {
+        features["ocr_local"] = json!(crate::ocr_local::rule::VERSION);
+    }
     // Likewise, as its `decades`.
     if b.decades.on() {
         features["decades"] = json!(usnm_core::decade::VERSION);
@@ -138,6 +144,7 @@ mod tests {
             writer: crate::sink::WriterTuning::default(),
             american_stories: false,
             ja_latin: false,
+            ocr_local: false,
             decades: crate::sink::Decades::Off,
             text_layout: usnm_core::text_layout::TextLayout::Separate,
             analyzer: usnm_core::text::Analyzer::LATEST,

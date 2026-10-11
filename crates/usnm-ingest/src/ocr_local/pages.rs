@@ -166,7 +166,12 @@ pub fn encode(rows: &[Imported]) -> anyhow::Result<Vec<u8>> {
 pub struct StoredRow {
     pub doc_id: String,
     pub lccn: String,
+    /// The base batch the page was queued from.
+    pub batch: String,
+    pub ocr_source: String,
     pub ocr_engine: String,
+    /// The node that read it.
+    pub node: String,
     pub ocred_at: i64,
     pub ours: Scores,
     pub loc: Scores,
@@ -194,7 +199,10 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
         }
         let doc_id = col!("doc_id", StringArray);
         let lccn = col!("lccn", StringArray);
+        let batch_name = col!("batch", StringArray);
+        let source = col!("ocr_source", StringArray);
         let engine = col!("ocr_engine", StringArray);
+        let node = col!("node", StringArray);
         let at = col!("ocred_at", arrow_array::TimestampMicrosecondArray);
         let s = |a: &StringArray, i: usize| (!a.is_null(i)).then(|| a.value(i).to_owned());
         let f = |a: &Float64Array, i: usize| (!a.is_null(i)).then(|| a.value(i));
@@ -228,7 +236,10 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
             out.push(StoredRow {
                 doc_id: doc_id.value(i).to_owned(),
                 lccn: lccn.value(i).to_owned(),
+                batch: batch_name.value(i).to_owned(),
+                ocr_source: source.value(i).to_owned(),
                 ocr_engine: engine.value(i).to_owned(),
+                node: node.value(i).to_owned(),
                 ocred_at: at.value(i),
                 ours: score(&sides[0]),
                 loc: score(&sides[1]),

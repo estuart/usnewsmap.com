@@ -81,7 +81,8 @@ pub(crate) struct Item {
     #[serde(skip_serializing_if = "Option::is_none")]
     matched_in: Option<Vec<&'static str>>,
     /// When the text is our own OCR, not LoC's: the Japanese index's pages
-    /// (#139), and the main index's pages with our OCR's Latin text (#203).
+    /// (#139), the main index's pages with our OCR's Latin text (#203), and
+    /// those with our OCR in place of LoC's (12 §12.5 Step 9).
     #[serde(skip_serializing_if = "Option::is_none")]
     ocr: Option<Ocr>,
     /// A Congress page's series and citation (#229). Its `title` is the
@@ -163,16 +164,28 @@ impl Item {
             };
         }
         // A Japanese page says so itself; a main-index page with our Latin
-        // text is in the snapshot's list.
+        // text, or with our own OCR in place of LoC's (12 §12.5 Step 9), is
+        // in the snapshot's lists.
         let ocr = match h.ocr_source {
             Some(source) => Some(Ocr {
                 source,
                 engine: h.ocr_engine,
             }),
-            None => rd.ja_latin.get(&h.doc_id).map(|p| Ocr {
-                source: p.ocr_source.clone(),
-                engine: Some(p.ocr_engine.clone()),
-            }),
+            None => rd
+                .ja_latin
+                .get(&h.doc_id)
+                .map(|p| Ocr {
+                    source: p.ocr_source.clone(),
+                    engine: Some(p.ocr_engine.clone()),
+                })
+                .or_else(|| {
+                    let e = rd.ocr_local.get(&h.doc_id)?;
+                    let engine = rd.ocr_local.engine(e)?;
+                    Some(Ocr {
+                        source: engine.source.clone(),
+                        engine: Some(engine.engine.clone()),
+                    })
+                }),
         };
         Item {
             date: date_from_day(h.day).to_string(),

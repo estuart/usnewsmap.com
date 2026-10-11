@@ -1188,6 +1188,98 @@ async fn hits_on_our_latin_text_are_marked_as_our_ocr() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A page whose main-index document holds our own OCR in place of LoC's
+/// text (12 §12.5 Step 9, the snapshot's `ocr_local_pages.bin`) is marked
+/// as our OCR in hits, with its engine and a viewer link without
+/// highlights; the other hits are LoC's as before. A copy the version hides
+/// isn't marked.
+#[tokio::test]
+async fn hits_on_our_ocr_in_place_of_locs_are_marked_as_our_ocr() {
+    use sha2::Digest;
+    use usnm_state::ocr_local::{Builder, Engine, OCR_LOCAL_PAGES_FILE};
+    let base = "/v1/hits?q=gold&place=P00001&limit=5";
+    let (_, _, before) = get(&state_with(None).await, base).await;
+    let ours = before["items"][0]["doc_id"].as_str().unwrap().to_owned();
+    let theirs = before["items"][1]["doc_id"].as_str().unwrap().to_owned();
+
+    let dir = temp_data_dir("ocr-local");
+    let mut pages = Builder::default();
+    pages
+        .add(
+            &ours,
+            Engine {
+                source: "usnm-tesseract".into(),
+                engine: "tesseract/5.5.1 eng".into(),
+            },
+            1,
+        )
+        .unwrap();
+    let body = pages.finish().encode().unwrap();
+    std::fs::write(dir.join("fixture-v1").join(OCR_LOCAL_PAGES_FILE), &body).unwrap();
+    let manifest = dir.join("fixture-v1/manifest.json");
+    let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    let digest = |b: &[u8]| -> String {
+        sha2::Sha256::digest(b)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    m["files"].as_array_mut().unwrap().push(json!({
+        "path": OCR_LOCAL_PAGES_FILE, "sha256": digest(&body), "bytes": body.len(),
+    }));
+    // The file names batches by their place in the version's list.
+    m["built_from"] = json!({"batches": [
+        {"batch": "batch_fx_early", "version": 1, "counts": "x"},
+        {"batch": "batch_fx_late", "version": 1, "counts": "y"},
+    ]});
+    std::fs::write(&manifest, m.to_string()).unwrap();
+    let rd = RefData::load(&LocalStore::new(&dir)).await.unwrap();
+    assert_eq!(rd.ocr_local.len(), 1);
+    let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+
+    let (status, _, after) = get(&s, base).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(after["total"], before["total"]);
+    let item = |id: &str| {
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["doc_id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let it = item(&ours);
+    assert_eq!(
+        it["ocr"],
+        json!({"source": "usnm-tesseract", "engine": "tesseract/5.5.1 eng"})
+    );
+    assert!(!it["links"]["viewer"].as_str().unwrap().contains("&q="));
+    let it = item(&theirs);
+    assert!(it.get("ocr").is_none());
+    assert!(it["links"]["viewer"].as_str().unwrap().ends_with("&q=gold"));
+
+    // Another batch's copy hidden changes nothing; ours hidden drops it.
+    for (batch, kept) in [("batch_fx_early", 1), ("batch_fx_late", 0)] {
+        let hidden = serde_json::to_vec(&json!([{"doc_id": &ours, "batch": batch}])).unwrap();
+        std::fs::write(dir.join("fixture-v1/duplicates.json"), &hidden).unwrap();
+        let files = m["files"].as_array_mut().unwrap();
+        files.retain(|f| f["path"] != "duplicates.json");
+        files.push(json!({
+            "path": "duplicates.json", "sha256": digest(&hidden), "bytes": hidden.len(),
+        }));
+        std::fs::write(&manifest, m.to_string()).unwrap();
+        let rd = RefData::load(&LocalStore::new(&dir)).await.unwrap();
+        assert_eq!(rd.ocr_local.len(), kept, "{batch}");
+    }
+
+    // A file naming a batch the version doesn't have is refused.
+    m["built_from"] = json!({"batches": [{"batch": "batch_fx_early", "version": 1}]});
+    std::fs::write(&manifest, m.to_string()).unwrap();
+    assert!(RefData::load(&LocalStore::new(&dir)).await.is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Matching pages per day for some places, against a brute-force pass over
 /// the fixture files and the aggregate's per-place totals.
 #[tokio::test]
