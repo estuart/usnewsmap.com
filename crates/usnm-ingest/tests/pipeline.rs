@@ -251,6 +251,7 @@ impl Env {
             american_stories: false,
             ja_latin: false,
             ocr_local: false,
+            congress: false,
             partition_decade: false,
             single_text_field: false,
             split_docs: None,
@@ -291,6 +292,7 @@ impl Env {
             american_stories,
             ja_latin,
             ocr_local: false,
+            congress: false,
             partition_decade: false,
             single_text_field: false,
             split_docs: None,
@@ -769,6 +771,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         american_stories: false,
         ja_latin: false,
         ocr_local: false,
+        congress: false,
         partition_decade: false,
         single_text_field: false,
         split_docs: None,
@@ -825,6 +828,7 @@ async fn releases_into_a_quickwit_writer_node() {
             american_stories: false,
             ja_latin: false,
             ocr_local: false,
+            congress: false,
             partition_decade: false,
             single_text_field: false,
             split_docs: None,
@@ -1426,6 +1430,7 @@ async fn a_backend_switch_forces_a_full_release() {
         american_stories: false,
         ja_latin: false,
         ocr_local: false,
+        congress: false,
         partition_decade: false,
         single_text_field: false,
         split_docs: None,
@@ -1468,6 +1473,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         american_stories: false,
         ja_latin: false,
         ocr_local: false,
+        congress: false,
         partition_decade: false,
         single_text_field: false,
         split_docs: None,
@@ -1554,6 +1560,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         american_stories: false,
         ja_latin: false,
         ocr_local: false,
+        congress: false,
         partition_decade: false,
         single_text_field: false,
         split_docs: None,
@@ -1980,6 +1987,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         american_stories: false,
         ja_latin: false,
         ocr_local: false,
+        congress: false,
         partition_decade: false,
         single_text_field: false,
         split_docs: None,
@@ -2040,6 +2048,7 @@ async fn a_failed_release_records_when_it_failed() {
         american_stories: false,
         ja_latin: false,
         ocr_local: false,
+        congress: false,
         partition_decade: false,
         single_text_field: false,
         split_docs: None,
@@ -2312,6 +2321,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             american_stories: false,
             ja_latin: false,
             ocr_local: false,
+            congress: false,
             partition_decade: false,
             single_text_field: false,
             split_docs: None,
@@ -3360,6 +3370,7 @@ async fn our_latin_text_follows_the_decade_layout() {
         split_docs: None,
         ja_latin: true,
         ocr_local: false,
+        congress: false,
         ..e.releaser(day, full)
     };
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
@@ -4076,6 +4087,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
             american_stories: true,
             ja_latin: false,
             ocr_local: false,
+            congress: false,
             partition_decade: false,
             single_text_field: false,
             split_docs: None,
@@ -5237,6 +5249,7 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
         let r = Release {
             ja_latin: true,
             ocr_local: true,
+            congress: false,
             ..e.releaser(day, full)
         };
         let root = e.root.clone();
@@ -5373,4 +5386,251 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
         .unwrap();
     assert_eq!(refdata.ocr_local.len(), 2);
     assert!(refdata.ocr_local.get(&id(&late[g])).is_some());
+}
+
+/// Congress pages curated from the recorded UNT responses (#229), as
+/// `congress-globe` writes them: metadc29274's pages in `seqs`, a new
+/// attempt each call.
+async fn put_globe(e: &Env, seqs: &[u32]) -> usnm_ingest::congress::curated::Counts {
+    use usnm_ingest::congress::{curated, globe, parse};
+    let dir = fixtures().join("../congress/unt");
+    let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
+    let (items, _) = globe::parse_records(&read("oai-cglob-1.xml")).unwrap();
+    let item = items.into_iter().find(|i| i.id == "metadc29274").unwrap();
+    let canvases = globe::parse_manifest(&read("metadc29274-manifest.json")).unwrap();
+    let mut dating = globe::Dating::new(&item).unwrap();
+    let at = Utc.with_ymd_and_hms(2026, 10, 11, 0, 0, 0).unwrap();
+    let mut rows = Vec::new();
+    for c in canvases.iter().filter(|c| seqs.contains(&c.seq)) {
+        let name = format!("metadc29274-m1-{}-ocr.json", c.seq);
+        let lines = if dir.join(&name).exists() {
+            parse::page_lines(&read(&name)).unwrap()
+        } else {
+            Vec::new()
+        };
+        let facts = dating.page(&lines);
+        rows.push(globe::page_row(&item, c, &lines, &facts, at));
+    }
+    curated::write_attempt(e.curated.as_ref(), "globe", "unt", &item.id, &rows, at)
+        .await
+        .unwrap()
+}
+
+impl Env {
+    /// A release with or without `--congress` (#229).
+    async fn release_congress(&self, day: u32, full: bool, congress: bool) -> Option<Published> {
+        let r = Release {
+            congress,
+            ..self.releaser(day, full)
+        };
+        let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
+        r.run(&mut sink).await.unwrap()
+    }
+}
+
+/// `--congress` (#229): the curated Congress pages get an index set of
+/// their own with their own baselines, kept while they don't change,
+/// rebuilt (even without new batches) when they do, and left out without
+/// the setting. The newspapers' baselines never count them.
+#[tokio::test]
+async fn congress_pages_get_an_index_set_of_their_own() {
+    use usnm_ingest::congress;
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let a = e.root.join("batch_fx_early_ver01.tar.gz");
+    let b = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&a, &early, true, true);
+    write_archive(&b, &late, false, true);
+    curate(&e, vec![listed("batch_fx_early_ver01", &a, None)]).await;
+    let first = put_globe(&e, &[1, 2, 3, 300, 301]).await;
+    assert_eq!((first.pages, first.indexable), (5, 4));
+    let day = |y, m, d| usnm_core::time::day_number(NaiveDate::from_ymd_opt(y, m, d).unwrap());
+
+    // The first release builds the set.
+    let p1 = e.release_congress(1, false, true).await.unwrap();
+    let v1 = &p1.index_version;
+    let current = e.reference_json("current.json").await;
+    let id1 = "congress-20261001-1";
+    assert_eq!(
+        current["congress"],
+        serde_json::json!({
+            "indexes": [id1],
+            "common_grams": usnm_core::common_grams::VERSION,
+            "series": [{"series": "globe", "pages": 5, "from": "1837-12-04", "to": "1838-03-29"}],
+        })
+    );
+    let docs = e.index(id1);
+    assert_eq!(docs.len(), 4);
+    let p300 = &docs["unt-metadc29274_p300"];
+    assert_eq!(p300["place_id"], congress::PLACE_ID);
+    assert_eq!(p300["series"], "globe");
+    assert_eq!(p300["date"], "1838-03-29");
+    assert_eq!(p300["chamber"], "house");
+    assert_eq!(p300["states"], serde_json::json!(["AL"]));
+    assert_eq!(
+        e.reference_json(&format!("{v1}/{}", congress::release::BASELINES_FILE))
+            .await,
+        serde_json::json!({"globe": [[day(1837, 12, 4), 3], [day(1838, 3, 29), 2]]})
+    );
+    let record = e
+        .reference_json(&format!("{v1}/{}", congress::release::FILE))
+        .await;
+    assert_eq!(record["index"], id1);
+    assert_eq!(record["indexed"], 4);
+    assert_eq!(record["units"][0]["unit"], "metadc29274");
+    let baselines = e.reference_json(&format!("{v1}/baselines.json")).await;
+    assert!(baselines.get(congress::PLACE_ID).is_none(), "{baselines}");
+    let manifest = e.reference_json(&format!("{v1}/manifest.json")).await;
+    assert_eq!(manifest["built_from"]["congress"]["built"], true);
+    assert_eq!(manifest["build"]["features"]["congress"], congress::VERSION);
+    assert_eq!(
+        manifest["build"]["templates"]["congress"]["yaml"],
+        congress::TEMPLATE
+    );
+    let files: Vec<&str> = manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+    assert!(
+        files.contains(&congress::release::BASELINES_FILE),
+        "{files:?}"
+    );
+    // The API loads it and searches it with `source=congress`.
+    let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert!(refdata.congress_index_set().is_some());
+    assert_eq!(
+        refdata.congress_bounds(),
+        Some((
+            NaiveDate::from_ymd_opt(1837, 12, 4).unwrap(),
+            NaiveDate::from_ymd_opt(1838, 3, 29).unwrap()
+        ))
+    );
+
+    // Nothing new anywhere: nothing to release.
+    assert!(e.release_congress(2, false, true).await.is_none());
+
+    // A delta of newspapers keeps the set as it is, with its files.
+    curate(&e, vec![listed("batch_fx_late_ver01", &b, None)]).await;
+    let p2 = e.release_congress(8, false, true).await.unwrap();
+    assert!(!p2.full);
+    let v2 = &p2.index_version;
+    let current = e.reference_json("current.json").await;
+    assert_eq!(current["congress"]["indexes"], serde_json::json!([id1]));
+    let manifest = e.reference_json(&format!("{v2}/manifest.json")).await;
+    assert_eq!(manifest["built_from"]["congress"]["built"], false);
+    assert!(manifest["build"]["templates"].get("congress").is_none());
+    assert_eq!(manifest["build"]["features"]["congress"], congress::VERSION);
+    for f in [congress::release::FILE, congress::release::BASELINES_FILE] {
+        assert_eq!(
+            e.reference.get(&format!("{v2}/{f}")).await.unwrap(),
+            e.reference.get(&format!("{v1}/{f}")).await.unwrap(),
+            "{f}"
+        );
+    }
+
+    // New Congress pages without new batches: the set alone is rebuilt.
+    let second = put_globe(&e, &[1, 2, 3, 300, 301, 541, 800]).await;
+    assert_eq!(second.attempt, 2);
+    let p3 = e.release_congress(15, false, true).await.unwrap();
+    assert_eq!(p3.indexes, p2.indexes, "no new main index");
+    assert_eq!(p3.docs, 0);
+    let current = e.reference_json("current.json").await;
+    let id3 = "congress-20261015-1";
+    assert_eq!(current["congress"]["indexes"], serde_json::json!([id3]));
+    assert_eq!(
+        current["congress"]["series"][0],
+        serde_json::json!({"series": "globe", "pages": 7, "from": "1837-12-04", "to": "1838-07-18"})
+    );
+    assert_eq!(e.index(id3).len(), 6);
+    let run = raw_run(&e, &p3.index_version).await;
+    assert_eq!(run["new_index"], id3);
+
+    // Without the setting the version has no Congress set.
+    let p4 = e.release_congress(22, true, false).await.unwrap();
+    let current = e.reference_json("current.json").await;
+    assert!(current.get("congress").is_none(), "{current}");
+    let v4 = &p4.index_version;
+    assert!(e
+        .reference
+        .get(&format!("{v4}/{}", congress::release::FILE))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+/// The Congress index in a Quickwit writer node (#229): built with its own
+/// template, merged and sealed like the others, laid out in the manifest,
+/// and searchable by series, chamber and phrase. Runs when `QUICKWIT_BIN`
+/// is set.
+#[tokio::test]
+async fn congress_pages_are_indexed_in_a_quickwit_writer_node() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use usnm_ingest::sink::{QuickwitNode, QuickwitSink};
+    let e = env().await;
+    let pages = fixture_pages();
+    let all: Vec<&Page> = pages.iter().collect();
+    let a = e.root.join("batch_fx_all_ver01.tar.gz");
+    write_archive(&a, &all, true, true);
+    curate(&e, vec![listed("batch_fx_all_ver01", &a, None)]).await;
+    let counts = put_globe(&e, &[1, 2, 3, 300, 301, 541, 800]).await;
+
+    let qw = e.root.join("qw");
+    std::fs::create_dir_all(&qw).unwrap();
+    let meta = format!("file://{}/meta", qw.display());
+    let root = format!("file://{}/indexes", qw.display());
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7421, &meta, &root)
+        .await
+        .unwrap();
+    let r = Release {
+        congress: true,
+        ..e.releaser(1, false)
+    };
+    let mut sink = QuickwitSink::new(&node.url, &root)
+        .unwrap()
+        .watching(&node)
+        .merges(quick_merges());
+    let p = r.run(&mut sink).await.unwrap().unwrap();
+    let id = "congress-20261001-1";
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", p.index_version))
+        .await;
+    let layout = manifest["indexes"].as_array().unwrap();
+    let c = layout
+        .iter()
+        .find(|l| l["index_id"] == id)
+        .expect("laid out");
+    assert_eq!(c["docs"].as_u64(), Some(counts.indexable));
+
+    let http = reqwest::Client::new();
+    let count = |q: &'static str| {
+        let url = format!("{}/api/v1/{id}/search", node.url);
+        let http = http.clone();
+        async move {
+            let v: Value = http
+                .post(url)
+                .json(&serde_json::json!({"query": q, "max_hits": 0}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["num_hits"].as_u64().unwrap()
+        }
+    };
+    assert_eq!(count("*").await, counts.indexable);
+    assert_eq!(count("series:globe").await, counts.indexable);
+    assert_eq!(count("series:annals").await, 0);
+    assert_eq!(count("text:\"price of public lands\"").await, 1);
+    assert_eq!(count("chamber:house AND text:duel").await, 1);
+    node.stop().await.unwrap();
 }

@@ -2623,6 +2623,7 @@ dependencies = [
  "futures",
  "opentelemetry",
  "parquet",
+ "quick-xml",
  "reqwest",
  "rustix",
  "serde",
