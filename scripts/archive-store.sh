@@ -13,15 +13,18 @@
 # provision does), then the account (putting the delete lock back), and
 # prints the account's resource id, for an environment's USNM_ARCHIVE_ACCOUNT.
 # Resources dropped from the template are detached, never deleted, and the
-# stack denies deletes outside it except of the lock and of private endpoint
-# connections. A delete lock on the account can block removing an
-# environment's private endpoint to it, so before an environment drops
-# USNM_ARCHIVE_ACCOUNT (or is torn down): `unlock`, provision the
-# environment without the setting, then `deploy` again.
+# stack denies deletes outside it except of the lock, of private endpoint
+# connections and of role definitions: an environment's stack declares its
+# writer role in the account's group, and the group's deny assignment would
+# keep that stack from deleting it when the environment detaches. A delete
+# lock on the account can block removing an environment's private endpoint
+# to it, so before an environment drops USNM_ARCHIVE_ACCOUNT (or is torn
+# down): `unlock`, provision the environment without the setting, then
+# `deploy` again.
 #
 # Needs az 2.61+, signed in with Owner on the subscription.
 set -euo pipefail
-usage() { sed -n '2,21s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,24s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 ACTION=$1; shift
 SUBSCRIPTION="" LOCATION=eastus2
@@ -80,7 +83,7 @@ case "$ACTION" in
       --parameters location="$LOCATION" \
       --action-on-unmanage detachAll \
       --deny-settings-mode denyDelete \
-      --deny-settings-excluded-actions "Microsoft.Authorization/locks/delete Microsoft.Storage/storageAccounts/privateEndpointConnections/delete Microsoft.Storage/storageAccounts/privateEndpointConnectionProxies/delete" \
+      --deny-settings-excluded-actions "Microsoft.Authorization/locks/delete Microsoft.Authorization/roleDefinitions/delete Microsoft.Storage/storageAccounts/privateEndpointConnections/delete Microsoft.Storage/storageAccounts/privateEndpointConnectionProxies/delete" \
       --description "usnewsmap archival storage, shared by every environment (scripts/archive-store.sh)" \
       --yes --only-show-errors -o none
     # Stacks can return output names with their case changed (scripts/lib/env.sh).
