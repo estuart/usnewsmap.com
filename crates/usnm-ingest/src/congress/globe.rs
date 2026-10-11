@@ -344,6 +344,9 @@ pub fn parse_manifest(json: &[u8]) -> anyhow::Result<Vec<Canvas>> {
             label: c.label,
         });
     }
+    // A manifest with no pages would curate an empty attempt and mark the
+    // item finished; it is a bad answer, so the item is tried again.
+    anyhow::ensure!(!out.is_empty(), "the manifest lists no pages");
     Ok(out)
 }
 
@@ -660,24 +663,36 @@ fn raw_ocr(id: &str, seq: u32) -> String {
 const RAW_MISSING: &[u8] = b"";
 
 /// A response, from the raw store when it holds it, else fetched (and kept
-/// there). `None` when UNT has no such page.
+/// there). `None` when UNT has no such page. Only a response `valid` accepts
+/// is kept, since the raw store is create-only: a bad answer kept there would
+/// be read back on every resumed fetch. A kept copy `valid` refuses (one kept
+/// before the check) is passed over and the page fetched again.
 async fn cached(
     fetch: &dyn Fetch,
     raw: Option<&dyn ObjectStore>,
     path: &str,
     url: &str,
+    valid: fn(&[u8]) -> bool,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     if let Some(raw) = raw {
         if let Some(z) = raw.get(path).await? {
             let body = zstd::decode_all(&z[..]).with_context(|| path.to_owned())?;
-            return Ok((body != RAW_MISSING).then_some(body));
+            if body == RAW_MISSING {
+                return Ok(None);
+            }
+            if valid(&body) {
+                return Ok(Some(body));
+            }
+            tracing::warn!(path, "a kept response isn't usable; fetching it again");
         }
     }
     let body = fetch.get(url).await?;
     if let Some(raw) = raw {
-        let z = zstd::encode_all(body.as_deref().unwrap_or(RAW_MISSING), 9)?;
-        // Create-only: a copy already there (a racing run) is the same response.
-        raw.put_new(path, z, "application/zstd").await?;
+        if body.as_deref().is_none_or(valid) {
+            let z = zstd::encode_all(body.as_deref().unwrap_or(RAW_MISSING), 9)?;
+            // Create-only: a copy already there (a racing run) is the same response.
+            raw.put_new(path, z, "application/zstd").await?;
+        }
     }
     Ok(body)
 }
@@ -802,6 +817,7 @@ async fn fetch_item(
         raw,
         &raw_manifest(&item.id),
         &manifest_url(&opts.base, &item.id),
+        |b| parse_manifest(b).is_ok(),
     )
     .await?
     .with_context(|| format!("item `{}` has no manifest", item.id))?;
@@ -823,6 +839,7 @@ async fn fetch_item(
             raw,
             &raw_ocr(&item.id, c.seq),
             &ocr_url(&opts.base, &item.id, c.seq),
+            |b| parse::page_lines(b).is_ok(),
         )
         .await?;
         let lines = match &body {
@@ -893,7 +910,8 @@ pub async fn run(
         .iter()
         .filter(|i| {
             let done = finished.contains(&i.id);
-            if done {
+            // Counted as not fetched again only when it isn't.
+            if done && !opts.refetch {
                 report.already += 1;
             }
             opts.refetch || !done
@@ -1207,6 +1225,57 @@ mod tests {
                 .0
                 .is_empty()
         );
+    }
+
+    /// Answers every request with the same body, counting them.
+    struct Same(&'static [u8], std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl Fetch for Same {
+        async fn get(&self, _url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.0.to_vec()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bad_answer_is_not_kept_and_a_kept_one_is_passed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = usnm_store::LocalStore::new(dir.path());
+        let valid = |b: &[u8]| parse_manifest(b).is_ok();
+        // An empty manifest: returned, not kept, so the next run asks again.
+        let bad = Same(b"{}", Default::default());
+        let got = cached(&bad, Some(&raw), "m.json.zst", "u", valid)
+            .await
+            .unwrap();
+        assert_eq!(got.as_deref(), Some(&b"{}"[..]));
+        assert!(!raw.exists("m.json.zst").await.unwrap());
+        // One kept before the check is passed over and fetched again.
+        raw.put_new(
+            "m.json.zst",
+            zstd::encode_all(&b"{}"[..], 9).unwrap(),
+            "application/zstd",
+        )
+        .await
+        .unwrap();
+        let good = Same(recorded_static(), Default::default());
+        let got = cached(&good, Some(&raw), "m.json.zst", "u", valid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(parse_manifest(&got).is_ok());
+        assert_eq!(good.1.load(Ordering::SeqCst), 1);
+    }
+
+    fn recorded_static() -> &'static [u8] {
+        Box::leak(recorded("metadc29274-manifest.json").into_boxed_slice())
+    }
+
+    #[test]
+    fn a_manifest_without_pages_is_refused() {
+        assert!(parse_manifest(b"{}").is_err());
+        assert!(parse_manifest(br#"{"sequences": []}"#).is_err());
+        assert!(parse_manifest(br#"{"sequences": [{"canvases": []}]}"#).is_err());
     }
 
     #[test]

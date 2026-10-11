@@ -169,6 +169,10 @@ fn clean(token: &str) -> &str {
 
 /// How a token reads as a weekday: `Some(Some(day))` spelled exactly,
 /// `Some(None)` near enough (`TftuasDAY`, `Thursdav`), `None` not one.
+/// Near enough is one wrong letter from a weekday of up to 7 letters, two
+/// from a longer one, or, for a token of 8 letters or more that ends in
+/// `DAY`, three from a weekday of 8 or more: so damaged headings pass, and
+/// words such as `YESTERDAY`, `HOLIDAY`, `MIDDAY` or `WEEKDAY` don't.
 fn weekday(token: &str) -> Option<Option<Weekday>> {
     let t = token.to_uppercase();
     if let Some((_, w)) = WEEKDAYS.iter().find(|(n, _)| *n == t) {
@@ -176,7 +180,12 @@ fn weekday(token: &str) -> Option<Option<Weekday>> {
     }
     let n = t.chars().count();
     let near = (6..=10).contains(&n)
-        && (t.ends_with("DAY") || WEEKDAYS.iter().any(|(w, _)| distance(&t, w) <= 2));
+        && WEEKDAYS.iter().any(|(w, _)| {
+            let len = w.chars().count();
+            let d = distance(&t, w);
+            d <= if len <= 7 { 1 } else { 2 }
+                || (t.ends_with("DAY") && n >= 8 && len >= 8 && d <= 3)
+        });
     near.then_some(None)
 }
 
@@ -457,6 +466,25 @@ mod tests {
         );
         // A weekday spelled out in full must match the date.
         assert_eq!(heading("FRIDAY March 29 1838"), None);
+        // Words that end in "day" but aren't weekdays.
+        for w in [
+            "YESTERDAY",
+            "HOLIDAY",
+            "MIDDAY",
+            "WEEKDAY",
+            "BIRTHDAY",
+            "SOMEDAY",
+        ] {
+            assert_eq!(heading(&format!("{w} March 29 1838")), None, "{w}");
+        }
+        // Damaged weekdays still are.
+        for w in ["Thursdav", "THUBSDAY", "TftuasDAY"] {
+            assert_eq!(
+                heading(&format!("{w} March 29 1838")).unwrap().date,
+                d(1838, 3, 29),
+                "{w}"
+            );
+        }
         // Prose isn't a heading.
         assert_eq!(heading("the committee met on Thursday March 29 1838"), None);
         assert_eq!(heading("Washington March 29 1838"), None);
