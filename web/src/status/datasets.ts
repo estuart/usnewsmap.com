@@ -61,7 +61,8 @@ const on = (v: number | null | undefined) => v !== undefined && v !== null;
 /**
  * What a version's build changed from the version before it: features it
  * added or dropped, and feature versions that changed. Empty when either has
- * no build record.
+ * no build record. An update's `build.features` lists only the indexes it
+ * wrote, and it keeps the earlier ones, so only a full rebuild drops one.
  */
 export function featureChanges(v: VersionItem, before: VersionItem | undefined): string[] {
   const now = v.build?.features;
@@ -73,18 +74,26 @@ export function featureChanges(v: VersionItem, before: VersionItem | undefined):
     const a = then[k];
     const b = now[k];
     if (!on(a) && on(b)) out.push(`Added ${featureLabel(k)}`);
-    else if (on(a) && !on(b)) out.push(`Dropped ${featureLabel(k)}`);
+    else if (on(a) && !on(b) && v.full) out.push(`Dropped ${featureLabel(k)}`);
     else if (on(a) && on(b) && a !== b) out.push(`New version of ${featureLabel(k)} (${String(b)})`);
   }
   return out;
 }
 
-/** Published versions, newest first, each with the published one before it. */
+/**
+ * Published versions, newest first, each with the version it replaced
+ * (`previous_version`), which after a rollback isn't the one published just
+ * before it. `before` is undefined when that version isn't listed.
+ */
 export function publishedVersions(all: VersionItem[]): { v: VersionItem; before: VersionItem | undefined }[] {
   const published = all
     .filter((v) => v.status === "published" && v.published_at)
     .sort((a, b) => Date.parse(b.published_at!) - Date.parse(a.published_at!));
-  return published.map((v, i) => ({ v, before: published[i + 1] }));
+  const byName = new Map(published.map((v) => [v.index_version, v]));
+  return published.map((v) => ({
+    v,
+    before: v.previous_version ? byName.get(v.previous_version) : undefined,
+  }));
 }
 
 /** The change in pages from the version before, signed: "+1,234", "−56", "no change". */

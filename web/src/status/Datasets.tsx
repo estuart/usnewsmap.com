@@ -263,8 +263,8 @@ function americanStoriesPages(as: Sources["american_stories"], known: boolean): 
       {plural(as.pages, "page has", "pages have")} its text
       {as.only_pages !== null && as.only_pages > 0 && (
         <>
-          , {plural(as.only_pages, "page", "pages")} of them with no Library of Congress text, searchable only through
-          American Stories
+          , {plural(as.only_pages, "page", "pages")} of them with no Library of Congress text
+          {as.searched && ", searchable only through American Stories"}
         </>
       )}
       {as.years !== null && <> ({plural(as.years, "year", "years")} of its text read)</>}
@@ -299,6 +299,17 @@ function JapanesePages({ s, now }: { s: Status; now: number }) {
             </>,
           ],
           [
+            "Rights",
+            <>
+              For the page images, the Library of Congress&apos;s{" "}
+              <Ext href="https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/">
+                rights and access statement
+              </Ext>
+              . The text is our own reading of them with NDLOCR-Lite, which the National Diet Library releases under{" "}
+              <Ext href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</Ext>.
+            </>,
+          ],
+          [
             "In the index",
             ja || latin ? (
               <>
@@ -306,7 +317,9 @@ function JapanesePages({ s, now }: { s: Status; now: number }) {
                 {ja && latin ? "; " : null}
                 {latin
                   ? `the English and other Latin-script text we read on ${plural(latin.pages, "page", "pages")} in the main search${
-                      mixed > 0 ? `, ${plural(mixed, "page", "pages")} of them mixing Japanese and English` : ""
+                      mixed > 0
+                        ? `, ${plural(mixed, "page", "pages")} of them where the Library of Congress text was partly readable`
+                        : ""
                     }`
                   : null}
               </>

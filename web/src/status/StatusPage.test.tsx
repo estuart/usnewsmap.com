@@ -186,7 +186,7 @@ describe("DatasetsPage", () => {
     ).toBeTruthy();
     expect(
       screen.getByText(
-        "10,305 Japanese pages in an index of their own; the English and other Latin-script text we read on 5,647 pages in the main search, 647 pages of them mixing Japanese and English",
+        "10,305 Japanese pages in an index of their own; the English and other Latin-script text we read on 5,647 pages in the main search, 647 pages of them where the Library of Congress text was partly readable",
       ),
     ).toBeTruthy();
     expect(screen.getByText(/^Stopped at 12,768 of 12,811 Japanese pages/)).toBeTruthy();
@@ -222,6 +222,27 @@ describe("DatasetsPage", () => {
     }
   });
 
+  it("doesn't call pages searchable through American Stories when its text is switched off", async () => {
+    serve({
+      ...body,
+      published: {
+        ...body.published,
+        sources: {
+          american_stories: { searched: false, pages: 1500, only_pages: 40, years: 3 },
+          ja_latin: null,
+          ocr_local: null,
+        },
+      },
+    });
+    renderPage();
+    expect(
+      await screen.findByText(
+        /^1,500 pages have its text, 40 pages of them with no Library of Congress text \(3 years of its text read\)$/,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/searchable only through American Stories/)).toBeNull();
+  });
+
   it("lists the published versions and what each changed", async () => {
     const run = (version: string, day: number, pages: number, features: Record<string, number | null>) => ({
       index_version: version,
@@ -246,7 +267,12 @@ describe("DatasetsPage", () => {
       read_at: new Date().toISOString(),
       serving: "pages-v3",
       versions: [
-        { ...run("pages-v3", 8, 1300, { common_grams: 1, american_stories: 1 }), serving: true, full: true },
+        {
+          ...run("pages-v3", 8, 1300, { common_grams: 1, american_stories: 1 }),
+          serving: true,
+          full: true,
+          previous_version: "pages-v1",
+        },
         { ...run("pages-v2", 6, 1000, { common_grams: 1 }), status: "failed", published_at: null },
         run("pages-v1", 5, 1000, { common_grams: 1 }),
       ],

@@ -50,15 +50,23 @@ describe("reasonLabel", () => {
 });
 
 describe("featureChanges", () => {
-  it("names features added, dropped and changed, against the version before", () => {
-    const before = version({ build: { features: { common_grams: 1, ja_fold: 1, decades: 1, ja_latin: null } } });
-    const after = version({
-      build: { features: { common_grams: 2, ja_fold: 1, american_stories: 1, ja_latin: 1, mystery: 4 } },
-    });
-    expect(featureChanges(after, before)).toEqual([
+  const before = version({ build: { features: { common_grams: 1, ja_fold: 1, decades: 1, ja_latin: null } } });
+  const features = { common_grams: 2, ja_fold: 1, american_stories: 1, ja_latin: 1, mystery: 4 };
+
+  it("names features a full rebuild added, dropped and changed, against the version before", () => {
+    expect(featureChanges(version({ full: true, build: { features } }), before)).toEqual([
       "Added American Stories' text",
       "New version of word pairs for phrase searches (2)",
       "Dropped the index split by decade",
+      "Added the Latin-script text of our Japanese OCR",
+      "Added mystery",
+    ]);
+  });
+
+  it("doesn't call a feature an update didn't write dropped, since the update keeps the earlier indexes", () => {
+    expect(featureChanges(version({ full: false, build: { features } }), before)).toEqual([
+      "Added American Stories' text",
+      "New version of word pairs for phrase searches (2)",
       "Added the Latin-script text of our Japanese OCR",
       "Added mystery",
     ]);
@@ -72,11 +80,11 @@ describe("featureChanges", () => {
 });
 
 describe("publishedVersions and pagesChange", () => {
-  it("keeps published versions, newest first, each with the one before", () => {
+  it("keeps published versions, newest first, each with the version it replaced", () => {
     const a = version({ index_version: "a", pages: 100, published_at: "2026-10-01T00:00:00Z" });
-    const b = version({ index_version: "b", status: "failed", published_at: null });
-    const c = version({ index_version: "c", pages: 90, published_at: "2026-10-03T00:00:00Z" });
-    const d = version({ index_version: "d", pages: 1100, published_at: "2026-10-02T00:00:00Z" });
+    const b = version({ index_version: "b", status: "failed", published_at: null, previous_version: "a" });
+    const c = version({ index_version: "c", pages: 90, published_at: "2026-10-03T00:00:00Z", previous_version: "d" });
+    const d = version({ index_version: "d", pages: 1100, published_at: "2026-10-02T00:00:00Z", previous_version: "a" });
     const list = publishedVersions([a, b, c, d]);
     expect(list.map(({ v, before }) => [v.index_version, before?.index_version])).toEqual([
       ["c", "d"],
@@ -87,5 +95,17 @@ describe("publishedVersions and pagesChange", () => {
     expect(pagesChange(d, a)).toBe("+1,000");
     expect(pagesChange(a, a)).toBe("no change");
     expect(pagesChange(a, undefined)).toBe("–");
+  });
+
+  it("pairs a version with the one it replaced after a rollback, or none when that one isn't listed", () => {
+    // d went live after a rollback from c to a, so it replaced a, not c.
+    const a = version({ index_version: "a", published_at: "2026-10-01T00:00:00Z", previous_version: "gone" });
+    const c = version({ index_version: "c", published_at: "2026-10-02T00:00:00Z", previous_version: "a" });
+    const d = version({ index_version: "d", published_at: "2026-10-03T00:00:00Z", previous_version: "a" });
+    expect(publishedVersions([a, c, d]).map(({ v, before }) => [v.index_version, before?.index_version])).toEqual([
+      ["d", "a"],
+      ["c", "a"],
+      ["a", undefined],
+    ]);
   });
 });
