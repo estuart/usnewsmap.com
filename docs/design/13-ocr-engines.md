@@ -462,14 +462,18 @@ production_licenses = [
 ]
 # Licences whose own terms require credit. Every production model is
 # credited on the credits page anyway; these say the licence requires it.
+# DINOv3's licence asks for acknowledgement only in research publications,
+# so it isn't here; NDLOCR-Lite is credited under its CC BY 4.0.
 credit_required = [
   "CC-BY-4.0", "CC-BY-NC-4.0", "CC-BY-SA-4.0", "LicenseRef-Datalab-OpenRAIL-M",
-  "LicenseRef-MinerU", "LicenseRef-DINOv3",
+  "LicenseRef-MinerU",
 ]
 # Tier 2, attributed: license = "none" (openly published, no explicit
 # licence) is allowed in production by the maintainer's decision of
 # 2026-10-11, when the entry has source, author, fetched, note and credit.
 # Tier 3, excluded: an entry with `restricted` is never routed in production.
+# Undecided: an entry with `undecided` is never routed in production either,
+# until the maintainer decides and the field is removed.
 
 [[engine]]
 id = "tesseract-5.5"
@@ -565,6 +569,7 @@ https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE"""
 1. **Cleared.** Its `license` is in `production_licenses`.
 2. **Openly published, no explicit licence, attributed.** Its `license` is `none`, and it has `source` (the URL the file was fetched from), `author` (the author or publisher as the source names them), `fetched` (a date), `note` (that it has no explicit licence, and where that was checked) and `credit`.
 3. **Excluded.** It has `restricted`, which quotes the clause that restricts our use and links it. It is refused whatever its `license` says. `license = "unknown"` means nobody has checked the terms yet, and is refused too.
+4. **Undecided.** It has `undecided`, which says what the maintainer has to decide and links the terms. It is refused whatever its `license` says, including `none`, until the maintainer decides and the field is replaced by a tier.
 
 Every model that a production route uses needs `author`, `source` and `credit`, because the credits page is built from them. Models whose licence is in `credit_required` are marked on that page as credited because the licence requires it. The worker and `routes check` both refuse anything else. Moving a model between tiers is the maintainer's decision.
 
@@ -751,7 +756,7 @@ min_word_overlap = 0.6           # share of the first reading's dictionary words
 
 ### 13.7.8 Validation, tools and distribution
 
-- `usnm-ocr-worker routes check --routing ocr/routing/routes.toml --engines ocr/engines/engines.toml --engines-lock ocr/engines/engines.lock.json [--survey-results <dir>]` fails on: an unknown engine or profile; an empty `candidates` list or `fallback_after = 0`; candidates of one route in different capability queues; options not in a profile's `tunable`; an unreachable route; no catch-all; a production route to a `production = false` engine, or to a profile that uses a model outside tiers 1 and 2 (§13.7.2), meaning a `license` not in `production_licenses` and not `none`, a `none` entry without `source`, `author`, `fetched`, `note` or `credit`, any entry with `restricted`, or any production model without `author`, `source` and `credit`; a `batch` pattern ending in `_verNN`; `score_*` keys or a cascade on a route that matches `jpn` or `und`; timeouts over the page budget; a changed file without a new `version`. `routes.golden.toml` includes a page on the default route and checks its resolved request: profile, merged options and `image.dpi` 300. With `--survey-results` it warns when a production route's locked image and model digests have no survey result. CI runs it.
+- `usnm-ocr-worker routes check --routing ocr/routing/routes.toml --engines ocr/engines/engines.toml --engines-lock ocr/engines/engines.lock.json [--survey-results <dir>]` fails on: an unknown engine or profile; an empty `candidates` list or `fallback_after = 0`; candidates of one route in different capability queues; options not in a profile's `tunable`; an unreachable route; no catch-all; a production route to a `production = false` engine, or to a profile that uses a model outside tiers 1 and 2 (§13.7.2), meaning a `license` not in `production_licenses` and not `none`, a `none` entry without `source`, `author`, `fetched`, `note` or `credit`, any entry with `restricted` or `undecided`, or any production model without `author`, `source` and `credit`; a `batch` pattern ending in `_verNN`; `score_*` keys or a cascade on a route that matches `jpn` or `und`; timeouts over the page budget; a changed file without a new `version`. `routes.golden.toml` includes a page on the default route and checks its resolved request: profile, merged options and `image.dpi` 300. With `--survey-results` it warns when a production route's locked image and model digests have no survey result. CI runs it.
 - `routes explain --page sn83045462/1890-05-03/ed-1/seq-7 --language deu --batch nbu_gage` prints the route, the candidates and why any were dropped.
 - `routes diff --from-version 1 --to-version 2 --manifest <sample.jsonl>` counts pages whose engine or profile changes.
 - **Distribution, first release:** the bundle files are installed on the node with the worker and passed by named flags (`--routing-file`, `--engines-file`, `--engines-lock`).
@@ -917,7 +922,7 @@ flowchart TB
 ## 13.10 Adding a new engine
 
 1. **Catalog.** Add a row to §13.12 from fact-checked sources: licence of code and of every model, outputs, ALTO, hardware, fit. Anything not confirmed goes in the Unconfirmed column.
-2. **Licences.** List each model in `engines.toml` with its licence and its tier (§13.7.2), quoting and linking the terms. A model with no explicit licence gets `license = "none"` with `source`, `author`, `fetched`, `note` and `credit`. A model whose terms restrict our use gets `restricted`, quoting the clause. Terms open to more than one reading go to the maintainer, and the model stays survey only until then.
+2. **Licences.** List each model in `engines.toml` with its licence and its tier (§13.7.2), quoting and linking the terms. A model with no explicit licence gets `license = "none"` with `source`, `author`, `fetched`, `note` and `credit`. A model whose terms restrict our use gets `restricted`, quoting the clause. Terms open to more than one reading go to the maintainer: the entry gets `undecided`, and the model stays survey only until then.
 3. **Image.** `ocr/engines/<family>/Containerfile`: base image by digest, packages pinned (§13.8.5), models from `models.lock` checked by sha256, `USER 10001`, offline caches baked in, nothing fetched at run time.
 4. **Adapter.** A Rust binary in `usnm-ocr-adapter` for a CLI or HTTP engine, or for an engine that can only be run as a script per page. A module in `usnm_ocr_adapter` for a Python library, which it imports once. It writes ALTO if the engine has it, otherwise `boxes.json` with declared units, reading order and markup, and only regular files in `/out/<run_id>/`. It never tiles. Logs go to stderr.
 5. **hello.** List every model file any profile can load, with its sha256, profiles with ISO 639-3 languages and their tunable options, `cancel` and `models_loaded`.
