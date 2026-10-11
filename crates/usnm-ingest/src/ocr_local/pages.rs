@@ -172,6 +172,12 @@ pub struct StoredRow {
     pub ocr_engine: String,
     /// The node that read it.
     pub node: String,
+    /// The damage metric version `ocr-sync` scored the row with. Rows of
+    /// another version than `usnm_core::damage::VERSION` are read with no
+    /// scores (`ours` and `loc` empty): their rates don't compare with
+    /// this version's, so they rank last and count in no estimate. The
+    /// release scores the chosen row again either way.
+    pub metric_version: u32,
     pub ocred_at: i64,
     pub ours: Scores,
     pub loc: Scores,
@@ -203,6 +209,7 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
         let source = col!("ocr_source", StringArray);
         let engine = col!("ocr_engine", StringArray);
         let node = col!("node", StringArray);
+        let metric = col!("metric_version", Int32Array);
         let at = col!("ocred_at", arrow_array::TimestampMicrosecondArray);
         let s = |a: &StringArray, i: usize| (!a.is_null(i)).then(|| a.value(i).to_owned());
         let f = |a: &Float64Array, i: usize| (!a.is_null(i)).then(|| a.value(i));
@@ -233,6 +240,7 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
                 function_share: f(c.3, i),
                 head: h(c.4, i),
             };
+            let current = u32::try_from(metric.value(i)).ok() == Some(usnm_core::damage::VERSION);
             out.push(StoredRow {
                 doc_id: doc_id.value(i).to_owned(),
                 lccn: lccn.value(i).to_owned(),
@@ -240,9 +248,18 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
                 ocr_source: source.value(i).to_owned(),
                 ocr_engine: engine.value(i).to_owned(),
                 node: node.value(i).to_owned(),
+                metric_version: u32::try_from(metric.value(i)).unwrap_or(0),
                 ocred_at: at.value(i),
-                ours: score(&sides[0]),
-                loc: score(&sides[1]),
+                ours: if current {
+                    score(&sides[0])
+                } else {
+                    Scores::default()
+                },
+                loc: if current {
+                    score(&sides[1])
+                } else {
+                    Scores::default()
+                },
             });
         }
     }

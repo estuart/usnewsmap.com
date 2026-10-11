@@ -416,6 +416,7 @@ mod tests {
             ocr_source: "usnm-tesseract".into(),
             ocr_engine: "tesseract/5.5.1 profile=eng".into(),
             node: "node1".into(),
+            metric_version: usnm_core::damage::VERSION,
             ocred_at: at,
             ours: Scores {
                 damage_rate: rate,
@@ -485,6 +486,63 @@ mod tests {
             "reason": "x", "reference": "y", "nodes": "z"
         }))
         .is_err());
+    }
+
+    /// A part `ocr-sync` scored with another metric version: its stored
+    /// scores read as none, so they rank last and estimate nothing.
+    #[test]
+    fn scores_of_another_metric_version_are_not_compared() {
+        use std::sync::Arc;
+        let text = "The city council met on Tuesday and voted for the new school on the hill \
+            and the mayor said the railroad would bring more trade to the town and its farms.";
+        let imported = pages::Imported {
+            row: usnm_overlay::OverlayRow {
+                key: usnm_core::ids::PageKey::new(
+                    "sn1",
+                    chrono::NaiveDate::from_ymd_opt(1900, 1, 1).unwrap(),
+                    1,
+                    1,
+                )
+                .unwrap(),
+                batch: "batch_a".into(),
+                ocr_source: "usnm-tesseract".into(),
+                ocr_engine: "tesseract/5.5.1 profile=eng".into(),
+                loc_text: "bulk".into(),
+                text: text.into(),
+                image_url: "https://tile.loc.gov/x".into(),
+                ocred_at: chrono::DateTime::from_timestamp(1, 0).unwrap(),
+            },
+            batch_version: 1,
+            source_part: "pages/x.parquet".into(),
+            node: "node1".into(),
+            reason: "bulk".into(),
+            ours: Scores::of(text, &["eng"]),
+            loc: Scores::of("", &["eng"]),
+        };
+        let bytes = Bytes::from(pages::encode(&[imported]).unwrap());
+        let now = pages::read_scores(bytes.clone()).unwrap();
+        assert_eq!(now[0].metric_version, usnm_core::damage::VERSION);
+        assert!(now[0].ours.damage_rate.is_some());
+        // The same part as an older metric wrote it.
+        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes)
+            .unwrap()
+            .build()
+            .unwrap();
+        let batch = reader.into_iter().next().unwrap().unwrap();
+        let i = batch.schema().index_of("metric_version").unwrap();
+        let mut cols = batch.columns().to_vec();
+        cols[i] = Arc::new(arrow_array::Int32Array::from(vec![1]));
+        let old = arrow_array::RecordBatch::try_new(batch.schema(), cols).unwrap();
+        let mut w = parquet::arrow::ArrowWriter::try_new(Vec::new(), old.schema(), None).unwrap();
+        w.write(&old).unwrap();
+        let rows = pages::read_scores(Bytes::from(w.into_inner().unwrap())).unwrap();
+        assert_eq!(rows[0].metric_version, 1);
+        assert_eq!(rows[0].ours, Scores::default());
+        assert!(
+            prefer((&now[0], 0, 0), (&rows[0], 1, 0)),
+            "the current metric's row wins"
+        );
+        assert!(rule::verdict(&rows[0].ours, &rows[0].loc, None).is_err());
     }
 
     #[test]
