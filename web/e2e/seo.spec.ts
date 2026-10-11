@@ -158,7 +158,7 @@ test("the privacy page renders, with links to it from the other pages", async ({
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Privacy");
   await expect(page.locator("h1")).toHaveCount(1);
   await expect(page).toHaveTitle("Privacy · US News Map");
-  for (const path of ["/", "/status", "/does-not-exist"]) {
+  for (const path of ["/", "/datasets", "/does-not-exist"]) {
     await page.goto(path);
     await expect(page.getByRole("link", { name: "Privacy" }), path).toHaveAttribute("href", "/privacy");
   }
@@ -182,11 +182,24 @@ test.describe("what the API tells crawlers", () => {
     expect(res.status()).toBe(404);
     expect(res.headers()["content-type"]).toContain("text/html");
     expect(await res.text()).toContain('id="root"');
-    expect((await request.get("/status")).status()).toBe(200);
+    expect((await request.get("/datasets")).status()).toBe(200);
   });
 
-  test("search permalinks and the status page are noindex; the home page is not", async ({ request }) => {
-    for (const url of ["/?q=x", "/status"]) {
+  test("the old status path redirects to the dataset details (#294)", async ({ request }) => {
+    for (const [url, location] of [
+      ["/status", "/datasets"],
+      ["/status/?x=1", "/datasets?x=1"],
+    ] as const) {
+      const res = await request.get(url, { maxRedirects: 0 });
+      expect(res.status(), url).toBe(301);
+      expect(res.headers()["location"], url).toBe(location);
+      expect(res.headers()["x-robots-tag"], url).toBe("noindex");
+    }
+    expect((await request.get("/status")).url()).toMatch(/\/datasets$/);
+  });
+
+  test("search permalinks and the dataset details are noindex; the home page is not", async ({ request }) => {
+    for (const url of ["/?q=x", "/datasets"]) {
       const res = await request.get(url);
       expect(res.status(), url).toBe(200);
       expect(res.headers()["x-robots-tag"], url).toBe("noindex");

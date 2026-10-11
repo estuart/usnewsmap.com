@@ -2,12 +2,12 @@
 
 > Search digitized American newspapers from the Library of Congress's Chronicling America collection and see where and when a word or phrase was printed. Each matching page is placed on the map where its newspaper was published and counted by date. The site and its JSON API are free and need no sign-in.
 
-The newspaper pages come from Chronicling America (Library of Congress, with the National Endowment for the Humanities). The collection is still being indexed, so counts grow between index versions; [the status page](https://usnewsmap.com/status) says how much is searchable now. Coverage is uneven: some states, years and languages have far more digitized pages than others, so compare a count with the number of pages published in the same place and dates before reading much into it. The text is OCR, so older pages have many misspellings and broken words.
+The newspaper pages come from Chronicling America (Library of Congress, with the National Endowment for the Humanities). The collection is still being indexed, so counts grow between index versions; [the dataset details page](https://usnewsmap.com/datasets) says how much is searchable now. Coverage is uneven: some states, years and languages have far more digitized pages than others, so compare a count with the number of pages published in the same place and dates before reading much into it. The text is OCR, so older pages have many misspellings and broken words.
 
 ## Site
 
 - [Home and search](https://usnewsmap.com/): search results show on a map, with a timeline and a table. A search's address can be shared, for example `https://usnewsmap.com/?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31`. The page needs JavaScript; to read results as data, use the API below.
-- [Pipeline status](https://usnewsmap.com/status): how many of the downloaded pages are searchable, what the ingest pipeline is doing now, and page counts by state and by language. The same data is JSON at `/v1/status`.
+- [Dataset details](https://usnewsmap.com/datasets): the collections in the index, where each comes from, its rights and how it is searched; how many of the downloaded pages are searchable, what the ingest pipeline is doing now, and page counts by state and by language. The same data is JSON at `/v1/status`.
 - [Privacy](https://usnewsmap.com/privacy): what the site records. Search words are kept, but never with an IP address or anything else about who searched.
 
 ## API

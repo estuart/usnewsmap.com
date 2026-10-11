@@ -1380,10 +1380,21 @@ async fn hits_on_our_ocr_in_place_of_locs_are_marked_as_our_ocr() {
     m["built_from"] = json!({"batches": [
         {"batch": "batch_fx_early", "version": 1, "counts": "x"},
         {"batch": "batch_fx_late", "version": 1, "counts": "y"},
-    ]});
+    ], "american_stories": {
+        "version": 1, "years": 2, "parts": 5, "bytes": 100, "docs": 40, "only_american_stories": 3,
+    }});
     std::fs::write(&manifest, m.to_string()).unwrap();
     let rd = RefData::load(&LocalStore::new(&dir)).await.unwrap();
     assert_eq!(rd.ocr_local.len(), 1);
+    // The manifest's American Stories summary is kept for the status page.
+    assert_eq!(
+        rd.american_stories_built,
+        Some(usnm_api::refdata::AmericanStoriesBuilt {
+            years: 2,
+            docs: 40,
+            only_american_stories: 3,
+        })
+    );
     let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
 
     let (status, _, after) = get(&s, base).await;
@@ -2275,12 +2286,23 @@ async fn serves_the_site_alongside_the_api() {
 
     // The app's pages get the shell too, so a reload keeps working. The file
     // itself is served with or without a trailing slash (web/src/route.ts).
-    for uri in ["/status", "/status/", "/index.html", "/index.html/"] {
+    for uri in ["/datasets", "/datasets/", "/index.html", "/index.html/"] {
         let (status, h, body) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(body.contains("id=root"), "{uri}");
         assert!(header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
         assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache");
+    }
+
+    // The dataset details page's old path redirects, keeping the query (#294).
+    for (uri, location) in [
+        ("/status", "/datasets"),
+        ("/status/", "/datasets"),
+        ("/status?x=1", "/datasets?x=1"),
+    ] {
+        let (status, h, _) = get_site(&s, uri, None).await;
+        assert_eq!(status, StatusCode::MOVED_PERMANENTLY, "{uri}");
+        assert_eq!(header_str(&h, header::LOCATION), location, "{uri}");
     }
 
     // Other paths get the shell, where the app shows a not-found page, with a
@@ -2334,7 +2356,7 @@ async fn serves_the_site_alongside_the_api() {
         .oneshot(
             Request::builder()
                 .method("HEAD")
-                .uri("/status")
+                .uri("/datasets")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2444,7 +2466,7 @@ async fn serves_the_site_alongside_the_api() {
 }
 
 #[tokio::test]
-async fn search_permalinks_and_status_are_noindex() {
+async fn search_permalinks_and_dataset_details_are_noindex() {
     let mut cfg = config();
     cfg.site_dir = Some(site_dir("noindex"));
     let s = Arc::new(AppState::new(
@@ -2456,12 +2478,16 @@ async fn search_permalinks_and_status_are_noindex() {
     for uri in [
         "/?q=x",
         "/?q=%22cross+of+gold%22&from=1896-06-01",
-        "/status",
+        "/datasets",
     ] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(header_str(&h, robots.clone()), "noindex", "{uri}");
     }
+    // The old path's redirect too.
+    let (status, h, _) = get_site(&s, "/status", None).await;
+    assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(header_str(&h, robots.clone()), "noindex");
     for uri in ["/", "/?t=1896-07-01", "/favicon.svg"] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
@@ -2622,6 +2648,20 @@ async fn status_has_pages_by_state_and_language() {
                          "percent": 33.3},
                         {"code": "spa", "name": "Spanish", "titles": 1, "pages": 312,
                          "percent": 16.7}]})
+    );
+    // Pages by year cover the version's dates and add up to its pages.
+    let years = p["by_year"].as_array().unwrap();
+    let year = |r: &Value| r["year"].as_i64().unwrap();
+    assert_eq!(
+        years.iter().map(year).collect::<Vec<_>>(),
+        [1895, 1896, 1897]
+    );
+    let total: u64 = years.iter().map(|r| r["pages"].as_u64().unwrap()).sum();
+    assert_eq!(total, p["pages"].as_u64().unwrap());
+    // The fixtures search LoC's text alone.
+    assert_eq!(
+        p["sources"],
+        json!({"american_stories": null, "ja_latin": null, "ocr_local": null})
     );
 }
 

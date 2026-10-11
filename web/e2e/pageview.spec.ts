@@ -73,16 +73,16 @@ test("Global Privacy Control and Do Not Track turn page views off", async ({ pag
   await dnt.addInitScript(() => {
     Object.defineProperty(Navigator.prototype, "doNotTrack", { get: () => "1" });
   });
-  await dnt.goto(`${SITE}/status`);
-  await expect(dnt.getByRole("heading", { level: 1 })).toHaveText("Pipeline status");
+  await dnt.goto(`${SITE}/datasets`);
+  await expect(dnt.getByRole("heading", { level: 1 })).toHaveText("Dataset details");
   await page.waitForTimeout(500);
   expect(reports).toEqual([]);
 
   // The same context without either signal does report.
   const plain = await page.context().newPage();
-  await plain.goto(`${SITE}/status`);
+  await plain.goto(`${SITE}/datasets`);
   await expect.poll(() => reports.length).toBe(1);
-  expect(JSON.parse(reports[0]!.body)).toMatchObject({ route: "status" });
+  expect(JSON.parse(reports[0]!.body)).toMatchObject({ route: "datasets" });
 });
 
 test("other origins (development, these tests) send no page views", async ({ page }) => {

@@ -142,7 +142,7 @@ async fn page_views_are_forwarded_with_route_referrer_and_coarse_client() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     let req = post(&[("user-agent", IPHONE)])
         .body(Body::from(
-            r#"{"route":"status","referrer_origin":"internal"}"#,
+            r#"{"route":"datasets","referrer_origin":"internal"}"#,
         ))
         .unwrap();
     assert_eq!(send(&state, req).await.0, StatusCode::NO_CONTENT);
@@ -209,8 +209,8 @@ async fn page_views_are_forwarded_with_route_referrer_and_coarse_client() {
         })
     );
     let data = &views[1]["data"]["baseData"];
-    assert_eq!(data["name"], "status");
-    assert_eq!(data["url"], "https://usnewsmap.com/status");
+    assert_eq!(data["name"], "datasets");
+    assert_eq!(data["url"], "https://usnewsmap.com/datasets");
     assert_eq!(
         data["properties"],
         serde_json::json!({
@@ -305,7 +305,7 @@ async fn a_beacon_cannot_carry_search_text() {
         r#"{"route":"search","referrer_origin":"https://www.google.com/search?q=zebrasecret"}"#,
         // Not an object, or a duplicate field.
         r#"["search","zebrasecret"]"#,
-        r#"{"route":"search","route":"status"}"#,
+        r#"{"route":"search","route":"datasets"}"#,
         r#"{"route":"search","title":null,"utm_source":{"q":"zebrasecret"}}"#,
         "",
     ];
