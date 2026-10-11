@@ -9,8 +9,10 @@
 # Needs az signed in with an account that can read the workspace (Log
 # Analytics Reader or more) and jq. The workspace accepts Entra tokens only
 # (ADR-0009); its id comes from the stack output LOG_ANALYTICS_WORKSPACE_ID.
+# The ocr-node-* queries run against the OCR nodes' own workspace instead
+# (usnm-ocr-log-<env>, OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID; ADR-0015).
 set -euo pipefail
-[ $# -ge 2 ] && [ $# -le 3 ] || { sed -n '2,11s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -ge 2 ] && [ $# -le 3 ] || { sed -n '2,13s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 ENV_NAME=$1
 NAME=$2
 SPAN=${3:-1d}
@@ -40,9 +42,14 @@ esac
   die "timespan \"$SPAN\" isn't an ISO 8601 duration"
 
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"
-workspace=$(aget LOG_ANALYTICS_WORKSPACE_ID)
+# The nodes' data is only in their workspace.
+case $NAME in
+  ocr-node-*) ws_key=OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID ;;
+  *) ws_key=LOG_ANALYTICS_WORKSPACE_ID ;;
+esac
+workspace=$(aget "$ws_key")
 [ -n "$workspace" ] ||
-  die "LOG_ANALYTICS_WORKSPACE_ID isn't set for $ENV_NAME; run scripts/provision.sh $ENV_NAME to save the stack outputs"
+  die "$ws_key isn't set for $ENV_NAME; run scripts/provision.sh $ENV_NAME to save the stack outputs"
 
 body=$(mktemp)
 trap 'rm -f "$body"' EXIT

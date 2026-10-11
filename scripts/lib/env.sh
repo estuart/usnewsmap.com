@@ -146,9 +146,36 @@ save_outputs() {
   done < <(awk -F'\t' 'NR == 1 { n = split($0, k, "\t") }
       NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) print k[i] "\t" toupper(k[i]) "\t" v[i] }' <<< "$out")
 }
+# With USNM_OCR_NODES off, the stack deletes the nodes' monitoring (their
+# workspace, Application Insights component and data collection rule), and
+# Azure won't delete a rule that still has associations, so every try below
+# would fail. Stops first, naming them; offboard.sh deletes them.
+# Returns 0 when there's nothing to check or the rule is already gone.
+ocr_nodes_off_check() {
+  local nodes dcr out err errf
+  nodes=$(aget USNM_OCR_NODES) || return 1
+  dcr=$(aget OCR_NODE_DCR_ID) || return 1
+  [ "$nodes" != true ] && [ -n "$dcr" ] || return 0
+  errf=$(mktemp)
+  if ! out=$(az rest --method get --url "https://management.azure.com$dcr/associations?api-version=2022-06-01" \
+    --query 'value[].id' -o tsv 2> "$errf"); then
+    err=$(cat "$errf")
+    rm -f "$errf"
+    grep -q ResourceNotFound <<< "$err" && return 0
+    echo "error: can't list the associations of ${dcr##*/}: $err" >&2
+    return 1
+  fi
+  rm -f "$errf"
+  [ -n "$out" ] || return 0
+  echo "error: USNM_OCR_NODES is off, so the provision would delete ${dcr##*/}, which these still use:" >&2
+  while IFS= read -r err; do echo "  $err"; done <<< "$out" >&2
+  echo "offboard those nodes first (scripts/ocr-node/offboard.sh), or turn USNM_OCR_NODES back on" >&2
+  return 1
+}
 # New roles and permissions take a minute or two to apply everywhere, so a
 # deployment that depends on one can fail once; it's idempotent, so retry.
 provision() {
+  ocr_nodes_off_check || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
     deploy_guardrails && deploy_stack && save_outputs && return 0
     [ "$attempt" = 3 ] && die "provisioning failed three times"

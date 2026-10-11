@@ -1,7 +1,11 @@
-// Resource logs for every resource that has them (08 §8.1), all to the one
-// Log Analytics workspace. Kept in one place so the inventory is reviewable;
-// the "diagnostic settings" audit policy (infra/guardrails.bicep) flags any
-// resource that slips through.
+// Resource logs for every resource that has them (08 §8.1), to the
+// environment's Log Analytics workspace, except what the on-prem OCR nodes
+// control, which goes to the nodes' own workspace (ocr-node-monitoring.bicep)
+// so that a node can't fill the environment's daily cap: the exchange
+// account's queue logs (every node request is a row) and the nodes' data
+// collection rule's errors. Kept in one place so the inventory is
+// reviewable; the "diagnostic settings" audit policy (infra/guardrails.bicep)
+// flags any resource that slips through.
 //
 // Everything with resource logs is covered, with every category, except
 // where a category would record each request and eat the workspace's daily
@@ -18,8 +22,9 @@
 //   Application Insights request, without the path or query.
 //
 // Not covered, deliberately:
-// - Application Insights: workspace-based, so its telemetry is already in
-//   this workspace; its resource logs would store every row twice.
+// - Application Insights, the environment's and the nodes': workspace-based,
+//   so their telemetry is already in a workspace; their resource logs would
+//   store every row twice.
 // - Resources with platform metrics only (DNS zones, private endpoints,
 //   Container Apps and jobs): no logs to send, and Azure Monitor keeps their
 //   metrics 93 days at no cost.
@@ -39,6 +44,12 @@ param tilesStorageName string
 param scratchStorageName string = ''
 @description('The on-prem OCR exchange account (ocr-exchange.bicep); empty if there is none.')
 param exchangeStorageName string = ''
+@description('The OCR nodes\' workspace (ocr-node-monitoring.bicep), as a resource id; empty if there is none.')
+param ocrNodeWorkspaceId string = ''
+@description('The OCR nodes\' workspace\'s name; empty if there is none.')
+param ocrNodeWorkspaceName string = ''
+@description('The OCR nodes\' data collection rule (ocr-node-monitoring.bicep); empty if there is none.')
+param ocrNodeDcrName string = ''
 
 var name = 'to-log-analytics'
 
@@ -68,6 +79,21 @@ resource workspaceLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview
   name: name
   properties: {
     workspaceId: workspaceId
+    logs: [{ categoryGroup: 'allLogs', enabled: true }]
+  }
+}
+
+// The OCR nodes' workspace, the same way, into itself: the operators' and
+// the node alerts' queries, a few rows an hour that no node can add to.
+resource ocrNodeWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = if (!empty(ocrNodeWorkspaceName)) {
+  name: ocrNodeWorkspaceName
+}
+
+resource ocrNodeWorkspaceLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(ocrNodeWorkspaceName)) {
+  scope: ocrNodeWorkspace
+  name: name
+  properties: {
+    workspaceId: ocrNodeWorkspaceId
     logs: [{ categoryGroup: 'allLogs', enabled: true }]
   }
 }
@@ -125,7 +151,10 @@ resource cosmosLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' =
 // one: blob writes and deletes; the queue, table and file services log
 // everything. Only the exchange account uses queues: each node's take,
 // delete and empty poll is a StorageQueueLogs row, so the worker backs off
-// while the queues are empty.
+// while the queues are empty, and a node decides how many there are, so
+// they go to the nodes' workspace and count under its cap. Its blob writes
+// stay here, in StorageBlobLogs on the Auxiliary plan, which no cap covers
+// (monitoring.bicep), so they can't stop the environment's logging.
 module dataStorageLogs 'storage-diagnostics.bicep' = {
   name: 'diagnostics-${dataStorageName}'
   params: {
@@ -149,6 +178,7 @@ module exchangeStorageLogs 'storage-diagnostics.bicep' = if (!empty(exchangeStor
   params: {
     storageName: exchangeStorageName
     workspaceId: workspaceId
+    queueWorkspaceId: ocrNodeWorkspaceId
     settingName: name
   }
 }
@@ -170,5 +200,22 @@ resource scratchLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' 
   properties: {
     workspaceId: workspaceId
     logs: [{ category: 'StorageDelete', enabled: true }]
+  }
+}
+
+// The OCR nodes' data collection rule: errors in collecting or transforming
+// what the Azure Monitor Agent sends (DCRLogErrors), its only category. Rows
+// only when something fails, and what a node sends can make it fail, so
+// they go to the nodes' workspace with the rest of the nodes' data.
+resource ocrNodeDcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' existing = if (!empty(ocrNodeDcrName)) {
+  name: ocrNodeDcrName
+}
+
+resource ocrNodeDcrLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(ocrNodeDcrName)) {
+  scope: ocrNodeDcr
+  name: name
+  properties: {
+    workspaceId: ocrNodeWorkspaceId
+    logs: [{ category: 'LogErrors', enabled: true }]
   }
 }

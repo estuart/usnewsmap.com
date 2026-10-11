@@ -2,6 +2,8 @@
 
 param storageName string
 param workspaceId string
+@description('Where the queue service\'s logs go instead, as a workspace resource id; empty: workspaceId.')
+param queueWorkspaceId string = ''
 param settingName string
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
@@ -38,7 +40,7 @@ resource queueLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = 
   scope: account::queue
   name: settingName
   properties: {
-    workspaceId: workspaceId
+    workspaceId: empty(queueWorkspaceId) ? workspaceId : queueWorkspaceId
     logs: [{ categoryGroup: 'allLogs', enabled: true }]
   }
 }

@@ -1,0 +1,95 @@
+// The on-prem OCR nodes, one row each (#296), from the nodes' workspace
+// usnm-ocr-log-<env> (scripts/logs.sh runs ocr-node-* queries there): the
+// last heartbeat and counters, CPU and memory over the 5 minutes before the
+// last counters, the highest memory use in the span, free space on /, the
+// worker's last line, pages done and warnings and errors, and the billed MB
+// each node sent: Perf, Syslog and its Application Insights telemetry
+// (WorkerMB, by the role instance the sender set). DayMB is everything the
+// workspace billed in the last 24 hours (the span, if shorter), the
+// exchange account's queue logs included, and CapPct that against the
+// daily cap; the same on every row.
+// Status is "no heartbeat" or "no counters" after 15 minutes of silence.
+// The agent sends heartbeats only to the workspaces of the rules it's
+// associated with, so a lost association shows as "no heartbeat". Nodes
+// come from the agent's heartbeats in the span: a node with no heartbeat in
+// the whole span isn't listed at all, so widen the span
+// (scripts/logs.sh prod ocr-node-health 7d) or check the Arc machine's
+// status. A table with no rows yet (a new workspace) gives no rows, not an
+// error.
+// The daily cap, as dailyCapGb of ocr-node-monitoring in infra/main.bicep;
+// change both together.
+let cap_gb = 0.1;
+let machines = "/providers/microsoft.hybridcompute/machines/";
+let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) };
+let heartbeat = union isfuzzy=true
+    (Heartbeat
+    | where _ResourceId has machines
+    | project TimeGenerated, Node = node_of(_ResourceId), Version),
+    (datatable(TimeGenerated: datetime, Node: string, Version: string)[]);
+let perf = union isfuzzy=true
+    (Perf
+    | where _ResourceId has machines
+    | project TimeGenerated, Node = node_of(_ResourceId), ObjectName, CounterName, InstanceName, CounterValue,
+        Size = _BilledSize),
+    (datatable(TimeGenerated: datetime, Node: string, ObjectName: string, CounterName: string, InstanceName: string,
+        CounterValue: real, Size: real)[]);
+let syslog = union isfuzzy=true
+    (Syslog
+    | where _ResourceId has machines
+    | project TimeGenerated, Node = node_of(_ResourceId), Facility, SyslogMessage, Size = _BilledSize),
+    (datatable(TimeGenerated: datetime, Node: string, Facility: string, SyslogMessage: string, Size: real)[]);
+let nodes = heartbeat
+    | summarize arg_max(TimeGenerated, Version) by Node
+    | project Node, LastHeartbeat = TimeGenerated, Agent = Version;
+let last_perf = perf
+    | summarize LastCounters = max(TimeGenerated),
+        MemPctMax = round(maxif(CounterValue, ObjectName == "Memory" and CounterName == "% Used Memory"), 1)
+        by Node;
+// The processor's instances are its CPUs (and a total, if the agent sends
+// one, which doesn't change their average).
+let recent = perf
+    | join kind=inner last_perf on Node
+    | where TimeGenerated > LastCounters - 5m
+    | summarize
+        CpuPct = round(avgif(CounterValue, ObjectName == "Processor" and CounterName == "% Processor Time"), 1),
+        MemPct = round(avgif(CounterValue, ObjectName == "Memory" and CounterName == "% Used Memory"), 1),
+        RootFreePct = round(minif(CounterValue, ObjectName == "Logical Disk" and CounterName == "% Free Space" and InstanceName == "/"), 1)
+        by Node;
+// The worker logs JSON lines to local0; a line that isn't JSON is stderr
+// (a panic, a bad flag) and counts as an error.
+let worker = syslog
+    | where Facility == "local0"
+    | extend j = parse_json(SyslogMessage)
+    | extend Level = iff(isnotempty(tostring(j.level)), tostring(j.level), "TEXT")
+    | summarize WorkerLast = max(TimeGenerated),
+        PagesDone = countif(tostring(j.fields.message) == "page done"),
+        WorkerWarnings = countif(Level == "WARN"),
+        WorkerErrors = countif(Level in ("ERROR", "TEXT"))
+        by Node;
+let perf_mb = perf | summarize PerfMB = round(sum(Size) / 1e6, 2) by Node;
+let syslog_mb = syslog | summarize SyslogMB = round(sum(Size) / 1e6, 2) by Node;
+// Only the nodes' component sends Application Insights rows to this
+// workspace. Lowercased to join the other rows: Log Analytics lowercases
+// _ResourceId, and the role instance keeps the Arc name's case.
+let worker_mb = union isfuzzy=true App*, (datatable(AppRoleInstance: string, _BilledSize: real)[])
+    | summarize WorkerMB = round(sum(_BilledSize) / 1e6, 2) by Node = tolower(AppRoleInstance);
+let day_mb = toscalar(union isfuzzy=true
+    (Usage | where TimeGenerated > ago(1d) and IsBillable | project Quantity),
+    (datatable(Quantity: real)[])
+    | summarize sum(Quantity));
+nodes
+| join kind=leftouter (last_perf | project Node, LastCounters, MemPctMax) on Node
+| join kind=leftouter recent on Node
+| join kind=leftouter worker on Node
+| join kind=leftouter perf_mb on Node
+| join kind=leftouter syslog_mb on Node
+| join kind=leftouter worker_mb on Node
+| extend Status = case(
+    now() - LastHeartbeat > 15m, "no heartbeat",
+    isnull(LastCounters) or now() - LastCounters > 15m, "no counters",
+    WorkerErrors > 0, "worker errors",
+    "ok")
+| extend DayMB = round(day_mb, 1), CapPct = round(100 * day_mb / (cap_gb * 1000), 1)
+| project Node, Status, LastHeartbeat, LastCounters, CpuPct, MemPct, MemPctMax, RootFreePct,
+    WorkerLast, PagesDone, WorkerWarnings, WorkerErrors, PerfMB, SyslogMB, WorkerMB, Agent, DayMB, CapPct
+| order by Node asc

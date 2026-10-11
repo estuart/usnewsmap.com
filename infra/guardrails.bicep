@@ -151,6 +151,7 @@ var loggedTypes = [
   'Microsoft.Network/virtualNetworks'
   'Microsoft.App/managedEnvironments'
   'Microsoft.DocumentDB/databaseAccounts'
+  'Microsoft.Insights/dataCollectionRules'
   'Microsoft.Storage/storageAccounts/blobServices'
   'Microsoft.Storage/storageAccounts/queueServices'
   'Microsoft.Storage/storageAccounts/tableServices'

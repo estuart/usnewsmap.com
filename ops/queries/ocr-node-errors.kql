@@ -1,0 +1,40 @@
+// The on-prem OCR nodes' problems, newest first (#296), from the nodes'
+// workspace usnm-ocr-log-<env> (scripts/logs.sh runs ocr-node-* queries
+// there). Worker: its WARN and ERROR lines by message and kind, and any
+// line that isn't JSON (a panic, a bad flag), from Syslog local0. System:
+// everything at err and above, systemd's lines about
+// usnm-ocr-worker.service and the kernel's OOM kills, by process and
+// message with digits masked. Each group shows its count, first and last
+// time and one example, cut to 300 characters. No Syslog table yet (a new
+// workspace) gives no rows, not an error.
+let machines = "/providers/microsoft.hybridcompute/machines/";
+let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) };
+let syslog = union isfuzzy=true
+    (Syslog
+    | where _ResourceId has machines
+    | project TimeGenerated, Node = node_of(_ResourceId), Facility, SeverityLevel, ProcessName, SyslogMessage),
+    (datatable(TimeGenerated: datetime, Node: string, Facility: string, SeverityLevel: string, ProcessName: string,
+        SyslogMessage: string)[]);
+let worker = syslog
+    | where Facility == "local0"
+    | extend j = parse_json(SyslogMessage)
+    | extend Level = iff(isnotempty(tostring(j.level)), tostring(j.level), "TEXT")
+    | where Level in ("WARN", "ERROR", "TEXT")
+    | extend Message = iff(Level == "TEXT", replace_regex(substring(SyslogMessage, 0, 120), @"\d+", "N"),
+        strcat(tostring(j.fields.message), iff(isnotempty(tostring(j.fields.kind)), strcat(" (", tostring(j.fields.kind), ")"), "")))
+    | extend Example = substring(iff(Level == "TEXT", SyslogMessage,
+        strcat(tostring(j.fields.page), " ", coalesce(tostring(j.fields.error), tostring(j.fields.cause)))), 0, 300)
+    | summarize Count = count(), First = min(TimeGenerated), Last = max(TimeGenerated), Example = take_any(Example)
+        by Node, Source = "worker", Level, Message;
+let system = syslog
+    | where Facility != "local0"
+    | where SeverityLevel in ("err", "crit", "alert", "emerg")
+        or SyslogMessage has "usnm-ocr-worker"
+        or SyslogMessage has_any ("Out of memory", "oom-kill", "oom_reaper")
+    | extend Message = strcat(ProcessName, ": ", replace_regex(substring(SyslogMessage, 0, 120), @"\d+", "N"))
+    | summarize Count = count(), First = min(TimeGenerated), Last = max(TimeGenerated),
+        Example = take_any(substring(SyslogMessage, 0, 300))
+        by Node, Source = "system", Level = SeverityLevel, Message;
+union worker, system
+| project Last, First, Node, Source, Level, Count, Message, Example
+| order by Last desc

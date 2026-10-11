@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Onboard an on-prem OCR node (#296, ADR-0015) from the operator's machine:
-# connect it to Azure Arc in the environment's resource group and add its
+# connect it to Azure Arc in the environment's resource group, add its
 # identity to the nodes' Entra group, which the provision has already
-# granted the exchange account's queues and output container. No provision
-# is needed afterwards.
+# granted the exchange account's queues and output container (and the
+# nodes' own Application Insights component, usnm-ocr-appi-<env>, for the
+# worker's telemetry), and install the Azure Monitor Agent with the nodes'
+# data collection rule, which sends to the nodes' own workspace. No
+# provision is needed afterwards.
 #
 #   scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org \
 #     --name usnm-ocr-node1 [--ssh-key ~/.ssh/id_ed25519] [--dry-run]
@@ -19,30 +22,38 @@
 #      Azure Connected Machine Onboarding on the environment's group;
 #   3. copies scripts/ocr-node/node-setup.sh to the node and runs it with
 #      sudo, sending the tenant, app id and secret on its stdin (never on a
-#      command line, never on the node's disk);
+#      command line, never on the node's disk), and the exchange account
+#      and the nodes' Application Insights connection string
+#      (OCR_NODE_APPINSIGHTS) as arguments (not secrets) for the worker's
+#      unit;
 #   4. deletes the role assignment, the service principal and the app
-#      registration, and purges them from Entra's deleted items, when the
-#      script exits, on failure or Ctrl-C too;
+#      registration, and purges them from Entra's deleted items, as soon as
+#      node-setup.sh has finished (the connect was their only use), or when
+#      the script exits before that, on failure or Ctrl-C too;
 #   5. waits for the Arc machine's system-assigned identity and adds it to
-#      the group (once).
+#      the group (once);
+#   6. associates the machine with the nodes' data collection rule
+#      (OCR_NODE_DCR_ID) and installs the Azure Monitor Linux Agent
+#      extension, once the machine reports the allow list node-setup.sh set.
+#      It stops if the machine has any other extension in Azure.
 # Remove a node with scripts/ocr-node/offboard.sh.
 #
 # --dry-run checks the settings and your sign-in and prints the plan; it
-# registers nothing, creates nothing in Entra, doesn't connect to the node
-# and adds no group member.
+# registers nothing, creates nothing in Entra, doesn't connect to the node,
+# adds no group member and installs nothing.
 #
 # Needs az signed in with the right to register applications in the tenant,
-# to assign roles on the environment's group and to write its Arc machines
-# (Owner; or User Access Administrator plus Azure Connected Machine Resource
-# Administrator or Contributor, for the automatic-upgrade setting), and to
-# add members to the
-# nodes' group (an owner of it, as group.sh makes you), and ssh. Registering the
-# three providers is a subscription-level action
+# to assign roles on the environment's group and to write its Arc machines,
+# their extensions and their data collection rule associations (Owner; or
+# User Access Administrator plus Contributor, or plus Azure Connected
+# Machine Resource Administrator and Monitoring Contributor), and to add
+# members to the nodes' group (an owner of it, as group.sh makes you), and
+# ssh. Registering the three providers is a subscription-level action
 # (Microsoft.<namespace>/register/action, in Contributor or Owner on the
 # subscription); without it they have to be registered already.
 # Works with macOS's bash 3.2.
 set -euo pipefail
-usage() { sed -n '7,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '11,12s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
@@ -62,8 +73,9 @@ done
 [ -n "$HOST" ] || { echo "error: missing --host" >&2; usage; }
 [ -n "$NAME" ] || { echo "error: missing --name" >&2; usage; }
 # Arc resource names: letters, digits, hyphens, periods and underscores; we
-# keep to letters, digits and hyphens.
-[[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,53}$ ]] || die "--name: 1 to 54 letters, digits or hyphens, starting with a letter or digit"
+# keep to letters, digits and hyphens, and to 32, since the name is also
+# the worker's --node-id.
+[[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,31}$ ]] || die "--name: 1 to 32 letters, digits or hyphens, starting with a letter or digit"
 [ -z "$SSH_KEY" ] || [ -r "$SSH_KEY" ] || die "--ssh-key: can't read $SSH_KEY"
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -80,6 +92,10 @@ EXCHANGE=$(aget OCR_EXCHANGE_ACCOUNT)
 NODES=$(aget USNM_OCR_NODES)
 NODE_IPS=$(aget USNM_OCR_NODE_IPS)
 NODE_GROUP=$(aget USNM_OCR_NODE_GROUP)
+# The nodes' own component, never the environment's (ADR-0015 decision 8).
+CONN=$(aget OCR_NODE_APPINSIGHTS)
+APPI_ID=$(aget OCR_NODE_APPINSIGHTS_ID)
+DCR_ID=$(aget OCR_NODE_DCR_ID)
 [ -n "$SUBSCRIPTION" ] && [ -n "$TENANT" ] && [ -n "$GROUP" ] ||
   die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/provision.sh $ENV_NAME"
 [ "$NODES" = true ] ||
@@ -88,6 +104,10 @@ NODE_GROUP=$(aget USNM_OCR_NODE_GROUP)
   die "no OCR_EXCHANGE_ACCOUNT for $ENV_NAME yet: run scripts/provision.sh $ENV_NAME first"
 [ -n "$NODE_GROUP" ] ||
   die "no USNM_OCR_NODE_GROUP for $ENV_NAME: scripts/ocr-node/group.sh --env $ENV_NAME, then scripts/provision.sh $ENV_NAME"
+[ -n "$DCR_ID" ] ||
+  die "no OCR_NODE_DCR_ID for $ENV_NAME (the nodes' data collection rule): run scripts/provision.sh $ENV_NAME first"
+[ -n "$CONN" ] ||
+  echo "warning: OCR_NODE_APPINSIGHTS (the nodes' Application Insights) is empty, so the worker will send no telemetry; run scripts/provision.sh $ENV_NAME"
 [ -n "$NODE_IPS" ] ||
   echo "warning: USNM_OCR_NODE_IPS is empty, so the exchange account's firewall lets no node in; set it to the node's public IP and provision"
 
@@ -107,6 +127,8 @@ NODE_GROUP_NAME=$(az ad group show --group "$NODE_GROUP" --query displayName -o 
   die "can't read group $NODE_GROUP (USNM_OCR_NODE_GROUP); run scripts/ocr-node/group.sh --env $ENV_NAME"
 echo "environment $ENV_NAME: subscription $SUBSCRIPTION, $GROUP, $LOCATION, exchange account $EXCHANGE"
 echo "node group $NODE_GROUP_NAME ($NODE_GROUP)"
+appi=${APPI_ID##*/}
+echo "data collection rule ${DCR_ID##*/}; worker telemetry to ${appi:-none}"
 echo "node $HOST, Arc resource $NAME"
 [ "$DRY_RUN" = false ] || echo "dry run: nothing is changed"
 
@@ -145,13 +167,15 @@ else
   KEY_STORE=default
 fi
 SETUP_ARGS=$(printf '%q ' --subscription "$SUBSCRIPTION" --resource-group "$GROUP" \
-  --location "$LOCATION" --name "$NAME" --tags "$TAGS" --identity-key-store "$KEY_STORE")
+  --location "$LOCATION" --name "$NAME" --tags "$TAGS" --identity-key-store "$KEY_STORE" \
+  --exchange-account "$EXCHANGE" --app-insights "$CONN")
 echo "identity key store: $KEY_STORE (HybridComputePreview feature: ${tpm_feature:-unknown})"
 
 # The onboarding credential is a throwaway service principal with only Azure
 # Connected Machine Onboarding on the group, made for this run and deleted
-# when the script exits, however it exits (ADR-0015). Your own token would
-# carry all your rights for about an hour.
+# once node-setup.sh has connected the node, or when the script exits before
+# that, however it exits (ADR-0015). Your own token would carry all your
+# rights for about an hour.
 ONBOARD_ROLE=b64e21ea-ac4e-4cdf-9dc9-5b892992bee7 # Azure Connected Machine Onboarding
 SCOPE="/subscriptions/$SUBSCRIPTION/resourceGroups/$GROUP"
 SP_NAME="usnm-arc-onboard-$NAME-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -161,6 +185,9 @@ APP_OBJ="" APP_ID="" SP_OBJ="" SECRET="" RA_ID="" SP_CREATED=false
 # registration, then purges both from Entra's deleted items. Looks each one
 # up by name if the script stopped before it recorded its id.
 cleanup() {
+  # The status the script is exiting with, kept for the EXIT trap; 0 when
+  # called once node-setup.sh has finished.
+  # shellcheck disable=SC2319
   local status=$? ids id deleted="" ok attempt
   SECRET=""
   [ "$SP_CREATED" = true ] || return "$status"
@@ -318,7 +345,181 @@ else
   # shellcheck disable=SC2029
   ssh "${SSH_OPTS[@]}" "$HOST" "rm -rf $remote" || true
   [ "$status" -eq 0 ] || die "node-setup.sh failed on $HOST ($status)"
+  # The node is connected; nothing below needs the principal, and the
+  # monitoring step can wait up to 25 minutes. Delete it now (cleanup does
+  # nothing unless this run created it), in a subshell, because cleanup
+  # turns off set -e. The EXIT trap still covers the failures above, and
+  # runs cleanup again if this one is interrupted.
+  (cleanup) || true
+  SP_CREATED=false
 fi
+
+# The Azure Monitor Agent and the nodes' data collection rule (ADR-0015
+# decision 8). The template can't attach them, because it doesn't declare
+# the machines. The extension is a child of the machine; offboard.sh
+# deletes it and the association. Resource Manager calls go through az
+# rest, so no az extension (connectedmachine, monitor-control-service) is
+# needed.
+ARM=https://management.azure.com
+HC_API=2025-01-13
+DCRA_API=2022-06-01
+EXT=AzureMonitorLinuxAgent
+EXT_TYPE=Microsoft.Azure.Monitor/$EXT
+DCRA=${DCR_ID##*/}
+lower() { tr '[:upper:]' '[:lower:]'; }
+
+# A Resource Manager GET; the query's result goes in ARM_OUT. Like
+# machine_get, returns 1 only when the resource doesn't exist and stops on
+# any other failure. Called in this shell.
+ARM_OUT=""
+arm_get() {
+  local out err errf
+  ARM_OUT=""
+  errf=$(mktemp)
+  if out=$(az rest --method get --url "$1" --query "$2" -o tsv 2> "$errf"); then
+    rm -f "$errf"
+    ARM_OUT=$out
+    return 0
+  fi
+  err=$(cat "$errf")
+  rm -f "$errf"
+  if grep -qE '"code": ?"ResourceNotFound"' <<< "$err"; then return 1; fi
+  die "can't read ${1%%\?*}: $err"
+}
+# What the machine last reported to Azure, which refuses an extension the
+# machine's agent would refuse: "<extensionsEnabled> <allow list>" in CFG.
+agent_config() {
+  machine_get "join(' ', [to_string(properties.agentConfiguration.extensionsEnabled), join(',', \
+    (properties.agentConfiguration.extensionsAllowList || \`[]\`)[].join('/', [publisher, type]))])" ||
+    die "$NAME is no longer in $GROUP"
+  CFG=$MACHINE_OUT
+}
+# The extension's provisioning state in STATE, empty if it isn't there, and
+# UPGRADES: on if its automatic upgrade is on, else off. (Minor versions are
+# picked at install or update, which the PUT below asks for anyway.)
+ext_state() {
+  STATE="" UPGRADES=off
+  if arm_get "$ARM$1/extensions/$EXT?api-version=$HC_API" \
+    "join(' ', [properties.provisioningState || '-', to_string(properties.enableAutomaticUpgrade)])"; then
+    STATE=${ARM_OUT%% *}
+    [ "$STATE" != - ] || STATE=""
+    [ "${ARM_OUT#* }" != true ] || UPGRADES=on
+  fi
+}
+# The rule the machine's association names, lowercase, in RULE; empty if
+# there's no association.
+dcra_rule() {
+  RULE=""
+  if arm_get "$ARM$1/providers/Microsoft.Insights/dataCollectionRuleAssociations/$DCRA?api-version=$DCRA_API" \
+    properties.dataCollectionRuleId; then
+    RULE=$(lower <<< "$ARM_OUT")
+  fi
+}
+
+# Associates machine $1 with the rule and installs the agent; with
+# --dry-run, says what it would do. Safe to run again.
+CFG="" STATE="" UPGRADES=off RULE=""
+monitoring() {
+  local machine=$1 want_rule location waited
+  step "Azure Monitor Agent"
+  if [ -z "$machine" ]; then
+    [ "$DRY_RUN" = true ] || die "can't find $NAME in $GROUP; run this again"
+    echo "would associate $NAME with $DCRA and install $EXT (automatic upgrades on) once it's connected"
+    return 0
+  fi
+  want_rule=$(lower <<< "$DCR_ID")
+  agent_config
+  dcra_rule "$machine"
+  ext_state "$machine"
+  echo "$NAME reports extensions enabled: ${CFG%% *}; allowed: ${CFG#* }"
+  # The allow list stops new installs, not an extension installed before
+  # it: that one stays, and runs again once the extension manager is on,
+  # until it's deleted from Azure (Microsoft). So any other extension stops
+  # this, in a dry run too. node-setup.sh checks the node's side.
+  if arm_get "$ARM$machine/extensions?api-version=$HC_API" "value[?name!='$EXT'].name" && [ -n "$ARM_OUT" ]; then
+    die "$NAME has other extensions in Azure: $(paste -sd, - <<< "$ARM_OUT"); delete each one" \
+      "(az rest --method delete --url \"$ARM$machine/extensions/<name>?api-version=$HC_API\";" \
+      "deletes are accepted whatever the allow list says) and run this again"
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    if [ "$RULE" = "$want_rule" ]; then
+      echo "already associated with $DCRA"
+    else
+      echo "would associate it with $DCRA"
+    fi
+    if [ "$STATE" = Succeeded ] && [ "$UPGRADES" = on ]; then
+      echo "$EXT is installed, automatic upgrades on"
+    elif [ "$STATE" = Succeeded ]; then
+      echo "$EXT is installed with automatic upgrades off; would turn them on"
+    else
+      echo "$EXT: ${STATE:-not installed}; would wait for the machine to report extensions enabled with"
+      echo "only $EXT_TYPE allowed (node-setup.sh sets that), then install it (automatic upgrades on)"
+    fi
+    return 0
+  fi
+
+  if [ "$RULE" = "$want_rule" ]; then
+    echo "already associated with $DCRA"
+  else
+    az rest --method put \
+      --url "$ARM$machine/providers/Microsoft.Insights/dataCollectionRuleAssociations/$DCRA?api-version=$DCRA_API" \
+      --body "{\"properties\": {\"dataCollectionRuleId\": \"$DCR_ID\", \"description\": \"usnewsmap OCR node (onboard.sh)\"}}" \
+      -o none || die "can't associate $NAME with $DCRA"
+    echo "associated $NAME with $DCRA"
+  fi
+
+  # Installed some other way (by hand, by policy), it may have automatic
+  # upgrades off; the PUT below turns them on.
+  if [ "$STATE" = Succeeded ] && [ "$UPGRADES" = on ]; then
+    echo "$EXT is installed, automatic upgrades on"
+    return 0
+  fi
+  # The machine reports a configuration change within a few minutes.
+  waited=0
+  while [ "$(lower <<< "$CFG")" != "$(lower <<< "true $EXT_TYPE")" ]; do
+    [ "$waited" -lt 600 ] ||
+      die "$NAME still reports extensions enabled: ${CFG%% *}; allowed: ${CFG#* } (want true and only $EXT_TYPE); check \`azcmagent config list\` on the node, then run this again"
+    echo "waiting for $NAME to report the extension allow list ($waited s)"
+    sleep 20
+    waited=$((waited + 20))
+    agent_config
+  done
+  case "$STATE" in
+    Creating | Updating) echo "$EXT: $STATE" ;;
+    *)
+      machine_get location || die "$NAME is no longer in $GROUP"
+      location=$MACHINE_OUT
+      az rest --method put --url "$ARM$machine/extensions/$EXT?api-version=$HC_API" \
+        --body "{\"location\": \"$location\", \"properties\": {\"publisher\": \"Microsoft.Azure.Monitor\", \"type\": \"$EXT\", \"enableAutomaticUpgrade\": true, \"autoUpgradeMinorVersion\": true}}" \
+        -o none || die "can't install $EXT on $NAME"
+      if [ "$STATE" = Succeeded ]; then
+        echo "turning on automatic upgrades for $EXT"
+      else
+        echo "installing $EXT${STATE:+ (was $STATE)}"
+      fi
+      ;;
+  esac
+  # The node downloads and starts it; a few minutes.
+  waited=0
+  while :; do
+    sleep 20
+    waited=$((waited + 20))
+    ext_state "$machine"
+    case "$STATE" in
+      Succeeded) break ;;
+      Failed | Canceled)
+        arm_get "$ARM$machine/extensions/$EXT?api-version=$HC_API" properties.instanceView.status.message || true
+        die "$EXT on $NAME: $STATE${ARM_OUT:+ ($ARM_OUT)}; fix the cause and run this again"
+        ;;
+    esac
+    [ "$waited" -lt 900 ] || die "$EXT on $NAME is still ${STATE:-unknown} after 15 minutes; run this again later"
+  done
+  if [ "$UPGRADES" = on ]; then
+    echo "$EXT is installed, automatic upgrades on"
+  else
+    echo "warning: $EXT is installed but reports automatic upgrades off; run this again in a few minutes"
+  fi
+}
 
 step "Machine"
 # The provision grants the nodes' group the node roles
@@ -350,6 +551,9 @@ if [ "$DRY_RUN" = true ]; then
   else
     echo "would turn on automatic agent upgrade"
   fi
+  machine=""
+  if machine_get id; then machine=$MACHINE_OUT; fi
+  monitoring "$machine"
   exit 0
 fi
 principal=""
@@ -392,7 +596,14 @@ else
   echo "turned on automatic agent upgrade"
 fi
 
+machine_get id || die "$NAME is no longer in $GROUP"
+monitoring "$MACHINE_OUT"
+
 step "Next"
 echo "$NAME has the node roles on $EXCHANGE through $NODE_GROUP_NAME; no provision needed."
 echo "A token the node fetched for storage before it joined the group lacks the membership"
 echo "until it expires (up to about 24 hours for a managed identity; ADR-0015)."
+echo "Its heartbeat and counters reach the nodes' workspace within about 10 minutes:"
+echo "  scripts/logs.sh $ENV_NAME ocr-node-health"
+echo "The worker starts once its binary is installed on the node, as root:"
+echo "  install -m 0755 usnm-ocr-worker /usr/local/bin/ && systemctl enable --now usnm-ocr-worker"
