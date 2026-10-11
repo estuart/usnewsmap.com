@@ -201,6 +201,14 @@ scripts/settings.sh prod USNM_SINGLE_TEXT_FIELD true   # the job's --single-text
 
 Only a full base takes it. The release logs `one searched text field` when it creates the index, and `building index` with `text_layout: 2`. Check afterwards: `current.json` has `text_layout: 2`; `reference/<version>/manifest.json` has `build.features.text_layout` and, in `build.templates.pages`, the `text_all` and `text_all_cg` fields; `/v1/meta` says `"text_layout": 2`. The aggregate then has no `total.american_stories_only` (the site drops its page-count note), while hits keep `matched_in` and the American Stories badge. `USNM_AMERICAN_STORIES_SEARCH` has no effect on such a version (below). Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version. To go back at once, publish a `current.json` of a version with a field per text (rollback); a full rebuild without the setting does it for good. Turning `USNM_AMERICAN_STORIES` off on such a version makes the next release a full base: the text can't be left out of the field it shares with LoC's in a delta.
 
+**Page languages (#289, 05 §5.5.8).** To have the rebuild give each page its own languages, so `lang=` filters by them, add the setting to the first provision above:
+
+```sh
+scripts/settings.sh prod USNM_PAGE_LANGUAGE true   # the job's --page-language
+```
+
+Only a full base takes it. The release logs `building index` with `page_language: true`, and before the merges `pages whose own languages differ from their title's, in the version` with their count (expect about 1.5 to 2 million: mostly pages of multilingual titles). Check afterwards: `current.json` has `page_language: 1`; `reference/<version>/manifest.json` has `build.features.page_language`, the two fields in `build.templates.pages`, `page_languages.pages`, and lists `page_language_baselines.json` (perhaps 10% to 20% more entries than `language_baselines.json`) and `page_languages.json` (about 15 to 20 MB); `/v1/meta` says `"language_filter": "page"`. Compare the release's pages a second with the last rebuild's (`release progress`): detection runs on up to 4 threads beside the writer. Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version and carry the moves forward. To go back to title languages at once, publish a `current.json` without the key; a full rebuild without the setting does it for good.
+
 Then turn the full rebuild off, and the E4 profile with it, in two provisions: the job has to leave the profile before the profile can go.
 
 ```sh
