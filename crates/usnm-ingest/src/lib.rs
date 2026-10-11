@@ -23,6 +23,7 @@ pub mod ocr_ja;
 pub mod ocr_local;
 pub mod places;
 pub mod progress;
+pub mod prune;
 pub mod raw;
 pub mod release;
 pub mod sink;

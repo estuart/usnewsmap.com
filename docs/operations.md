@@ -215,6 +215,38 @@ Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would re
 
 **Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why the ingest job's replica timeout is 48 h (#173). Benchmark afterwards with `scripts/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
 
+## Prune old index versions
+
+Releases never delete an index, so `qw-index` keeps every version ever built and every rebuild that stopped part way (in October 2026, about 1.2 TB of the 2.8 TB of current index blobs; #245). `usnm-ingest prune` deletes the Quickwit indexes that no kept version names. It keeps:
+
+- the serving version: every index `current.json` lists, its Japanese (`ja`) and Congress (`congress`) index sets included;
+- its rollback, the version `current.json` names as `previous_version`;
+- any published version newer than the serving one (there is one only after `current.json` was rolled back by hand, so rolling forward still works). A newer version whose snapshot has a `manifest.json` counts as published even if its run says `building`: a release writes the manifest, then `current.json`, then records the publish, and that last step can fail.
+
+A kept version's indexes are all that its records name: `current.json`, its run in the pipeline state, the `indexes` of `reference/<version>/manifest.json`, and its Japanese and Congress index ids (`pages-ja-{date}-{n}`, `congress-{date}-{n}`). Every other `pages-…` or `congress-…` index is deleted: older versions, and rebuilds that were stopped or failed. Indexes of other names (such as Quickwit's own `otel-…`) are left alone. It deletes through Quickwit (`DELETE /api/v1/indexes/{id}`), which removes the split files and the index's metastore entry together, never with blob deletes.
+
+Without `--delete`, it's a dry run: it lists each index it would delete with its splits, documents and size (its published splits' files), and the total, and changes nothing. It takes the writer lock like a release, so it fails with ``lock `quickwit-writer` is held by …`` while a release runs, and a release can't take the lock while prune holds it. It refuses to run when `current.json` can't be read or names no indexes, when the serving version has no index run, or when neither the rollback's run nor its manifest names its indexes (and when a manifest's `indexes` isn't a list of `index_id`s). With `--delete`, it reads `current.json` and the runs again before each delete and stops if what it keeps has changed. If the writer lock can't be renewed, it gives up the delete under way at once and stops its Quickwit node. So `--delete` needs `--quickwit-bin`, a node prune starts itself; `--quickwit-url` (a node already running, which Quickwit lets finish a delete its caller left) is for dry runs only.
+
+Don't roll `current.json` back by hand while prune runs: a rollback doesn't take the writer lock, and prune checks what it keeps only before each delete, so a version made serving during a delete of its index loses it. Run it in the ingest job, as an execution with other arguments (`scripts/start-job.sh`), after a new version is published and checked, and while no ingest or backfill execution is running. An execution can't mount the scratch share, and prune doesn't need it: its Quickwit node only reads the metastore and deletes, with its data in a temporary directory. You need `az` signed in with access that can start the job (the owner's Contributor on the resource group) and read the logs. Dry run first:
+
+```sh
+RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
+JOB=$(scripts/settings.sh prod INGEST_JOB)
+QW=(--quickwit-bin /usr/local/bin/quickwit --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index)
+scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}"   # dry run: lists, deletes nothing
+az containerapp job execution list -n "$JOB" -g "$RG" -o table  # until it has Succeeded
+scripts/logs.sh prod prune 2h
+```
+
+`prune keeps` names the serving and rollback versions and every index they keep; check that the serving version is the one `/v1/status` reports and that the rollback is the one you want. Then one `prune candidate` line per index it would delete, with `bytes` and `gib`, and `prune plan` with the count and `total_gib` (the execution's console log ends with the whole report as JSON). If the list is what you expect, delete:
+
+```sh
+scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}" --delete
+scripts/logs.sh prod prune 2h    # a "deleted index" line for each, then "pruned"
+```
+
+A large index can take minutes to delete: Quickwit deletes each split file before it answers. A failed delete stops the run with the error; the indexes already deleted stay deleted, and running it again carries on. Afterwards the rollback is still there, but the versions before it are gone and can't be rolled back to. The bill drops later than the delete: the deleted split files become previous blob versions, which the `qw-index/` lifecycle rule deletes after a day, and then sit in the 14-day soft delete (08 §8.1).
+
 ## American Stories' text
 
 The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #218) only with `USNM_AMERICAN_STORIES` (the job's `--american-stories`), off by default. The first release with it builds a full base, so turn it on for a full rebuild, after step 4 of #218 has measured the index size and rebuild time, and with an explicit go-ahead:
