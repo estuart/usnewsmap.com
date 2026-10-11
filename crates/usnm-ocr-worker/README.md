@@ -38,7 +38,7 @@ usnm-ocr-worker prefetch --manifest /tank/ocr/manifests/<version>/manifest.parqu
   --out /tank/ocr/scans --resolution full --max-total-bytes 2500000000000
 
 # About 300 pages stratified by language and decade, scaled to 50%, then a projection.
-usnm-ocr-worker prefetch --manifest <manifest> --out <dir> --sample 300 --resolution scaled:50
+usnm-ocr-worker prefetch --manifest <manifest> --out <dir> --sample 300 --resolution scaled:50 --buffer-resolution scaled:50
 usnm-ocr-worker prefetch-estimate --manifest <manifest> --index <dir>/index-pct50.jsonl
 ```
 

@@ -240,24 +240,44 @@ pub fn page_path(
         .join(format!("{seq}.{ext}"))
 }
 
-/// The bytes of scans (`*.jpg`) under `dir`, 0 if it isn't there.
-pub fn dir_scan_bytes(dir: &Path) -> u64 {
+/// The bytes of scans (`*.jpg`) under `dir`, 0 if it isn't there. Any
+/// other error is returned, so a cap is never checked against a count that
+/// missed files.
+pub fn dir_scan_bytes(dir: &Path) -> std::io::Result<u64> {
     let mut total = 0;
     let mut stack = vec![dir.to_owned()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
-            continue;
+        let entries = match std::fs::read_dir(&d) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && d == dir => return Ok(0),
+            // Deleted while counting.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
         };
-        for e in entries.flatten() {
-            let Ok(t) = e.file_type() else { continue };
+        for e in entries {
+            let e = e?;
+            let t = e.file_type()?;
             if t.is_dir() {
                 stack.push(e.path());
             } else if t.is_file() && e.file_name().to_string_lossy().ends_with(".jpg") {
-                total += e.metadata().map_or(0, |m| m.len());
+                match e.metadata() {
+                    Ok(m) => total += m.len(),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
     }
-    total
+    Ok(total)
+}
+
+/// The marker a consumed buffer scan leaves (`<scan>.done`, its sidecar
+/// renamed by the scan server's delete), so a later run doesn't fetch it
+/// again.
+pub fn consumed_path(scan: &Path) -> PathBuf {
+    let mut p = scan.as_os_str().to_owned();
+    p.push(".done");
+    PathBuf::from(p)
 }
 
 /// The sidecar beside a scan.
@@ -610,11 +630,21 @@ impl Run {
         self.stop.lock().expect("stop lock").is_some()
     }
 
+    /// Count the buffer again. If it can't be counted, it is taken as full,
+    /// so the fetcher waits rather than overfill the pool.
     async fn count_buffer(&self) {
         let dir = self.opts.out.join(Set::Buffer.dir());
-        let n = tokio::task::spawn_blocking(move || dir_scan_bytes(&dir))
-            .await
-            .unwrap_or(0);
+        let n = match tokio::task::spawn_blocking(move || dir_scan_bytes(&dir)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "can't count the buffer; treating it as full");
+                u64::MAX
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "can't count the buffer; treating it as full");
+                u64::MAX
+            }
+        };
         self.counts.buffer_bytes.store(n, Ordering::SeqCst);
     }
 
@@ -656,6 +686,16 @@ impl Run {
                 c.keep_bytes.fetch_add(n, Ordering::SeqCst);
             }
             // A page that is done breaks a run of failures too.
+            c.in_a_row.store(0, Ordering::SeqCst);
+            return Ok(true);
+        }
+        // A buffer page a worker has read and the scan server deleted.
+        if set == Set::Buffer
+            && tokio::fs::try_exists(consumed_path(&path))
+                .await
+                .unwrap_or(false)
+        {
+            c.already_there.fetch_add(1, Ordering::SeqCst);
             c.in_a_row.store(0, Ordering::SeqCst);
             return Ok(true);
         }
@@ -1247,6 +1287,48 @@ mod tests {
         .await
         .unwrap();
         assert_eq!((s.state.as_str(), s.already_there), ("done", 1));
+    }
+
+    #[tokio::test]
+    async fn a_consumed_buffer_page_isnt_fetched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = row("sn1", 1890, 1, "eng");
+        let manifest = dir.path().join("m.parquet");
+        std::fs::write(
+            &manifest,
+            prefetch::encode(std::slice::from_ref(&r)).unwrap(),
+        )
+        .unwrap();
+        let out = dir.path().join("scans");
+        let path = scan_path(&out, &r, ImageSize::Full);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(consumed_path(&path), b"{}").unwrap();
+        let opts = Options {
+            manifest,
+            out,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        // Nothing listens: a fetch would fail.
+        let s = run(
+            opts,
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx,
+        )
+        .await
+        .unwrap();
+        assert_eq!((s.already_there, s.fetched, s.failed_transient), (1, 0, 0));
+    }
+
+    #[test]
+    fn counts_only_scans_and_a_missing_buffer_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(dir_scan_bytes(&dir.path().join("none")).unwrap(), 0);
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        std::fs::write(dir.path().join("a/b/1.jpg"), b"1234").unwrap();
+        std::fs::write(dir.path().join("a/b/1.jpg.json"), b"{}").unwrap();
+        std::fs::write(dir.path().join("a/2.jpg.done"), b"{}").unwrap();
+        assert_eq!(dir_scan_bytes(dir.path()).unwrap(), 4);
     }
 
     #[tokio::test]
