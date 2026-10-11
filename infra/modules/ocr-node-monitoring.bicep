@@ -36,15 +36,33 @@
 //   without it (bad flags, a crash, no Monitoring Metrics Publisher).
 // - Performance counters every 60 s: CPU, memory, free disk space and disk
 //   throughput, network bytes.
+// - VM insights' log-based metrics every 60 s (\VmInsights\DetailedMetrics,
+//   into InsightsMetrics), so each Arc machine's Insights pane shows
+//   Monitoring insights as configured and its Performance tab has data. Not
+//   the OpenTelemetry mode (it needs an Azure Monitor workspace) and no
+//   Dependency agent, so no Map: the agent stays the only extension.
+//   Microsoft's log-based VM insights rule has one performanceCounters data
+//   source, VMInsightsPerfCounters, with only that specifier (the service
+//   refuses it mixed with other counters in one data source), and one flow
+//   of Microsoft-InsightsMetrics to a Log Analytics workspace; Learn says
+//   not to change that rule's content. The data source here is the same,
+//   name included, beside the node's own; Learn doesn't say the portal
+//   checks the rule's or the data source's name (the portal's own rules are
+//   named MSVMI-*).
 //
 // Estimated volume per node (an estimate; measure it with
 // ops/queries/ocr-node-health.kql, columns PerfMB, SyslogMB and WorkerMB):
-// - Perf: on node 1 (4 vCPUs, 3 mounted file systems, eth0 and lo) the
-//   counters below give about 20 to 23 rows a sample: 5 processor
-//   instances (4 CPUs and the total), 2 memory, 3 disk counters x 3 or 4
-//   mounts, 2 network counters x 2 interfaces. Once a minute that is about
-//   29,000 to 33,000 rows a day; at roughly 150 to 300 billed bytes a row,
-//   4 to 10 MB a day.
+// - Perf: measured on 11 October 2026, 28 series a sample on node 1 (4
+//   vCPUs) and 35 on node 2 (8 vCPUs): the CPUs and a total, memory, 3 disk
+//   counters x 9 or 10 mounts and a total (/run, /dev and the like
+//   included), network x eth0 and a total. At 190 billed bytes a row, 7 to
+//   10 MB a day.
+// - InsightsMetrics (VM insights): an estimate, not measured yet. About 30
+//   to 45 rows a sample: processor, memory and the computer's heartbeat,
+//   network bytes in and out per interface, and about 9 metrics for each
+//   ext or xfs file system (2 or 3 a node). At roughly 250 to 350 billed
+//   bytes a row (each carries a Tags column), 10 to 20 MB a day; up to
+//   about 40 MB if it counts every mount Perf does.
 // - Syslog, system: node 1 logged 372 lines at Warning and above in the
 //   2.6 hours after a reboot during the engine survey (boot messages and
 //   the survey containers' stderr); a few hundred to a few thousand rows a
@@ -60,9 +78,12 @@
 //   5,000 pages.
 // - The worker's Application Insights telemetry: not estimated yet; the
 //   worker hasn't run against Azure.
-// So roughly 8 to 25 MB a day per node before the worker's telemetry, and
-// with the rest of prod inside the free 5 GB a month. The cap starts at
-// 0.1 GB (main.bicep); raise it once the worker's telemetry is measured.
+// So roughly 20 to 45 MB a day per node before the worker's telemetry,
+// about 40 to 90 MB for the two nodes against the 0.1 GB cap (main.bicep):
+// room while they're idle (about 40 to 60 MB), little once both work.
+// Measure InsightsMB with ops/queries/ocr-node-health.kql after a day, and
+// raise the cap if DayMB is over about 70 MB, or once the worker's
+// telemetry is measured.
 //
 // A node can still send far more: a worker in a crash loop, RUST_LOG=debug
 // (every crate's debug lines, to Syslog and to Application Insights alike)
@@ -70,7 +91,7 @@
 // more than a tenth of the daily cap in an hour, and the cap alert when the
 // workspace reaches it.
 //
-// Table plans: Syslog and Perf stay on Analytics. Syslog can't use Basic
+// Table plans: Syslog, Perf and InsightsMetrics stay on Analytics. Syslog can't use Basic
 // (it supports Auxiliary) and Perf can't use Auxiliary (it supports Basic).
 // Basic and Auxiliary ingestion are billed from the first byte, outside the
 // free 5 GB, and queries on them are billed per GB scanned; at this volume
@@ -165,7 +186,7 @@ resource rule 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
   tags: tags
   kind: 'Linux'
   properties: {
-    description: 'On-prem OCR nodes (#296): Syslog at Warning and above, the worker (local0) at Info and above, and CPU, memory, disk and network counters every 60 s, into ${workspaceName}.'
+    description: 'On-prem OCR nodes (#296): Syslog at Warning and above, the worker (local0) at Info and above, CPU, memory, disk and network counters every 60 s, and VM insights\' log-based metrics (InsightsMetrics) every 60 s, into ${workspaceName}.'
     dataSources: {
       syslog: [
         {
@@ -188,6 +209,14 @@ resource rule 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
           samplingFrequencyInSeconds: 60
           counterSpecifiers: counters
         }
+        // VM insights, log-based: as in Microsoft's rule, in a data source
+        // of its own.
+        {
+          name: 'VMInsightsPerfCounters'
+          streams: ['Microsoft-InsightsMetrics']
+          samplingFrequencyInSeconds: 60
+          counterSpecifiers: ['\\VmInsights\\DetailedMetrics']
+        }
       ]
     }
     destinations: {
@@ -207,12 +236,16 @@ resource rule 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
         streams: ['Microsoft-Perf']
         destinations: ['workspace']
       }
+      {
+        streams: ['Microsoft-InsightsMetrics']
+        destinations: ['workspace']
+      }
     ]
   }
 }
 
 // Billed MB per node in the last hour, both paths added up: what the agent
-// sent (Syslog and Perf; Heartbeat is free) and every Application Insights
+// sent (Syslog, Perf and InsightsMetrics; Heartbeat is free) and every Application Insights
 // table of this component, by the role instance the sender set (the
 // worker's is its node name). Worker lines go both ways, so either path
 // alone could stay under the threshold while the node sends twice as much.
@@ -224,7 +257,7 @@ resource rule 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
 // Analytics lowercases _ResourceId and the role instance keeps the Arc
 // name's case. The threshold is a tenth of the daily cap (__CAP_GB__
 // GB), so one node that keeps it up fills the cap within 10 hours; the
-// estimate is under 1 MB an hour.
+// estimate is under 2 MB an hour.
 var nodeVolume = '''
 let cap_mb = todouble("__CAP_GB__") * 1000;
 let component = "__COMPONENT_ID__";
@@ -233,6 +266,7 @@ let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) 
 let agent = union isfuzzy=true
     (Syslog | where _ResourceId has machines | project Node = node_of(_ResourceId), Size = _BilledSize),
     (Perf | where _ResourceId has machines | project Node = node_of(_ResourceId), Size = _BilledSize),
+    (InsightsMetrics | where _ResourceId has machines | project Node = node_of(_ResourceId), Size = _BilledSize),
     (datatable(Node: string, Size: real)[])
     | summarize AgentMB = sum(Size) / 1e6 by Node
     | extend WorkerMB = 0.0;
@@ -259,14 +293,14 @@ resource volumeAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!
   kind: 'LogAlert'
   properties: {
     displayName: 'OCR node log volume high'
-    description: 'An on-prem OCR node sent more than a tenth of ${workspaceName}\'s daily cap of ${dailyCapGb} GB in the last hour (the estimate is under 1 MB an hour). Kept up, it fills the cap within 10 hours, and then the nodes have no monitoring until the reset (the environment\'s own workspace isn\'t affected). Node says which; the results split the total into AgentMB (Syslog and Perf from the Azure Monitor Agent) and WorkerMB (the nodes\' Application Insights telemetry, by the role instance the sender set). Next: scripts/logs.sh <env> ocr-node-health and ocr-node-errors; on the node, check RUST_LOG in /etc/usnm/ocr-worker.local.env and journalctl -u usnm-ocr-worker; stop the worker (systemctl stop usnm-ocr-worker) if it keeps on.'
+    description: 'An on-prem OCR node sent more than a tenth of ${workspaceName}\'s daily cap of ${dailyCapGb} GB in the last hour (the estimate is under 2 MB an hour). Kept up, it fills the cap within 10 hours, and then the nodes have no monitoring until the reset (the environment\'s own workspace isn\'t affected). Node says which; the results split the total into AgentMB (Syslog, Perf and InsightsMetrics from the Azure Monitor Agent) and WorkerMB (the nodes\' Application Insights telemetry, by the role instance the sender set). Next: scripts/logs.sh <env> ocr-node-health and ocr-node-errors; on the node, check RUST_LOG in /etc/usnm/ocr-worker.local.env and journalctl -u usnm-ocr-worker; stop the worker (systemctl stop usnm-ocr-worker) if it keeps on.'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT15M'
     windowSize: 'PT1H'
     scopes: [workspace.id]
-    // A new workspace has no Syslog, Perf or App tables until a node first
-    // sends.
+    // A new workspace has no Syslog, Perf, InsightsMetrics or App tables
+    // until a node first sends.
     skipQueryValidation: true
     autoMitigate: true
     criteria: {
