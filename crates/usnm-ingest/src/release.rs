@@ -129,7 +129,9 @@ pub struct Release {
     /// `congress` block in `current.json`. The set is rebuilt when the
     /// curated units changed since the published version (or its analyzer
     /// did), else kept; a release with no new batches still publishes for a
-    /// changed set. Off: nothing is read, and the version has no Congress set.
+    /// changed set. Off: nothing is read, and the version has no Congress set;
+    /// a published set is removed then (or when no curated pages with text
+    /// are left), by a release of its own if there are no new batches.
     pub congress: bool,
 }
 
@@ -706,6 +708,13 @@ impl Release {
             .congress_plan(previous.as_ref(), pointer.as_ref(), analyzer, switching)
             .await?;
         let congress_builds = matches!(congress_plan, CongressPlan::Build(_));
+        // The published version has a Congress set this one won't (the
+        // setting turned off, or no curated pages with text left): a change
+        // to publish even without new batches, or `current.json` would keep
+        // naming the set.
+        let congress_removed = matches!(congress_plan, CongressPlan::Off)
+            && pointer.as_ref().is_some_and(|p| p.congress.is_some());
+        let congress_changes = congress_builds || congress_removed;
         // Our own OCR of the Japanese pages (04 §4.8): its own index, rebuilt
         // at every release from the pages of the version's batches.
         let batch_names: BTreeSet<&str> =
@@ -747,7 +756,7 @@ impl Release {
         // counts: a run with nothing to release returns without it.
         if nothing_new
             && !latin_pending
-            && !congress_builds
+            && !congress_changes
             && !self.overlay_releasable(previous.as_ref(), &overlay).await?
         {
             return Ok(None);
@@ -755,6 +764,12 @@ impl Release {
         if nothing_new && congress_builds {
             tracing::info!(
                 "no newly curated batches; releasing the changed Congress pages on the same indexes"
+            );
+        }
+        if nothing_new && congress_removed {
+            tracing::info!(
+                "no newly curated batches; releasing the same indexes without the published \
+                 Congress set"
             );
         }
         let curated_keys = {
@@ -805,7 +820,7 @@ impl Release {
         // records `latin.rule` and later runs skip the curated parts. The
         // run records the Japanese index as the index it wrote, so there
         // must be one.
-        if overlay_only && latin_pending && !congress_builds {
+        if overlay_only && latin_pending && !congress_changes {
             if !overlay.pages.iter().any(ocr_ja::JaPage::indexable) {
                 tracing::info!(
                     "no newly curated batches and no Latin text of ours to add, and the \
@@ -1015,12 +1030,18 @@ impl Release {
 
         let (version, index_id) = self.next_names(full).await?;
         // An overlay-only release adds no main index: the run's new index is
-        // the Japanese one, or with no Japanese pages to index, the Congress one.
+        // the Japanese one, or with no Japanese pages to index, the Congress
+        // one. A release that only removes the Congress set writes none, and
+        // its run names none (empty) rather than an index that doesn't exist.
         let new_index = if overlay_only {
-            if overlay.pages.iter().any(ocr_ja::JaPage::indexable) || !congress_builds {
+            if overlay.pages.iter().any(ocr_ja::JaPage::indexable) {
                 ocr_ja::index_id(&version)
-            } else {
+            } else if congress_builds {
                 congress::index_id(&version)
+            } else if congress_removed {
+                String::new()
+            } else {
+                ocr_ja::index_id(&version)
             }
         } else {
             indexes.push(index_id.clone());
@@ -1816,6 +1837,12 @@ impl Release {
             "Congress pages"
         );
         if listing.indexable() == 0 {
+            if published.is_some() {
+                tracing::warn!(
+                    "no curated Congress pages with text, and the published version has a \
+                     Congress index set: this version leaves it out"
+                );
+            }
             tracing::info!("no curated Congress pages with text; the version has no Congress set");
             return Ok(CongressPlan::Off);
         }

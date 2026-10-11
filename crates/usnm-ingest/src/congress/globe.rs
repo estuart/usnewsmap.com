@@ -601,14 +601,27 @@ impl Fetch for Http {
                         None
                     }
                 };
-                // The next try waits longer, and at least what the server asked.
-                wait = (self.delay.max(Duration::from_secs(1)) * 2u32.pow(attempt + 1))
-                    .min(Duration::from_secs(600))
-                    .max(retry_after.unwrap_or_default());
+                wait = retry_wait(self.delay, attempt, retry_after);
             }
         }
         bail!("`{url}` failed {} times", self.retries + 1)
     }
+}
+
+/// The longest wait before a retry, whatever the server asks.
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(600);
+
+/// The wait before the try after `attempt`: doubling from the pacing delay, at
+/// least what the server asked (`Retry-After`), and at most
+/// [`MAX_RETRY_WAIT`], so a long hint can't keep the job asleep past its
+/// deadline margin.
+fn retry_wait(delay: Duration, attempt: u32, retry_after: Option<Duration>) -> Duration {
+    let doubled = delay
+        .max(Duration::from_secs(1))
+        .saturating_mul(2u32.saturating_pow(attempt + 1));
+    doubled
+        .max(retry_after.unwrap_or_default())
+        .min(MAX_RETRY_WAIT)
 }
 
 /// The URLs of one item's manifest and page OCR, under `base`.
@@ -950,6 +963,32 @@ pub async fn locked<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_waits_double_honour_retry_after_and_stay_under_ten_minutes() {
+        let d = Duration::from_secs(3);
+        assert_eq!(retry_wait(d, 0, None), Duration::from_secs(6));
+        assert_eq!(retry_wait(d, 2, None), Duration::from_secs(24));
+        // A short hint doesn't shorten the doubling; a longer one is honoured.
+        assert_eq!(
+            retry_wait(d, 1, Some(Duration::from_secs(5))),
+            Duration::from_secs(12)
+        );
+        assert_eq!(
+            retry_wait(d, 0, Some(Duration::from_secs(120))),
+            Duration::from_secs(120)
+        );
+        // The cap holds for the doubling and for a hint over it.
+        assert_eq!(retry_wait(d, 10, None), MAX_RETRY_WAIT);
+        assert_eq!(
+            retry_wait(d, 0, Some(Duration::from_secs(3600))),
+            MAX_RETRY_WAIT
+        );
+        assert_eq!(
+            retry_wait(d, 0, Some(Duration::from_secs(u64::MAX))),
+            MAX_RETRY_WAIT
+        );
+    }
 
     fn item(sort: &str, official: &str) -> Item {
         let mut i = Item {

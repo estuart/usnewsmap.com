@@ -213,7 +213,8 @@ pub struct IndexRun {
     pub full: bool,
     /// Every index the version serves (base + deltas).
     pub indexes: Vec<String>,
-    /// The index this run wrote.
+    /// The index this run wrote; empty when it wrote none (a release that
+    /// only removes the published Congress set, #229).
     pub new_index: String,
     /// Batches in the version.
     #[serde(default, skip_serializing_if = "Option::is_none")]

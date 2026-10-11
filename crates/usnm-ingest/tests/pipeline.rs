@@ -5564,6 +5564,108 @@ async fn congress_pages_get_an_index_set_of_their_own() {
         .is_none());
 }
 
+/// Leaving out a published Congress set (#229) is a change to publish,
+/// even with no new batches: with `--congress` off, and with no curated
+/// Congress page with text left. The version keeps the main indexes, has
+/// no `congress` block or files, and its run names no index it didn't
+/// write. Prune keeps the old Congress index while its version is the
+/// rollback, and not after.
+#[tokio::test]
+async fn a_published_congress_set_is_removed_without_new_batches() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let a = e.root.join("batch_fx_early_ver01.tar.gz");
+    let b = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&a, &early, true, true);
+    write_archive(&b, &late, false, true);
+    curate(&e, vec![listed("batch_fx_early_ver01", &a, None)]).await;
+    put_globe(&e, &[1, 2, 3, 300, 301]).await;
+
+    let p1 = e.release_congress(1, false, true).await.unwrap();
+    let id1 = "congress-20261001-1";
+    let current = e.reference_json("current.json").await;
+    assert_eq!(current["congress"]["indexes"], serde_json::json!([id1]));
+
+    // --congress off, no new batch: a version on the same indexes without it.
+    let p2 = e.release_congress(8, false, false).await.unwrap();
+    assert!(!p2.full);
+    assert_eq!(p2.indexes, p1.indexes, "no new main index");
+    assert_eq!(p2.docs, 0);
+    assert_no_congress(&e, &p2.index_version).await;
+    assert!(kept_indexes(&e).await.contains(id1), "v1 is the rollback");
+    // Once removed, nothing more to release.
+    assert!(e.release_congress(9, false, false).await.is_none());
+    // A newer version with v2 as its rollback: prune drops the old index.
+    curate(&e, vec![listed("batch_fx_late_ver01", &b, None)]).await;
+    let p3 = e.release_congress(10, false, false).await.unwrap();
+    assert_eq!(p3.indexes.len(), 2);
+    assert!(!kept_indexes(&e).await.contains(id1));
+
+    // Back on, the set is built again; then the curated listing has no
+    // page with text (an attempt of the item's textless page only).
+    let p4 = e.release_congress(15, false, true).await.unwrap();
+    assert_eq!(p4.indexes, p3.indexes);
+    let id4 = "congress-20261015-1";
+    let current = e.reference_json("current.json").await;
+    assert_eq!(current["congress"]["indexes"], serde_json::json!([id4]));
+    let empty = put_globe(&e, &[2]).await;
+    assert_eq!((empty.pages, empty.indexable), (1, 0));
+    let p5 = e.release_congress(22, false, true).await.unwrap();
+    assert_eq!(p5.indexes, p4.indexes, "no new main index");
+    assert_no_congress(&e, &p5.index_version).await;
+    assert!(kept_indexes(&e).await.contains(id4), "v4 is the rollback");
+    assert!(e.release_congress(23, false, true).await.is_none());
+}
+
+/// What prune keeps now.
+async fn kept_indexes(e: &Env) -> std::collections::BTreeSet<String> {
+    usnm_ingest::prune::kept(e.reference.as_ref(), &e.state)
+        .await
+        .unwrap()
+        .indexes
+}
+
+/// `v` is the serving version and has no Congress set, and its run names
+/// no index it didn't write (there are no Japanese pages).
+async fn assert_no_congress(e: &Env, v: &str) {
+    use usnm_ingest::congress;
+    let current = e.reference_json("current.json").await;
+    assert_eq!(current["index_version"], v);
+    assert!(current.get("congress").is_none(), "{current}");
+    for f in [congress::release::FILE, congress::release::BASELINES_FILE] {
+        assert!(
+            e.reference
+                .get(&format!("{v}/{f}"))
+                .await
+                .unwrap()
+                .is_none(),
+            "{f}"
+        );
+    }
+    let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
+    assert!(
+        manifest["built_from"].get("congress").is_none(),
+        "{manifest}"
+    );
+    assert!(manifest["build"]["features"].get("congress").is_none());
+    // A JSONL sink lays out nothing; a writer node's layout has no Congress index.
+    let layout: Vec<&str> = manifest["indexes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l["index_id"].as_str())
+        .collect();
+    assert!(
+        !layout.iter().any(|i| i.starts_with("congress-")),
+        "{layout:?}"
+    );
+    let run = raw_run(e, v).await;
+    assert_eq!(run["new_index"], "", "{run}");
+    assert_eq!(run["status"], "published");
+}
+
 /// The Congress index in a Quickwit writer node (#229): built with its own
 /// template, merged and sealed like the others, laid out in the manifest,
 /// and searchable by series, chamber and phrase. Runs when `QUICKWIT_BIN`

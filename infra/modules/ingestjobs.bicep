@@ -30,7 +30,7 @@
 //   `ocr-enqueue`, `ocr-requeue` and `ocr-seed` run as one-off executions of
 //   it (scripts/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
 //   account's endpoints.
-// - `usnm-congress-caj-{env}` (when `congressJob`): manual, one replica of
+// - `usnm-cong-caj-{env}` (when `congressJob`, named in main.bicep): manual, one replica of
 //   `usnm-ingest congress-globe` as id-usnm-ingest (#229, 04 §4.10): fetches
 //   the Congressional Globe from UNT's page OCR at UNT's 3-second crawl
 //   delay into curated/congress/, keeping every response in the raw store
@@ -74,8 +74,11 @@ param jaLatin bool = false
 param ocrLocal bool = false
 @description('Give each release the Congress pages curated under curated/congress/ (#229): their own index set, rebuilt when they change.')
 param congress bool = false
-@description('Deploy the Congress fetch job, usnm-congress-caj-<env> (#229): manual, one replica of `usnm-ingest congress-globe`.')
+@description('Deploy the Congress fetch job, `congressJobName` (#229): manual, one replica of `usnm-ingest congress-globe`.')
 param congressJob bool = false
+@description('The Congress fetch job\'s name (with congressJob), usnm-cong-caj-<env>; a Container Apps job name is under 32 characters (ADR-0017).')
+@maxLength(31)
+param congressJobName string = ''
 @description('Lay a full rebuild\'s base out by decade (#123, 05 §5.5.5), so date-limited searches skip the other decades\' splits. Only a full base takes it; deltas follow the published version.')
 param partitionDecade bool = false
 @description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.7). Only a full base takes it; deltas follow the published version.')
@@ -401,7 +404,7 @@ resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
 var congressMaxRuntimeSecs = 79200
 
 resource congressFetch 'Microsoft.App/jobs@2025-01-01' = if (congressJob) {
-  name: 'usnm-congress-caj-${jobNameSuffix}'
+  name: congressJobName
   location: location
   tags: tags
   identity: {

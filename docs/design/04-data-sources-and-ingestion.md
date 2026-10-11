@@ -276,7 +276,7 @@ The Congressional Globe (UNT's page OCR), the Serial Set (GovInfo, no key) and t
 
 Phase 0 added the shapes: the page a release indexes (`usnm_ingest::congress::CongressPage`) and its engine document (`congress_doc`). Phase 1 adds the first source, the Globe, and the release step.
 
-**The Globe from UNT** (`usnm-ingest congress-globe`, `congress::globe`). It runs as the manual job `usnm-congress-caj-<env>` ([operations](../operations.md#congress-pages)):
+**The Globe from UNT** (`usnm-ingest congress-globe`, `congress::globe`). It runs as the manual job `usnm-cong-caj-<env>` ([operations](../operations.md#congress-pages)):
 
 1. **List.** OAI-PMH `ListRecords` on UNT's `CGLOB` collection in its `untl` format: 112 items, each with its official and sort titles (`Congressional Globe, Congress 25, Session 2`, `Session 1x` for an appendix volume, `Part 2`), its date range and its page extent.
 2. **De-duplicate sessions.** Only one pair of items holds the same pages. `metadc30905` and `metadc30907` (the 24th Congress's first session and its appendix in the 25 cm set) are both in `metadc29282` (the 30 cm set, `xliv, 616, ix, 769 p.`), so the two are left out (`globe::SUPERSEDED`). The five other pairs that share a sort title are different parts of one session catalogued under one title: their extents differ (`942 p.` and `[942] p.`, `xxxv, 1120 p.` and `xiv, 457 p.`), so both stay. A new pair with the same session, part and extent is logged.
@@ -306,4 +306,4 @@ Phase 0 added the shapes: the page a release indexes (`usnm_ingest::congress::Co
 - **Snapshot.** `congress.json` holds the units with their sha256, the index and pages indexed. `congress/baselines.json` is `{series: [[day, pages], …]}`, every page printed, kept apart from the newspapers' baselines. The manifest lists both, and its `indexes` layout includes the Congress index, so prune keeps it for that version.
 - **`current.json`.** It gets `congress: {indexes, common_grams, series: [{series, pages, from, to}]}`, which the API reads (06 §6.3.10).
 - **Build record.** It has `features.congress` and, when the run wrote the index, the template.
-- **Off.** Without the setting nothing is read, and the version has no Congress set.
+- **Off.** Without the setting nothing is read, and the version has no Congress set. The same holds when no curated unit has a page with text. Leaving out a set the published version has is a change to publish: with no new batches, the release keeps the main indexes (and rebuilds the Japanese one, as every release does) and drops the `congress` block and files. Its run's new index is then the Japanese index, or empty when there are no Japanese pages. Prune deletes the old Congress index once no kept version names it, so it stays while that version is the rollback.
