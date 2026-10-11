@@ -156,7 +156,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
 
     // The first scrape: both gauges of each cache, and everything since the
     // searcher started. Zero counts aren't sent.
-    scraper.observe(Ok(a.clone()), t0);
+    assert!(!scraper.observe(Ok(a.clone()), t0));
     let from = flush().await;
     assert_eq!(
         cache_rows(&seen, from),
@@ -172,16 +172,16 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
     );
 
     // Nothing changed: no cache metric is sent.
-    scraper.observe(Ok(a.clone()), t0 + Duration::from_secs(60));
+    assert!(!scraper.observe(Ok(a.clone()), t0 + Duration::from_secs(60)));
     let from = flush().await;
     assert_eq!(cache_rows(&seen, from), vec![]);
 
     // The sidecar goes away for a few scrapes: one warning, nothing sent.
     for i in 2..6 {
-        scraper.observe(
+        assert!(!scraper.observe(
             Err("connection refused".into()),
             t0 + Duration::from_secs(60 * i),
-        );
+        ));
     }
     assert_eq!(scraper.failures(), 4);
     let from = flush().await;
@@ -199,7 +199,8 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
         (Cache::FastField, s(663, 4, 0, 4, 0)),
     ]);
     let t1 = t0 + Duration::from_secs(360);
-    scraper.observe(Ok(b.clone()), t1);
+    // Higher counters after the gap: the same searcher, not a restart.
+    assert!(!scraper.observe(Ok(b.clone()), t1));
     let c = report(&[
         (Cache::SplitFooter, s(268_000_000, 790, 11, 803, 13)),
         (Cache::FastField, s(663, 4, 0, 4, 0)),
@@ -241,7 +242,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
         (Cache::SplitFooter, s(8_000, 1, 0, 1, 0)),
         (Cache::FastField, s(663, 4, 0, 6, 0)),
     ]);
-    scraper.observe(Ok(d), t1 + HEARTBEAT + Duration::from_secs(60));
+    assert!(scraper.observe(Ok(d), t1 + HEARTBEAT + Duration::from_secs(60)));
     let from = flush().await;
     assert_eq!(
         cache_rows(&seen, from),
@@ -261,7 +262,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
         (Cache::SplitFooter, s(8_000, 1, 0, 2, 1)),
         (Cache::FastField, s(663, 4, 0, 6, 0)),
     ]);
-    scraper.observe(Ok(e), t1 + HEARTBEAT + Duration::from_secs(120));
+    assert!(!scraper.observe(Ok(e), t1 + HEARTBEAT + Duration::from_secs(120)));
     assert_eq!(console.count("split footer cache evictions seen"), 2);
 
     drop(guard);
@@ -416,10 +417,10 @@ async fn pools_and_runtimes_are_recorded_at_every_scrape() {
     // the 5 misses are all since then, not 3 more. Its busy time covers the
     // new searcher's life, so neither it nor the thread time is recorded.
     let footers = [(Cache::SplitFooter, s(17_220, 2, 4, 5, 0))];
-    scraper.observe(
+    assert!(scraper.observe(
         Ok(with_threads(&footers, threads((0, 0), 700))),
         t1 + Duration::from_secs(240),
-    );
+    ));
     let from = flush().await;
     let mut want = pools((0.0, 0.0), (0.0, 0.0));
     want.extend([
@@ -476,6 +477,7 @@ async fn a_missing_sidecar_is_logged_once_and_the_loop_keeps_going() {
                 async move { qw.searcher_metrics().await.map_err(|e| e.to_string()) }
             }
         },
+        || panic!("no scrape succeeded, so none can show a restart"),
     );
     for _ in 0..200 {
         if *calls.lock().unwrap() >= 5 {
@@ -492,6 +494,61 @@ async fn a_missing_sidecar_is_logged_once_and_the_loop_keeps_going() {
         "{}",
         console.text()
     );
+}
+
+/// The scrape loop tells `on_restart` about each restart its scrapes show,
+/// once: a searcher in its own app restarts without the API (#267).
+#[tokio::test]
+async fn the_loop_reports_a_restart_once() {
+    let footers = |misses| {
+        let mut m = SearcherMetrics::default();
+        m.caches
+            .insert(Cache::SplitFooter, s(17_220, 2, 4, misses, 0));
+        m
+    };
+    // A searcher run, a failed scrape while it restarts, the new run.
+    let scrapes = Arc::new(Mutex::new(
+        vec![
+            Ok(footers(800)),
+            Ok(footers(802)),
+            Err("connection refused".to_owned()),
+            Ok(footers(3)),
+            Ok(footers(9)),
+        ]
+        .into_iter(),
+    ));
+    let left = {
+        let scrapes = scrapes.clone();
+        move || scrapes.lock().unwrap().as_slice().len()
+    };
+    let restarts = Arc::new(Mutex::new(Vec::new()));
+    let handle = searcher_metrics::spawn(
+        Duration::from_millis(10),
+        &opentelemetry::global::meter("test"),
+        {
+            let scrapes = scrapes.clone();
+            move || {
+                let next = scrapes.lock().unwrap().next();
+                async move { next.unwrap_or_else(|| Err("no more scrapes".to_owned())) }
+            }
+        },
+        {
+            let restarts = restarts.clone();
+            let left = left.clone();
+            // How many scrapes were left when it was called.
+            move || restarts.lock().unwrap().push(left())
+        },
+    );
+    for _ in 0..200 {
+        if left() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    handle.abort();
+    // After the fourth scrape, with one left.
+    assert_eq!(*restarts.lock().unwrap(), vec![1]);
 }
 
 /// The scrape loop against a sidecar that answers with Quickwit 0.9.1's

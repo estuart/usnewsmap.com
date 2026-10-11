@@ -8,7 +8,8 @@ use std::time::Duration;
 pub enum BackendKind {
     /// In-memory engine over local JSONL indexes (development and tests).
     Memory,
-    /// Quickwit at the given base URL (production: the localhost sidecar).
+    /// Quickwit at the given base URL (production: the localhost sidecar,
+    /// or the searcher app's internal address, #267).
     Quickwit(String),
 }
 

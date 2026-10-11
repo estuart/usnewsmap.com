@@ -138,6 +138,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 3,
         "timeContextFromParameter": "TimeRange",
         "chartSettings": {
           "ySettings": {
@@ -162,6 +163,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 3,
         "timeContextFromParameter": "TimeRange",
         "chartSettings": {
           "ySettings": {
@@ -186,6 +188,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 5,
         "timeContextFromParameter": "TimeRange",
         "chartSettings": {
           "ySettings": {
@@ -210,6 +213,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 3,
         "timeContextFromParameter": "TimeRange",
         "chartSettings": {
           "ySettings": {
@@ -239,6 +243,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 3,
         "timeContextFromParameter": "TimeRange",
         "chartSettings": {
           "ySettings": {
@@ -366,6 +371,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "barchart",
+        "aggregation": 3,
         "timeContextFromParameter": "TimeRange",
         "noDataMessage": "No Usage rows in the time range yet (Usage lags ingestion by up to a few hours)."
       },

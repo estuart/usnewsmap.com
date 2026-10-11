@@ -103,6 +103,8 @@ Outside the environments, the archival account (`usnm-archive`, [operations](../
 
 **Rollouts.** Each rollout of the API runs two replicas side by side: the old revision serves until the new replica has loaded and finished its startup warm-up, which in prod uses its whole 5-minute budget (06 §6.6, 08 §8.6). Since #265 that is about 4 minutes longer than when a replica went ready at a 1-minute cap. The old replica is mostly idle then, so each rollout costs about 1 cent more at the idle rate (4 vCPU and 8 GiB for 240 s at $0.000003/s each), or 3 cents at the active rate. Prod had 7 to 27 rollouts a day from 28 September to 9 October 2026, about 17 on average: about $4 a month ($14 at the active rate), not in the table above. Environments that scale to zero keep the 1-minute cap.
 
+**Searcher app (#267).** With `USNM_SEARCHER_APP` the sidecar becomes its own app, so web and API deploys stop restarting it. Container Apps bills each replica by vCPU-seconds and GiB-seconds, linearly, so a 3.75 / 7.5 searcher and a 0.25 / 0.5 API cost the same as the one 4 / 8 replica if both bill at the same rate: about $89 + $6 = $95 a month idle. Whether each app bills idle once split is to be measured (Cost Management per app, [operations](../operations.md#searcher-app)): the API app now waits between visitors on its own, and the searcher still polls the metastore and answers the API's metrics read every minute. Rollouts get cheaper: the API's old revision overlapping the new one is 0.25 / 0.5, not 4 / 8. The setting is off until measured; the decision is pending.
+
 **Sidecar size is the biggest cost lever.** Quickwit went from 1 to 2 vCPU in October 2026 and to 3.75 vCPU / 7.5 GiB on 9 October 2026 (#251). Each vCPU with its 2 GiB costs about $24 a month at the idle rate. Going back to 2 vCPU / 4 GiB (replica 2.25 / 4.5) saves about $41 a month once the index needs less CPU per search; the other options are dropping the private endpoints (−$17, back to identity-only) or accepting slower common-word searches.
 
 ### One-time backfill (Container Apps Jobs)
@@ -134,7 +136,7 @@ L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas
 - `maxReplicas: 2` on the only always-on app
 - Log Analytics daily cap
 - Curated data kept in Cool storage; raw archives not retained
-- `dev` scales to zero
+- `dev` exists only during an experiment: stood up for it and torn down afterwards, with a $5-a-month budget alert on its groups ([Dev environment lifecycle](../operations.md#dev-environment-lifecycle))
 - Spot compute only for offline jobs
 - A tag policy (`project=usnm`, `env=`) enables cost-by-environment views
 

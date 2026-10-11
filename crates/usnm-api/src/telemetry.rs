@@ -58,7 +58,7 @@ pub struct Metrics {
     queue_wait: Histogram<f64>,
     /// Reference-data reloads by `outcome` (published, failed).
     reloads: Counter<u64>,
-    /// One warm-up run, by `trigger` (startup, publish).
+    /// One warm-up run, by `trigger` (startup, publish, searcher_restart).
     prewarm_duration: Histogram<f64>,
     /// Warm-up queries by `outcome` (ok, timeout, error, skipped).
     prewarm_queries: Counter<u64>,
@@ -109,7 +109,9 @@ impl Metrics {
             prewarm_duration: meter
                 .f64_histogram("api.prewarm_duration_seconds")
                 .with_unit("s")
-                .with_description("One cache warm-up run, by trigger (startup, publish)")
+                .with_description(
+                    "One cache warm-up run, by trigger (startup, publish, searcher_restart)",
+                )
                 .build(),
             prewarm_queries: meter
                 .u64_counter("api.prewarm_queries")
