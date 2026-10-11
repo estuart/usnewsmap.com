@@ -46,7 +46,7 @@ use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
 use crate::decade_order::DecadeOrder;
 use crate::dedup::{self, Plan};
-use crate::merges::{self, IndexLayout};
+use crate::merges::IndexLayout;
 use crate::ocr_ja;
 use crate::ocr_local;
 use crate::page_language::{self as page_lang, Moves};
@@ -116,6 +116,13 @@ pub struct Release {
     /// published version, whatever this says. Off: the documents, the index
     /// config, the snapshot and `current.json` are as before.
     pub page_language: bool,
+    /// The split target of a full base's main index in place of the
+    /// template's 30,000 pages (#283): a merge stops taking splits once it
+    /// holds this many, so a larger one leaves fewer, larger splits for a
+    /// cold search to open. The manifest's `build.features` records it
+    /// (`split_docs`). Only a full base takes it: a delta's few splits
+    /// keep the template's. `None`: the index config is as before.
+    pub split_docs: Option<u64>,
     /// Weigh our own OCR from `ocr-local` against LoC's text (12 §12.5 Step
     /// 9): on the pages of the batches this release indexes, ours replaces
     /// LoC's where rule v1 prefers it (`crate::ocr_local::rule`), and the
@@ -591,6 +598,7 @@ impl Release {
         let decades = self.decade_layout(full, previous_decades);
         let text_layout = self.text_layout(full, published_layout.flatten());
         let page_language = self.page_language_on(full, previous_page_language);
+        let split_docs = self.split_docs(full);
         let analyzer = match published_analyzer {
             Some(a) if !full => a,
             _ => Analyzer::LATEST,
@@ -1011,6 +1019,7 @@ impl Release {
             decades,
             text_layout,
             page_language,
+            split_docs,
             analyzer,
         };
         let mut run = IndexRun {
@@ -1041,7 +1050,7 @@ impl Release {
         span.record("version", version.as_str());
         span.record("full", full);
         span.record("batches", scope.len());
-        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, text_layout = text_layout.version(), page_language, "building index");
+        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, text_layout = text_layout.version(), page_language, split_docs, "building index");
 
         report.version(&version);
         report.step(Step::Indexing).await;
@@ -1066,6 +1075,7 @@ impl Release {
                         decades,
                         text: text_layout,
                         page_language,
+                        split_docs,
                     },
                     analyzer,
                     moves.as_mut(),
@@ -1396,6 +1406,23 @@ impl Release {
         Ok(moves)
     }
 
+    /// The split target of this release's main index (#283): a full
+    /// base's as `split_docs` says; a delta's the template's, since a
+    /// week's pages make a few splits either way.
+    fn split_docs(&self, full: bool) -> Option<u64> {
+        if full {
+            return self.split_docs;
+        }
+        if let Some(docs) = self.split_docs {
+            tracing::info!(
+                split_docs = docs,
+                "a delta keeps the template's split target: --split-docs takes effect at the \
+                 next full release"
+            );
+        }
+        None
+    }
+
     /// `pages-v{date}-{n}` and its new index, `pages-{base|delta}-{date}-{n}`.
     async fn next_names(&self, full: bool) -> anyhow::Result<(String, String)> {
         let stamp = self.now.format("%Y%m%d");
@@ -1544,8 +1571,7 @@ impl Release {
                     .work_dir
                     .clone()
                     .unwrap_or_else(std::env::temp_dir);
-                let chunk = merges::template_setting("split_num_docs_target").unwrap_or(30_000);
-                Some(DecadeOrder::new(&work, chunk)?)
+                Some(DecadeOrder::new(&work, layout.split_target())?)
             }
             _ => None,
         };

@@ -51,6 +51,9 @@ pub struct Built {
     /// The page languages (05 §5.5.8): the main index this run writes has
     /// the fields, and so do the version's other main indexes.
     pub page_language: bool,
+    /// The split target of the main index this run writes, when it isn't
+    /// the template's (`--split-docs`, a full base only, #283).
+    pub split_docs: Option<u64>,
     /// The analyzer the run's indexes fold words with (#168): the latest for
     /// a full base, the published version's for a delta. The record's
     /// `common_grams` and `ja_fold` name it.
@@ -62,12 +65,13 @@ fn templates(b: &Built) -> Vec<(&'static str, String)> {
     let mut t = Vec::new();
     if b.main_index {
         // As the writer applies it: the run's tuning in place of the
-        // template's heap and commit timeout, its decade layout and its
-        // text fields.
+        // template's heap and commit timeout, its decade layout, its text
+        // fields and its split target.
         let layout = crate::sink::MainLayout {
             decades: b.decades,
             text: b.text_layout,
             page_language: b.page_language,
+            split_docs: b.split_docs,
         };
         let pages = crate::sink::main_template(&b.writer, layout)
             .unwrap_or_else(|_| crate::sink::INDEX_TEMPLATE.to_owned());
@@ -131,6 +135,11 @@ pub fn summary(b: &Built) -> Value {
     if b.page_language {
         features["page_language"] = json!(usnm_core::page_language::VERSION);
     }
+    // A split target other than the template's: the index config in
+    // `templates` has it too, but a feature is easier to find.
+    if let Some(docs) = b.split_docs {
+        features["split_docs"] = json!(docs);
+    }
     json!({
         "commit": std::env::var(COMMIT_ENV).ok().filter(|s| !s.is_empty()),
         "ingest": env!("CARGO_PKG_VERSION"),
@@ -159,6 +168,7 @@ mod tests {
             decades: crate::sink::Decades::Off,
             text_layout: usnm_core::text_layout::TextLayout::Separate,
             page_language: false,
+            split_docs: None,
             analyzer: usnm_core::text::Analyzer::LATEST,
         }
     }
@@ -187,6 +197,28 @@ mod tests {
             .unwrap()
             .to_owned();
         assert!(!ja.contains("page_language"), "{ja}");
+    }
+
+    #[test]
+    fn records_a_split_target_and_its_template() {
+        let off = record(&built(true, false));
+        assert!(off["features"].get("split_docs").is_none(), "{off}");
+        let yaml = off["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(yaml.contains("  split_num_docs_target: 30000\n"));
+        let mut b = built(true, false);
+        b.split_docs = Some(120_000);
+        let v = record(&b);
+        assert_eq!(v["features"]["split_docs"], 120_000);
+        let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(
+            yaml.contains("  split_num_docs_target: 120000\n") && !yaml.contains(": 30000"),
+            "{yaml}"
+        );
+        // The Japanese index keeps its template's.
+        b.ja_index = true;
+        let v = record(&b);
+        let ja = v["templates"]["pages-ja"]["yaml"].as_str().unwrap();
+        assert!(ja.contains("split_num_docs_target: 30000"));
     }
 
     #[test]

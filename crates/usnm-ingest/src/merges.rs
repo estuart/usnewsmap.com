@@ -62,14 +62,19 @@ pub fn template_setting(key: &str) -> Option<u64> {
     })
 }
 
-/// The most splits a fully merged index of `docs` documents can have.
-/// Splits reach `split_num_docs_target` documents and stop merging, so there
-/// are at most `docs / target` of those. Below that size, every split left
-/// after the planner settles is in a final merge (at most
-/// `max_finalize_merge_operations`) except fewer than three, the smallest
-/// final merge.
-pub fn max_splits(docs: u64) -> u64 {
-    let target = template_setting("split_num_docs_target").unwrap_or(10_000_000);
+/// The template's `split_num_docs_target`: the target of every index but a
+/// main index built with another (`crate::sink::MainLayout::split_docs`).
+pub fn template_split_target() -> u64 {
+    template_setting("split_num_docs_target").unwrap_or(10_000_000)
+}
+
+/// The most splits a fully merged index of `docs` documents can have, when
+/// its `split_num_docs_target` is `target`. Splits reach `target` documents
+/// and stop merging, so there are at most `docs / target` of those. Below
+/// that size, every split left after the planner settles is in a final
+/// merge (at most `max_finalize_merge_operations`) except fewer than three,
+/// the smallest final merge.
+pub fn max_splits(docs: u64, target: u64) -> u64 {
     let finals = template_setting("max_finalize_merge_operations").unwrap_or(0);
     docs / target.max(1) + finals + 2
 }
@@ -78,8 +83,8 @@ pub fn max_splits(docs: u64) -> u64 {
 /// partitioned (05 §5.5.5): Quickwit merges only splits of one partition,
 /// and runs its final merges in each, so every partition can be left with
 /// its own [`max_splits`]. `docs` are the documents of each partition.
-pub fn max_partitioned_splits(docs: impl IntoIterator<Item = u64>) -> u64 {
-    docs.into_iter().map(max_splits).sum()
+pub fn max_partitioned_splits(docs: impl IntoIterator<Item = u64>, target: u64) -> u64 {
+    docs.into_iter().map(|d| max_splits(d, target)).sum()
 }
 
 /// What the writer node's output has said about the release so far: read
@@ -609,19 +614,30 @@ const LOG_EVERY: Duration = Duration::from_secs(30);
 
 /// Wait until `index_id` is merged as far as its merge policy goes, close
 /// it, and check the result (see the module docs). `expected` is the number
-/// of documents sent; `work_dir` is where the writer keeps its data. Nothing
-/// counts as sealed after `wait.timeout`, and a request to the writer that
-/// hangs past it (plus one poll) is abandoned.
+/// of documents sent, `split_target` the index's `split_num_docs_target`
+/// ([`template_split_target`] unless the index was created with another);
+/// `work_dir` is where the writer keeps its data. Nothing counts as sealed
+/// after `wait.timeout`, and a request to the writer that hangs past it
+/// (plus one poll) is abandoned.
 pub async fn seal(
     node: &Node<'_>,
     index_id: &str,
     expected: u64,
+    split_target: u64,
     events: Option<&NodeEvents>,
     wait: &MergeWait,
     work_dir: Option<&Path>,
 ) -> anyhow::Result<IndexLayout> {
     let closed = AtomicBool::new(false);
-    let polls = poll_until_sealed(node, index_id, expected, events, wait, work_dir, &closed);
+    let polls = poll_until_sealed(
+        node,
+        index_id,
+        (expected, split_target),
+        events,
+        wait,
+        work_dir,
+        &closed,
+    );
     match tokio::time::timeout(wait.timeout + wait.poll, polls).await {
         Ok(result) => result,
         Err(_) => {
@@ -645,10 +661,12 @@ pub async fn seal(
     }
 }
 
+/// `expected`: the documents sent and the index's split target, as for
+/// [`seal`].
 async fn poll_until_sealed(
     node: &Node<'_>,
     index_id: &str,
-    expected: u64,
+    (expected, split_target): (u64, u64),
     events: Option<&NodeEvents>,
     wait: &MergeWait,
     work_dir: Option<&Path>,
@@ -716,7 +734,7 @@ async fn poll_until_sealed(
                 };
                 let why = match state {
                     FinalMerges::Done if tokio::time::Instant::now() <= deadline => {
-                        return check(index_id, expected, &splits);
+                        return check(index_id, expected, split_target, &splits);
                     }
                     FinalMerges::Done => None,
                     FinalMerges::Stopped(line) => {
@@ -874,8 +892,13 @@ impl Drop for CloseOnDrop {
 }
 
 /// The merged index holds every document, in no more splits than the
-/// merge policy leaves.
-fn check(index_id: &str, expected: u64, splits: &[Split]) -> anyhow::Result<IndexLayout> {
+/// merge policy leaves at its split target.
+fn check(
+    index_id: &str,
+    expected: u64,
+    split_target: u64,
+    splits: &[Split],
+) -> anyhow::Result<IndexLayout> {
     let layout = IndexLayout::of(index_id, splits);
     if layout.docs != expected {
         bail!(
@@ -888,7 +911,7 @@ fn check(index_id: &str, expected: u64, splits: &[Split]) -> anyhow::Result<Inde
     for s in splits {
         *partitions.entry(s.partition_id).or_default() += s.docs;
     }
-    let ceiling = max_partitioned_splits(partitions.values().copied());
+    let ceiling = max_partitioned_splits(partitions.values().copied(), split_target);
     if layout.splits > ceiling {
         let across = match partitions.len() {
             0 | 1 => String::new(),
@@ -910,17 +933,24 @@ mod tests {
 
     use super::*;
 
+    /// The template's split target.
+    const T: u64 = 30_000;
+
     #[test]
     fn the_template_sets_the_merge_policy_the_checks_assume() {
         assert_eq!(template_setting("split_num_docs_target"), Some(30_000));
         assert_eq!(template_setting("max_finalize_merge_operations"), Some(5));
         assert!(INDEX_TEMPLATE.contains("type: limit_merge"));
         assert_eq!(template_setting("no_such_setting"), None);
+        let target = template_split_target();
+        assert_eq!(target, 30_000);
         // 274,480 documents: nine full splits, up to five final merges, two left over.
-        assert_eq!(max_splits(274_480), 9 + 5 + 2);
-        assert_eq!(max_splits(51_764), 1 + 7);
+        assert_eq!(max_splits(274_480, target), 9 + 5 + 2);
+        assert_eq!(max_splits(51_764, target), 1 + 7);
         // The whole corpus: about 800 splits.
-        assert_eq!(max_splits(23_800_000), 793 + 7);
+        assert_eq!(max_splits(23_800_000, target), 793 + 7);
+        // At a larger target (`--split-docs`), fewer.
+        assert_eq!(max_splits(23_800_000, 120_000), 198 + 7);
     }
 
     #[test]
@@ -1092,7 +1122,7 @@ mod tests {
                 decades: vec![],
             },
         ];
-        let l = check("idx", 1_040_000, &splits).unwrap();
+        let l = check("idx", 1_040_000, T, &splits).unwrap();
         assert_eq!(
             l,
             IndexLayout {
@@ -1129,7 +1159,7 @@ mod tests {
             (empty.footer_bytes, empty.largest_footer_bytes),
             (Some(0), Some(0))
         );
-        let err = check("idx", 1_040_001, &splits).unwrap_err().to_string();
+        let err = check("idx", 1_040_001, T, &splits).unwrap_err().to_string();
         assert!(err.contains("expected 1040001"), "{err}");
 
         let many: Vec<Split> = (0..20)
@@ -1142,9 +1172,23 @@ mod tests {
                 decades: vec![],
             })
             .collect();
-        let err = check("idx", 140_000, &many).unwrap_err().to_string();
+        let err = check("idx", 140_000, T, &many).unwrap_err().to_string();
         assert!(err.contains("at most 11"), "{err}");
         assert_eq!(IndexLayout::of("empty", &[]).splits, 0);
+        // An index is held to the target it was created with (`--split-docs`):
+        // 12 splits of 35,000 pages are mature at 30,000, so they pass, but at
+        // 120,000 they should still have merged, so they fail.
+        let mid: Vec<Split> = (0..12)
+            .map(|i| Split {
+                docs: 35_000,
+                ..many[i].clone()
+            })
+            .collect();
+        assert!(check("idx", 420_000, T, &mid).is_ok());
+        let err = check("idx", 420_000, 120_000, &mid)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("at most 10"), "{err}");
 
         // Partitioned by decade (05 §5.5.5): each partition merges on its
         // own, so each may keep its own small splits.
@@ -1155,7 +1199,7 @@ mod tests {
                 ..many[i as usize].clone()
             })
             .collect();
-        let l = check("idx", 140_000, &decades).unwrap();
+        let l = check("idx", 140_000, T, &decades).unwrap();
         assert_eq!(
             l.splits_by_decade,
             BTreeMap::from([(1860, 5), (1870, 5), (1880, 5), (1890, 5)])
@@ -1165,13 +1209,13 @@ mod tests {
             serde_json::json!({"1860": 5, "1870": 5, "1880": 5, "1890": 5})
         );
         // 4 partitions of 35,000 pages: at most 4 × (1 + 5 + 2).
-        assert_eq!(max_partitioned_splits([35_000; 4]), 32);
-        assert_eq!(max_partitioned_splits([140_000]), max_splits(140_000));
+        assert_eq!(max_partitioned_splits([35_000; 4], T), 32);
+        assert_eq!(max_partitioned_splits([140_000], T), max_splits(140_000, T));
         let mut crowded = decades.clone();
         for s in &mut crowded {
             s.partition_id = 7;
         }
-        let err = check("idx", 140_000, &crowded).unwrap_err().to_string();
+        let err = check("idx", 140_000, T, &crowded).unwrap_err().to_string();
         assert!(
             err.contains("at most 11") && !err.contains("partitions"),
             "{err}"
@@ -1183,7 +1227,7 @@ mod tests {
                 ..decades[0].clone()
             })
             .collect();
-        let err = check("idx", 40, &tiny).unwrap_err().to_string();
+        let err = check("idx", 40, T, &tiny).unwrap_err().to_string();
         assert!(
             err.contains("at most 14") && err.contains("in 2 partitions"),
             "{err}"
@@ -1333,7 +1377,7 @@ mod tests {
             http: &http,
             base: &base,
         };
-        let layout = seal(&node, "idx", 1000, Some(&events), &quick(), None)
+        let layout = seal(&node, "idx", 1000, T, Some(&events), &quick(), None)
             .await
             .unwrap();
         assert_eq!((layout.splits, layout.docs), (1, 1000));
@@ -1350,7 +1394,7 @@ mod tests {
             base: &base,
         };
         let started = std::time::Instant::now();
-        let layout = seal(&node, "idx", 1000, None, &quick(), None)
+        let layout = seal(&node, "idx", 1000, T, None, &quick(), None)
             .await
             .unwrap();
         assert_eq!(layout.splits, 1);
@@ -1371,7 +1415,7 @@ mod tests {
             timeout: Duration::from_millis(300),
             ..quick()
         };
-        let err = seal(&node, "idx", 1000, Some(&events), &wait, None)
+        let err = seal(&node, "idx", 1000, T, Some(&events), &wait, None)
             .await
             .unwrap_err()
             .to_string();
@@ -1403,7 +1447,7 @@ mod tests {
             ..quick()
         };
         let started = std::time::Instant::now();
-        let err = seal(&node, "idx", 1000, None, &wait, None)
+        let err = seal(&node, "idx", 1000, T, None, &wait, None)
             .await
             .unwrap_err()
             .to_string();
@@ -1421,7 +1465,7 @@ mod tests {
             http: &http,
             base: &base,
         };
-        let err = seal(&node, "idx", 1000, Some(&events), &quick(), None)
+        let err = seal(&node, "idx", 1000, T, Some(&events), &quick(), None)
             .await
             .unwrap_err()
             .to_string();
@@ -1490,7 +1534,7 @@ mod tests {
             http: &http,
             base: &base,
         };
-        let err = seal(&node, "idx", 1000, Some(&events), &quick(), None)
+        let err = seal(&node, "idx", 1000, T, Some(&events), &quick(), None)
             .await
             .unwrap_err();
         let err = format!("{err:#}");
@@ -1622,7 +1666,7 @@ mod tests {
             http: &http,
             base: &base,
         };
-        let r = seal(&node, "idx", 1000, Some(&w.events), &quick(), None).await;
+        let r = seal(&node, "idx", 1000, T, Some(&w.events), &quick(), None).await;
         (r, w)
     }
 
@@ -1781,7 +1825,7 @@ mod tests {
             finalize_stall: Duration::from_secs(60),
             ..quick()
         };
-        let err = seal(&node, "idx", 1000, Some(&events), &wait, None)
+        let err = seal(&node, "idx", 1000, T, Some(&events), &wait, None)
             .await
             .unwrap_err()
             .to_string();
@@ -1803,7 +1847,7 @@ mod tests {
             http: &http,
             base: &base,
         };
-        let layout = seal(&node, "idx", 1000, Some(&w.events), &quick(), None)
+        let layout = seal(&node, "idx", 1000, T, Some(&w.events), &quick(), None)
             .await
             .unwrap();
         assert_eq!(layout.splits, 1);
@@ -1819,7 +1863,7 @@ mod tests {
             http: &http,
             base: &base,
         };
-        let err = seal(&node, "idx", 1001, Some(&events), &quick(), None)
+        let err = seal(&node, "idx", 1001, T, Some(&events), &quick(), None)
             .await
             .unwrap_err()
             .to_string();
