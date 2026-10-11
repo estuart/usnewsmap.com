@@ -196,8 +196,9 @@ function ChroniclingAmerica({ s }: { s: Status }) {
           [
             "How it's searched",
             <>
-              Every search reads the Library of Congress&apos;s text, and each result links to the page image at the
-              Library of Congress.
+              Every search reads the Library of Congress&apos;s text, except on the pages we read again ourselves
+              (below), where our text is searched in its place. Each result links to the page image at the Library of
+              Congress.
             </>,
           ],
         ]}
@@ -331,8 +332,9 @@ function JapanesePages({ s, now }: { s: Status; now: number }) {
             "How it's searched",
             <>
               A search with any Japanese character searches only the Japanese pages, by character. Other searches read
-              the Latin-script text we found on them along with the Library of Congress text. Results from our OCR carry
-              an &quot;Our OCR&quot; badge.
+              the Library of Congress text, or the Latin-script text we found on a page in its place when the Library of
+              Congress has none for that page or ours reads more words. Results from our OCR carry an &quot;Our
+              OCR&quot; badge.
             </>,
           ],
         ]}
@@ -392,7 +394,7 @@ export function OurOcr({ s, now }: { s: Status; now: number }) {
     <section aria-labelledby="own-ocr" className="status-section">
       <h2 id="own-ocr">Pages we read ourselves</h2>
       <p>
-        The Library of Congress&apos;s text is all a search has to go on, so a page whose text is missing or badly read
+        A search finds a page only through its text, so a page whose Library of Congress text is missing or badly read
         can&apos;t be found. We read such a page again from its image: on the Japanese-language newspapers, when the
         Library of Congress has no text for it, or its text is empty, too short, garbled or only partly readable; on the
         others, when its text misreads many common words.
