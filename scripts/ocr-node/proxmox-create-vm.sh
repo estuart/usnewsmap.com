@@ -11,7 +11,7 @@
 # Optional: --cores 4 --memory-mib 8192 --disk-gib 64 --storage local-lvm
 #           --bridge vmbr0 --snippets-storage local
 #           --mac 52:54:00:12:34:56 (keeps a DHCP reservation across rebuilds)
-#           --image-file /var/lib/vz/template/cache/rhel-10.0-x86_64-kvm.qcow2
+#           --image-file /var/lib/vz/template/cache/rhel-10.2-x86_64-kvm.qcow2
 #             --image-sha256 <its SHA-256, from Red Hat's download page>
 #
 # Without --image-file, downloads AlmaLinux's GenericCloud image (checksum
