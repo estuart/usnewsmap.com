@@ -13,8 +13,8 @@
 # provision does), then the account (putting the delete lock back), and
 # prints the account's resource id, for an environment's USNM_ARCHIVE_ACCOUNT.
 # Resources dropped from the template are detached, never deleted, and the
-# stack denies deletes outside it except of the lock, of private endpoint
-# connections and of role definitions: an environment's stack declares its
+# stack denies deletes outside it except for the lock, private endpoint
+# connections and role definitions: an environment's stack declares its
 # writer role in the account's group, and the group's deny assignment would
 # keep that stack from deleting it when the environment detaches. A delete
 # lock on the account can block removing an environment's private endpoint
