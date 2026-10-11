@@ -219,6 +219,12 @@ param siteCertificateId string = ''
 @description('Managed certificate for www.{dnsZoneName}, recorded by scripts/bootstrap.sh.')
 param wwwCertificateId string = ''
 
+@description('The issue number of the experiment this environment is up for (#275; docs/operations.md, "Dev environment lifecycle"). Tags the project resource group with `experiment` and `started`. scripts/lib/env.sh requires it for dev. Empty: no tags.')
+param experiment string = ''
+
+@description('When the experiment started, UTC (ISO 8601), set by scripts/lib/env.sh.')
+param experimentStarted string = ''
+
 // Resource names must be lowercase (Cosmos, storage).
 var env = toLower(environmentName)
 var tags = {
@@ -254,10 +260,12 @@ var customDomains = empty(dnsZoneName)
       { name: 'api.${dnsZoneName}', certificateId: apiCertificateId }
     ]
 
+// The experiment marker is on the project group alone: scripts/dev-status.sh
+// reads it there, and a new `started` doesn't touch every resource.
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: 'rg-usnm-${env}'
   location: location
-  tags: tags
+  tags: empty(experiment) ? tags : union(tags, { experiment: experiment, started: experimentStarted })
 }
 
 resource spotRg 'Microsoft.Resources/resourceGroups@2024-03-01' = {

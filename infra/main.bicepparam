@@ -76,5 +76,7 @@ param availabilityFrequency = readEnvironmentVariable('USNM_AVAILABILITY_FREQUEN
 param apiCertificateId = readEnvironmentVariable('USNM_API_CERT_ID', '')
 param siteCertificateId = readEnvironmentVariable('USNM_SITE_CERT_ID', '')
 param wwwCertificateId = readEnvironmentVariable('USNM_WWW_CERT_ID', '')
+param experiment = readEnvironmentVariable('USNM_EXPERIMENT', '')
+param experimentStarted = readEnvironmentVariable('USNM_EXPERIMENT_STARTED', '')
 param githubRepo = readEnvironmentVariable('USNM_GITHUB_REPO', 'tgoodyear/usnewsmap.com')
 param githubRepoIds = readEnvironmentVariable('USNM_GITHUB_REPO_IDS', 'tgoodyear@116683/usnewsmap.com@1389862972')
