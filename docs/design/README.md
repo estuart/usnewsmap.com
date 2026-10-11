@@ -22,6 +22,7 @@ This document set evaluates the legacy system ([`tgoodyear/usnewsmap`](https://g
 | 10  | [Roadmap, risks & open questions](10-roadmap-and-risks.md)           | Phased delivery plan, validation spikes, risk register, decisions needed from the maintainer                                                                         |
 | 11  | [Geographic skew of search terms](11-term-geographic-skew.md)        | Proposal: comparing places with what their digitized pages predict (time-standardized lift with empirical-Bayes shrinkage), with measurements on the published index |
 | 12  | [On-prem OCR pipeline](12-onprem-ocr-pipeline.md)                    | Re-reading badly OCR'd pages on local machines (#296): what is built, the flows from queue to search, languages, next pull requests                                  |
+| 13  | [OCR engines](13-ocr-engines.md)                                     | The contract between the on-prem OCR worker and its engines, how engines run and are routed, provenance, the survey's use of the same images, and an engine catalog  |
 | ADR | [Architecture decision records](adr/)                                | Short records of each major decision and the alternatives rejected                                                                                                   |
 
 The [technical notes](../notes/README.md) are dated write-ups of the work, with its measurements; they say what was true when, where these documents say how the system stands now.
