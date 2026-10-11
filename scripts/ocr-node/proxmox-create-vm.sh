@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Create an AlmaLinux 9 VM for an on-prem OCR node (#296) on a Proxmox host.
+# Create a VM for an on-prem OCR node (#296) on a Proxmox host: AlmaLinux 9
+# by default, or RHEL 10 from Red Hat's KVM Guest Image, a qcow2 file on the
+# host. node-setup.sh onboards only those two.
 # Run on the Proxmox host as root (copy it there first); then run
 # scripts/ocr-node/onboard.sh from your machine (docs/operations.md,
 # "On-prem OCR nodes"):
@@ -9,17 +11,26 @@
 #
 # Optional: --cores 4 --memory-mib 8192 --disk-gib 64 --storage local-lvm
 #           --bridge vmbr0 --snippets-storage local
+#           --mac 52:54:00:12:34:56 (keeps a DHCP reservation across rebuilds)
+#           --image-file /var/lib/vz/template/cache/rhel-10.2-x86_64-kvm.qcow2
+#             --image-sha256 <its SHA-256, from Red Hat's download page>
 #
-# Uses AlmaLinux's GenericCloud image (checksum verified) and cloud-init:
-# UEFI with Secure Boot (Microsoft keys pre-enrolled; AlmaLinux's shim is
-# signed) and a vTPM, CPU type host (AVX2 for OCR), qemu guest agent, an
-# admin user "claude" with key-only login and passwordless sudo, DHCP,
-# start at boot.
+# Without --image-file, downloads AlmaLinux's GenericCloud image (checksum
+# verified against AlmaLinux's list). --image-file takes a qcow2 already on
+# the host, such as Red Hat's RHEL 10 KVM Guest Image, and needs
+# --image-sha256. Then cloud-init: UEFI with Secure Boot (Microsoft keys
+# pre-enrolled; AlmaLinux's and Red Hat's shims are signed) and a vTPM, CPU
+# type host (AVX2 for OCR), qemu guest agent, an admin user "claude" with
+# key-only login and passwordless sudo, DHCP, start at boot. A RHEL image
+# can't install packages until it's registered (onboard.sh does that), so
+# with --image-file cloud-init installs nothing: it starts the guest agent
+# the image ships, and node-setup.sh installs it after registration if the
+# image has none.
 set -euo pipefail
 
-VMID="" NAME="" SSH_KEY=""
+VMID="" NAME="" SSH_KEY="" IMAGE_FILE="" IMAGE_SHA256="" MAC=""
 CORES=4 MEMORY_MIB=8192 DISK_GIB=64 STORAGE=local-lvm BRIDGE=vmbr0 SNIPPETS=local
-usage() { sed -n '2,18s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,29s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --vmid) VMID=$2; shift 2 ;;
@@ -31,6 +42,9 @@ while [ $# -gt 0 ]; do
     --storage) STORAGE=$2; shift 2 ;;
     --bridge) BRIDGE=$2; shift 2 ;;
     --snippets-storage) SNIPPETS=$2; shift 2 ;;
+    --image-file) IMAGE_FILE=$2; shift 2 ;;
+    --image-sha256) IMAGE_SHA256=$2; shift 2 ;;
+    --mac) MAC=$2; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -46,21 +60,42 @@ command -v qm >/dev/null || { echo "qm not found: not a Proxmox host?" >&2; exit
 qm status "$VMID" >/dev/null 2>&1 && { echo "VM $VMID already exists" >&2; exit 1; }
 pvesm status --storage "$STORAGE" >/dev/null || { echo "no storage $STORAGE" >&2; exit 1; }
 case "$SSH_KEY" in ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*) ;; *) echo "--ssh-key must be a public key line" >&2; exit 1 ;; esac
-
-# 1. Image, verified against AlmaLinux's published SHA-256 list.
-BASE=https://repo.almalinux.org/almalinux/9/cloud/x86_64/images
-IMG=AlmaLinux-9-GenericCloud-latest.x86_64.qcow2
-CACHE=/var/lib/vz/template/cache
-mkdir -p "$CACHE"
-curl -fsSL -o "$CACHE/$IMG.CHECKSUM" "$BASE/CHECKSUM"
-want=$(grep -F "$IMG" "$CACHE/$IMG.CHECKSUM" | grep -oE '[0-9a-f]{64}' | head -1)
-[ -n "$want" ] || { echo "no checksum for $IMG" >&2; exit 1; }
-if [ ! -f "$CACHE/$IMG" ] || [ "$(sha256sum "$CACHE/$IMG" | cut -d' ' -f1)" != "$want" ]; then
-  echo "downloading $IMG"
-  curl -fL -o "$CACHE/$IMG.part" "$BASE/$IMG"
-  mv "$CACHE/$IMG.part" "$CACHE/$IMG"
+if [ -n "$IMAGE_FILE" ]; then
+  [ -f "$IMAGE_FILE" ] || { echo "--image-file: no file $IMAGE_FILE" >&2; exit 1; }
+  case "$IMAGE_FILE" in /*) ;; *) echo "--image-file: an absolute path" >&2; exit 1 ;; esac
+  IMAGE_SHA256=$(printf '%s' "$IMAGE_SHA256" | tr '[:upper:]' '[:lower:]')
+  [[ $IMAGE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "--image-file needs --image-sha256 (64 hex digits)" >&2; exit 1; }
+elif [ -n "$IMAGE_SHA256" ]; then
+  echo "--image-sha256 goes with --image-file" >&2; exit 1
 fi
-[ "$(sha256sum "$CACHE/$IMG" | cut -d' ' -f1)" = "$want" ] || { echo "checksum mismatch" >&2; exit 1; }
+# A unicast MAC (the first octet even), so the VM keeps its DHCP
+# reservation (a fixed IP on the router) when it's rebuilt.
+if [ -n "$MAC" ]; then
+  [[ $MAC =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]] || { echo "--mac: six hex pairs separated by colons" >&2; exit 1; }
+  (( 0x${MAC:0:2} % 2 == 0 )) || { echo "--mac: a unicast address (even first octet)" >&2; exit 1; }
+fi
+
+# 1. Image: a local file checked against --image-sha256, or AlmaLinux's,
+# verified against AlmaLinux's published SHA-256 list.
+if [ -n "$IMAGE_FILE" ]; then
+  IMAGE=$IMAGE_FILE
+  want=$IMAGE_SHA256
+else
+  BASE=https://repo.almalinux.org/almalinux/9/cloud/x86_64/images
+  IMG=AlmaLinux-9-GenericCloud-latest.x86_64.qcow2
+  CACHE=/var/lib/vz/template/cache
+  IMAGE=$CACHE/$IMG
+  mkdir -p "$CACHE"
+  curl -fsSL -o "$CACHE/$IMG.CHECKSUM" "$BASE/CHECKSUM"
+  want=$(grep -F "$IMG" "$CACHE/$IMG.CHECKSUM" | grep -oE '[0-9a-f]{64}' | head -1)
+  [ -n "$want" ] || { echo "no checksum for $IMG" >&2; exit 1; }
+  if [ ! -f "$IMAGE" ] || [ "$(sha256sum "$IMAGE" | cut -d' ' -f1)" != "$want" ]; then
+    echo "downloading $IMG"
+    curl -fL -o "$IMAGE.part" "$BASE/$IMG"
+    mv "$IMAGE.part" "$IMAGE"
+  fi
+fi
+[ "$(sha256sum "$IMAGE" | cut -d' ' -f1)" = "$want" ] || { echo "checksum mismatch: $IMAGE" >&2; exit 1; }
 echo "image verified: $want"
 
 # 2. cloud-init user data as a snippet (the storage must allow snippets).
@@ -73,6 +108,18 @@ if ! pvesm status --storage "$SNIPPETS" --content snippets 2>/dev/null | grep -q
 fi
 mkdir -p "$SNIPDIR"
 USERDATA="$NAME-user.yaml"
+# AlmaLinux installs the guest agent from its repositories on first boot.
+# A RHEL image has no repositories until it's registered, so with
+# --image-file nothing is installed: the agent is started if the image has
+# it (Red Hat's KVM Guest Image does), and node-setup.sh installs it after
+# registration otherwise.
+if [ -n "$IMAGE_FILE" ]; then
+  PACKAGES="package_update: false"
+  AGENT="  - [sh, -c, 'systemctl enable --now qemu-guest-agent || echo \"no qemu-guest-agent yet: node-setup.sh installs it\"']"
+else
+  PACKAGES=$'package_update: true\npackages: [qemu-guest-agent]'
+  AGENT="  - [systemctl, enable, --now, qemu-guest-agent]"
+fi
 cat > "$SNIPDIR/$USERDATA" <<EOF
 #cloud-config
 hostname: $NAME
@@ -89,12 +136,11 @@ users:
       - $SSH_KEY
 ssh_pwauth: false
 disable_root: true
-package_update: true
-packages: [qemu-guest-agent]
+$PACKAGES
 runcmd:
   # cloud-init can leave the hostname as localhost on this image; set it explicitly.
   - [hostnamectl, set-hostname, $NAME]
-  - [systemctl, enable, --now, qemu-guest-agent]
+$AGENT
 EOF
 
 # 3. VM: UEFI + Secure Boot + vTPM, host CPU, virtio disk and NIC, serial
@@ -103,10 +149,10 @@ qm create "$VMID" --name "$NAME" --ostype l26 --machine q35 --bios ovmf \
   --efidisk0 "$STORAGE:1,efitype=4m,pre-enrolled-keys=1" \
   --tpmstate0 "$STORAGE:1,version=v2.0" \
   --cpu host --cores "$CORES" --sockets 1 --memory "$MEMORY_MIB" --balloon 0 \
-  --net0 "virtio,bridge=$BRIDGE" --scsihw virtio-scsi-single \
+  --net0 "virtio${MAC:+=$MAC},bridge=$BRIDGE" --scsihw virtio-scsi-single \
   --serial0 socket --vga serial0 --agent enabled=1 --onboot 1 \
   --description "usnewsmap on-prem OCR node (#296)"
-qm set "$VMID" --scsi0 "$STORAGE:0,import-from=$CACHE/$IMG,discard=on,ssd=1,iothread=1"
+qm set "$VMID" --scsi0 "$STORAGE:0,import-from=$IMAGE,discard=on,ssd=1,iothread=1"
 qm resize "$VMID" scsi0 "${DISK_GIB}G"
 qm set "$VMID" --ide2 "$STORAGE:cloudinit" --boot order=scsi0 \
   --ipconfig0 ip=dhcp --cicustom "user=$SNIPPETS:snippets/$USERDATA"
@@ -123,5 +169,6 @@ for _ in $(seq 1 60); do
   fi
   sleep 10
 done
-echo "VM started, but the guest agent didn't report an address in 10 minutes; check the console: qm terminal $VMID" >&2
+echo "VM started, but the guest agent didn't report an address in 10 minutes; check the console (qm terminal $VMID)" >&2
+echo "or the router's DHCP leases for $(qm config "$VMID" | sed -n 's/^net0: virtio=\([^,]*\).*/\1/p')" >&2
 exit 1

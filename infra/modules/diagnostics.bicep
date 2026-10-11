@@ -50,6 +50,8 @@ param ocrNodeWorkspaceId string = ''
 param ocrNodeWorkspaceName string = ''
 @description('The OCR nodes\' data collection rule (ocr-node-monitoring.bicep); empty if there is none.')
 param ocrNodeDcrName string = ''
+@description('The OCR nodes\' Key Vault (ocr-vault.bicep); empty if there is none.')
+param ocrVaultName string = ''
 
 var name = 'to-log-analytics'
 
@@ -217,5 +219,21 @@ resource ocrNodeDcrLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-previe
   properties: {
     workspaceId: ocrNodeWorkspaceId
     logs: [{ category: 'LogErrors', enabled: true }]
+  }
+}
+
+// The OCR nodes' Key Vault: every secret read and write and every refused
+// request (AuditEvent), to the environment's workspace. Only the operator
+// uses it, a few requests per onboarding, and no node can reach it.
+resource ocrVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (!empty(ocrVaultName)) {
+  name: ocrVaultName
+}
+
+resource ocrVaultLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(ocrVaultName)) {
+  scope: ocrVault
+  name: name
+  properties: {
+    workspaceId: workspaceId
+    logs: [{ category: 'AuditEvent', enabled: true }]
   }
 }

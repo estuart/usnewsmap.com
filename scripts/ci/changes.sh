@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Which parts of CI a change needs, as step outputs rust/web/image/fixtures/
-# ops/code/markdown=true|false (code: anything but documentation changed, so
-# the infrastructure checks and the shared-key scan run; markdown: a Markdown
+# ops/code/markdown/ocr_worker=true|false (ocr_worker: the OCR worker's EL9
+# build, its Tesseract image and, on main, its release; code: anything but
+# documentation changed, so the infrastructure checks and the shared-key scan run; markdown: a Markdown
 # file changed, so Prettier checks its format), and provision=true|false:
 # whether it changes the Azure stack beyond what a deploy applies (the API
 # image and infra/quickwit/searcher.yaml, which scripts/ci/roll-api.sh
@@ -21,7 +22,7 @@ out=${GITHUB_OUTPUT:-/dev/stdout}
 provision=false
 ops=false
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -57,8 +58,10 @@ matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(c
 matches '^\.github/' && all "workflow changed"
 # The Rust build and tests: the crates, the files compiled into binaries
 # (index config, place overrides, the example searches the API warms, the
-# reconstructed index history) and the fixtures the tests read.
-rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|scripts/(ci/|quickwit-fixtures\.sh))'
+# reconstructed index history), the fixtures the tests read, and the Python
+# metric the damage port is checked against (its tables, its word lists and
+# their sha256).
+rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/(ci/|quickwit-fixtures\.sh))'
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer): the code those tests run and what they load. Not catalog/,
 # web/src/examples.json, ops/index-history.json or other CI scripts, which
@@ -71,7 +74,10 @@ web='^(web/|fixtures/|scripts/ci/|\.prettier(rc\.json|ignore)$)'
 image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$)"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
-for part in rust quickwit web image fixtures; do
+# The OCR worker's release: the worker, the crates it uses, the workspace's
+# build files, its Tesseract image and the release script.
+ocr_worker='^(crates/(usnm-ocr-worker|usnm-core|usnm-overlay|usnm-store|usnm-telemetry)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|ocr/engines/tesseract/|scripts/ci/ocr-worker-release\.sh$)'
+for part in rust quickwit web image fixtures ocr_worker; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"

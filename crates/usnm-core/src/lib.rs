@@ -6,8 +6,10 @@
 //! - [`time`]: day numbers and time buckets (05 §5.5, §5.7)
 //! - [`text`]: text normalization shared by ingest and query parsing (04 §4.5)
 //! - [`common_grams`]: common-word pairs, so phrases skip common words' positions (05 §5.5.3)
+//! - `damage` (feature `damage`): the OCR damage metric, version 2 (12 §12.5, #296)
 //! - [`decade`]: decade partitions, so date-limited searches skip splits (05 §5.5.5, #123)
 //! - [`ja`]: Japanese tokens and folding for our own OCR (04 §4.8, #139)
+//! - [`lang`]: MARC, ISO 639-3 and word-list language codes; with feature `damage`, the word lists (12 §12.5, #296)
 //! - [`query`]: the user query language and its limits (06 §6.4)
 //! - [`query_language`]: the language of a query's words, for its baseline (06 §6.3.3, #237)
 //! - [`params`]: request parameters and canonical cache keys (06 §6.3)
@@ -19,9 +21,12 @@
 pub mod american_stories;
 pub mod common_grams;
 pub mod cube;
+#[cfg(feature = "damage")]
+pub mod damage;
 pub mod decade;
 pub mod ids;
 pub mod ja;
+pub mod lang;
 pub mod names;
 pub mod params;
 pub mod query;

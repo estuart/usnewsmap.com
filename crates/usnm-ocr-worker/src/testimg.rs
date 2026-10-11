@@ -1,5 +1,5 @@
 //! A rendered line of capitals as a binary PGM, for tests that run the real
-//! Tesseract without a checked-in image.
+//! Tesseract and for `check-engine`, without a checked-in image.
 
 /// 5×7 glyphs for the letters the tests use.
 fn glyph(c: char) -> [&'static str; 7] {

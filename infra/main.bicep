@@ -183,6 +183,9 @@ param ocrNodeIps string = ''
 @description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
 
+@description('Entra object ids (people or groups), comma separated, given Key Vault Secrets Officer on the OCR nodes\' Key Vault, usnmocrkv<env><suffix> (with ocrNodes): the operators who set and read the fleet\'s secrets, such as the Red Hat activation key. Settings only, never in the repository (#295).')
+param ocrKeyVaultAdmins string = ''
+
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
@@ -354,6 +357,31 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
   }
 }
 
+// The OCR nodes' Key Vault (#296, #295): secrets the operator holds for
+// setting up nodes (the Red Hat activation key), which onboard.sh reads with
+// the operator's sign-in. Nodes have no access. Its firewall allows only the
+// node IPs (the operator's home IP), so the public-network policy exempts it
+// by resource id like the exchange account, and its assignment goes first.
+// Compact name (ADR-0017): usnm{fn}{abbr}{env}{sfx}, at most 24 characters.
+// The environment name is cut to 9 characters, never the suffix, which
+// keeps the name unique; ADR-0017's 5-character cap makes the cut moot.
+var ocrVaultName = 'usnmocrkv${take(env, 9)}${suffix}'
+var ocrVaultId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.KeyVault/vaults', ocrVaultName)
+
+module ocrVault 'modules/ocr-vault.bicep' = if (ocrNodes) {
+  scope: rg
+  name: 'ocr-vault'
+  dependsOn: [policies]
+  params: {
+    location: location
+    tags: tags
+    name: ocrVaultName
+    purgeProtection: env == 'prod'
+    allowedIps: filter(map(split(ocrNodeIps, ','), ip => trim(ip)), ip => !empty(ip))
+    admins: filter(map(split(ocrKeyVaultAdmins, ','), a => trim(a)), a => !empty(a))
+  }
+}
+
 // The OCR nodes' monitoring (ADR-0015 decision 8), apart from the
 // environment's: a workspace and an Application Insights component of their
 // own, so a node can't write the environment's telemetry or fill its daily
@@ -361,6 +389,12 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
 // Publisher grant on that component only; and alerts on a node sending too
 // much and on the cap. onboard.sh installs the agent on each node and
 // associates it with the rule.
+// The nodes' workspace's daily cap in GB, which the OCR nodes workbook also
+// charts against. 0.1 GB to start: about 8 to 25 MB a day per node is
+// estimated before the worker's telemetry, which isn't measured yet. Raise
+// it with cap_gb in ops/queries/ocr-node-health.kql.
+var ocrNodeDailyCapGb = '0.1'
+
 module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
   scope: rg
   name: 'ocr-node-monitoring'
@@ -371,10 +405,7 @@ module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
     workspaceName: 'usnm-ocr-log-${env}'
     appInsightsName: 'usnm-ocr-appi-${env}'
     ruleName: 'usnm-ocr-dcr-${env}'
-    // 0.1 GB to start: about 8 to 25 MB a day per node is estimated before
-    // the worker's telemetry, which isn't measured yet. Raise it with
-    // cap_gb in ops/queries/ocr-node-health.kql.
-    dailyCapGb: '0.1'
+    dailyCapGb: ocrNodeDailyCapGb
     nodeGroupId: trim(ocrNodeGroupId)
     actionGroupId: monitoring.outputs.actionGroupId
   }
@@ -464,6 +495,7 @@ module diagnostics 'modules/diagnostics.bicep' = {
     ocrNodeWorkspaceId: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceId : ''
     ocrNodeWorkspaceName: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceName : ''
     ocrNodeDcrName: ocrNodes ? ocrNodeMonitoring!.outputs.ruleName : ''
+    ocrVaultName: ocrNodes ? ocrVault!.outputs.name : ''
   }
 }
 
@@ -692,9 +724,10 @@ module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
   }
 }
 
-// Dashboards over the workspace: the pipeline workbook with the jobs, the
-// API workbook with the API. No alert emails needed.
-module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deployApi) {
+// Dashboards: the pipeline workbook with the jobs and the API workbook with
+// the API, over the workspace; the OCR nodes workbook with the nodes, over
+// their own workspace. No alert emails needed.
+module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deployApi || ocrNodes) {
   scope: rg
   name: 'workbooks'
   params: {
@@ -702,9 +735,14 @@ module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deplo
     tags: tags
     workspaceId: monitoring.outputs.workspaceId
     appInsightsId: monitoring.outputs.appInsightsId
+    env: env
     pipeline: ingestJobs && useAcr
     api: deployApi
     apiAppName: deployApi ? api!.outputs.name : ''
+    ocrNodes: ocrNodes
+    ocrNodeWorkspaceId: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceId : ''
+    ocrNodeAppInsightsId: ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsId : ''
+    ocrNodeDailyCapGb: ocrNodeDailyCapGb
   }
 }
 
@@ -725,7 +763,7 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
       // Deny and the exemption arrive together, in the same assignment update.
       '${guardrailPolicyNames.auditPublicAccess}': {
         effect: { value: 'deny' }
-        publicAccountIds: { value: ocrNodes ? [tilesId, exchangeId] : [tilesId] }
+        publicAccountIds: { value: ocrNodes ? [tilesId, exchangeId, ocrVaultId] : [tilesId] }
       }
     }
   }
@@ -800,6 +838,8 @@ output SEARCH_COMPARE_URLS string = searchClusterOn ? join(searchClusterModule!.
 output OCR_EXCHANGE_ACCOUNT string = ocrNodes ? ocrExchange!.outputs.name : ''
 output OCR_QUEUE_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
 output OCR_BLOB_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
+// The OCR nodes' Key Vault: onboard.sh reads the Red Hat secrets from it.
+output OCR_KEYVAULT string = ocrNodes ? ocrVault!.outputs.name : ''
 // The nodes' data collection rule; onboard.sh associates each node with it.
 output OCR_NODE_DCR_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.ruleId : ''
 // The nodes' own Application Insights component: onboard.sh passes its

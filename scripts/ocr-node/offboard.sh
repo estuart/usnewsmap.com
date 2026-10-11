@@ -21,8 +21,9 @@
 #      if the agent is configured (connected or not), runs
 #      `azcmagent disconnect --force-local-only`,
 #      which clears the agent's local state without signing in to Azure
-#      (so no onboarding credential is needed); without --host, prints
-#      those commands instead;
+#      (so no onboarding credential is needed), and on RHEL unregisters
+#      it from Red Hat (`subscription-manager unregister`); without --host,
+#      prints those commands instead;
 #   4. deletes the Arc machine with your own az sign-in, which deletes its
 #      identity.
 # Tokens the node already holds stay valid until they expire: up to about
@@ -191,6 +192,7 @@ step "Node"
 # The agent is cleared whenever it's configured (it has a resource name),
 # whether it shows Connected or not: one that can't reach Azure shows
 # Disconnected but still holds the machine's settings.
+# shellcheck disable=SC2016 # expanded on the node
 REMOTE='systemctl disable --now usnm-ocr-worker.service 2> /dev/null || true
 if ! command -v azcmagent > /dev/null; then
   echo "no Connected Machine agent"
@@ -203,6 +205,14 @@ else
   else
     echo "agent not configured"
   fi
+fi
+# A RHEL node leaves Red Hat too; onboard.sh registers it again.
+if [ "$(. /etc/os-release && printf %s "${ID:-}")" = rhel ] && command -v subscription-manager > /dev/null; then
+  if subscription-manager identity > /dev/null 2>&1; then
+    subscription-manager unregister || echo "warning: subscription-manager unregister failed"
+  else
+    echo "not registered with Red Hat"
+  fi
 fi'
 if [ -z "$HOST" ]; then
   echo "no --host; if the node still exists, run on it as root:"
@@ -210,6 +220,7 @@ if [ -z "$HOST" ]; then
   echo "  systemctl stop extd"
   echo "  azcmagent extension remove --all"
   echo "  azcmagent disconnect --force-local-only"
+  echo "  subscription-manager unregister   # RHEL only"
 elif [ "$DRY_RUN" = true ]; then
   echo "would run on $HOST with sudo:"
   printf '%s\n' "$REMOTE" | while IFS= read -r line; do echo "  $line"; done
