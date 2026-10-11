@@ -22,16 +22,17 @@
 # Needs az 2.61+, signed in with Owner on the subscription.
 set -euo pipefail
 usage() { sed -n '2,21s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-[ $# -ge 1 ] || usage
-ACTION=$1; shift
-SUBSCRIPTION="" LOCATION=eastus2
+ACTION="" SUBSCRIPTION="" LOCATION=eastus2
 while [ $# -gt 0 ]; do
   case "$1" in
-    --subscription) SUBSCRIPTION=$2; shift 2 ;;
-    --location) LOCATION=$2; shift 2 ;;
-    *) usage ;;
+    what-if|deploy|unlock) [ -z "$ACTION" ] || usage; ACTION=$1; shift ;;
+    --subscription) [ $# -ge 2 ] || usage; SUBSCRIPTION=$2; shift 2 ;;
+    --location) [ $# -ge 2 ] || usage; LOCATION=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
 done
+[ -n "$ACTION" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/guardrails.sh
@@ -88,7 +89,7 @@ case "$ACTION" in
       jq -r 'to_entries[] | select(.key | ascii_upcase == "ARCHIVE_ACCOUNT_ID") | .value.value')
     [ -n "$id" ] || die "the stack has no ARCHIVE_ACCOUNT_ID output"
     echo "archival account: $id"
-    echo "an environment uses it with: scripts/settings.sh <env> USNM_ARCHIVE_ACCOUNT $id && scripts/provision.sh <env>"
+    echo "an environment uses it with: scripts/settings.sh --env <env> --key USNM_ARCHIVE_ACCOUNT --value $id && scripts/provision.sh --env <env>"
     ;;
   unlock)
     account=$(az storage account list -g "$GROUP" --query "[0].name" -o tsv)

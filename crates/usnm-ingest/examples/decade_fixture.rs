@@ -1,10 +1,10 @@
 //! The fixture indexes laid out by decade (05 §5.5.5, #123), for
 //! scripts/quickwit-fixtures.sh and the parity test:
 //!
-//! - `decade_fixture template partitioned|tagged`: the index template on
+//! - `decade_fixture --template partitioned|tagged`: the index template on
 //!   stdin, with the `decade` field and its partitions (a full base) or its
 //!   split tags (a delta), as a release creates the index.
-//! - `decade_fixture docs`: fixture documents on stdin, moved over several
+//! - `decade_fixture --docs`: fixture documents on stdin, moved over several
 //!   decades (`fixtures/decades.rs`), with `decade`, `text_cg` and
 //!   `text_as_cg` as a release writes them.
 
@@ -16,7 +16,16 @@ use usnm_ingest::sink::Decades;
 mod decades;
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // The positional form (`template LAYOUT`, `docs`) works for one release,
+    // with a warning (#277).
+    if let Some(first) = args
+        .first_mut()
+        .filter(|a| *a == "template" || *a == "docs")
+    {
+        eprintln!("warning: `decade_fixture {first}` is deprecated; use --{first} (#277)");
+        *first = format!("--{first}");
+    }
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
     match args
@@ -25,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["template", layout] => {
+        ["--template", layout] => {
             let layout = match *layout {
                 "partitioned" => Decades::Partitioned,
                 "tagged" => Decades::Tagged,
@@ -35,7 +44,7 @@ fn main() -> anyhow::Result<()> {
             io::stdin().read_to_string(&mut template)?;
             out.write_all(layout.apply(&template)?.as_bytes())?;
         }
-        ["docs"] => {
+        ["--docs"] => {
             for line in io::stdin().lock().lines() {
                 let line = line?;
                 if line.trim().is_empty() {
@@ -62,7 +71,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
         _ => {
-            anyhow::bail!("usage: decade_fixture template partitioned|tagged | decade_fixture docs")
+            anyhow::bail!(
+                "usage: decade_fixture --template partitioned|tagged | decade_fixture --docs"
+            )
         }
     }
     out.flush()?;

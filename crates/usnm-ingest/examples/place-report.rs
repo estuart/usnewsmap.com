@@ -2,7 +2,7 @@
 //! `/v1/places` GeoJSON, without LoC's title records:
 //!
 //!     curl -s https://usnewsmap.com/v1/places > places.json
-//!     cargo run -p usnm-ingest --example place-report -- places.json > report.txt
+//!     cargo run -p usnm-ingest --example place-report -- --places places.json > report.txt
 //!
 //! Each live place becomes that many stand-in titles at its live point. The
 //! records behind a point aren't in the GeoJSON, so a point two places with
@@ -33,9 +33,21 @@ struct Live {
 }
 
 fn main() -> anyhow::Result<()> {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/tmp/places.json".into());
+    let mut args = std::env::args().skip(1).peekable();
+    let mut path = None;
+    // The positional form (`place-report FILE`) works for one release, with
+    // a warning (#277).
+    if let Some(p) = args.next_if(|a| !a.starts_with('-')) {
+        eprintln!("warning: `place-report FILE` is deprecated; use --places FILE (#277)");
+        path = Some(p);
+    }
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), args.next()) {
+            ("--places", Some(p)) => path = Some(p),
+            _ => anyhow::bail!("usage: place-report [--places FILE] (default /tmp/places.json)"),
+        }
+    }
+    let path = path.unwrap_or_else(|| "/tmp/places.json".into());
     let json: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
     let geo = Geo::compiled()?;
     let overrides = place_overrides(PLACE_OVERRIDES)?;

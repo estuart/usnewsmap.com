@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run cold searches at rising concurrency and report how the API copes.
 
-    scripts/load-cold-searches.py [base-url] [--levels 1,2,4,10] [--pause 30] [-v]
+    scripts/load-cold-searches.py [--base-url URL] [--levels 1,2,4,10] [--pause 30] [-v]
 
 The default base URL is http://localhost:8080. Run it against staging; run it
 against production only at a quiet hour, once, since every search it sends
@@ -52,6 +52,7 @@ import datetime
 import json
 import random
 import statistics
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -217,13 +218,21 @@ def summary(label, wall, results, baseline):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("base", nargs="?", default="http://localhost:8080")
+    ap.add_argument("--base-url", help="the API to load (default http://localhost:8080)")
+    # The positional form (`load-cold-searches.py URL`) works for one
+    # release, with a warning (#277).
+    ap.add_argument("legacy_base_url", nargs="?", help=argparse.SUPPRESS)
     ap.add_argument("--levels", default="1,2,4,10", help="concurrency levels, comma-separated")
     ap.add_argument("--pause", type=float, default=30, help="seconds between levels (rate limit)")
     ap.add_argument("--offset", type=int, help="days every window starts shifted back (default: random, 0-90)")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every search")
     args = ap.parse_args()
-    base = args.base.rstrip("/")
+    if args.legacy_base_url is not None:
+        if args.base_url is not None:
+            ap.error("give the base URL once, as --base-url")
+        print("warning: a positional base URL is deprecated; use --base-url (#277)", file=sys.stderr)
+        args.base_url = args.legacy_base_url
+    base = (args.base_url or "http://localhost:8080").rstrip("/")
     levels = [int(n) for n in args.levels.split(",")]
 
     status, _, body = get(base + "/v1/meta")

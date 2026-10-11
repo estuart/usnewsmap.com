@@ -103,7 +103,7 @@ if [ "$stack" = false ] && [ -z "$groups" ]; then
   exit 0
 fi
 if [ -z "$experiment" ]; then
-  echo "error: $ENV_NAME has resources and no experiment tag on $RG: tear it down (scripts/teardown.sh $ENV_NAME), or tag it (scripts/settings.sh $ENV_NAME USNM_EXPERIMENT <issue>; scripts/provision.sh $ENV_NAME)" >&2
+  echo "error: $ENV_NAME has resources and no experiment tag on $RG: tear it down (scripts/teardown.sh --env $ENV_NAME), or tag it (scripts/settings.sh --env $ENV_NAME --key USNM_EXPERIMENT --value <issue>; scripts/provision.sh --env $ENV_NAME)" >&2
   exit 1
 fi
 age=""

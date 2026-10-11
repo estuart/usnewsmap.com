@@ -21,7 +21,7 @@ With the API running, `cd web && npm ci && npm run dev` serves the site on `http
 The same fixtures can be served by [Quickwit 0.9.1](https://github.com/quickwit-oss/quickwit/releases/tag/v0.9.1), the pinned version, set up the way production runs it. `scripts/quickwit-fixtures.sh` loads the fixture indexes with a writer node, stops it, and starts a read-only searcher that polls the metastore:
 
 ```sh
-url=$(QUICKWIT_BIN=/path/to/quickwit scripts/quickwit-fixtures.sh /tmp/qw)
+url=$(QUICKWIT_BIN=/path/to/quickwit scripts/quickwit-fixtures.sh --workdir /tmp/qw)
 QUICKWIT_URL=$url cargo test -p usnm-search --test quickwit_parity   # Quickwit vs the reference backend
 USNM_BACKEND=quickwit USNM_QUICKWIT_URL=$url cargo run -p usnm-api
 kill "$(cat /tmp/qw/quickwit.pid)"
@@ -34,8 +34,8 @@ Without `QUICKWIT_URL`, the parity tests skip; CI runs them in the `quickwit` jo
 `usnm-ingest` turns LoC batch archives into a published version: `enqueue` records a batch list, `curate` claims queued batches and writes curated Parquet, and `release` builds a new index (a delta, or a base with `--full`) and its reference snapshot, then writes `current.json` last. `run` does all three. To try it on the synthetic corpus, rebuilt as two batch archives:
 
 ```sh
-repo=$PWD                                                    # run from the repository root
-python3 scripts/fixture-batches.py /tmp/usnm-ingest          # archives, batches.json, reference/catalog/
+repo=$PWD                                                       # run from the repository root
+python3 scripts/fixture-batches.py --out-dir /tmp/usnm-ingest   # archives, batches.json, reference/catalog/
 cd /tmp/usnm-ingest
 cargo run --manifest-path "$repo/Cargo.toml" -p usnm-ingest -- \
   --state-file state.json --curated curated --reference reference \
@@ -59,7 +59,7 @@ In Azure the same binary runs from the `usnewsmap-ingest` image with `--cosmos h
 It needs `azurite-blob` on `PATH` (`npm install -g azurite`), Python 3 and `openssl`.
 
 ```sh
-. "$(scripts/local-azure/up.sh /tmp/usnm-azure)"     # starts everything, exports the USNM_* and IDENTITY_* variables
+. "$(scripts/local-azure/up.sh --workdir /tmp/usnm-azure)"     # starts everything, exports the USNM_* and IDENTITY_* variables
 cargo build --release -p usnm-ingest -p usnm-api
 ingest=target/release/usnm-ingest
 $ingest enqueue --batches dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01
@@ -67,7 +67,7 @@ $ingest curate & $ingest curate & wait                  # two workers, one queue
 $ingest titles-sync --lccns sn85042252,sn83025894,sn83021129
 $ingest release --index-dir /tmp/usnm-azure/indexes
 USNM_DATA_DIR=/tmp/usnm-azure target/release/usnm-api   # reads the snapshot from Azurite, caches responses there
-scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on the same directory resumes
+scripts/local-azure/down.sh --workdir /tmp/usnm-azure   # data stays; up.sh on the same directory resumes
 ```
 
 `$ingest duplicates` reports the pages that ship in more than one curated batch (JSON on stdout; changes nothing). `titles-sync` with no `--lccns` or `--list` fetches every title in LoC's listing (hours); `run --batches …` syncs only the titles for those batches. Set these on `up.sh` to change the Cosmos stand-in: `COSMOS_PAGE=2` exercises query continuation, `COSMOS_429=0.1` throttles a tenth of requests, and `COSMOS_SEED=state.json` starts from a `--state-file` run.

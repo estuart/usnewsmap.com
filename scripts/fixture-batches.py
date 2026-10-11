@@ -8,8 +8,9 @@ Writes to OUT_DIR:
   batches.json                  the batch list for `usnm-ingest enqueue`
   reference/catalog/            titles.json and places.json
 
-Usage: python3 scripts/fixture-batches.py OUT_DIR
+Usage: python3 scripts/fixture-batches.py --out-dir OUT_DIR
 """
+import argparse
 import hashlib
 import io
 import json
@@ -61,6 +62,17 @@ def main(out):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    main(Path(sys.argv[1]))
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0].replace("\n", " "))
+    ap.add_argument("--out-dir", type=Path, help="where to write the archives (required)")
+    # The positional form (`fixture-batches.py OUT_DIR`) works for one
+    # release, with a warning (#277).
+    ap.add_argument("legacy_out_dir", nargs="?", type=Path, help=argparse.SUPPRESS)
+    a = ap.parse_args()
+    if a.legacy_out_dir is not None:
+        if a.out_dir is not None:
+            ap.error("give the directory once, as --out-dir")
+        print("warning: a positional OUT_DIR is deprecated; use --out-dir (#277)", file=sys.stderr)
+        a.out_dir = a.legacy_out_dir
+    if a.out_dir is None:
+        ap.error("--out-dir is required")
+    main(a.out_dir)

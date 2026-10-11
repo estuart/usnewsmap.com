@@ -132,10 +132,10 @@ class Check(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "h.json"
             path.write_text(json.dumps({"pages-v20260928-1": {**ENTRY, "note": 1}}, sort_keys=True))
-            with unittest.mock.patch.object(check.sys, "argv", ["check", str(path)]):
+            with unittest.mock.patch.object(check.sys, "argv", ["check", "--path", str(path)]):
                 self.assertEqual(check.main(), 1)
             path.write_text(json.dumps(GOOD, sort_keys=True))
-            with unittest.mock.patch.object(check.sys, "argv", ["check", str(path)]):
+            with unittest.mock.patch.object(check.sys, "argv", ["check", "--path", str(path)]):
                 self.assertEqual(check.main(), 0)
 
     def test_not_json(self):

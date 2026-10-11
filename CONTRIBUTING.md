@@ -28,6 +28,8 @@ The infrastructure checks, and the scan for shared keys, run on every pull reque
 ```sh
 scripts/ci/lint-bicep.sh
 scripts/ci/no-shared-keys.sh
+scripts/ci/no-positional-args.py
+python3 -m unittest scripts/ci/test_no_positional_args.py
 scripts/ci/check-workbooks.py
 python3 -m unittest scripts/ci/test_check_workbooks.py
 python3 -m unittest scripts/test_env_scripts.py
@@ -43,6 +45,7 @@ AZURE_ENV_NAME=ci bicep build-params infra/main.bicepparam --stdout > /dev/null
 - **Entra ID only.** Every service signs in with a managed identity. Don't add account keys, SAS tokens, connection strings with keys or instrumentation keys ([ADR-0009](docs/design/adr/0009-entra-identity-only.md)). `scripts/ci/no-shared-keys.sh` fails the build if one appears.
 - **No real data from production.** Never commit search log content or real search queries ([ADR-0012](docs/design/adr/0012-anonymous-search-log.md)), production logs, traces or data dumps. Tests use the synthetic corpus in `fixtures/`. `python3 fixtures/generate.py` rebuilds it, and CI checks that the result matches what is committed.
 - **No secrets.** The repository holds none, and pull requests never get Azure access. Only `main` deploys, through its GitHub Environment.
+- **Named arguments only.** Scripts and command-line tools take named arguments (`scripts/settings.sh --env prod --key USNM_X --value true`), never positional ones: a positional interface breaks silently when its order changes, a named one fails loudly. Each parses its flags, fails on an unknown or missing one and prints its usage. A subcommand (`usnm-ingest enqueue`, `jaocr.py run`) is a name too. `scripts/ci/no-positional-args.py` fails the build on a script that reads `$1` or `sys.argv` outside its flag parser, a positional argparse argument, or a clap field that isn't `long` (#277).
 
 ## Pull requests
 
