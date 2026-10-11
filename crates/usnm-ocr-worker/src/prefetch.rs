@@ -489,9 +489,10 @@ struct Counts {
     failed_permanent: AtomicU64,
     failed_transient: AtomicU64,
     bytes_fetched: AtomicU64,
-    /// Bytes of scans found already there.
-    bytes_there: AtomicU64,
+    /// The keep set's scans of this run on disk: found there or fetched.
+    keep_bytes: AtomicU64,
     /// The buffer set's scans on disk: the last count plus fetches since.
+    /// Workers delete buffer scans, so it is counted again while waiting.
     buffer_bytes: AtomicU64,
     in_a_row: AtomicU32,
 }
@@ -503,8 +504,14 @@ struct Run {
     status: Mutex<Status>,
     status_path: PathBuf,
     status_write: Mutex<()>,
-    index: Lines,
-    failures: Lines,
+    /// The current state (`running` or `waiting`), which every status write
+    /// reports until the run ends.
+    state: Mutex<String>,
+    /// Index and failure lines by resolution tag, so each file holds one
+    /// resolution.
+    index: BTreeMap<String, Lines>,
+    failures: BTreeMap<String, Lines>,
+    stop_rx: watch::Receiver<bool>,
     started: Instant,
     /// Set when the run must stop taking pages: (state, error).
     stop: Mutex<Option<(String, Option<String>)>>,
@@ -522,8 +529,8 @@ impl Run {
         s.failed_permanent = c.failed_permanent.load(Ordering::SeqCst);
         s.failed_transient = c.failed_transient.load(Ordering::SeqCst);
         s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
-        s.bytes_on_disk = s.bytes_fetched + c.bytes_there.load(Ordering::SeqCst);
         s.buffer_bytes = c.buffer_bytes.load(Ordering::SeqCst);
+        s.bytes_on_disk = self.on_disk();
         let secs = self.started.elapsed().as_secs_f64();
         s.elapsed_secs = secs as u64;
         let worked = s.finished.saturating_sub(s.already_there);
@@ -541,7 +548,24 @@ impl Run {
         s
     }
 
-    fn write_status(&self, state: &str) {
+    /// This run's scans on disk now: its keep scans and the buffer as last
+    /// counted.
+    fn on_disk(&self) -> u64 {
+        let c = &self.counts;
+        c.keep_bytes.load(Ordering::SeqCst) + c.buffer_bytes.load(Ordering::SeqCst)
+    }
+
+    fn set_state(&self, state: &str) {
+        *self.state.lock().expect("state lock") = state.to_owned();
+    }
+
+    /// Write the status in the current state.
+    fn write_status(&self) {
+        let state = self.state.lock().expect("state lock").clone();
+        self.write_status_as(&state);
+    }
+
+    fn write_status_as(&self, state: &str) {
         // One write at a time: the ticker and the page tasks share the
         // `.tmp` file.
         let _one = self.status_write.lock().expect("status write lock");
@@ -566,6 +590,8 @@ impl Run {
             failed_permanent = s.failed_permanent,
             failed_transient = s.failed_transient,
             bytes_fetched = s.bytes_fetched,
+            bytes_on_disk = s.bytes_on_disk,
+            buffer_bytes = s.buffer_bytes,
             fetched_per_hour = s.fetched_per_hour,
             eta_secs = s.eta_secs,
             loc_hold_secs = s.loc_hold_secs,
@@ -584,7 +610,39 @@ impl Run {
         self.stop.lock().expect("stop lock").is_some()
     }
 
-    async fn page(&self, row: ManifestRow) -> anyhow::Result<()> {
+    async fn count_buffer(&self) {
+        let dir = self.opts.out.join(Set::Buffer.dir());
+        let n = tokio::task::spawn_blocking(move || dir_scan_bytes(&dir))
+            .await
+            .unwrap_or(0);
+        self.counts.buffer_bytes.store(n, Ordering::SeqCst);
+    }
+
+    /// Wait while the buffer is at its cap, counting it again every
+    /// minute. False if the run was stopped meanwhile.
+    async fn wait_for_buffer(&self) -> bool {
+        let mut stop = self.stop_rx.clone();
+        while self.counts.buffer_bytes.load(Ordering::SeqCst) >= self.opts.buffer_cap {
+            self.set_state("waiting");
+            self.write_status();
+            tokio::select! {
+                _ = tokio::time::sleep(BUFFER_RECHECK) => {}
+                _ = stop.wait_for(|s| *s) => {
+                    self.stop_with("stopped", None);
+                }
+            }
+            if self.stopping() {
+                return false;
+            }
+            self.count_buffer().await;
+        }
+        self.set_state("running");
+        true
+    }
+
+    /// One page. False if it was left for a later run (stopped while
+    /// waiting for the buffer).
+    async fn page(&self, row: ManifestRow) -> anyhow::Result<bool> {
         let set = set_of(&row);
         let size = match set {
             Set::Keep => self.opts.size,
@@ -594,11 +652,18 @@ impl Run {
         let c = &self.counts;
         if let Some(n) = verified(&path, &row, size).await {
             c.already_there.fetch_add(1, Ordering::SeqCst);
-            c.bytes_there.fetch_add(n, Ordering::SeqCst);
+            if set == Set::Keep {
+                c.keep_bytes.fetch_add(n, Ordering::SeqCst);
+            }
             // A page that is done breaks a run of failures too.
             c.in_a_row.store(0, Ordering::SeqCst);
-            return Ok(());
+            return Ok(true);
         }
+        // Only a page that needs fetching waits for room in the buffer.
+        if set == Set::Buffer && !self.wait_for_buffer().await {
+            return Ok(false);
+        }
+        let t = tag(size);
         let key = row.key()?;
         match self.loc.scan_at(&key, size).await {
             Ok(scan) => {
@@ -617,12 +682,13 @@ impl Run {
                 };
                 write_atomic(&path, scan.jpeg.to_vec()).await?;
                 write_atomic(&sidecar_path(&path), serde_json::to_vec_pretty(&side)?).await?;
-                self.index.push(&side)?;
+                self.index[&t].push(&side)?;
                 c.fetched.fetch_add(1, Ordering::SeqCst);
                 c.bytes_fetched.fetch_add(side.bytes, Ordering::SeqCst);
-                if set == Set::Buffer {
-                    c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst);
-                }
+                match set {
+                    Set::Keep => c.keep_bytes.fetch_add(side.bytes, Ordering::SeqCst),
+                    Set::Buffer => c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst),
+                };
                 c.in_a_row.store(0, Ordering::SeqCst);
             }
             Err(e) => {
@@ -631,7 +697,7 @@ impl Run {
                     FetchError::Transient(m) => ("transient", m.clone()),
                 };
                 tracing::warn!(doc_id = row.doc_id, kind, error = msg, "prefetch failed");
-                self.failures.push(&Failure {
+                self.failures[&t].push(&Failure {
                     doc_id: row.doc_id.clone(),
                     kind: kind.into(),
                     error: msg.chars().take(300).collect(),
@@ -653,7 +719,7 @@ impl Run {
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -676,7 +742,10 @@ fn lock(path: &Path) -> anyhow::Result<std::fs::File> {
 }
 
 /// The rows a run works through: the manifest, sampled, ordered, then
-/// limited.
+/// limited. Keep pages come first. With [`Order::Priority`] they go by
+/// issue, each issue in its best keep page's group, so an issue's pages stay
+/// together and its item JSON is asked for once (even when they came from
+/// different batches); buffer pages stay in issue order either way.
 pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
     let rows: Vec<ManifestRow> = rows
         .into_iter()
@@ -686,26 +755,25 @@ pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
         Some(n) => sample(&rows, n),
         None => rows,
     };
+    type Issue = (String, chrono::NaiveDate, u16);
+    let mut best: std::collections::HashMap<Issue, u8> = std::collections::HashMap::new();
     if opts.order == Order::Priority {
-        // By issue, so an issue's pages stay together and its item JSON is
-        // asked for once (even when its pages came from different batches):
-        // each issue goes in its best page's group, then issue and page
-        // order within the group.
-        let mut best: std::collections::HashMap<(String, chrono::NaiveDate, u16), u8> =
-            std::collections::HashMap::new();
-        for r in &rows {
+        for r in rows.iter().filter(|r| set_of(r) == Set::Keep) {
             let e = best
                 .entry((r.lccn.clone(), r.date, r.edition))
                 .or_insert(u8::MAX);
             *e = (*e).min(priority(r));
         }
-        rows.sort_by_cached_key(|r| {
-            let issue = (r.lccn.clone(), r.date, r.edition);
-            (best[&issue], issue, r.seq)
-        });
     }
-    // The keep set first, whatever the order. Stable, so each set keeps it.
-    rows.sort_by_key(set_of);
+    rows.sort_by_cached_key(|r| {
+        let set = set_of(r);
+        let issue = (r.lccn.clone(), r.date, r.edition);
+        match (set, opts.order) {
+            (Set::Keep, Order::Priority) => (set, best[&issue], Some((issue, r.seq))),
+            // Otherwise the manifest's order, which the stable sort keeps.
+            _ => (set, 0, None),
+        }
+    });
     if let Some(l) = opts.limit {
         rows.truncate(l);
     }
@@ -717,8 +785,9 @@ pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
 pub async fn run(
     opts: Options,
     loc: Arc<LocClient>,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
 ) -> anyhow::Result<Status> {
+    let mut stop_main = stop.clone();
     std::fs::create_dir_all(&opts.out)
         .with_context(|| format!("creating {}", opts.out.display()))?;
     let lock_path = opts
@@ -733,7 +802,27 @@ pub async fn run(
     let rows = prefetch::decode(Bytes::from(bytes)).context("reading the manifest")?;
     let manifest_pages = rows.len();
     let rows = select(rows, &opts);
-    let t = tag(opts.size);
+    // The status is named for the resolution of the set the run starts with.
+    let status_tag = tag(if opts.sets == Sets::Buffer {
+        opts.buffer_size
+    } else {
+        opts.size
+    });
+    let mut index = BTreeMap::new();
+    let mut failures = BTreeMap::new();
+    for size in [opts.size, opts.buffer_size] {
+        let t = tag(size);
+        if !index.contains_key(&t) {
+            index.insert(
+                t.clone(),
+                Lines::open(&opts.out.join(format!("index-{t}.jsonl")))?,
+            );
+            failures.insert(
+                t.clone(),
+                Lines::open(&opts.out.join(format!("failures-{t}.jsonl")))?,
+            );
+        }
+    }
     let run = Arc::new(Run {
         loc,
         counts: Counts::default(),
@@ -753,10 +842,12 @@ pub async fn run(
             buffer_pages: rows.iter().filter(|r| set_of(r) == Set::Buffer).count() as u64,
             ..Status::default()
         }),
-        status_path: opts.out.join(format!("status-{t}.json")),
+        status_path: opts.out.join(format!("status-{status_tag}.json")),
         status_write: Mutex::new(()),
-        index: Lines::open(&opts.out.join(format!("index-{t}.jsonl")))?,
-        failures: Lines::open(&opts.out.join(format!("failures-{t}.jsonl")))?,
+        state: Mutex::new("running".into()),
+        index,
+        failures,
+        stop_rx: stop,
         started: Instant::now(),
         stop: Mutex::new(None),
         opts,
@@ -765,26 +856,14 @@ pub async fn run(
         manifest_pages,
         pages = rows.len(),
         resolution = %run.opts.size,
+        buffer_resolution = %run.opts.buffer_size,
+        buffer_cap = run.opts.buffer_cap,
         concurrency = run.opts.concurrency,
         out = %run.opts.out.display(),
         "prefetch starting"
     );
-    let buffer_dir = run.opts.out.join(Set::Buffer.dir());
-    let count_buffer = {
-        let dir = buffer_dir.clone();
-        move || {
-            let dir = dir.clone();
-            async move {
-                tokio::task::spawn_blocking(move || dir_scan_bytes(&dir))
-                    .await
-                    .unwrap_or(0)
-            }
-        }
-    };
-    run.counts
-        .buffer_bytes
-        .store(count_buffer().await, Ordering::SeqCst);
-    run.write_status("running");
+    run.count_buffer().await;
+    run.write_status();
     // A status write every 30 s, so a long hold still shows.
     let ticker = {
         let run = Arc::clone(&run);
@@ -793,7 +872,7 @@ pub async fn run(
             every.tick().await;
             loop {
                 every.tick().await;
-                run.write_status("running");
+                run.write_status();
             }
         })
     };
@@ -806,7 +885,7 @@ pub async fn run(
         }
         let permit = tokio::select! {
             p = Arc::clone(&slots).acquire_owned() => p.expect("semaphore open"),
-            _ = stop.wait_for(|s| *s) => {
+            _ = stop_main.wait_for(|s| *s) => {
                 run.stop_with("stopped", None);
                 break;
             }
@@ -814,31 +893,8 @@ pub async fn run(
         if run.stopping() {
             break;
         }
-        // The buffer at its cap: wait for the workers to empty some of it,
-        // counting again every minute.
-        if set_of(&row) == Set::Buffer {
-            while run.counts.buffer_bytes.load(Ordering::SeqCst) >= run.opts.buffer_cap {
-                run.write_status("waiting");
-                tokio::select! {
-                    _ = tokio::time::sleep(BUFFER_RECHECK) => {}
-                    _ = stop.wait_for(|s| *s) => {
-                        run.stop_with("stopped", None);
-                        break;
-                    }
-                }
-                run.counts
-                    .buffer_bytes
-                    .store(count_buffer().await, Ordering::SeqCst);
-            }
-            if run.stopping() {
-                break;
-            }
-        }
         if let Some(max) = run.opts.max_total_bytes {
-            let c = &run.counts;
-            let on_disk =
-                c.bytes_fetched.load(Ordering::SeqCst) + c.bytes_there.load(Ordering::SeqCst);
-            if on_disk >= max {
+            if run.on_disk() >= max {
                 run.stop_with("budget", None);
                 break;
             }
@@ -846,14 +902,15 @@ pub async fn run(
         let run = Arc::clone(&run);
         tasks.spawn(async move {
             let doc_id = row.doc_id.clone();
-            let result = run.page(row).await;
-            if let Err(e) = &result {
-                run.stop_with("failed", Some(format!("{doc_id}: {e:#}")));
+            match run.page(row).await {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(e) => run.stop_with("failed", Some(format!("{doc_id}: {e:#}"))),
             }
             let n = run.counts.finished.fetch_add(1, Ordering::SeqCst) + 1;
             run.status.lock().expect("status lock").last_doc_id = doc_id;
             if n.is_multiple_of(every) {
-                run.write_status("running");
+                run.write_status();
             }
             drop(permit);
         });
@@ -875,7 +932,8 @@ pub async fn run(
         .clone()
         .unwrap_or_else(|| ("done".into(), None));
     run.status.lock().expect("status lock").error = error.clone();
-    run.write_status(&state);
+    run.set_state(&state);
+    run.write_status();
     let status = run.snapshot(&state);
     if state == "failed" {
         bail!(error.unwrap_or_else(|| "prefetch failed".into()));
@@ -1144,6 +1202,51 @@ mod tests {
             ..Options::default()
         };
         assert_eq!(ids(&only), ["sn1"]);
+    }
+
+    #[tokio::test]
+    async fn a_buffer_at_its_cap_doesnt_block_pages_already_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = row("sn1", 1890, 1, "eng");
+        let manifest = dir.path().join("m.parquet");
+        std::fs::write(
+            &manifest,
+            prefetch::encode(std::slice::from_ref(&r)).unwrap(),
+        )
+        .unwrap();
+        let out = dir.path().join("scans");
+        let path = scan_path(&out, &r, ImageSize::Full);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"jpeg").unwrap();
+        let side = Sidecar {
+            doc_id: r.doc_id.clone(),
+            batch: r.batch.clone(),
+            batch_version: 1,
+            loc_url: String::new(),
+            iiif_base: String::new(),
+            resolution: "full".into(),
+            fetched_at: Utc::now(),
+            bytes: 4,
+            sha256: sha256(b"jpeg"),
+            download_ms: 0,
+            user_agent: String::new(),
+        };
+        std::fs::write(sidecar_path(&path), serde_json::to_vec(&side).unwrap()).unwrap();
+        let opts = Options {
+            manifest,
+            out,
+            buffer_cap: 1,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let s = run(
+            opts,
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx,
+        )
+        .await
+        .unwrap();
+        assert_eq!((s.state.as_str(), s.already_there), ("done", 1));
     }
 
     #[tokio::test]
