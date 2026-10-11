@@ -240,7 +240,7 @@ Only a full base takes it. The release logs `one searched text field` when it cr
 **Page languages (#289, 05 §5.5.8).** To have the rebuild give each page its own languages, so `lang=` filters by them, add the setting to the first provision above:
 
 ```sh
-scripts/settings.sh prod USNM_PAGE_LANGUAGE true   # the job's --page-language
+scripts/settings.sh --env prod --key USNM_PAGE_LANGUAGE --value true   # the job's --page-language
 ```
 
 Only a full base takes it. The release logs `building index` with `page_language: true`, and before the merges `pages whose own languages differ from their title's, in the version` with their count (expect about 1.5 to 2 million: mostly pages of multilingual titles). Check afterwards: `current.json` has `page_language: 1`; `reference/<version>/manifest.json` has `build.features.page_language`, the two fields in `build.templates.pages`, `page_languages.pages`, and lists `page_language_baselines.json` (perhaps 10% to 20% more entries than `language_baselines.json`) and `page_languages.json` (about 15 to 20 MB); `/v1/meta` says `"language_filter": "page"`. Compare the release's pages a second with the last rebuild's (`release progress`): detection runs on up to 4 threads beside the writer. Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version and carry the moves forward. To go back to title languages at once, publish a `current.json` without the key; a full rebuild without the setting does it for good.

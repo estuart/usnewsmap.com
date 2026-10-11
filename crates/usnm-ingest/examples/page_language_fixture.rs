@@ -1,10 +1,10 @@
 //! The fixture indexes with page languages (05 §5.5.8, #289), for
 //! scripts/quickwit-fixtures.sh and the parity test:
 //!
-//! - `page_language_fixture template`: the index template on stdin, with
+//! - `page_language_fixture --template`: the index template on stdin, with
 //!   the `page_language` and `page_language_set` fields, as a release
 //!   creates the index.
-//! - `page_language_fixture docs`: fixture documents on stdin, with their
+//! - `page_language_fixture --docs`: fixture documents on stdin, with their
 //!   page languages (`fixtures/page_language.rs`), `text_cg` and
 //!   `text_as_cg` as a release writes them.
 
@@ -23,13 +23,13 @@ fn main() -> anyhow::Result<()> {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["template"] => {
+        ["--template"] => {
             let mut template = String::new();
             io::stdin().read_to_string(&mut template)?;
             let yaml = usnm_ingest::sink::page_language_fields(true, &template)?;
             out.write_all(yaml.as_bytes())?;
         }
-        ["docs"] => {
+        ["--docs"] => {
             for line in io::stdin().lock().lines() {
                 let line = line?;
                 if line.trim().is_empty() {
@@ -50,7 +50,9 @@ fn main() -> anyhow::Result<()> {
                 out.write_all(b"\n")?;
             }
         }
-        _ => anyhow::bail!("usage: page_language_fixture template | page_language_fixture docs"),
+        _ => {
+            anyhow::bail!("usage: page_language_fixture --template | page_language_fixture --docs")
+        }
     }
     out.flush()?;
     Ok(())

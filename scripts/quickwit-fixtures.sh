@@ -158,12 +158,12 @@ done
 for from in pages-base-fixture pages-delta-fixture-1; do
   index="${from}-page-language"
   cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-ingest --example page_language_fixture -- \
-    template < "$root/infra/quickwit/pages-index.yaml" |
+    --template < "$root/infra/quickwit/pages-index.yaml" |
     sed -e "s|\${INDEX_ID}|${index}|" -e "s|\${INDEX_URI}|file://${work}/indexes/${index}|" |
     curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
       "$url/api/v1/indexes" > /dev/null
   cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-ingest --example page_language_fixture -- \
-    docs < "$root/fixtures/data/indexes/${from}.jsonl" > "$work/${index}.jsonl"
+    --docs < "$root/fixtures/data/indexes/${from}.jsonl" > "$work/${index}.jsonl"
   curl -sf -XPOST "$url/api/v1/${index}/ingest?commit=force" \
     --data-binary @"$work/${index}.jsonl" |
     grep -q '"num_rejected_docs": 0' || { echo "ingest of ${index} rejected documents" >&2; exit 1; }

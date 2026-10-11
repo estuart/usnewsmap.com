@@ -236,6 +236,7 @@ HAND_PARSED = {
     "crates/usnm-core/examples/add_text_cg.rs": 1,
     "crates/usnm-core/examples/term_skew.rs": 1,
     "crates/usnm-ingest/examples/decade_fixture.rs": 1,
+    "crates/usnm-ingest/examples/page_language_fixture.rs": 1,
     "crates/usnm-ingest/examples/place-report.rs": 1,
     "crates/usnm-ingest/examples/single_field_fixture.rs": 1,
 }

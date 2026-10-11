@@ -4764,7 +4764,7 @@ async fn releases_page_languages_into_a_quickwit_writer_node() {
     std::fs::create_dir_all(&qw).unwrap();
     let meta = format!("file://{}/meta", qw.display());
     let root = format!("file://{}/indexes", qw.display());
-    let node = QuickwitNode::start(Path::new(&bin), &qw, 7404, &meta, &root)
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7412, &meta, &root)
         .await
         .unwrap();
     let mut published = Vec::new();
