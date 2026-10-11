@@ -195,7 +195,7 @@ sequenceDiagram
   else a valid message
     W->>L: issue JSON from loc.gov (cached, 3.5 s gap)
     W->>L: full-size scan from tile.loc.gov (1 s gap)
-    alt LoC lists no image, or answers a 4xx other than 408 or 429
+    alt LoC lists no image, or answers a 4xx other than 403, 408 or 429
       W->>D: Put Message (the checked message)
       W->>Q: Delete Message
     else scan fetched
@@ -206,7 +206,7 @@ sequenceDiagram
       W->>Q: Delete Message with the pop receipt
     end
   end
-  Note over W,Q: At 1440 s, or 60 s after SIGTERM, the page is abandoned and nothing more is written.<br/>Temporary errors, and a failed Delete Message after the output is written, also leave the message.<br/>It is visible again when its 1800 s run out.
+  Note over W,Q: At 1440 s, or 60 s after SIGTERM, the page is abandoned and nothing more is written.<br/>Temporary errors, a 403, 429 or 503 (which hold that LoC server), and a failed Delete Message after the output is written, also leave the message.<br/>It is visible again when its 1800 s run out.
 ```
 
 ### 12.3.3 Queue message states
