@@ -292,6 +292,16 @@ class TitlesSeed(Stubbed):
         self.assertEqual(r.returncode, 1)
         self.assertIn("still Running", r.stderr)
 
+    def test_wait_mins_with_a_leading_zero_is_decimal(self):
+        # `08` isn't octal: the wait is 8 minutes, not "value too great for base".
+        self.settings_file(self.SETTINGS)
+        r = self.seed("--wait-mins", "08")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("base", r.stderr)
+        r = self.seed("--wait-mins", "00", STUB_EXEC_STATUS="Running")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("still Running after 0 minutes", r.stderr)
+
     def test_needs_the_archive(self):
         self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\nINGEST_JOB="caj-usnm-ingest-dev"\n')
         r = self.seed()

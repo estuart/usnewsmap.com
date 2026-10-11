@@ -37,6 +37,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENV_NAME" ] || usage
 [[ $WAIT_MINS =~ ^[0-9]+$ ]] || { echo "error: --wait-mins is a number of minutes" >&2; exit 2; }
+# In decimal: Bash arithmetic reads a leading zero (`08`) as octal.
+WAIT_MINS=$((10#$WAIT_MINS))
 # Prod's catalog numbers are in its published versions: it keeps its own.
 [ "$ENV_NAME" != prod ] || { echo "error: prod keeps its own title records" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }

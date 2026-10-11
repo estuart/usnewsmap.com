@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use usnm_store::ObjectStore;
 
-use crate::catalog::{Place, Title, PLACES, TITLES};
+use crate::catalog::{Catalog, Place, Title, PLACES, TITLES};
 use crate::titles::{RawTitle, RAW};
 
 /// Where the copies go in the raw store: `titles/{time}.json`.
@@ -62,18 +62,26 @@ impl Copy {
             && self.catalog_places == other.catalog_places
     }
 
-    /// Parse each part as the pipeline reads it, so a seed never writes a
-    /// file titles-sync or geocode would then fail on.
+    /// Read each part as the pipeline reads it, so a seed never writes a
+    /// file titles-sync or geocode would then fail on: every record, and
+    /// the catalog as one ([`Catalog::new`], as [`Catalog::load`] builds
+    /// it: unique ids and ordinals, ordinals in range, every title's place
+    /// listed). The catalog's two files go together: both or neither.
     fn check(&self) -> anyhow::Result<()> {
         for (lccn, r) in &self.records {
             serde_json::from_value::<RawTitle>(r.clone())
                 .with_context(|| format!("record `{lccn}`"))?;
         }
-        if let Some(t) = &self.catalog_titles {
-            serde_json::from_value::<Vec<Title>>(t.clone()).context(TITLES)?;
-        }
-        if let Some(p) = &self.catalog_places {
-            serde_json::from_value::<Vec<Place>>(p.clone()).context(PLACES)?;
+        match (&self.catalog_titles, &self.catalog_places) {
+            (None, None) => {}
+            (Some(t), Some(p)) => {
+                let titles: Vec<Title> = serde_json::from_value(t.clone()).context(TITLES)?;
+                let places: Vec<Place> = serde_json::from_value(p.clone()).context(PLACES)?;
+                Catalog::new(titles, places).context("the copy's catalog")?;
+            }
+            (Some(_), None) | (None, Some(_)) => anyhow::bail!(
+                "the copy has only one of `{TITLES}` and `{PLACES}`; the catalog needs both"
+            ),
         }
         Ok(())
     }
@@ -518,5 +526,128 @@ mod tests {
         put(&raw, "titles/20261011T050000Z.json", &bad).await;
         assert!(seed(&raw, &reference).await.is_err());
         assert!(!reference.exists(RAW).await.unwrap());
+    }
+
+    /// Seed from a copy with `titles` and `places` as its catalog: the
+    /// error if it is refused (nothing written then), or what it wrote.
+    async fn seed_catalog(
+        titles: Option<Value>,
+        places: Option<Value>,
+    ) -> Result<Vec<String>, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = LocalStore::new(dir.path().join("raw"));
+        let reference = LocalStore::new(dir.path().join("reference"));
+        let copy = Copy {
+            saved_at: at(5),
+            git_sha: None,
+            records: [("sn1".to_owned(), record("sn1", "A"))].into(),
+            catalog_titles: titles,
+            catalog_places: places,
+        };
+        put(
+            &raw,
+            "titles/20261011T050000Z.json",
+            &serde_json::to_value(&copy).unwrap(),
+        )
+        .await;
+        match seed(&raw, &reference).await {
+            Ok(s) => Ok(s.written),
+            Err(e) => {
+                for file in [RAW, TITLES, PLACES] {
+                    assert!(!reference.exists(file).await.unwrap(), "{file} written");
+                }
+                Err(format!("{e:#}"))
+            }
+        }
+    }
+
+    fn place(id: &str, ordinal: u32) -> Value {
+        json!({ "id": id, "ordinal": ordinal, "name": "North Platte", "state": "NE",
+                "lat": 41.12, "lon": -100.77, "precision": "city" })
+    }
+
+    fn title(lccn: &str, ordinal: u32, place_id: &str) -> Value {
+        json!({ "lccn": lccn, "name": "The Tribune", "ordinal": ordinal,
+                "place_id": place_id, "state": "NE" })
+    }
+
+    #[tokio::test]
+    async fn refuses_a_catalog_the_pipeline_couldnt_load() {
+        let good_places = json!([place("ne-north-platte", 3)]);
+        // Duplicate place id.
+        let e = seed_catalog(
+            Some(json!([title("sn1", 7, "ne-north-platte")])),
+            Some(json!([
+                place("ne-north-platte", 3),
+                place("ne-north-platte", 4)
+            ])),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("invalid or duplicated"), "{e}");
+        // Duplicate title.
+        let e = seed_catalog(
+            Some(json!([
+                title("sn1", 7, "ne-north-platte"),
+                title("sn1", 8, "ne-north-platte")
+            ])),
+            Some(good_places.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("listed twice"), "{e}");
+        // Title ordinal out of range, and used twice.
+        let e = seed_catalog(
+            Some(json!([title("sn1", 1 << 21, "ne-north-platte")])),
+            Some(good_places.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("out of range"), "{e}");
+        let e = seed_catalog(
+            Some(json!([
+                title("sn1", 7, "ne-north-platte"),
+                title("sn2", 7, "ne-north-platte")
+            ])),
+            Some(good_places.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("out of range or used twice"), "{e}");
+        // Place ordinal used twice.
+        let e = seed_catalog(
+            Some(json!([title("sn1", 7, "ne-north-platte")])),
+            Some(json!([
+                place("ne-north-platte", 3),
+                place("ne-ogallala", 3)
+            ])),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("used twice"), "{e}");
+        // A title in a place the catalog doesn't list.
+        let e = seed_catalog(
+            Some(json!([title("sn1", 7, "ne-ogallala")])),
+            Some(good_places.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("unknown place"), "{e}");
+        // Only one of the two files.
+        let e = seed_catalog(Some(catalog_titles("sn1")), None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("only one of"), "{e}");
+        let e = seed_catalog(None, Some(good_places)).await.unwrap_err();
+        assert!(e.contains("only one of"), "{e}");
+
+        // Both, valid, or neither: seeded.
+        assert_eq!(
+            seed_catalog(Some(catalog_titles("sn1")), Some(catalog_places()))
+                .await
+                .unwrap(),
+            vec![TITLES, PLACES, RAW]
+        );
+        assert_eq!(seed_catalog(None, None).await.unwrap(), vec![RAW]);
     }
 }
