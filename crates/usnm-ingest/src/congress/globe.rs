@@ -166,11 +166,16 @@ pub fn parse_records(xml: &[u8]) -> anyhow::Result<(Vec<Item>, Option<String>)> 
     let mut text = String::new();
     let mut token: Option<String> = None;
     let mut error: Option<String> = None;
+    // A 200 that isn't a listing (a maintenance page, say) is no empty set.
+    let mut listing = false;
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Start(e) => {
                 let name = e.local_name().as_ref().to_owned();
                 qualifier = None;
+                if name == "ListRecords" {
+                    listing = true;
+                }
                 if name == "record" {
                     item = Some(Item::default());
                 }
@@ -193,6 +198,7 @@ pub fn parse_records(xml: &[u8]) -> anyhow::Result<(Vec<Item>, Option<String>)> 
             }
             Event::Empty(e) => match e.local_name().as_ref() {
                 "resumptionToken" => token = None,
+                "ListRecords" => listing = true,
                 // `<error code="badResumptionToken"/>`: an error all the same.
                 "error" => {
                     let mut code = String::from("unknown");
@@ -265,7 +271,9 @@ pub fn parse_records(xml: &[u8]) -> anyhow::Result<(Vec<Item>, Option<String>)> 
     }
     match error.as_deref() {
         // An empty set is an answer, not a failure.
-        Some("noRecordsMatch") | None => Ok((items, token)),
+        Some("noRecordsMatch") => Ok((items, token)),
+        None if listing => Ok((items, token)),
+        None => bail!("not an OAI-PMH `ListRecords` response"),
         Some(code) => bail!("OAI-PMH error `{code}`"),
     }
 }
@@ -279,6 +287,8 @@ pub struct Plan {
     pub deleted: Vec<String>,
     /// Items without the dates a page needs when it has no heading.
     pub undated: Vec<String>,
+    /// Items whose id can't be a segment of an object path.
+    pub bad_ids: Vec<String>,
 }
 
 /// Leave out deleted and superseded items, and items without dates. Warns
@@ -289,6 +299,9 @@ pub fn plan(items: Vec<Item>) -> Plan {
     for i in items {
         if i.deleted {
             p.deleted.push(i.id);
+        } else if !usnm_store::is_safe_segment(&i.id) {
+            tracing::warn!(item = %i.id, "a Globe item id that can't be an object path; left out");
+            p.bad_ids.push(i.id);
         } else if let Some((_, by, _)) = SUPERSEDED.iter().find(|(id, _, _)| *id == i.id) {
             p.superseded.push((i.id, (*by).to_owned()));
         } else if i.coverage.is_none() || i.id.is_empty() {
@@ -745,6 +758,8 @@ pub struct Report {
     pub superseded: Vec<(String, String)>,
     pub deleted: Vec<String>,
     pub undated: Vec<String>,
+    /// Items left out for an id that can't be an object path.
+    pub bad_ids: Vec<String>,
     /// Items with a finished attempt already, not fetched again.
     pub already: usize,
     /// Items written, with their attempt and pages.
@@ -891,6 +906,7 @@ pub async fn run(
     report.superseded = p.superseded.clone();
     report.deleted = p.deleted.clone();
     report.undated = p.undated.clone();
+    report.bad_ids = p.bad_ids.clone();
     if !opts.items.is_empty() {
         let unknown: Vec<&String> = opts
             .items
@@ -914,6 +930,7 @@ pub async fn run(
         superseded = p.superseded.len(),
         deleted = p.deleted.len(),
         undated = p.undated.len(),
+        bad_ids = p.bad_ids.len(),
         finished = finished.len(),
         "Congressional Globe items"
     );
@@ -939,6 +956,12 @@ pub async fn run(
         }
         tracing::info!(item = %item.id, title = %item.title, "fetching a Globe item");
         match fetch_item(fetch, raw, opts, item, lost, &mut report).await? {
+            // Lost during the last page: nothing to see it between pages.
+            Ok(_) if lost.load(Ordering::SeqCst) => {
+                report.left = todo.len() - n;
+                tracing::warn!(item = %item.id, "the fetch lock was lost; stopping");
+                break;
+            }
             Ok(rows) => {
                 let counts =
                     curated::write_attempt(curated, SERIES, SOURCE, &item.id, &rows, Utc::now())
@@ -1088,7 +1111,9 @@ mod tests {
         let mut d = a.clone();
         d.id = "metadc88888".into();
         d.coverage = None;
-        let p = plan(vec![b, a, c, d]);
+        let mut e = a.clone();
+        e.id = "../metadc1".into();
+        let p = plan(vec![b, a, c, d, e]);
         assert_eq!(
             p.fetch.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
             ["metadc29282"]
@@ -1099,6 +1124,7 @@ mod tests {
         );
         assert_eq!(p.deleted, ["metadc99999"]);
         assert_eq!(p.undated, ["metadc88888"]);
+        assert_eq!(p.bad_ids, ["../metadc1"]);
     }
 
     fn lines(s: &[&str]) -> Vec<String> {
@@ -1243,6 +1269,12 @@ mod tests {
             .to_string();
         assert!(err.contains("badResumptionToken"), "{err}");
         assert!(parse_records(b"<OAI-PMH><error/></OAI-PMH>").is_err());
+        // A page that isn't a listing is refused; an empty listing is not.
+        assert!(parse_records(b"<html><body>Down for maintenance</body></html>").is_err());
+        assert!(parse_records(b"<OAI-PMH><ListRecords/></OAI-PMH>")
+            .unwrap()
+            .0
+            .is_empty());
     }
 
     /// Answers every request with the same body, counting them.
@@ -1438,6 +1470,30 @@ mod tests {
             (c2.days.clone(), c2.text_status.clone()),
             (counts.days, counts.text_status)
         );
+    }
+
+    /// The recorded responses, losing the lock while the last page is asked for.
+    struct LosesOnLastPage<'a>(Recorded, &'a AtomicBool);
+
+    #[async_trait::async_trait]
+    impl Fetch for LosesOnLastPage<'_> {
+        async fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+            if url.ends_with("/m1/800/annotations/ocr/") {
+                self.1.store(true, Ordering::SeqCst);
+            }
+            self.0.get(url).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lock_lost_on_the_last_page_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::LocalStore::new(dir.path());
+        let lost = AtomicBool::new(false);
+        let unt = LosesOnLastPage(Recorded::default(), &lost);
+        assert!(run(&unt, &curated, None, &options(), &lost).await.is_err());
+        assert!(lost.load(Ordering::SeqCst), "the last page was asked for");
+        assert!(curated::finished(&curated).await.unwrap().is_empty());
     }
 
     #[tokio::test]
