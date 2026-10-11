@@ -8,6 +8,7 @@ import type {
   PlacesResponse,
   Problem,
   Status,
+  TitlesResponse,
 } from "./types";
 
 /** API origin: same-origin (the API serves the site; the dev server proxies) unless configured. */
@@ -344,6 +345,9 @@ export const api = {
   status: (signal?: AbortSignal) => getJson<Status>("/v1/status", { signal, cache: "no-cache" }),
   places: (version: string, signal?: AbortSignal) =>
     getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, { signal }),
+  /** Every newspaper of the version, for the newspaper filter (07 §7.13). */
+  titles: (version: string, signal?: AbortSignal) =>
+    getPinned<TitlesResponse>(`/v1/titles?v=${encodeURIComponent(version)}`, version, { signal }),
   /** `onComputing` is called while the API is still computing a large search. */
   aggregate: (p: SearchParams, version: string, signal?: AbortSignal, onComputing?: (ahead: number | null) => void) =>
     getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, version, { signal, onComputing }),

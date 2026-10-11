@@ -140,6 +140,14 @@ pub struct Title {
     pub state: String,
     #[serde(default)]
     pub languages: Vec<String>,
+    /// The first and last years of publication in LoC's title record
+    /// (`dates`, such as "1883-1922"), as `geocode` reads them (04 §4.6):
+    /// the paper's whole run, not the years of its pages in the version.
+    /// Absent when the record gives none, or an open end ("1890-current").
+    #[serde(default)]
+    pub first_year: Option<u16>,
+    #[serde(default)]
+    pub last_year: Option<u16>,
 }
 
 /// Everything the API needs in memory for one published version.

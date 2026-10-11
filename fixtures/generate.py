@@ -301,10 +301,17 @@ def main():
     for pid, ordinal, name, state, *_ in PLACES:
         lccn = f"sn99{ordinal:06d}"
         languages = LANGUAGES.get(pid, ["eng"])
-        titles.append({
+        # Years of publication as geocode derives them from LoC's `dates`
+        # (04 §4.6); the last paper's record is open-ended ("1896-current").
+        first_year = 1890 + ordinal
+        dates = f"{first_year}-current" if ordinal == len(PLACES) else f"{first_year}-1897"
+        title = {
             "lccn": lccn, "name": f"The Fixture Gazette {ordinal}", "ordinal": ordinal, "place_id": pid,
-            "state": state, "languages": languages, "first": "1895-01-01", "last": "1897-12-31",
-        })
+            "state": state, "languages": languages, "dates": dates, "first_year": first_year,
+        }
+        if ordinal != len(PLACES):
+            title["last_year"] = 1897
+        titles.append(title)
         counts = {}
         d = date(1895, 1, 5)
         while d <= date(1897, 12, 31):

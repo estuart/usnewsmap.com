@@ -1,11 +1,12 @@
 import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { flushSync } from "react-dom";
-import type { Meta, Mode } from "../api/types";
+import type { Meta, Mode, TitleEntry } from "../api/types";
 import { parseDateEntry, showDate } from "../lib/dateEntry";
 import { hasJapanese } from "../lib/japanese";
 import { DEFAULTS, type ViewState } from "../state/url";
 import { DateField } from "./DateField";
 import { LanguageFilter, languageChoices } from "./LanguageFilter";
+import { NewspaperFilter } from "./NewspaperFilter";
 
 interface Props {
   view: ViewState;
@@ -13,6 +14,11 @@ interface Props {
   onSearch: (patch: Partial<ViewState>) => void;
   /** A search is running: the button shows a spinner (its width doesn't change). */
   busy?: boolean;
+  /** The version's newspapers (`/v1/titles`), once loaded. */
+  titles?: readonly TitleEntry[];
+  titlesFailed?: boolean;
+  /** Asks for the newspapers' list: it loads when the newspaper filter is first opened. */
+  onWantTitles?: () => void;
 }
 
 const MODES: { value: Mode; label: string }[] = [
@@ -24,10 +30,10 @@ const MODES: { value: Mode; label: string }[] = [
 
 /** How many search options differ from the defaults (shown on the toggle). */
 export function activeOptions(
-  view: Pick<ViewState, "mode" | "from" | "to" | "state" | "lang"> & Partial<Pick<ViewState, "source">>,
+  view: Pick<ViewState, "mode" | "from" | "to" | "state" | "lang"> & Partial<Pick<ViewState, "source" | "lccn">>,
 ): number {
-  // A Congress search hides the state and language filters and drops them
-  // on submit (#229), so they don't count.
+  // A Congress search hides the state, language and newspaper filters and
+  // drops them on submit (#229), so they don't count.
   const congress = (view.source ?? DEFAULTS.source) === "congress";
   return [
     congress,
@@ -36,6 +42,7 @@ export function activeOptions(
     view.to !== DEFAULTS.to,
     !congress && view.state.length > 0,
     !congress && view.lang.length > 0,
+    !congress && (view.lccn?.length ?? 0) > 0,
   ].filter(Boolean).length;
 }
 
@@ -95,7 +102,7 @@ export function searchBounds(
   return lo && hi ? { from: lo, to: hi } : undefined;
 }
 
-export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
+export function SearchBar({ view, meta, onSearch, busy = false, titles, titlesFailed, onWantTitles }: Props) {
   const id = useId();
   // The parent remounts this form (via `key`) when the search in the URL
   // changes, so back/forward and example cards replace the draft.
@@ -110,7 +117,7 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
   const toRef = useRef<HTMLInputElement>(null);
   // Codes from the URL stay listed after they're unchecked, so they don't vanish.
   const languages = languageChoices(meta?.languages, [...new Set([...view.lang, ...draft.lang])]);
-  // On phones the options (match mode, dates, states, languages) sit behind a toggle so
+  // On phones the options (match mode, dates, states, languages, newspapers) sit behind a toggle so
   // the header is just the search box. They start open when a search already
   // uses one, so an active filter is never hidden. Wider screens always show
   // them (CSS hides the toggle).
@@ -168,7 +175,8 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
       // Congress pages are all English and printed in Washington for now,
       // and belong to no newspaper: those filters apply to newspapers only.
       lang: source === "congress" ? [] : draft.lang,
-      ...(source === "congress" ? { state: [], lccn: [] } : {}),
+      lccn: source === "congress" ? [] : draft.lccn,
+      ...(source === "congress" ? { state: [] } : {}),
       source,
       series: source === "congress" ? draft.series : [],
     });
@@ -318,6 +326,16 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
             choices={languages}
             value={draft.lang}
             onChange={(lang) => setDraft({ ...draft, lang })}
+          />
+        )}
+        {source === "news" && (
+          <NewspaperFilter
+            id={id}
+            titles={titles}
+            failed={titlesFailed}
+            onWant={onWantTitles}
+            value={draft.lccn}
+            onChange={(lccn) => setDraft({ ...draft, lccn })}
           />
         )}
       </div>

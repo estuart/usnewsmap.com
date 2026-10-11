@@ -4,6 +4,7 @@ mod coverage;
 mod days;
 mod hits;
 mod meta;
+mod titles;
 
 pub use aggregate::aggregate;
 pub(crate) use aggregate::{aggregate_in, cache_key as aggregate_key};
@@ -15,6 +16,7 @@ pub use days::days;
 pub use hits::hits;
 pub(crate) use meta::places_in;
 pub use meta::{meta, places, readyz};
+pub use titles::{title, titles};
 
 use std::future::Future;
 use std::io::Read;
@@ -174,7 +176,7 @@ pub(crate) struct Job {
     /// (within `limit`), and leave the visitor metrics alone.
     pub warm_up: bool,
     /// A search: it takes one of the `compute_concurrency` slots while it
-    /// runs. The reference-data responses (places, coverage) don't.
+    /// runs. The reference-data responses (places, titles, coverage) don't.
     pub search: bool,
     /// Limit on the whole computation, after which it is cancelled.
     pub limit: Duration,

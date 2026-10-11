@@ -1,12 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { AggregateResponse, HitsResponse, Meta, PlacesResponse } from "./api/types";
+import type { AggregateResponse, HitsResponse, Meta, PlacesResponse, TitlesResponse } from "./api/types";
 
 // The API answers from these, so App can be shown for a search (no WebGL in
 // jsdom: it shows the tables, not the map).
 const { api } = vi.hoisted(() => ({
-  api: { meta: vi.fn(), places: vi.fn(), aggregate: vi.fn(), coverage: vi.fn(), days: vi.fn(), hits: vi.fn() },
+  api: {
+    meta: vi.fn(),
+    places: vi.fn(),
+    titles: vi.fn(),
+    aggregate: vi.fn(),
+    coverage: vi.fn(),
+    days: vi.fn(),
+    hits: vi.fn(),
+  },
 }));
 vi.mock("./api/client", async (importOriginal) => ({ ...(await importOriginal<object>()), api }));
 // jsdom has no canvas: say so quietly, as a browser without WebGL2 would.
@@ -59,6 +67,34 @@ function aggregate(place: string, hits: number, lccn: string): AggregateResponse
   };
 }
 
+const titles: TitlesResponse = {
+  index_version: "v1",
+  titles: [
+    {
+      lccn: "sn82014424",
+      title: "The Atlanta Intelligencer",
+      place_id: "P00001",
+      place: "Atlanta",
+      state: "GA",
+      first_year: 1849,
+      last_year: 1871,
+      pages: 2000,
+      languages: ["eng"],
+    },
+    {
+      lccn: "sn89053729",
+      title: "The Atlanta Constitution",
+      place_id: "P00001",
+      place: "Atlanta",
+      state: "GA",
+      first_year: 1868,
+      last_year: null,
+      pages: 9000,
+      languages: ["eng"],
+    },
+  ],
+};
+
 const noHits: HitsResponse = {
   index_version: "v1",
   place: null,
@@ -87,6 +123,7 @@ beforeEach(() => {
   }));
   api.meta.mockResolvedValue(meta);
   api.places.mockResolvedValue(places);
+  api.titles.mockResolvedValue(titles);
   api.hits.mockResolvedValue(noHits);
 });
 
@@ -133,5 +170,49 @@ describe("App under the Congress source (#229)", () => {
     expect(none.closest(".notice")?.textContent).toBe(
       "No pages match. Try “All words” instead of an exact phrase, widen the dates, or remove language or state filters.",
     );
+  });
+});
+
+describe("App under a newspaper filter (07 §7.13)", () => {
+  it("names the papers from the newspapers' list and says why the relative rate is off", async () => {
+    api.aggregate.mockResolvedValue(aggregate("P00001", 3, "sn82014424"));
+    show("?q=gold&lccn=sn82014424,sn89053729");
+    const note = await screen.findByText(/Only pages from/);
+    await screen.findByText("The Atlanta Constitution", { selector: "cite" });
+    expect(note.textContent).toBe(
+      "Only pages from The Atlanta Intelligencer and The Atlanta Constitution. Show every newspaper",
+    );
+    expect(api.titles).toHaveBeenCalledWith("v1", expect.anything());
+    const rate = screen.getByRole("button", { name: "Relative rate" });
+    expect(rate.hasAttribute("disabled")).toBe(true);
+    expect(rate.getAttribute("title")).toBe("Not for chosen newspapers: pages published aren't counted per newspaper.");
+  });
+
+  it("says the map shows one paper's place only", async () => {
+    api.aggregate.mockResolvedValue(aggregate("P00001", 3, "sn82014424"));
+    show("?q=gold&lccn=sn82014424");
+    const note = await screen.findByText(/Only pages from/);
+    expect(note.textContent).toBe(
+      "Only pages from The Atlanta Intelligencer, so the map shows its place only. Show every newspaper",
+    );
+    expect(screen.getByRole("button", { name: "Relative rate" }).getAttribute("title")).toBe(
+      "Not for one newspaper: pages published aren't counted per newspaper.",
+    );
+  });
+
+  it("suggests removing the newspaper filter when nothing matches", async () => {
+    api.aggregate.mockResolvedValue(aggregate("P00001", 0, ""));
+    show("?q=gold&lccn=sn82014424");
+    const none = await screen.findByText(/No pages match/);
+    expect(none.closest(".notice")?.textContent).toBe(
+      "No pages match. Try “All words” instead of an exact phrase, widen the dates, or remove newspaper, language or state filters.",
+    );
+  });
+
+  it("doesn't load the newspapers' list until it is wanted", async () => {
+    api.aggregate.mockResolvedValue(aggregate("P00001", 3, "sn82014424"));
+    show("?q=gold");
+    await screen.findByRole("region", { name: "Newspapers" });
+    expect(api.titles).not.toHaveBeenCalled();
   });
 });
