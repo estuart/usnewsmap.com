@@ -95,8 +95,9 @@ impl Listing {
             let Some(paths) = self.by_title.get(lccn) else {
                 continue;
             };
-            // The stored scores alone choose each page's row.
-            let mut best: HashMap<String, (StoredRow, usize)> = HashMap::new();
+            // The stored scores alone choose each page's row: (row, part,
+            // the row's place in the part).
+            let mut best: HashMap<String, (StoredRow, usize, usize)> = HashMap::new();
             let mut withdrawn: HashSet<String> = HashSet::new();
             let mut bodies = Vec::with_capacity(paths.len());
             for (i, path) in paths.iter().enumerate() {
@@ -108,43 +109,43 @@ impl Listing {
                 );
                 out.parts.push((path.clone(), bytes.len() as u64));
                 let run = run_of(path);
-                for row in pages::read_scores(bytes.clone()).with_context(|| path.clone())? {
+                let rows = pages::read_scores(bytes.clone()).with_context(|| path.clone())?;
+                for (r, row) in rows.into_iter().enumerate() {
                     anyhow::ensure!(row.lccn == lccn, "`{path}` holds a page of `{}`", row.lccn);
-                    if revoked.iter().any(|r| r.matches(&row, run)) {
+                    if revoked.iter().any(|v| v.matches(&row, run)) {
                         withdrawn.insert(row.doc_id.clone());
                         continue;
                     }
                     let take = match best.get(&row.doc_id) {
                         None => true,
-                        Some((b, j)) => prefer((&row, i), (b, *j)),
+                        Some((b, j, q)) => prefer((&row, i, r), (b, *j, *q)),
                     };
                     if take {
-                        best.insert(row.doc_id.clone(), (row, i));
+                        best.insert(row.doc_id.clone(), (row, i, r));
                     }
                 }
                 bodies.push(bytes);
             }
-            // Then the chosen rows' text, part by part.
-            let mut wanted: HashMap<usize, HashSet<&str>> = HashMap::new();
-            for (id, (_, i)) in &best {
-                wanted.entry(*i).or_default().insert(id.as_str());
+            // Then the chosen rows' text, by their place in their part (a
+            // part can hold a page twice), reading only that column.
+            let mut wanted: HashMap<usize, HashSet<usize>> = HashMap::new();
+            for (_, i, r) in best.values() {
+                wanted.entry(*i).or_default().insert(*r);
             }
-            let mut texts: HashMap<String, String> = HashMap::new();
-            for (i, ids) in wanted {
-                for page in
-                    usnm_overlay::read_part(bodies[i].clone()).with_context(|| paths[i].clone())?
+            let mut texts: HashMap<(usize, usize), (String, String)> = HashMap::new();
+            for (i, rows) in wanted {
+                for (r, found) in
+                    pages::read_texts(bodies[i].clone(), &rows).with_context(|| paths[i].clone())?
                 {
-                    let id = page.key.doc_id();
-                    if ids.contains(id.as_str()) {
-                        texts.insert(id, page.text.unwrap_or_default());
-                    }
+                    texts.insert((i, r), found);
                 }
             }
             drop(bodies);
-            for (id, (row, _)) in best {
-                let text = texts
-                    .remove(&id)
+            for (id, (row, i, r)) in best {
+                let (doc_id, text) = texts
+                    .remove(&(i, r))
                     .with_context(|| format!("`{id}` has scores but no text"))?;
+                anyhow::ensure!(doc_id == id, "`{}` row {r} changed between reads", paths[i]);
                 withdrawn.remove(&id);
                 out.pages.insert(id, Candidate { row, text });
             }
@@ -168,13 +169,14 @@ impl Listing {
         for (lccn, paths) in &self.by_title {
             let langs = title_languages(lccn);
             let langs: Vec<&str> = langs.iter().map(String::as_str).collect();
-            let mut best: HashMap<String, (StoredRow, usize)> = HashMap::new();
+            let mut best: HashMap<String, (StoredRow, usize, usize)> = HashMap::new();
             for (i, path) in paths.iter().enumerate() {
                 let Some(bytes) = curated.get(path).await? else {
                     continue;
                 };
                 let run = run_of(path);
-                for row in pages::read_scores(Bytes::from(bytes)).with_context(|| path.clone())? {
+                let rows = pages::read_scores(Bytes::from(bytes)).with_context(|| path.clone())?;
+                for (r, row) in rows.into_iter().enumerate() {
                     if !published.contains(row.batch.as_str())
                         || revoked.iter().any(|r| r.matches(&row, run))
                     {
@@ -182,15 +184,15 @@ impl Listing {
                     }
                     let take = best
                         .get(&row.doc_id)
-                        .is_none_or(|(b, j)| prefer((&row, i), (b, *j)));
+                        .is_none_or(|(b, j, q)| prefer((&row, i, r), (b, *j, *q)));
                     if take {
-                        best.insert(row.doc_id.clone(), (row, i));
+                        best.insert(row.doc_id.clone(), (row, i, r));
                     }
                 }
             }
             n += best
                 .values()
-                .filter(|(r, _)| rule::verdict(&r.ours, &r.loc, Some(&langs)).is_ok())
+                .filter(|(r, _, _)| rule::verdict(&r.ours, &r.loc, Some(&langs)).is_ok())
                 .count() as u64;
         }
         Ok(n)
@@ -205,15 +207,16 @@ fn run_of(path: &str) -> &str {
         .unwrap_or_default()
 }
 
-/// Whether row `a` (from the `i`th part in path order) is chosen over `b`:
-/// the lower stored damage rate, then the newer, then the later part.
-fn prefer(a: (&StoredRow, usize), b: (&StoredRow, usize)) -> bool {
+/// Whether row `a` (the `r`th row of the `i`th part in path order) is
+/// chosen over `b`: the lower stored damage rate, then the newer, then the
+/// later part, then the later row.
+fn prefer(a: (&StoredRow, usize, usize), b: (&StoredRow, usize, usize)) -> bool {
     let rate = |r: &StoredRow| r.ours.damage_rate.unwrap_or(f64::INFINITY);
     let (ra, rb) = (rate(a.0), rate(b.0));
     if ra != rb {
         return ra < rb;
     }
-    (a.0.ocred_at, a.1) > (b.0.ocred_at, b.1)
+    (a.0.ocred_at, a.1, a.2) > (b.0.ocred_at, b.1, b.2)
 }
 
 /// One page's chosen reading.
@@ -295,6 +298,20 @@ impl Revocation {
         }
         if self.reason.trim().is_empty() || self.reference.trim().is_empty() {
             bail!("has no reason or reference");
+        }
+        for (name, v) in [
+            ("node", &self.node),
+            ("engine", &self.engine),
+            ("run", &self.run),
+        ] {
+            if v.as_ref().is_some_and(|v| v.trim().is_empty()) {
+                bail!("has an empty `{name}`, which matches nothing");
+            }
+        }
+        if let (Some(from), Some(to)) = (self.from, self.to) {
+            if from >= to {
+                bail!("has `from` at or after `to`, which matches nothing");
+            }
         }
         Ok(())
     }
@@ -410,13 +427,25 @@ mod tests {
 
     #[test]
     fn the_lowest_stored_rate_wins_then_the_newest() {
-        assert!(prefer((&row(Some(0.1), 1), 0), (&row(Some(0.2), 9), 1)));
-        assert!(!prefer((&row(Some(0.2), 9), 1), (&row(Some(0.1), 1), 0)));
+        assert!(prefer(
+            (&row(Some(0.1), 1), 0, 0),
+            (&row(Some(0.2), 9), 1, 0)
+        ));
+        assert!(!prefer(
+            (&row(Some(0.2), 9), 1, 0),
+            (&row(Some(0.1), 1), 0, 0)
+        ));
         // Ties: the newest, then the later part.
-        assert!(prefer((&row(Some(0.1), 2), 0), (&row(Some(0.1), 1), 1)));
-        assert!(prefer((&row(Some(0.1), 1), 1), (&row(Some(0.1), 1), 0)));
+        assert!(prefer(
+            (&row(Some(0.1), 2), 0, 0),
+            (&row(Some(0.1), 1), 1, 0)
+        ));
+        assert!(prefer(
+            (&row(Some(0.1), 1), 1, 0),
+            (&row(Some(0.1), 1), 0, 0)
+        ));
         // An unscored row loses to any scored one.
-        assert!(prefer((&row(Some(0.9), 0), 0), (&row(None, 9), 1)));
+        assert!(prefer((&row(Some(0.9), 0), 0, 0), (&row(None, 9), 1, 0)));
     }
 
     #[test]
@@ -441,7 +470,17 @@ mod tests {
         let mut both = with("node", "node1".into());
         both.run = Some("other".into());
         assert!(!both.matches(&x, "run1"), "every selector must match");
-        assert!(r(base).check().is_err(), "a selector is required");
+        assert!(r(base.clone()).check().is_err(), "a selector is required");
+        assert!(with("node", "node1".into()).check().is_ok());
+        assert!(
+            with("node", " ".into()).check().is_err(),
+            "an empty selector"
+        );
+        let mut window = with("from", "2026-10-02T00:00:00Z".into());
+        window.to = Some("2026-10-01T00:00:00Z".parse().unwrap());
+        assert!(window.check().is_err(), "a reversed window");
+        window.to = window.from;
+        assert!(window.check().is_err(), "an empty window");
         assert!(serde_json::from_value::<Revocation>(json!({
             "reason": "x", "reference": "y", "nodes": "z"
         }))

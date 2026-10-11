@@ -248,3 +248,45 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
     }
     Ok(out)
 }
+
+/// The `doc_id` and text of the rows of a merged part at the places in
+/// `rows` (0-based, in file order), reading only those two columns and
+/// keeping only those rows' text.
+pub fn read_texts(
+    bytes: Bytes,
+    rows: &std::collections::HashSet<usize>,
+) -> anyhow::Result<Vec<(usize, (String, String))>> {
+    use arrow_array::LargeStringArray;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+    let schema = builder.schema().clone();
+    let wanted: Vec<usize> = ["doc_id", "text"]
+        .iter()
+        .map(|n| {
+            schema
+                .index_of(n)
+                .with_context(|| format!("no `{n}` column"))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let mask = ProjectionMask::roots(builder.parquet_schema(), wanted);
+    let mut out = Vec::with_capacity(rows.len());
+    let mut at = 0usize;
+    for batch in builder.with_projection(mask).build()? {
+        let b = batch?;
+        let doc_id = b
+            .column_by_name("doc_id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .context("column `doc_id` has an unexpected type")?;
+        let text = b
+            .column_by_name("text")
+            .and_then(|c| c.as_any().downcast_ref::<LargeStringArray>())
+            .context("column `text` has an unexpected type")?;
+        for i in 0..b.num_rows() {
+            if rows.contains(&(at + i)) {
+                let t = if text.is_null(i) { "" } else { text.value(i) };
+                out.push((at + i, (doc_id.value(i).to_owned(), t.to_owned())));
+            }
+        }
+        at += b.num_rows();
+    }
+    Ok(out)
+}

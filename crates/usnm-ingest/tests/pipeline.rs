@@ -4948,12 +4948,22 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
     write_archive(&late_path, &late.iter().collect::<Vec<_>>(), false, true);
     curate(&e, vec![listed("batch_fx_early_ver01", &early_path, None)]).await;
 
-    // Two imports. Page a has a second, worse reading the lower stored
-    // rate passes over; f's only reading is from a node later revoked.
+    // Two imports. Page a has worse readings the lower stored rate passes
+    // over; f's only reading is from a node later revoked.
     let fx = "batch_fx_early";
     let lccn = "sn99000001";
     let run1 = [
         local_row(&early[a], fx, &clean[0], &early[a].text, "node1", 10),
+        // The same page twice in one part (a message delivered twice):
+        // the chosen row's own text, not the part's last for the page.
+        local_row(
+            &early[a],
+            fx,
+            &garble(&clean[0]),
+            &early[a].text,
+            "node1",
+            10,
+        ),
         local_row(
             &early[b],
             fx,
