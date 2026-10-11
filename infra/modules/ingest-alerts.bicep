@@ -23,6 +23,8 @@ param tags object
 param nameSuffix string
 param workspaceId string
 param actionGroupId string
+@description('Alert on the OCR pickup job, usnm-ocrsync-caj-<env> (with the on-prem OCR nodes, 12 §12.5 Step 8).')
+param ocrSync bool = false
 
 // Every error exit of usnm-ingest ends with one "command failed" line: the
 // reliable signal, with the error text. A replica killed without writing it
@@ -332,6 +334,114 @@ var rules = [
     window: 'P1D'
     query: backfillReplicaSilent
     dimensions: ['Replica', 'Detail']
+  }
+]
+
+// The OCR pickup job (usnm-ocrsync-caj-*, 12 §12.5 Step 8), at severity 3:
+// a failed pickup touches no published index, and the next hourly run
+// continues it. Its "command failed" line, or the platform's events for a
+// replica that died without one. Split by Execution and Reason as above.
+var ocrSyncFailed = '''
+let lines = ContainerAppConsoleLogs
+    | where ContainerName == "ocrsync"
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+    | where Log has "failed"
+    | extend j = parse_json(Log)
+    | where tostring(j.level) == "ERROR" and tostring(j.fields.message) == "command failed"
+    | project TimeGenerated, Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName,
+        Detail = tostring(j.fields.error);
+let platform = ContainerAppSystemLogs
+    | where JobName startswith "usnm-ocrsync-caj-" or ContainerAppName startswith "usnm-ocrsync-caj-"
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+    | where Reason in ("BackoffLimitExceeded", "DeadlineExceeded")
+        or (Log contains "terminated with exit code" and Log !contains "exit code '0'")
+    | project TimeGenerated, Job = coalesce(JobName, ContainerAppName), Replica = ReplicaName,
+        Detail = strcat(Reason, ": ", Log)
+    | join kind=leftanti lines on Replica;
+union lines, platform
+| where TimeGenerated > ago(15m)
+| extend Execution = iff(isempty(Replica), Job, extract(@"^(.+)-[a-z0-9]+$", 1, Replica))
+| extend Reason = replace_regex(Detail, @"\?[^\s'\x22]+", "?…")
+| extend Reason = replace_regex(Reason, @"(?i)(sig|signature|token|secret|password|key|code)=[^\s&,;]+", @"\1=***")
+| extend Reason = replace_regex(Reason, @"[A-Za-z0-9+/_=-]{40,}", "***")
+| extend Reason = iff(strlen(Reason) > 180, strcat(substring(Reason, 0, 179), "…"), Reason)
+| project TimeGenerated, Execution, Reason
+'''
+
+// Node output waiting in ocr-out for more than 72 hours: the pickup's
+// last "ocr sync finished" line in the last 3 hours reports the oldest
+// part it left (oldest_age_s), from the parts' creation times on the
+// server. Parts left that long are refused by nothing and taken by
+// nothing: a run that keeps stopping at its max runtime, or a pickup
+// that can't read them.
+var ocrSyncBacklog = '''
+ContainerAppConsoleLogs
+| where ContainerName == "ocrsync"
+| where Log has "ocr sync finished"
+| extend j = parse_json(Log)
+| where tostring(j.fields.message) == "ocr sync finished"
+| summarize arg_max(TimeGenerated, j) by ContainerAppName
+| extend OldestHours = toint(tolong(j.fields.oldest_age_s) / 3600), PartsLeft = tolong(j.fields.parts_left)
+| where OldestHours > 72
+| project TimeGenerated, Job = ContainerAppName, Detail = strcat(PartsLeft, " parts left, the oldest ", OldestHours, " hours old")
+'''
+
+var ocrSyncRules = [
+  {
+    name: 'usnm-ocrsync-failed-alert-${nameSuffix}'
+    displayName: 'OCR pickup failed'
+    description: 'An execution of the OCR pickup job (usnm-ocrsync-caj) failed in the last 15 minutes; Execution and Reason say which and why. Nothing published changes, and the next hourly run continues. Next: the job\'s console logs for its last lines (scripts/logs.sh <env> job-executions 1d); fix the cause, then start the job again or wait for the schedule.'
+    severity: 3
+    frequency: 'PT5M'
+    window: 'PT30M'
+    query: ocrSyncFailed
+    dimensions: ['Execution', 'Reason']
+  }
+  {
+    name: 'usnm-ocrsync-backlog-alert-${nameSuffix}'
+    displayName: 'OCR output waiting over 72 hours'
+    description: 'The OCR pickup\'s last run left node output in ocr-out that is more than 72 hours old; Detail says how much. ocr-out deletes blobs 30 days after their last change. Next: reference status/ocr-local.json (parts_left, oldest_age_s) and the pickup\'s logs; raise --max-parts or start extra executions (scripts/start-job.sh --job OCR_SYNC_JOB -- ocr-sync).'
+    severity: 3
+    frequency: 'PT1H'
+    window: 'PT3H'
+    query: ocrSyncBacklog
+    dimensions: ['Job', 'Detail']
+  }
+]
+
+resource ocrSyncAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
+  for r in (ocrSync ? ocrSyncRules : []): {
+    name: r.name
+    location: location
+    tags: tags
+    kind: 'LogAlert'
+    properties: {
+      displayName: r.displayName
+      description: r.description
+      severity: r.severity
+      enabled: true
+      evaluationFrequency: r.frequency
+      windowSize: r.window
+      scopes: [workspaceId]
+      skipQueryValidation: true
+      autoMitigate: true
+      criteria: {
+        allOf: [
+          {
+            query: r.query
+            timeAggregation: 'Count'
+            operator: 'GreaterThan'
+            threshold: 0
+            dimensions: [for d in r.dimensions: { name: d, operator: 'Include', values: ['*'] }]
+            failingPeriods: {
+              numberOfEvaluationPeriods: 1
+              minFailingPeriodsToAlert: 1
+            }
+          }
+        ]
+      }
+      actions: { actionGroups: [actionGroupId] }
+    }
   }
 ]
 

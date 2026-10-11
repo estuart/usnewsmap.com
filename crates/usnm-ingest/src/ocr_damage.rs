@@ -673,6 +673,73 @@ pub struct VersionBatch {
     pub summary: String,
 }
 
+/// A page's LoC scores as a page table holds them, for `ocr-sync` and
+/// `ocr-enqueue` (12 §12.5 Step 8).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredScore {
+    pub batch: String,
+    pub batch_version: u16,
+    pub lang: Option<String>,
+    pub decision: String,
+    pub damage_rate: Option<f64>,
+    pub function_share: Option<f64>,
+    pub head: u32,
+}
+
+/// The rows of a page table ([`encode_table`]) whose doc_id is in `wanted`
+/// (all of them when `wanted` is `None`), without reading the rest of each
+/// row group into rows.
+pub fn read_scores(
+    bytes: Bytes,
+    wanted: Option<&HashSet<String>>,
+) -> anyhow::Result<HashMap<String, StoredScore>> {
+    use arrow_array::{Array, Float64Array, Int16Array, Int32Array, StringArray};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(bytes)?.build()?;
+    let mut out = HashMap::new();
+    for batch in reader {
+        let batch = batch?;
+        macro_rules! col {
+            ($name:expr, $t:ty) => {
+                batch
+                    .column_by_name($name)
+                    .with_context(|| format!("page table has no `{}` column", $name))?
+                    .as_any()
+                    .downcast_ref::<$t>()
+                    .with_context(|| format!("column `{}` has an unexpected type", $name))?
+            };
+        }
+        let doc_id = col!("doc_id", StringArray);
+        let batch_name = col!("batch", StringArray);
+        let version = col!("batch_version", Int16Array);
+        let lang = col!("lang", StringArray);
+        let decision = col!("decision", StringArray);
+        let rate = col!("damage_rate", Float64Array);
+        let share = col!("function_share", Float64Array);
+        let head = col!("head", Int32Array);
+        let opt_f = |a: &Float64Array, i: usize| (!a.is_null(i)).then(|| a.value(i));
+        for i in 0..batch.num_rows() {
+            let id = doc_id.value(i);
+            if wanted.is_some_and(|w| !w.contains(id)) {
+                continue;
+            }
+            out.insert(
+                id.to_owned(),
+                StoredScore {
+                    batch: batch_name.value(i).to_owned(),
+                    batch_version: u16::try_from(version.value(i)).unwrap_or(0),
+                    lang: (!lang.is_null(i)).then(|| lang.value(i).to_owned()),
+                    decision: decision.value(i).to_owned(),
+                    damage_rate: opt_f(rate, i),
+                    function_share: opt_f(share, i),
+                    head: u32::try_from(head.value(i)).unwrap_or(0),
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
 /// One page of the audit's per-page CSV, as far as the gate compares it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CsvPage {

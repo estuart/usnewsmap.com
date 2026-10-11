@@ -27,6 +27,24 @@ struct Cli {
     command: Command,
 }
 
+/// Why a page is queued for OCR.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum OcrReason {
+    /// A page someone was shown (`ocr-priority`).
+    User,
+    /// The damage-ranked backlog (`ocr-bulk`).
+    Bulk,
+}
+
+impl From<OcrReason> for usnm_ocr_contract::message::Reason {
+    fn from(r: OcrReason) -> Self {
+        match r {
+            OcrReason::User => Self::User,
+            OcrReason::Bulk => Self::Bulk,
+        }
+    }
+}
+
 #[derive(Args)]
 struct Stores {
     /// Cosmos DB endpoint for pipeline state (Azure).
@@ -233,6 +251,91 @@ enum Command {
         /// Batches scored at once (default: the CPUs).
         #[arg(long)]
         parallel: Option<usize>,
+    },
+    /// Pick up the OCR nodes' output (12 §12.5 Step 8, #296): drain the
+    /// dead letters, check each part in the exchange account's `ocr-out`
+    /// and its ALTO, import what passes into `ocr-local/` in the curated
+    /// store, move the rest to `ocr-quarantine`, delete the sources and
+    /// write `status/ocr-local.json`. Holds the `ocr-sync` lock. Logs page
+    /// ids and reason codes, never text.
+    OcrSync {
+        /// The exchange account's queue endpoint (`OCR_QUEUE_ENDPOINT`).
+        #[arg(long, env = "USNM_OCR_QUEUE_URL")]
+        queue_url: Option<String>,
+        /// The exchange account's `ocr-out` container: a Blob container URL or a directory.
+        #[arg(long, env = "USNM_OCR_OUT_URL")]
+        out_url: Option<String>,
+        /// The exchange account's `ocr-quarantine` container: a Blob container URL or a directory.
+        #[arg(long, env = "USNM_OCR_QUARANTINE_URL")]
+        quarantine_url: Option<String>,
+        /// The most parts checked in one run; the rest wait for the next.
+        #[arg(long, default_value_t = 2000)]
+        max_parts: usize,
+        /// Parts per import (each import writes and deletes on its own).
+        #[arg(long, default_value_t = 200)]
+        chunk: usize,
+        /// The most dead letters drained in one run.
+        #[arg(long, default_value_t = 5000)]
+        max_dead_letters: usize,
+        /// Only apply rule v1 to the stored scores of all of `ocr-local`
+        /// and write `ocr-local/report/<run>.json`; picks nothing up.
+        #[arg(long, conflicts_with = "from_quarantine")]
+        report: bool,
+        /// First put the rejects with `--reason` back where they came
+        /// from, so this run checks them again.
+        #[arg(long, requires = "reason")]
+        from_quarantine: bool,
+        /// The reject reason code to replay (as in the quarantine records).
+        #[arg(long, requires = "from_quarantine")]
+        reason: Option<String>,
+        /// Seconds after the start to stop starting imports. Keep it under
+        /// the job's replica timeout.
+        #[arg(long)]
+        max_runtime_secs: Option<u64>,
+    },
+    /// Queue chosen pages for OCR (12 §12.5 Step 8): finds each page in the
+    /// published version, writes a ledger row for it and puts its message
+    /// on `ocr-priority` (`--reason user`) or `ocr-bulk` (`bulk`). Run as
+    /// an ingest job execution: only `id-usnm-ingest` can add messages.
+    OcrEnqueue {
+        #[arg(long, env = "USNM_OCR_QUEUE_URL")]
+        queue_url: String,
+        /// Page doc_ids, comma separated (`sn83045462_1890-05-03_ed-1_seq-7`).
+        #[arg(long, value_delimiter = ',', required = true)]
+        pages: Vec<String>,
+        #[arg(long, value_enum)]
+        reason: OcrReason,
+        /// The plan name recorded in the ledger.
+        #[arg(long, default_value = "manual")]
+        plan: String,
+        /// Look for the pages only in this base batch.
+        #[arg(long)]
+        batch: Option<String>,
+        /// Count what would be queued; write and send nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Queue dead-lettered pages again by their cause and kind (12 §12.5
+    /// Step 8), from the dead letters `ocr-sync` drained into `ocr-local`.
+    OcrRequeue {
+        #[arg(long, env = "USNM_OCR_QUEUE_URL")]
+        queue_url: String,
+        /// `dequeue_count`, `invalid`, `permanent` or `unroutable`.
+        #[arg(long)]
+        cause: String,
+        /// For `invalid`: the check that failed.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only dead letters drained on or after this UTC day (YYYY-MM-DD).
+        #[arg(long)]
+        since: Option<chrono::NaiveDate>,
+        /// The plan name recorded in the ledger.
+        #[arg(long, default_value = "requeue")]
+        plan: String,
+        #[arg(long, default_value_t = 1000)]
+        max_pages: usize,
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
@@ -643,6 +746,9 @@ impl Command {
             Command::Duplicates => "duplicates",
             Command::ArchiveCopy { .. } => "archive-copy",
             Command::OcrDamage { .. } => "ocr-damage",
+            Command::OcrSync { .. } => "ocr-sync",
+            Command::OcrEnqueue { .. } => "ocr-enqueue",
+            Command::OcrRequeue { .. } => "ocr-requeue",
             Command::Run { .. } => "run",
         }
     }
@@ -666,7 +772,10 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::Geocode
         | Command::Duplicates
         | Command::ArchiveCopy { .. }
-        | Command::OcrDamage { .. } => None,
+        | Command::OcrDamage { .. }
+        | Command::OcrSync { .. }
+        | Command::OcrEnqueue { .. }
+        | Command::OcrRequeue { .. } => None,
     }
 }
 
@@ -801,6 +910,96 @@ async fn command(
             usnm_ingest::ocr_damage::run(curated, reference.as_ref(), &opts)
                 .await
                 .map(|()| None)
+        }
+        Command::OcrSync {
+            queue_url,
+            out_url,
+            quarantine_url,
+            max_parts,
+            chunk,
+            max_dead_letters,
+            report,
+            from_quarantine,
+            reason,
+            max_runtime_secs,
+        } => {
+            let curated = usnm_store::open(&cli.stores.curated)?;
+            if *report {
+                usnm_ingest::ocr_local::report::run(curated.as_ref()).await?;
+                return Ok(None);
+            }
+            let need = |v: &Option<String>, flag: &str| {
+                v.clone().with_context(|| format!("ocr-sync needs {flag}"))
+            };
+            let stores = usnm_ingest::ocr_local::sync::Stores {
+                curated,
+                reference: usnm_store::open(&cli.stores.reference)?,
+                out: usnm_store::open(&need(out_url, "--out-url")?)?,
+                quarantine: usnm_store::open(&need(quarantine_url, "--quarantine-url")?)?,
+                queue: usnm_store::queue::open(&need(queue_url, "--queue-url")?)?,
+            };
+            let opts = usnm_ingest::ocr_local::sync::Options {
+                max_parts: *max_parts,
+                chunk: *chunk,
+                max_dead_letters: *max_dead_letters,
+                from_quarantine: from_quarantine.then(|| reason.clone()).flatten(),
+                deadline: deadline(start, *max_runtime_secs),
+            };
+            usnm_ingest::ocr_local::sync::run(&state, &owner_id(), &stores, &opts)
+                .await
+                .map(|_| None)
+        }
+        Command::OcrEnqueue {
+            queue_url,
+            pages,
+            reason,
+            plan,
+            batch,
+            dry_run,
+        } => {
+            let opts = usnm_ingest::ocr_local::enqueue::EnqueueOptions {
+                pages: pages.clone(),
+                reason: (*reason).into(),
+                plan: plan.clone(),
+                batch: batch.clone(),
+                dry_run: *dry_run,
+            };
+            usnm_ingest::ocr_local::enqueue::enqueue(
+                &state,
+                usnm_store::open(&cli.stores.curated)?.as_ref(),
+                usnm_store::open(&cli.stores.reference)?.as_ref(),
+                &usnm_store::queue::open(queue_url)?,
+                &opts,
+            )
+            .await
+            .map(|_| None)
+        }
+        Command::OcrRequeue {
+            queue_url,
+            cause,
+            kind,
+            since,
+            plan,
+            max_pages,
+            dry_run,
+        } => {
+            let opts = usnm_ingest::ocr_local::enqueue::RequeueOptions {
+                cause: cause.clone(),
+                kind: kind.clone(),
+                since: *since,
+                plan: plan.clone(),
+                max_pages: *max_pages,
+                dry_run: *dry_run,
+            };
+            usnm_ingest::ocr_local::enqueue::requeue(
+                &state,
+                usnm_store::open(&cli.stores.curated)?.as_ref(),
+                usnm_store::open(&cli.stores.reference)?.as_ref(),
+                &usnm_store::queue::open(queue_url)?,
+                &opts,
+            )
+            .await
+            .map(|_| None)
         }
         Command::Duplicates => {
             let curated = usnm_store::open(&cli.stores.curated)?;

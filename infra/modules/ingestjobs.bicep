@@ -21,6 +21,13 @@
 //   for with NDLOCR-Lite (04 §4.8, #128). Replicas claim issues through
 //   create-only blobs, and pace loc.gov together. Started again until every
 //   target issue has a part.
+// - `usnm-ocrsync-caj-{env}` (when `ocrSync`, with the on-prem OCR nodes):
+//   `usnm-ingest ocr-sync` on `ocrSyncCron` (hourly), one replica, as
+//   id-usnm-ingest: picks the nodes' output up from the exchange account,
+//   checks it and imports it into curated/ocr-local/ (12 §12.5 Step 8).
+//   Named by ADR-0017. `ocr-enqueue` and `ocr-requeue` run as one-off
+//   executions of it (scripts/start-job.sh --job OCR_SYNC_JOB), since it
+//   has the exchange account's endpoints.
 // - `caj-usnm-jaone-{env}` (with the jaocr job): manual, one replica, the
 //   same image and settings, for jaocr.py's one-off measurements (`mixed`,
 //   `american-stories`) that one replica does anyway; a second replica only
@@ -82,6 +89,14 @@ param jaOcrImage string = ''
 param jaOcrReplicas int = 2
 @description('Where curation retains the batch archives it downloads (the `raw` container URL, `retainRaw`); empty keeps none.')
 param rawUrl string = ''
+@description('Deploy the OCR pickup job, usnm-ocrsync-caj-<env> (12 §12.5 Step 8). Needs the exchange account (ocrNodes).')
+param ocrSync bool = false
+@description('The OCR exchange account\'s queue endpoint (OCR_QUEUE_ENDPOINT).')
+param ocrQueueEndpoint string = ''
+@description('The OCR exchange account\'s blob endpoint (OCR_BLOB_ENDPOINT), with its trailing slash.')
+param ocrBlobEndpoint string = ''
+@description('Schedule for the OCR pickup job (UTC cron). Empty: manual only.')
+param ocrSyncCron string = '17 * * * *'
 
 // Both jobs: the platform kills a replica after replicaTimeout, which the
 // ingest-job-failed alert reports as a failure. Curation stops claiming at a
@@ -355,6 +370,53 @@ resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
   }
 }
 
+// ocr-sync stops starting imports at 3000 s, leaving 10 minutes of its
+// 3600 s replica timeout for the import in hand, the status file and the
+// telemetry flush. An hourly run normally takes a few minutes.
+var ocrSyncReplicaTimeoutSecs = 3600
+var ocrSyncMaxRuntimeSecs = 3000
+
+resource ocrSyncJob 'Microsoft.App/jobs@2025-01-01' = if (ocrSync) {
+  name: 'usnm-ocrsync-caj-${jobNameSuffix}'
+  location: location
+  tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${ingestIdentityId}': {} }
+  }
+  properties: {
+    environmentId: environmentId
+    workloadProfileName: 'Consumption'
+    configuration: {
+      registries: [{ server: registryServer, identity: ingestIdentityId }]
+      triggerType: empty(ocrSyncCron) ? 'Manual' : 'Schedule'
+      manualTriggerConfig: empty(ocrSyncCron) ? { parallelism: 1, replicaCompletionCount: 1 } : null
+      scheduleTriggerConfig: empty(ocrSyncCron)
+        ? null
+        : { cronExpression: ocrSyncCron, parallelism: 1, replicaCompletionCount: 1 }
+      replicaTimeout: ocrSyncReplicaTimeoutSecs
+      // The next hourly run picks up where a failed one stopped; the Cosmos
+      // lock keeps two from overlapping.
+      replicaRetryLimit: 0
+    }
+    template: {
+      containers: [
+        {
+          name: 'ocrsync'
+          image: image
+          args: ['ocr-sync', '--max-runtime-secs', string(ocrSyncMaxRuntimeSecs)]
+          resources: { cpu: json('0.5'), memory: '1Gi' }
+          env: concat(env, [
+            { name: 'USNM_OCR_QUEUE_URL', value: ocrQueueEndpoint }
+            { name: 'USNM_OCR_OUT_URL', value: '${ocrBlobEndpoint}ocr-out' }
+            { name: 'USNM_OCR_QUARANTINE_URL', value: '${ocrBlobEndpoint}ocr-quarantine' }
+          ])
+        }
+      ]
+    }
+  }
+}
+
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 
@@ -384,3 +446,4 @@ output ingestJobName string = ingest.name
 output backfillJobName string = backfill.name
 output jaOcrJobName string = empty(jaOcrImage) ? '' : jaOcr.name
 output jaAuditJobName string = empty(jaOcrImage) ? '' : jaAudit.name
+output ocrSyncJobName string = ocrSync ? ocrSyncJob.name : ''

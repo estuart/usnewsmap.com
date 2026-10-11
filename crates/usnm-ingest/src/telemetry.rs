@@ -36,6 +36,11 @@ pub struct Metrics {
     pub curate_duration: Histogram<f64>,
     pub docs_expected: Gauge<u64>,
     pub disk_free: Gauge<u64>,
+    /// Node parts `ocr-sync` took, by `outcome` (imported, rejected) and
+    /// `reason` (a reject's code).
+    pub ocr_sync_parts: Counter<u64>,
+    /// The age of the oldest part `ocr-sync` left in `ocr-out`.
+    pub ocr_out_oldest_age: Gauge<u64>,
 }
 
 /// The instruments, created on first use from the global meter provider
@@ -79,6 +84,15 @@ pub fn metrics() -> &'static Metrics {
                 .u64_gauge("work_disk_free_bytes")
                 .with_unit("By")
                 .with_description("Free space on the work directory's file system")
+                .build(),
+            ocr_sync_parts: m
+                .u64_counter("ocr_sync.parts")
+                .with_description("OCR node parts picked up, by outcome and reject reason")
+                .build(),
+            ocr_out_oldest_age: m
+                .u64_gauge("ocr.out.oldest_age_s")
+                .with_unit("s")
+                .with_description("Age of the oldest part left in ocr-out after a pickup")
                 .build(),
         }
     })
