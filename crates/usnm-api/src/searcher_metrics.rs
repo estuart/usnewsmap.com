@@ -1,10 +1,11 @@
-//! The Quickwit searcher sidecar's cache, thread pool and runtime metrics,
+//! The Quickwit searcher's cache, thread pool and runtime metrics,
 //! reported as the API's own (#125, #251, 08 §8.1.2, 08 §8.4).
 //!
-//! The sidecar listens on localhost only, and its storage is reachable only
-//! inside the network, so its Prometheus endpoint can't be read from
-//! outside. Every `USNM_SEARCHER_METRICS_SECS` (60 s by default; 0 turns it
-//! off) the API reads it and reports, for the split footer, fast field,
+//! The searcher (a sidecar on localhost, or its own app on the environment's
+//! internal ingress, #267) can't be reached from outside, so neither can its
+//! Prometheus endpoint. Every `USNM_SEARCHER_METRICS_SECS` (60 s by default;
+//! 0 turns it off, and with it the restart warm-up, which these reads detect)
+//! the API reads it and reports, for the split footer, fast field,
 //! partial request and predicate caches (`cache`: `split_footer`,
 //! `fast_field`, `partial_request`, `predicate`):
 //!

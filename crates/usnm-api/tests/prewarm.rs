@@ -1235,7 +1235,7 @@ async fn a_searcher_restart_during_a_publish_warms_the_new_version_after_it() {
 }
 
 #[tokio::test]
-async fn a_publish_during_a_restarts_warm_up_waits_its_turn() {
+async fn a_publish_during_a_restart_warm_up_waits_its_turn() {
     // Never dropped: the publish runs after the restart's warm-up, and a
     // restart seen meanwhile runs after the publish.
     let backend = Counting::new(Duration::from_millis(2), false);
