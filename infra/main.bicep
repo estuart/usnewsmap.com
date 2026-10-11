@@ -186,6 +186,9 @@ param ocrNodeGroupId string = ''
 @description('Schedule for the OCR pickup job usnm-ocrsync-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
 param ocrSyncCron string = '17 * * * *'
 
+@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name (USNM_OCR_SEED_* and USNM_OCR_BULK_*; docs/operations.md). Seeding stays off while USNM_OCR_SEED_PLAN is empty (ADR-0015 decision 7).')
+param ocrSeed object = {}
+
 @description('Entra object ids (people or groups), comma separated, given Key Vault Secrets Officer on the OCR nodes\' Key Vault, usnmocrkv<env><suffix> (with ocrNodes): the operators who set and read the fleet\'s secrets, such as the Red Hat activation key. Settings only, never in the repository (#295).')
 param ocrKeyVaultAdmins string = ''
 
@@ -645,6 +648,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     ocrQueueEndpoint: ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
     ocrBlobEndpoint: ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
     ocrSyncCron: ocrSyncCron == 'manual' ? '' : ocrSyncCron
+    ocrSeed: ocrSeed
     rawUrl: !empty(archiveAccountId)
       ? 'https://${archiveAccount}.blob.${environment().suffixes.storage}/raw'
       : (retainRaw ? '${storage.outputs.blobEndpoint}${rawStore!.outputs.container}' : '')

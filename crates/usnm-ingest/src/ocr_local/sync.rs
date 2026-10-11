@@ -13,7 +13,8 @@
 //!    that passes, to `ocr-local/alto/`, as it is checked; (2) one merged
 //!    part per title; (3) the outcomes and the import record; (4) delete the
 //!    sources with If-Match on the ETags read.
-//! 5. Write `status/ocr-local.json` and the metrics.
+//! 5. With a seed plan, top `ocr-bulk` up ([`super::seed`], Step 10).
+//! 6. Write `status/ocr-local.json` and the metrics.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,6 +64,8 @@ pub struct Options {
     pub from_quarantine: Option<String>,
     /// Stop starting imports after this.
     pub deadline: Option<Instant>,
+    /// The seeder's settings; off while its plan is empty.
+    pub seed: super::seed::Options,
 }
 
 impl Default for Options {
@@ -73,6 +76,7 @@ impl Default for Options {
             max_dead_letters: 5000,
             from_quarantine: None,
             deadline: None,
+            seed: super::seed::Options::default(),
         }
     }
 }
@@ -142,6 +146,9 @@ pub struct Status {
     /// Parts left in `ocr-out` after the run, and the oldest one's age.
     pub parts_left: u64,
     pub oldest_age_s: u64,
+    /// The run's seeding, when a plan is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<super::seed::SeedReport>,
 }
 
 /// One source the run consumed (imported, or moved to quarantine).
@@ -168,13 +175,13 @@ pub struct ImportRecord {
 }
 
 /// The lock, renewed in the background until dropped.
-struct Lease {
+pub(super) struct Lease {
     lost: Arc<AtomicBool>,
     renewer: tokio::task::JoinHandle<()>,
 }
 
 impl Lease {
-    async fn take(state: &State, owner: &str) -> anyhow::Result<Self> {
+    pub(super) async fn take(state: &State, owner: &str) -> anyhow::Result<Self> {
         state.lock(super::LOCK, owner, LOCK_TTL).await?;
         let lost = Arc::new(AtomicBool::new(false));
         let (state, owner, flag) = (state.clone(), owner.to_owned(), lost.clone());
@@ -191,7 +198,7 @@ impl Lease {
         Ok(Self { lost, renewer })
     }
 
-    fn check(&self) -> anyhow::Result<()> {
+    pub(super) fn check(&self) -> anyhow::Result<()> {
         if self.lost.load(Ordering::SeqCst) {
             bail!("the ocr-sync lock could not be renewed; stopping before the next write");
         }
@@ -648,6 +655,26 @@ async fn run_locked(
         .await?;
     }
 
+    // Seeding, after the imports so the ledger has their outcomes.
+    let seeded = if !opts.seed.on() {
+        None
+    } else if opts.deadline.is_some_and(|d| Instant::now() >= d) {
+        tracing::info!("max runtime reached; seeding waits for the next run");
+        None
+    } else {
+        let seed_opts = super::seed::Options {
+            deadline: opts.deadline,
+            dry_run: false,
+            ..opts.seed.clone()
+        };
+        let seed_stores = super::seed::Stores {
+            curated: stores.curated.as_ref(),
+            reference: stores.reference.as_ref(),
+            queue: &stores.queue,
+        };
+        Some(super::seed::seed(state, &seed_stores, &seed_opts, Some(lease)).await)
+    };
+
     // Status and metrics.
     let now = SystemTime::now();
     let left: Vec<&ObjectInfo> = parts.iter().filter(|p| !taken.contains(&p.path)).collect();
@@ -685,6 +712,7 @@ async fn run_locked(
         },
         parts_left: left.len() as u64,
         oldest_age_s,
+        seed: seeded.as_ref().and_then(|r| r.as_ref().ok()).cloned(),
     };
     stores
         .reference
@@ -708,6 +736,10 @@ async fn run_locked(
         oldest_age_s,
         "ocr sync finished"
     );
+    // A failed seeding fails the run, once the imports' status is written.
+    if let Some(Err(e)) = seeded {
+        return Err(e.context("seeding ocr-bulk"));
+    }
     Ok(status)
 }
 

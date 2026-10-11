@@ -222,7 +222,10 @@ resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (n
 
 // The ingest identity: ocr-enqueue and the seeder add pages to the queues,
 // and ocr-sync drains the dead letters (reads and deletes them), so Queue
-// Data Contributor on the account. Blob Data Contributor on ocr-out, not
+// Data Contributor on the account. The seeder and the status file read each
+// queue's approximate message count (Get Queue Metadata), which needs
+// Microsoft.Storage/storageAccounts/queueServices/queues/read: one of this
+// role's actions. Blob Data Contributor on ocr-out, not
 // Reader: ocr-sync deletes each part once it is in curated or quarantine.
 // And on ocr-quarantine, which only ocr-sync writes.
 resource ingestQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = {

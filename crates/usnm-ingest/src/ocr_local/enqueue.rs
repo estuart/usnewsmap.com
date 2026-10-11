@@ -44,7 +44,7 @@ pub struct QueueReport {
     pub ledger: Option<String>,
 }
 
-fn skip(r: &mut QueueReport, why: &str, doc_id: &str) {
+pub(super) fn skip(r: &mut QueueReport, why: &str, doc_id: &str) {
     tracing::info!(doc_id, why, "page not queued");
     *r.skipped.entry(why.to_owned()).or_default() += 1;
 }
@@ -60,7 +60,7 @@ pub fn message_language(detected: Option<&str>, title_languages: &[String]) -> O
 }
 
 /// Send messages after writing their ledger rows.
-async fn send_all(
+pub(super) async fn send_all(
     curated: &dyn ObjectStore,
     queue: &Arc<dyn Queue>,
     run: &str,

@@ -10,7 +10,7 @@
 //!
 //! A page is outstanding while its latest queued row has no outcome after
 //! it, or its latest outcome is a dead letter with cause `unroutable`,
-//! which the seeder queues again. `ocr-sync` imports a part only for an
+//! which the seeder queues again ([`super::seed`]). `ocr-sync` imports a part only for an
 //! outstanding page, with the batch and reason the ledger has for it.
 
 use std::collections::HashMap;
@@ -54,6 +54,8 @@ pub struct Queued {
 
 pub const IMPORTED: &str = "imported";
 pub const DEAD_LETTERED: &str = "dead_lettered";
+/// The dead-letter cause for a page no node could route.
+pub const UNROUTABLE: &str = "unroutable";
 
 /// What became of a queued page.
 #[derive(Debug, Clone, PartialEq)]
@@ -257,6 +259,10 @@ pub struct Ledger {
     pub outcomes: HashMap<String, Outcome>,
     /// How often each page was queued under each plan.
     pub attempts: HashMap<(String, String), u32>,
+    /// How many dead letters with cause `unroutable` each page has had:
+    /// the seeder queues those again outside its retry limit, waiting
+    /// longer each time (Step 10).
+    pub unroutable: HashMap<String, u32>,
 }
 
 impl Ledger {
@@ -275,6 +281,9 @@ impl Ledger {
     }
 
     pub fn add_outcome(&mut self, o: Outcome) {
+        if o.outcome == DEAD_LETTERED && o.cause.as_deref() == Some(UNROUTABLE) {
+            *self.unroutable.entry(o.doc_id.clone()).or_default() += 1;
+        }
         match self.outcomes.get(&o.doc_id) {
             Some(old) if old.at > o.at => {}
             _ => {
@@ -289,7 +298,7 @@ impl Ledger {
         match self.outcomes.get(doc_id) {
             None => Some(q),
             Some(o) if o.at < q.queued_at => Some(q),
-            Some(o) if o.outcome == DEAD_LETTERED && o.cause.as_deref() == Some("unroutable") => {
+            Some(o) if o.outcome == DEAD_LETTERED && o.cause.as_deref() == Some(UNROUTABLE) => {
                 Some(q)
             }
             Some(_) => None,

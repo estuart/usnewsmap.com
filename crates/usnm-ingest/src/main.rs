@@ -45,6 +45,83 @@ impl From<OcrReason> for usnm_ocr_contract::message::Reason {
     }
 }
 
+/// The seeder's settings (12 §12.5 Step 10), for `ocr-sync`'s seeding
+/// step and `ocr-seed`. Seeding is off while the plan is empty.
+#[derive(Args, Clone, Debug)]
+struct SeedArgs {
+    /// The seeding plan, as the ledger records it (`pilot-deu`). Empty: off.
+    #[arg(long, env = "USNM_OCR_SEED_PLAN")]
+    seed_plan: Option<String>,
+    /// Only these batches (base names or `name_verNN`), comma separated.
+    #[arg(long, env = "USNM_OCR_SEED_BATCHES", value_delimiter = ',')]
+    seed_batches: Vec<String>,
+    /// ISO 639-3 languages to seed (the page's detected language, or its
+    /// title's first for `und`), comma separated. Default: the Tesseract
+    /// pilot's, ces, deu, eng, pol, rus and srp.
+    #[arg(long, env = "USNM_OCR_SEED_LANGUAGES", value_delimiter = ',')]
+    seed_languages: Vec<String>,
+    /// Only issues in these years: `1890` or `1850-1919`.
+    #[arg(long, env = "USNM_OCR_SEED_YEARS")]
+    seed_years: Option<String>,
+    /// The least damage a page needs to be queued.
+    #[arg(long, env = "USNM_OCR_SEED_MIN_DAMAGE", default_value_t = usnm_ingest::ocr_local::seed::MIN_DAMAGE)]
+    seed_min_damage: f64,
+    /// The plan's budget: the most distinct pages it ever queues.
+    #[arg(long, env = "USNM_OCR_SEED_MAX_PAGES")]
+    seed_max_pages: Option<u64>,
+    /// A pilot: one group (one language, or `--seed-batches`) and a budget
+    /// of at most 10,000 pages.
+    #[arg(long, env = "USNM_OCR_SEED_PILOT")]
+    seed_pilot: bool,
+    /// Also skip pages whose American Stories text scores under the
+    /// minimum damage (12 §12.6 question 8; off by default).
+    #[arg(long, env = "USNM_OCR_SEED_SKIP_AMERICAN_STORIES")]
+    seed_skip_american_stories: bool,
+    /// The most bulk pages outstanding at once. 0: about two days of pages,
+    /// from the import records, at least 500.
+    #[arg(long, env = "USNM_OCR_BULK_WINDOW", default_value_t = 0)]
+    bulk_window: u64,
+    /// Top `ocr-bulk` up only when it holds fewer messages than this.
+    /// 0: half the window.
+    #[arg(long, env = "USNM_OCR_BULK_REFILL_BELOW", default_value_t = 0)]
+    bulk_refill_below: u64,
+}
+
+impl SeedArgs {
+    fn options(&self, dry_run: bool) -> anyhow::Result<usnm_ingest::ocr_local::seed::Options> {
+        let opts = usnm_ingest::ocr_local::seed::Options {
+            plan: self.seed_plan.clone().unwrap_or_default().trim().to_owned(),
+            batches: self
+                .seed_batches
+                .iter()
+                .map(|b| b.trim().to_owned())
+                .filter(|b| !b.is_empty())
+                .collect(),
+            languages: self
+                .seed_languages
+                .iter()
+                .map(|l| l.trim().to_owned())
+                .filter(|l| !l.is_empty())
+                .collect(),
+            years: usnm_ingest::ocr_local::seed::parse_years(
+                self.seed_years.as_deref().unwrap_or_default(),
+            )?,
+            min_damage: self.seed_min_damage,
+            max_pages: self.seed_max_pages,
+            window: self.bulk_window,
+            refill_below: self.bulk_refill_below,
+            pilot: self.seed_pilot,
+            skip_american_stories: self.seed_skip_american_stories,
+            dry_run,
+            deadline: None,
+        };
+        if opts.on() {
+            opts.check()?;
+        }
+        Ok(opts)
+    }
+}
+
 #[derive(Args)]
 struct Stores {
     /// Cosmos DB endpoint for pipeline state (Azure).
@@ -290,6 +367,27 @@ enum Command {
         reason: Option<String>,
         /// Seconds after the start to stop starting imports. Keep it under
         /// the job's replica timeout.
+        #[arg(long)]
+        max_runtime_secs: Option<u64>,
+        /// With a seed plan, top `ocr-bulk` up after the imports (Step 10).
+        #[command(flatten)]
+        seed: SeedArgs,
+    },
+    /// Fill `ocr-bulk` with the pages LoC read worst, ranked by Step 6's
+    /// damage tables (12 §12.5 Step 10), as `ocr-sync`'s seeding step does,
+    /// once. `--dry-run` prints what it would queue as JSON and writes
+    /// nothing; otherwise it holds the `ocr-sync` lock. Run as an execution
+    /// of the pickup job: only `id-usnm-ingest` can add messages.
+    OcrSeed {
+        #[arg(long, env = "USNM_OCR_QUEUE_URL")]
+        queue_url: String,
+        #[command(flatten)]
+        seed: SeedArgs,
+        /// Print what would be queued; write and send nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Seconds after the start to stop working out ranks; the next run
+        /// goes on from there.
         #[arg(long)]
         max_runtime_secs: Option<u64>,
     },
@@ -751,6 +849,7 @@ impl Command {
             Command::ArchiveCopy { .. } => "archive-copy",
             Command::OcrDamage { .. } => "ocr-damage",
             Command::OcrSync { .. } => "ocr-sync",
+            Command::OcrSeed { .. } => "ocr-seed",
             Command::OcrEnqueue { .. } => "ocr-enqueue",
             Command::OcrRequeue { .. } => "ocr-requeue",
             Command::Run { .. } => "run",
@@ -778,6 +877,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::ArchiveCopy { .. }
         | Command::OcrDamage { .. }
         | Command::OcrSync { .. }
+        | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. } => None,
     }
@@ -926,7 +1026,9 @@ async fn command(
             from_quarantine,
             reason,
             max_runtime_secs,
+            seed,
         } => {
+            let seed = seed.options(false)?;
             let curated = usnm_store::open(&cli.stores.curated)?;
             if *report {
                 usnm_ingest::ocr_local::report::run(curated.as_ref()).await?;
@@ -948,10 +1050,34 @@ async fn command(
                 max_dead_letters: *max_dead_letters,
                 from_quarantine: from_quarantine.then(|| reason.clone()).flatten(),
                 deadline: deadline(start, *max_runtime_secs),
+                seed,
             };
             usnm_ingest::ocr_local::sync::run(&state, &owner_id(), &stores, &opts)
                 .await
                 .map(|_| None)
+        }
+        Command::OcrSeed {
+            queue_url,
+            seed,
+            dry_run,
+            max_runtime_secs,
+        } => {
+            let opts = usnm_ingest::ocr_local::seed::Options {
+                deadline: deadline(start, *max_runtime_secs),
+                ..seed.options(*dry_run)?
+            };
+            let curated = usnm_store::open(&cli.stores.curated)?;
+            let reference = usnm_store::open(&cli.stores.reference)?;
+            let queue = usnm_store::queue::open(queue_url)?;
+            let stores = usnm_ingest::ocr_local::seed::Stores {
+                curated: curated.as_ref(),
+                reference: reference.as_ref(),
+                queue: &queue,
+            };
+            let report =
+                usnm_ingest::ocr_local::seed::run(&state, &owner_id(), &stores, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(None)
         }
         Command::OcrEnqueue {
             queue_url,
@@ -1373,5 +1499,78 @@ mod tests {
         assert_eq!(index_version.as_deref(), Some("v1"));
         assert_eq!(batches, ["a", "b_ver02"]);
         assert_eq!(max_runtime_secs, Some(60));
+    }
+
+    #[test]
+    fn ocr_seed_arguments() {
+        let parse = |args: &[&str]| {
+            let mut all = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "ocr-seed",
+                "--queue-url",
+                "q",
+            ];
+            all.extend_from_slice(args);
+            Cli::try_parse_from(all)
+        };
+        let cli = parse(&[
+            "--seed-plan",
+            "pilot-deu",
+            "--seed-languages",
+            "deu",
+            "--seed-years",
+            "1850-1919",
+            "--seed-max-pages",
+            "3000",
+            "--seed-pilot",
+            "--bulk-window",
+            "1000",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Command::OcrSeed { seed, dry_run, .. } = cli.command else {
+            panic!("not ocr-seed");
+        };
+        assert!(dry_run);
+        let opts = seed.options(true).unwrap();
+        assert_eq!(opts.plan, "pilot-deu");
+        assert_eq!(opts.languages, ["deu"]);
+        assert_eq!(opts.years, Some((1850, 1919)));
+        assert_eq!(opts.max_pages, Some(3000));
+        assert_eq!(opts.window, 1000);
+        assert_eq!(opts.refill_below, 0);
+        assert!(opts.pilot && !opts.skip_american_stories);
+        assert!((opts.min_damage - 0.25).abs() < 1e-12);
+        // A pilot needs a budget.
+        let cli = parse(&[
+            "--seed-plan",
+            "p",
+            "--seed-pilot",
+            "--seed-languages",
+            "deu",
+        ])
+        .unwrap();
+        let Command::OcrSeed { seed, .. } = cli.command else {
+            panic!("not ocr-seed");
+        };
+        assert!(seed.options(false).is_err());
+        // ocr-sync takes the same settings; no plan leaves seeding off.
+        let cli = Cli::try_parse_from([
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "ocr-sync",
+        ])
+        .unwrap();
+        let Command::OcrSync { seed, .. } = cli.command else {
+            panic!("not ocr-sync");
+        };
+        assert!(!seed.options(false).unwrap().on());
     }
 }
