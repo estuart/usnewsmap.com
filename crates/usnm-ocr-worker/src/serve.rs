@@ -10,6 +10,12 @@
 //!   leaves a scan that looks valid, and the fetcher knows not to fetch the
 //!   page again), then the scan goes. A worker sends it once its output for
 //!   the page is uploaded. A keep-set path is refused with 403.
+//! - `GET /index/<tag>.jsonl` (`full`, or `pct<n>`): the fetcher's index,
+//!   one JSON line per fetched scan (its sidecar: doc_id, batch,
+//!   batch_version, loc_url, iiif_base, resolution, fetched_at, bytes,
+//!   sha256, download_ms, user_agent), appended as scans land. It is how a
+//!   seeder learns which pages are cached: a line means the scan was
+//!   written; a buffer scan may since have been read and deleted.
 //! - `PUT /manifests/<version>/{manifest.parquet,summary.json}` writes a
 //!   prefetch manifest from a node (`pull-manifest.sh`), through a temporary
 //!   file and a rename.
@@ -192,6 +198,32 @@ async fn delete_scan(
     }
 }
 
+async fn get_index(
+    State(opts): State<Arc<ServeOptions>>,
+    UrlPath(name): UrlPath<String>,
+) -> Response {
+    // `full.jsonl` or `pct<1-99>.jsonl`, mapped to a constant-shaped name.
+    let Some(tag) = name.strip_suffix(".jsonl") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let ok = tag == "full"
+        || tag
+            .strip_prefix("pct")
+            .and_then(|p| p.parse::<u8>().ok())
+            .is_some_and(|p| (1..100).contains(&p) && tag == format!("pct{p}"));
+    if !ok {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match tokio::fs::read(opts.scans.join(format!("index-{tag}.jsonl"))).await {
+        Ok(b) => ([(header::CONTENT_TYPE, "application/x-ndjson")], b).into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::warn!(tag, error = %e, "can't read the index");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 async fn put_manifest(
     State(opts): State<Arc<ServeOptions>>,
     UrlPath((version, file)): UrlPath<(String, String)>,
@@ -226,6 +258,7 @@ pub fn router(opts: ServeOptions) -> Router {
     let opts = Arc::new(opts);
     Router::new()
         .route("/scans/{*path}", get(get_scan).delete(delete_scan))
+        .route("/index/{name}", get(get_index))
         .route(
             "/manifests/{version}/{file}",
             put(put_manifest).layer(DefaultBodyLimit::max(MAX_PUT_BYTES)),
@@ -385,6 +418,24 @@ mod tests {
             assert!(
                 [400, 403, 404].contains(&r.status().as_u16()),
                 "{p}: {}",
+                r.status()
+            );
+        }
+        // The index, by tag.
+        std::fs::write(dir.path().join("scans/index-full.jsonl"), b"{}\n").unwrap();
+        let idx = http.get(url("/index/full.jsonl")).send().await.unwrap();
+        assert_eq!(idx.status(), 200);
+        assert_eq!(&idx.bytes().await.unwrap()[..], b"{}\n");
+        for bad in [
+            "/index/../x.jsonl",
+            "/index/pct0.jsonl",
+            "/index/pct050.jsonl",
+            "/index/full.json",
+        ] {
+            let r = http.get(url(bad)).send().await.unwrap();
+            assert!(
+                [400, 404].contains(&r.status().as_u16()),
+                "{bad}: {}",
                 r.status()
             );
         }
