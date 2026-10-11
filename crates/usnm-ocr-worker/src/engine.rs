@@ -182,9 +182,17 @@ impl Runner {
                 .args(["--entrypoint", "tesseract"]);
                 if let Some(w) = work {
                     // :Z gives the page's private scratch directory the
-                    // container's SELinux label.
+                    // container's SELinux label. The engine runs as the
+                    // directory's owner (the worker's user, mapped to itself
+                    // by keep-id), not the image's user, so it can write its
+                    // output there.
                     cmd.args(["--volume", &format!("{}:/work:Z", w.display())])
                         .args(["--workdir", "/work"]);
+                    #[cfg(unix)]
+                    if let Ok(meta) = std::fs::metadata(w) {
+                        use std::os::unix::fs::MetadataExt;
+                        cmd.args(["--user", &format!("{}:{}", meta.uid(), meta.gid())]);
+                    }
                 }
                 cmd.arg(image);
                 let guard = ContainerGuard {
@@ -531,6 +539,17 @@ mod tests {
             assert!(has(a), "{a} missing from {args:?}");
         }
         assert_eq!(args.last(), Some(&image));
+        // With a real scratch directory, the engine runs as its owner.
+        let dir = tempfile::tempdir().unwrap();
+        let (cmd, guard) = runner.command(1, Some(dir.path()));
+        guard.unwrap().armed = false;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(dir.path()).unwrap();
+            let want = format!("{}:{}", meta.uid(), meta.gid());
+            assert!(cmd.as_std().get_args().any(|a| a == want.as_str()));
+        }
         let (cmd, guard) = Runner::Host("tesseract".into()).command(1, None);
         assert!(guard.is_none());
         assert_eq!(cmd.as_std().get_program(), "tesseract");
