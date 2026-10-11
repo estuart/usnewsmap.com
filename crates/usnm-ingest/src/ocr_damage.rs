@@ -422,16 +422,20 @@ pub async fn title_languages(
         languages: Vec<String>,
     }
     let mut out = HashMap::new();
-    for path in [
-        format!("{index_version}/titles.json"),
-        "catalog/titles.json".to_owned(),
-    ] {
-        if let Some(body) = reference.get(&path).await? {
-            let titles: Vec<T> =
-                serde_json::from_slice(&body).with_context(|| format!("reading {path}"))?;
-            for t in titles {
-                out.entry(t.lccn).or_insert(t.languages);
+    // The version's snapshot is required, as in `quality.py`; the working
+    // catalog only fills in titles it lacks.
+    let snapshot = format!("{index_version}/titles.json");
+    for (path, required) in [(snapshot, true), ("catalog/titles.json".to_owned(), false)] {
+        let Some(body) = reference.get(&path).await? else {
+            if required {
+                bail!("{path} not found: the version's titles snapshot is incomplete");
             }
+            continue;
+        };
+        let titles: Vec<T> =
+            serde_json::from_slice(&body).with_context(|| format!("reading {path}"))?;
+        for t in titles {
+            out.entry(t.lccn).or_insert(t.languages);
         }
     }
     Ok(out)
@@ -1213,6 +1217,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!((r.scored, r.skipped, r.version_list_written), (1, 1, true));
+        assert!(
+            title_languages(f.reference.as_ref(), "v2").await.is_err(),
+            "no titles snapshot"
+        );
         let bad = Options {
             batches: vec!["batch_c".into()],
             ..opts()
