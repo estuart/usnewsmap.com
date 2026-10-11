@@ -6,13 +6,20 @@
 #     --name ARC_NAME --exchange-account NAME [--app-insights CONNECTION_STRING] \
 #     [--tags K=V,K=V] [--identity-key-store default|tpm] [--force-unsupported] < credentials
 #
-# Reads the onboarding service principal from stdin, three lines: tenant id,
-# app id, secret. onboard.sh makes that principal for the run, with only
-# Azure Connected Machine Onboarding on the group, and deletes it after. The
-# secret never goes on a command line or to persistent disk: it waits in a 0600
-# file under /run (tmpfs) while `azcmagent connect --config` reads it, and
-# is deleted straight after. A node that's already connected needs none.
+# Reads up to five lines from stdin. The first three are the onboarding
+# service principal: tenant id, app id, secret. onboard.sh makes that
+# principal for the run, with only Azure Connected Machine Onboarding on the
+# group, and deletes it after. The secret never goes on a command line or to
+# persistent disk: it waits in a 0600 file under /run (tmpfs) while
+# `azcmagent connect --config` reads it, and is deleted straight after. A
+# node that's already connected needs none (three empty lines). The next two
+# are, on RHEL, the Red Hat organization id and activation key, which
+# onboard.sh reads from the nodes' Key Vault; they stay in this script's
+# memory, never on disk. RHEL is registered first, before anything is
+# installed, since its repositories need it; a registered node needs neither.
 #
+# On RHEL, registers with Red Hat (skipped if registered) and enables
+# BaseOS, AppStream and CodeReady Builder (for EPEL).
 # Keeps the journal on disk; installs python3, podman, chrony, cron and
 # rsyslog, and htop, iftop and screen from EPEL;
 # creates the `usnm` system user; installs the Azure Connected Machine
@@ -71,11 +78,13 @@ conn_re='^[A-Za-z0-9=;:/._-]+$'
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
 
 # The credentials first, before anything else can read stdin.
-TENANT="" SP_ID="" SP_SECRET=""
+TENANT="" SP_ID="" SP_SECRET="" RH_ORG="" RH_KEY=""
 if [ ! -t 0 ]; then
   IFS= read -r TENANT || true
   IFS= read -r SP_ID || true
   IFS= read -r SP_SECRET || true
+  IFS= read -r RH_ORG || true
+  IFS= read -r RH_KEY || true
 fi
 if [ -n "$TENANT$SP_ID$SP_SECRET" ]; then
   uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -84,6 +93,12 @@ if [ -n "$TENANT$SP_ID$SP_SECRET" ]; then
   # It goes into JSON as is, so no quotes, backslashes or control characters.
   [[ -n $SP_SECRET && $SP_SECRET =~ ^[[:graph:]]+$ && $SP_SECRET != *[\\\"]* ]] ||
     die "the third line on stdin isn't a client secret"
+fi
+# Both or neither. They go to subscription-manager as separate arguments,
+# never through a shell, so only printable characters are checked for.
+if [ -n "$RH_ORG$RH_KEY" ]; then
+  [[ $RH_ORG =~ ^[[:graph:]]+$ ]] || die "the fourth line on stdin isn't a Red Hat organization id"
+  [[ $RH_KEY =~ ^[[:graph:]]+$ ]] || die "the fifth line on stdin isn't a Red Hat activation key"
 fi
 
 step "Checking the OS"
@@ -106,6 +121,33 @@ echo "${PRETTY_NAME:-unknown}, $(uname -m), $(nproc) CPUs"
 # CPU type hides them, and speed measurements are then wrong (#296).
 grep -qw avx2 /proc/cpuinfo || echo "warning: no AVX2: on Proxmox, set the VM's CPU type to host"
 
+step "Red Hat registration"
+# RHEL's repositories (and so dnf below) need the system registered. With
+# an activation key, subscription-manager takes the organization id and key
+# as arguments, so for the few seconds it runs they're in its entry in the
+# process list, readable by local users; on a new node that's root and the
+# admin account (which has sudo), since the usnm user doesn't exist yet. A
+# registered node is skipped, so a re-run never needs them.
+if [ "$OS_ID" != rhel ]; then
+  echo "not RHEL; nothing to register"
+else
+  command -v subscription-manager > /dev/null || die "RHEL without subscription-manager"
+  if subscription-manager identity > /dev/null 2>&1; then
+    echo "already registered with Red Hat"
+  else
+    [ -n "$RH_KEY" ] ||
+      die "RHEL isn't registered and no Red Hat organization id and activation key came on stdin" \
+        "(onboard.sh reads rhel-org-id and rhel-activation-key from the nodes' Key Vault)"
+    subscription-manager register --org "$RH_ORG" --activationkey "$RH_KEY"
+  fi
+  # Enabling an enabled repository changes nothing. CodeReady Builder is
+  # for EPEL, below.
+  arch=$(uname -m)
+  subscription-manager repos --enable "rhel-10-for-$arch-baseos-rpms" \
+    --enable "rhel-10-for-$arch-appstream-rpms" --enable "codeready-builder-for-rhel-10-$arch-rpms"
+fi
+RH_ORG="" RH_KEY=""
+
 step "Installing packages"
 # No OCR engine here. EL9's AppStream has only Tesseract 4.1.1 (with 4.1.0
 # language data) and EPEL 9 has no Tesseract at all; the engines the survey
@@ -117,6 +159,15 @@ step "Installing packages"
 # Connected Machine agent schedules its automatic upgrades with cron.
 dnf -y -q install python3 podman chrony curl cronie rsyslog which
 dnf -y -q install initscripts > /dev/null 2>&1 || echo "warning: no initscripts package; the Azure Monitor Agent lists it as a prerequisite"
+# On a Proxmox VM, the guest agent reports the address and shuts the VM
+# down cleanly. AlmaLinux's cloud-init installs it; an image that can't
+# install packages before registration (RHEL) may not have it.
+case "$(systemd-detect-virt --vm 2> /dev/null || true)" in kvm|qemu) vm=true ;; *) vm=false ;; esac
+if [ "$vm" = true ]; then
+  rpm -q qemu-guest-agent > /dev/null 2>&1 || dnf -y -q install qemu-guest-agent
+  systemctl enable --now qemu-guest-agent > /dev/null 2>&1 ||
+    echo "warning: qemu-guest-agent didn't start (is the VM's guest agent option on?)"
+fi
 
 # Tools for whoever logs in to watch the node: htop (processes), iftop
 # (traffic per connection) and screen. On EL9 and EL10 they come from EPEL,
@@ -131,7 +182,7 @@ elif ! rpm -q epel-release > /dev/null 2>&1; then
       dnf config-manager --set-enabled crb
       dnf -y -q install epel-release ;;
     rhel)
-      subscription-manager repos --enable "codeready-builder-for-rhel-10-$(uname -m)-rpms"
+      # CodeReady Builder was enabled at registration, above.
       dnf -y -q install https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm ;;
     *) echo "warning: don't know how to add EPEL on $OS_ID; skipping htop, iftop and screen" ;;
   esac
