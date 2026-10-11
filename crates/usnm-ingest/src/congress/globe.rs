@@ -1403,6 +1403,8 @@ mod tests {
             facts(300),
             (day(1838, 3, 29), "heading", Some("house"), false)
         );
+        // Issue No. 18's masthead (April 9) heads this page, but its debates
+        // are continued from No. 17: still the 29th.
         assert_eq!(
             facts(301),
             (day(1838, 3, 29), "carried", Some("house"), false)

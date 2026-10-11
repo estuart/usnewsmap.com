@@ -238,6 +238,11 @@ fn upper(line: &str) -> bool {
 ///   REPRESENTATIVES`, `IN THE HOUSE OF REPRESENTATIVES`;
 /// - both: a chamber, then the date (`In Senate, March 3, 1838`), as the
 ///   appendix heads its speeches.
+///
+/// An issue's masthead (`25th Cong. 2nd Sess. MONDAY APRIL 9 1838 Volume 6
+/// No 18`) is not a heading: its date is the issue's, and the debates under
+/// it carry on from the last issue (`Continued from No 17`) until a day
+/// heading says otherwise.
 pub fn heading(line: &str) -> Option<Heading> {
     let tokens: Vec<String> = line
         .split_whitespace()
@@ -493,6 +498,11 @@ mod tests {
         assert_eq!(heading("March 29 1838"), None);
         // Out of the debates' years.
         assert_eq!(heading("THURSDAY March 29 1938"), None);
+        // A masthead's date is the issue's, not its debates'.
+        assert_eq!(
+            heading("25th Cokg 2nd Sess MONDAY APRIL 9 1838 Volume 6 No 18"),
+            None
+        );
     }
 
     #[test]
