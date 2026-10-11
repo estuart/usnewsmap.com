@@ -12,7 +12,8 @@
 #     [--data /tank/ocr]
 #   scanfetch-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7> [--ctid 211]
 #   scanfetch-ct.sh --configure --manifest /tank/ocr/manifests/<file>.parquet
-#     [--resolution full] [--order priority] [--max-total-bytes N]
+#     [--resolution full] [--buffer-resolution full] [--sets both]
+#     [--buffer-cap BYTES] [--order priority] [--max-total-bytes N]
 #     [--concurrency 2] [--enable] [--ctid 211]
 #
 # --create makes the container (onboot, one NIC on --bridge with DHCP,
@@ -28,13 +29,14 @@
 # (restarts it if it was running, which goes on where it stopped).
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,27s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,28s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 CTID=211 NAME=usnm-scanfetch STORAGE=ssd BRIDGE=vmbr0 CORES=2 MEMORY=1024
 TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst DATA=/tank/ocr
 CREATE=false INSTALL=false CONFIGURE=false ENABLE=false RELEASE=""
 MANIFEST="" RESOLUTION=full ORDER=priority MAX_BYTES="" CONCURRENCY=2
+BUFFER_RESOLUTION=full SETS=both BUFFER_CAP=1000000000000
 REPO=tgoodyear/usnewsmap.com
 FETCH_UID=2000
 while [ $# -gt 0 ]; do
@@ -56,6 +58,9 @@ while [ $# -gt 0 ]; do
     --resolution) RESOLUTION=${2:-}; shift 2 ;;
     --order) ORDER=${2:-}; shift 2 ;;
     --max-total-bytes) MAX_BYTES=${2:-}; shift 2 ;;
+    --buffer-resolution) BUFFER_RESOLUTION=${2:-}; shift 2 ;;
+    --sets) SETS=${2:-}; shift 2 ;;
+    --buffer-cap) BUFFER_CAP=${2:-}; shift 2 ;;
     --concurrency) CONCURRENCY=${2:-}; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
@@ -117,6 +122,9 @@ if $CONFIGURE; then
   [[ $RESOLUTION == full || $RESOLUTION =~ ^scaled:[1-9][0-9]?$ ]] || die "--resolution: full or scaled:<1-99>"
   [[ $ORDER == priority || $ORDER == issue ]] || die "--order: priority or issue"
   [ -z "$MAX_BYTES" ] || [[ $MAX_BYTES =~ ^[0-9]+$ ]] || die "--max-total-bytes: a number of bytes"
+  [[ $BUFFER_RESOLUTION == full || $BUFFER_RESOLUTION =~ ^scaled:[1-9][0-9]?$ ]] || die "--buffer-resolution: full or scaled:<1-99>"
+  [[ $SETS == keep || $SETS == buffer || $SETS == both ]] || die "--sets: keep, buffer or both"
+  [[ $BUFFER_CAP =~ ^[0-9]+$ ]] || die "--buffer-cap: a number of bytes"
   [[ $CONCURRENCY =~ ^[1-4]$ ]] || die "--concurrency: 1 to 4"
   in_ct test -r "$MANIFEST" || die "$MANIFEST isn't readable in CT $CTID"
   env="# Written by scripts/ocr-node/scanfetch-ct.sh --configure.
@@ -124,6 +132,9 @@ USNM_PREFETCH_MANIFEST=$MANIFEST
 USNM_PREFETCH_OUT=/tank/ocr/scans
 USNM_PREFETCH_LOCK=/tank/ocr/scans/.prefetch.lock
 USNM_PREFETCH_RESOLUTION=$RESOLUTION
+USNM_PREFETCH_BUFFER_RESOLUTION=$BUFFER_RESOLUTION
+USNM_PREFETCH_SETS=$SETS
+USNM_PREFETCH_BUFFER_CAP=$BUFFER_CAP
 USNM_PREFETCH_ORDER=$ORDER
 USNM_PREFETCH_CONCURRENCY=$CONCURRENCY
 USNM_OCR_API_GAP_MS=3500
