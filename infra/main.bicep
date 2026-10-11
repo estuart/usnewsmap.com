@@ -719,6 +719,7 @@ module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
     appInsightsId: monitoring.outputs.appInsightsId
     actionGroupId: monitoring.outputs.actionGroupId
     apiAppName: api!.outputs.name
+    replicaCpu: apiMinReplicas > 0
     siteUrl: !empty(dnsZoneName) && !empty(siteCertificateId) ? 'https://${dnsZoneName}/' : ''
     availabilityFrequency: availabilityFrequency
   }

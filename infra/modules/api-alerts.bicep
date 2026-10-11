@@ -49,6 +49,9 @@ param actionGroupId string
 @description('The API\'s container app (ca-usnm-<env>), for the replica CPU alert.')
 param apiAppName string
 
+@description('Create the replica CPU alert: the app keeps a replica running (minReplicas above 0), so its CPU has a sample every minute.')
+param replicaCpu bool = false
+
 @description('Site home page to test, e.g. https://usnewsmap.com/; empty skips the test.')
 param siteUrl string = ''
 
@@ -314,18 +317,22 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' existing = {
   name: apiAppName
 }
 
-// A replica's CPU (the API and the Quickwit sidecar together, 4 vCPU since
-// #251) averaging over 3 vCPU for 6 hours, per replica (podName), checked
-// hourly. A release's new replica warms its caches for minutes, which can't
-// hold a 6-hour average there, so releases are left out without a list of
-// them. Stateful: one email when it starts, one when it clears. Platform
-// metrics stay in Azure Monitor 93 days; the API workbook charts them.
-resource replicaCpu 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+// The replicas' CPU (each the API and the Quickwit sidecar together, 4 vCPU
+// since #251) averaging over 3 vCPU for 6 hours, checked hourly. Not split
+// by replica: Azure Monitor averages only the samples a series has, so a
+// release's new replica (a series of its own) would be judged on its
+// minutes of warm-up alone. The app's one series has a sample from every
+// running replica every minute, so a warm-up's minutes are a few of the
+// window's hundreds; and only where a replica always runs (prod), since
+// after scaling to zero a window could hold only a start's samples.
+// Stateful: one email when it starts, one when it clears. Platform metrics
+// stay in Azure Monitor 93 days; the API workbook charts them per replica.
+resource replicaCpuAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (replicaCpu) {
   name: 'alert-usnm-api-replica-cpu-${nameSuffix}'
   location: 'global'
   tags: tags
   properties: {
-    description: 'A replica of ${apiAppName} averaged over 3 vCPU (of 4) for the last 6 hours. #238 (deferred 10 October 2026): if it keeps happening outside releases for a week, revisit more search capacity (a second searcher, #239, after moving Quickwit out of the API replica, #267). Next: the capacity tiles in the API workbook (replica CPU and the queue wait by day), and scripts/logs.sh <env> api-requests 24h for the traffic.'
+    description: 'The replicas of ${apiAppName} averaged over 3 vCPU (of 4) for the last 6 hours. #238 (deferred 10 October 2026): if it keeps happening outside releases for a week, revisit more search capacity (a second searcher, #239, after moving Quickwit out of the API replica, #267). Next: the capacity tiles in the API workbook (replica CPU and the queue wait by day), and scripts/logs.sh <env> api-requests 24h for the traffic.'
     severity: 4
     enabled: true
     scopes: [apiApp.id]
@@ -343,7 +350,6 @@ resource replicaCpu 'Microsoft.Insights/metricAlerts@2018-03-01' = {
           operator: 'GreaterThan'
           // 3 vCPU in nanocores.
           threshold: 3000000000
-          dimensions: [{ name: 'podName', operator: 'Include', values: ['*'] }]
         }
       ]
     }
