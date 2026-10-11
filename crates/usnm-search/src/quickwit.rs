@@ -898,6 +898,7 @@ pub fn parse_hits(
 ) -> Result<HitsPage, SearchError> {
     let american_stories = indexes.american_stories();
     let analyzer = indexes.analyzer();
+    let layout = indexes.text_layout();
     let days = distinct(&resp)?;
     let mut hits = Vec::with_capacity(resp.hits.len());
     for d in resp.hits {
@@ -910,11 +911,11 @@ pub fn parse_hits(
         let text = d.text.as_deref().unwrap_or_default();
         let (snippets, snippet_source) = match &d.printed {
             Some(printed) => (ja_snippets(printed, query, analyzer), None),
-            None => page_snippets(text, d.text_as.as_deref(), query, american_stories),
+            None => page_snippets(text, d.text_as.as_deref(), query, american_stories, layout),
         };
         // Which texts match, from the same stored texts: no extra query.
         let matched_in = (american_stories && d.printed.is_none())
-            .then(|| matched_in(text, d.text_as.as_deref(), query));
+            .then(|| matched_in(text, d.text_as.as_deref(), query, layout));
         // A Congress unit's first page is no front page (#229), as its
         // document says and the memory backend reads.
         let front_page = d.seq == 1 && !d.congress.is_congress();

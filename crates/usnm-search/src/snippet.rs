@@ -5,7 +5,8 @@
 //! (which its REST API can't lengthen) no longer decides what readers see.
 
 use usnm_core::query::{Node, Term};
-use usnm_core::text::{fold, index_tokens, REMOVE_LONG_BYTES, USNM_TEXT};
+use usnm_core::text::{fold, index_tokens, MAX_TOKEN_CHARS, REMOVE_LONG_BYTES, USNM_TEXT};
+use usnm_core::text_layout::TextLayout;
 
 use crate::memory::{as_analyzed, eval, term_matches, word_matches};
 use crate::{mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES};
@@ -16,18 +17,32 @@ pub const MAX_FRAGMENTS: usize = 3;
 pub const CONTEXT: usize = 80;
 
 /// One word as the analyzer counts positions: its folded token, or `None`
-/// for an over-long OCR run the analyzer drops but still counts as a
-/// position (255 bytes or more, as `text` and `text_as` index them,
-/// [`index_tokens`], #286), and its character range in the text.
+/// for an over-long OCR run the index drops but still counts as a position
+/// ([`indexed`]), and its character range in the text.
 struct Word {
     token: Option<String>,
     start: usize,
     end: usize,
 }
 
-/// The text's words as the `usnm_text` analyzer splits and folds them, with
-/// positions.
-fn words(chars: &[char]) -> Vec<Word> {
+/// A word as the searched field of `layout` holds it (05 §5.5.7): on
+/// `text` and `text_as` (layout 1) `None` for 255 bytes or more as split
+/// ([`index_tokens`], #286), on `text_all` (layout 2) also for a folded word
+/// over [`MAX_TOKEN_CHARS`].
+fn indexed(raw: &str, layout: TextLayout) -> Option<String> {
+    (raw.len() < REMOVE_LONG_BYTES)
+        .then(|| fold(raw, USNM_TEXT))
+        .and_then(|t| single_keeps(t, layout))
+}
+
+/// `None` for a word layout 2's `text_all` drops (over [`MAX_TOKEN_CHARS`]).
+fn single_keeps(word: String, layout: TextLayout) -> Option<String> {
+    (layout == TextLayout::Separate || word.chars().count() <= MAX_TOKEN_CHARS).then_some(word)
+}
+
+/// The text's words as the searched field of `layout` splits and folds
+/// them, with positions.
+fn words(chars: &[char], layout: TextLayout) -> Vec<Word> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
@@ -42,7 +57,7 @@ fn words(chars: &[char]) -> Vec<Word> {
         let raw: String = chars[start..i].iter().collect();
         // A dropped run keeps its position, so a phrase can't match across it.
         out.push(Word {
-            token: (raw.len() < REMOVE_LONG_BYTES).then(|| fold(&raw, USNM_TEXT)),
+            token: indexed(&raw, layout),
             start,
             end: i,
         });
@@ -147,13 +162,14 @@ fn word_end(chars: &[char], mut at: usize) -> usize {
 /// that doesn't reach the text's start or end is marked with `…`. The words
 /// are matched as the engine matches them: the text's as `usnm_text` reads
 /// them, the query's analyzed again ([`as_analyzed`]), so with any analyzer
-/// version the marks land on the words the engine found (#168).
-pub fn text_snippets(text: &str, query: &Node) -> Vec<String> {
+/// version the marks land on the words the engine found (#168), and with
+/// either text layout on the words its searched field holds.
+pub fn text_snippets(text: &str, query: &Node, layout: TextLayout) -> Vec<String> {
     let chars: Vec<char> = text
         .chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
         .collect();
-    let hits = matches(&words(&chars), &patterns(&as_analyzed(query)));
+    let hits = matches(&words(&chars, layout), &patterns(&as_analyzed(query)));
     let mut out = Vec::new();
     let mut covered = 0;
     let mut k = 0;
@@ -203,11 +219,12 @@ pub fn page_snippets(
     text_as: Option<&str>,
     query: &Node,
     american_stories: bool,
+    layout: TextLayout,
 ) -> (Vec<String>, Option<&'static str>) {
-    let loc = text_snippets(text, query);
+    let loc = text_snippets(text, query, layout);
     match text_as {
         Some(text_as) if loc.is_empty() && american_stories => {
-            let other = text_snippets(text_as, query);
+            let other = text_snippets(text_as, query, layout);
             if other.is_empty() {
                 (loc, None)
             } else {
@@ -226,15 +243,26 @@ pub fn page_snippets(
 /// Evaluated as the memory backend evaluates a query, so a page listed
 /// without `loc` is one a search of LoC's text alone doesn't find: the
 /// pages `/v1/aggregate` counts in `total.american_stories_only`. Both
-/// backends use it. The texts are read as `text` and `text_as` index them
-/// ([`index_tokens`]), where that count is made.
-pub fn matched_in(text: &str, text_as: Option<&str>, query: &Node) -> Vec<&'static str> {
+/// backends use it. The texts are read as the searched field of `layout`
+/// holds them ([`indexed`]).
+pub fn matched_in(
+    text: &str,
+    text_as: Option<&str>,
+    query: &Node,
+    layout: TextLayout,
+) -> Vec<&'static str> {
     let Some(text_as) = text_as else {
         return vec![MATCHED_IN_LOC];
     };
     let query = as_analyzed(query);
-    let loc = eval(&query, &index_tokens(text, USNM_TEXT));
-    let american = eval(&query, &index_tokens(text_as, USNM_TEXT));
+    let read = |t: &str| -> Vec<Option<String>> {
+        index_tokens(t, USNM_TEXT)
+            .into_iter()
+            .map(|w| w.and_then(|w| single_keeps(w, layout)))
+            .collect()
+    };
+    let loc = eval(&query, &read(text));
+    let american = eval(&query, &read(text_as));
     match (loc, american) {
         (true, false) => vec![MATCHED_IN_LOC],
         (false, true) => vec![SNIPPETS_FROM_AMERICAN_STORIES],
@@ -265,7 +293,7 @@ mod tests {
     use usnm_core::query::parse;
 
     fn snip(text: &str, q: &str) -> Vec<String> {
-        text_snippets(text, &parse(q).unwrap())
+        text_snippets(text, &parse(q).unwrap(), TextLayout::Separate)
     }
 
     #[test]
@@ -319,10 +347,10 @@ mod tests {
         // the phrase "1 2" (#168): the mark lands on `1/2`.
         let q = usnm_core::query::parse_with("½", usnm_core::text::Analyzer::V1).unwrap();
         assert_eq!(
-            text_snippets("Oats closed 1/2 lower", &q),
+            text_snippets("Oats closed 1/2 lower", &q, TextLayout::Separate),
             ["Oats closed <mark>1/2</mark> lower"]
         );
-        assert!(text_snippets("Wheat closed ½ higher", &q).is_empty());
+        assert!(text_snippets("Wheat closed ½ higher", &q, TextLayout::Separate).is_empty());
     }
 
     #[test]
@@ -373,6 +401,29 @@ mod tests {
             snip(&format!("{kept} {dropped}"), "yyyyy* zzzzz*"),
             [format!("<mark>{kept}</mark> {dropped}")]
         );
+        // On layout 2, `text_all` drops words over 40 characters, so a
+        // prefix marks none of them, and an OR's other branch found the page.
+        let q = parse("gold OR yyyyy*").unwrap();
+        let long = "y".repeat(41);
+        let text = format!("{long} gold");
+        assert_eq!(
+            text_snippets(&text, &q, TextLayout::Single),
+            [format!("{long} <mark>gold</mark>")]
+        );
+        assert_eq!(
+            text_snippets(&text, &q, TextLayout::Separate),
+            [format!("<mark>{long}</mark> <mark>gold</mark>")]
+        );
+        let q = parse("yyyyy*").unwrap();
+        assert!(text_snippets(&long, &q, TextLayout::Single).is_empty());
+        assert_eq!(
+            matched_in("gold", Some(&long), &q, TextLayout::Separate),
+            [SNIPPETS_FROM_AMERICAN_STORIES]
+        );
+        assert_eq!(
+            matched_in("gold", Some(&long), &q, TextLayout::Single),
+            [MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES]
+        );
     }
 
     #[test]
@@ -397,11 +448,11 @@ mod tests {
         let american = "BRYAN AT CHICAGO the boy orator spoke";
         // Off: LoC's text only.
         assert_eq!(
-            page_snippets(loc, Some(american), &q, false),
+            page_snippets(loc, Some(american), &q, false, TextLayout::Separate),
             (Vec::new(), None)
         );
         assert_eq!(
-            page_snippets(loc, Some(american), &q, true),
+            page_snippets(loc, Some(american), &q, true, TextLayout::Separate),
             (
                 vec!["<mark>BRYAN</mark> AT CHICAGO the boy orator spoke".to_owned()],
                 Some(SNIPPETS_FROM_AMERICAN_STORIES)
@@ -410,22 +461,25 @@ mod tests {
         // A match in LoC's text keeps its snippets.
         let q = parse("orator").unwrap();
         assert_eq!(
-            page_snippets(loc, Some(american), &q, true),
+            page_snippets(loc, Some(american), &q, true, TextLayout::Separate),
             (vec!["the boy <mark>orator</mark> spoke".to_owned()], None)
         );
         // Nothing in either text, or no second text.
         let q = parse("silver").unwrap();
         assert_eq!(
-            page_snippets(loc, Some(american), &q, true),
+            page_snippets(loc, Some(american), &q, true, TextLayout::Separate),
             (Vec::new(), None)
         );
-        assert_eq!(page_snippets(loc, None, &q, true), (Vec::new(), None));
+        assert_eq!(
+            page_snippets(loc, None, &q, true, TextLayout::Separate),
+            (Vec::new(), None)
+        );
     }
 
     #[test]
     fn matched_in_names_the_texts_that_match_the_whole_query() {
         let m = |q: &str, loc: &str, american: Option<&str>| {
-            matched_in(loc, american, &parse(q).unwrap())
+            matched_in(loc, american, &parse(q).unwrap(), TextLayout::Separate)
         };
         let loc = "a cross of goid, said the boy orator";
         let american = "BRYAN AT CHICAGO a cross of gold, said the boy oratar";

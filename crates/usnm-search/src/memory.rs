@@ -357,10 +357,13 @@ impl SearchBackend for MemoryBackend {
                             d.text_as.as_deref(),
                             query,
                             indexes.american_stories(),
+                            indexes.text_layout(),
                         ),
                     };
-                    let matched_in = (indexes.american_stories() && d.printed.is_none())
-                        .then(|| matched_in(&d.text, d.text_as.as_deref(), query));
+                    let matched_in =
+                        (indexes.american_stories() && d.printed.is_none()).then(|| {
+                            matched_in(&d.text, d.text_as.as_deref(), query, indexes.text_layout())
+                        });
                     Hit {
                         doc_id: d.doc_id.clone(),
                         day: d.day,

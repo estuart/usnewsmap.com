@@ -8,7 +8,8 @@
 //! ([`index_tokens`], #286), so words of 41 to 254 bytes are indexed there.
 //! Our own code drops words over [`MAX_TOKEN_CHARS`] after folding: queries
 //! ([`tokenize`]), the common-word pairs (`text_cg`), the one searched field
-//! of layout 2 (`text_all`, 05 §5.5.7), Japanese pages and snippets.
+//! of layout 2 (`text_all`, 05 §5.5.7) and Japanese pages. Snippets read a
+//! page's words as the layout's searched field holds them.
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::char::is_combining_mark;
