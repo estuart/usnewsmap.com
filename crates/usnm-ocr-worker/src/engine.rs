@@ -139,9 +139,17 @@ impl Drop for ContainerGuard {
         let name = self.name.clone();
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
-                if let Err(e) = cmd.status().await {
-                    tracing::warn!(container = %name, error = %e, "couldn't remove a stopped page's container");
+                // `podman rm` can fail while the container is still
+                // stopping; try a few times, and say so if it never goes.
+                for attempt in 1..=3u32 {
+                    match cmd.status().await {
+                        Ok(s) if s.success() => return,
+                        Ok(s) => tracing::warn!(container = %name, attempt, status = %s, "podman rm failed"),
+                        Err(e) => tracing::warn!(container = %name, attempt, error = %e, "podman rm didn't run"),
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5 * u64::from(attempt))).await;
                 }
+                tracing::error!(container = %name, "couldn't remove a stopped page's container; remove it by hand");
             });
         }
     }
