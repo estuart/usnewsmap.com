@@ -7,7 +7,9 @@ resource count; unset: not found), STUB_GROUPS (group names, one per line),
 STUB_TAGS (the project group's "experiment<TAB>started"; unset: no group),
 STUB_PARAMS (the guard-rail stack's parameters as two tsv rows) and
 STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
-message). It logs each call to STUB_LOG."""
+message). For a job execution (scripts/titles-seed.sh through
+scripts/start-job.sh): STUB_EXECUTION (the started execution's name) and
+STUB_EXEC_STATUS (its status). It logs each call to STUB_LOG."""
 
 import json
 import os
@@ -37,7 +39,14 @@ case "$1 $2" in
     if [ -n "${STUB_TAGS+x}" ]; then printf '%b\n' "$STUB_TAGS"
     else echo "ERROR: (ResourceGroupNotFound) Resource group 'rg-usnm-dev' could not be found." >&2; exit 3; fi ;;
   "resource list") printf 'Microsoft.Storage/storageAccounts\tstusnmdev\n' ;;
+  "containerapp job")
+    case "$*" in
+      *"execution show"*) echo "${STUB_EXEC_STATUS:-Succeeded}" ;;
+      *"job show"*) echo '{"containers":[{"name":"ingest","image":"cr/usnewsmap-ingest:exp-1","args":["run"],"env":[]}]}' ;;
+      *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
+    esac ;;
   "rest --method")
+    case "$*" in *"/jobs/"*"/start?"*) echo "${STUB_EXECUTION:-}"; exit 0 ;; esac
     if [ -n "${STUB_COST_ERROR:-}" ]; then echo "$STUB_COST_ERROR" >&2; exit 1; fi
     printf '%s\n' "${STUB_COST:-}" ;;
   *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
@@ -242,6 +251,70 @@ class DevStatus(Stubbed):
                         STUB_COST_ERROR="ERROR: (TooManyRequests) throttled")
         self.assertEqual(r.returncode, 1)
         self.assertIn("can't read the cost", r.stderr)
+
+
+class TitlesSeed(Stubbed):
+    SETTINGS = ('AZURE_SUBSCRIPTION_ID="sub-1"\nAZURE_RESOURCE_GROUP="rg-usnm-dev"\n'
+                'INGEST_JOB="caj-usnm-ingest-dev"\n'
+                'USNM_ARCHIVE_ACCOUNT="/subscriptions/sub-1/resourceGroups/rg-usnm-archive/providers/'
+                'Microsoft.Storage/storageAccounts/stusnmarchivex"\n')
+
+    def seed(self, *args, env="dev", **extra):
+        return subprocess.run([os.path.join(HERE, "titles-seed.sh"), "--env", env, *args], cwd=ROOT,
+                              env={**self.env, "STUB_EXECUTION": "caj-usnm-ingest-dev-abc12", **extra},
+                              capture_output=True, text=True)
+
+    def test_runs_titles_seed_in_the_ingest_job_and_waits(self):
+        self.settings_file(self.SETTINGS)
+        r = self.seed()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        start = [c for c in self.calls() if c.startswith("rest --method post")]
+        self.assertEqual(len(start), 1)
+        self.assertIn("/jobs/caj-usnm-ingest-dev/start?", start[0])
+        # Only the arguments change: the job's own image and settings stay.
+        body = json.loads(start[0].split("--body ", 1)[1].split(" --query", 1)[0])
+        self.assertEqual(body["containers"][0]["args"], ["titles-seed"])
+        self.assertEqual(body["containers"][0]["image"], "cr/usnewsmap-ingest:exp-1")
+        self.assertTrue(any("--job-execution-name caj-usnm-ingest-dev-abc12" in c for c in self.calls()))
+        self.assertIn("--query-name titles-archive", r.stdout)
+        # Nothing here touches the archival account or its stack.
+        self.assertFalse(any(c.startswith(("storage", "stack", "lock", "role")) for c in self.calls()))
+
+    def test_a_failed_execution_fails(self):
+        self.settings_file(self.SETTINGS)
+        r = self.seed(STUB_EXEC_STATUS="Failed")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ended Failed", r.stderr)
+
+    def test_still_running_at_the_deadline(self):
+        self.settings_file(self.SETTINGS)
+        r = self.seed("--wait-mins", "0", STUB_EXEC_STATUS="Running")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("still Running", r.stderr)
+
+    def test_needs_the_archive(self):
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\nINGEST_JOB="caj-usnm-ingest-dev"\n')
+        r = self.seed()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("USNM_ARCHIVE_ACCOUNT", r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_needs_the_ingest_job(self):
+        self.settings_file(self.SETTINGS.replace('INGEST_JOB="caj-usnm-ingest-dev"\n', ""))
+        r = self.seed()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no ingest job", r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_never_prod(self):
+        r = self.seed(env="prod")
+        self.assertEqual(r.returncode, 2)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_named_arguments_only(self):
+        r = subprocess.run([os.path.join(HERE, "titles-seed.sh"), "dev"], cwd=ROOT, env=self.env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
 
 
 if __name__ == "__main__":

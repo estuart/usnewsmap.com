@@ -30,6 +30,7 @@ pub mod sink;
 pub mod source;
 pub mod telemetry;
 pub mod titles;
+pub mod titles_archive;
 pub mod worker;
 
 // Pipeline state lives in its own crate so the API can read it without
