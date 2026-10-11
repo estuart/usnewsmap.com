@@ -198,9 +198,21 @@ done
 # A deleted Key Vault stays soft-deleted, holding its name, for its retention
 # (7 days outside prod). Purge it so a rebuilt environment can use the name
 # (ADR-0017); prod's has purge protection, which refuses, so say so instead.
+# The deleted-vault list is eventually consistent: a vault deleted with its
+# group can take minutes to appear, so look for a while before concluding
+# it's gone (purged by an earlier run).
 for v in $vaults; do
-  if ! out=$(az keyvault show-deleted --name "$v" --query properties.purgeProtectionEnabled -o tsv 2>&1); then
+  found=false
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if out=$(az keyvault show-deleted --name "$v" --query properties.purgeProtectionEnabled -o tsv 2>&1); then
+      found=true
+      break
+    fi
     grep -qiE 'NotFound|not found' <<< "$out" || die "can't check deleted Key Vault $v: $out"
+    [ "$attempt" -lt 10 ] && sleep 30
+  done
+  if [ "$found" = false ]; then
+    echo "Key Vault $v isn't in the deleted list after 5 minutes; if it shows up later: az keyvault purge --name $v"
     continue
   fi
   if [ "$out" = true ]; then

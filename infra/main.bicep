@@ -362,10 +362,10 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
 // the operator's sign-in. Nodes have no access. Its firewall allows only the
 // node IPs (the operator's home IP), so the public-network policy exempts it
 // by resource id like the exchange account, and its assignment goes first.
-// Compact name (ADR-0017): usnm{fn}{abbr}{env}{sfx}, at most 24 characters;
-// take() only matters for an environment name over 9 characters, which
-// ADR-0017's 5-character cap rules out.
-var ocrVaultName = take('usnmocrkv${env}${suffix}', 24)
+// Compact name (ADR-0017): usnm{fn}{abbr}{env}{sfx}, at most 24 characters.
+// The environment name is cut to 9 characters, never the suffix, which
+// keeps the name unique; ADR-0017's 5-character cap makes the cut moot.
+var ocrVaultName = 'usnmocrkv${take(env, 9)}${suffix}'
 var ocrVaultId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.KeyVault/vaults', ocrVaultName)
 
 module ocrVault 'modules/ocr-vault.bicep' = if (ocrNodes) {

@@ -658,7 +658,7 @@ scripts/ocr-node/group.sh --env prod                      # writes USNM_OCR_NODE
 scripts/provision.sh prod                                 # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 
-**The nodes' Key Vault.** With `USNM_OCR_NODES` on, the provision also creates `usnmocrkv<env><suffix>` (saved as `OCR_KEYVAULT`) for the secrets you hold for setting up nodes: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation key and organization id a RHEL node registers with. Its firewall allows only `USNM_OCR_NODE_IPS`, so run `az` against it from home. Access is Azure RBAC only, and only the object ids in `USNM_OCR_KEYVAULT_ADMINS` get Key Vault Secrets Officer (nodes get nothing). Prod's vault has purge protection: a deleted secret or vault is kept for 90 days and can't be purged. Never paste the secrets into a chat, an issue or a commit, and keep them out of your shell history. The leading space on the two `secret set` lines below keeps zsh and bash from saving them when `HIST_IGNORE_SPACE` or `HISTCONTROL=ignorespace` is set; or use `--file` with a file you delete straight after. Grant yourself access, provision, then set the two secrets in your own terminal:
+**The nodes' Key Vault.** With `USNM_OCR_NODES` on, the provision also creates `usnmocrkv<env><suffix>` (saved as `OCR_KEYVAULT`) for the secrets you hold for setting up nodes: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation key and organization id a RHEL node registers with, and `rhel-offline-token`, a Red Hat API offline token used on the Proxmox hosts to fetch RHEL images through Red Hat's image API. Its firewall allows only `USNM_OCR_NODE_IPS`, so run `az` against it from home. Access is Azure RBAC only, and only the object ids in `USNM_OCR_KEYVAULT_ADMINS` get Key Vault Secrets Officer (nodes get nothing). Prod's vault has purge protection: a deleted secret or vault is kept for 90 days and can't be purged. Never paste the secrets into a chat, an issue or a commit, and keep them out of your shell history. The leading space on the `secret set` lines below keeps zsh and bash from saving them when `HIST_IGNORE_SPACE` or `HISTCONTROL=ignorespace` is set; or use `--file` with a file you delete straight after. Grant yourself access, provision, then set the secrets in your own terminal:
 
 ```sh
 scripts/settings.sh prod USNM_OCR_KEYVAULT_ADMINS "$(az ad signed-in-user show --query id -o tsv)"
@@ -666,6 +666,7 @@ scripts/provision.sh prod                                 # writes OCR_KEYVAULT
 vault=$(scripts/settings.sh prod OCR_KEYVAULT)                  # usnmocrkvprodffapzy
  az keyvault secret set --vault-name "$vault" --name rhel-activation-key --value '<activation key>' -o none
  az keyvault secret set --vault-name "$vault" --name rhel-org-id --value '<organization id>' -o none
+ az keyvault secret set --vault-name "$vault" --name rhel-offline-token --value '<offline token>' -o none
 az keyvault secret list --vault-name "$vault" --query '[].name' -o tsv   # names only, never values
 ```
 

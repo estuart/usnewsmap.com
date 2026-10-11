@@ -1,8 +1,10 @@
 // The OCR node fleet's Key Vault (#296, #295): secrets the operator holds
 // for setting up nodes, which aren't Azure credentials and have nowhere else
-// to live. The first two are `rhel-activation-key` and `rhel-org-id`, the
-// Red Hat activation key and organization id that onboard.sh reads with the
-// operator's az sign-in and passes to node-setup.sh over ssh's stdin. The
+// to live: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation
+// key and organization id that onboard.sh reads with the operator's az
+// sign-in and passes to node-setup.sh over ssh's stdin, and
+// `rhel-offline-token`, a Red Hat API offline token for fetching RHEL
+// images on the Proxmox hosts. The
 // maintainer sets them with az (docs/operations.md); the template never
 // writes a secret, so nothing secret is in the repository or a deployment.
 //
