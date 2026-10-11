@@ -382,6 +382,17 @@ async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> 
     let next = loader.current().await?;
     let serving = state.snapshot.load_full();
     if next.index_version == serving.refdata.version() {
+        // A version's language filter is fixed (05 §5.5.8): cached
+        // responses are keyed by the version alone.
+        if next.page_language != serving.refdata.current.page_language {
+            tracing::warn!(
+                version = %next.index_version,
+                serving = ?serving.refdata.current.page_language,
+                published = ?next.page_language,
+                "current.json changed page_language without a new version; ignored \
+                 (roll back to a version without page languages instead)"
+            );
+        }
         // The same version: worth another load only to bring back a Congress
         // set it dropped (#229). It goes live only if that set is searchable
         // now, and without a warm-up: the version's newspaper searches are

@@ -75,7 +75,9 @@ pub struct Current {
     /// The `usnm_core::page_language::VERSION` every main index's page
     /// languages were found with (05 §5.5.8, #289): `lang=` then means page
     /// language, and the baselines count pages by theirs. Absent for
-    /// versions without them, where `lang=` means title language.
+    /// versions without them, where `lang=` means title language. Fixed for
+    /// a version: the API reads it only when the version changes, and its
+    /// caches key on the version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_language: Option<u32>,
     /// The Congress index set (#229), when the version has one: the
