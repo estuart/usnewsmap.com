@@ -2,15 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MeasureToggle } from "./MeasureToggle";
 import { SkewLegend } from "./SkewLegend";
-import {
-  clearest,
-  LANGUAGE_EXPLAINER,
-  skewCsv,
-  SkewLists,
-  StateTable,
-  useListLengths,
-  type SkewRow,
-} from "./SkewPanels";
+import { clearest, LANGUAGE_EXPLAINER, skewCsv, SkewLists, StateTable, type SkewRow } from "./SkewPanels";
+import { useListLengths } from "./ListLength";
 import { PlaceTable } from "./PlaceTable";
 import type { SkewInfo } from "../lib/skewText";
 import { dayNumber } from "../lib/time";
@@ -42,7 +35,7 @@ function Lists({
   resetKey?: string;
   narrow?: boolean;
 }) {
-  const [shown, setShown] = useListLengths(resetKey);
+  const [shown, setShown] = useListLengths(resetKey, ["above", "below"]);
   const lists = <SkewLists rows={rows} onSelect={onSelect} shown={shown} onShown={setShown} />;
   return narrow ? <div>{lists}</div> : <section>{lists}</section>;
 }
