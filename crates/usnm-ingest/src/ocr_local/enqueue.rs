@@ -3,10 +3,17 @@
 //! lettered pages again by their cause. The operator has no queue data
 //! role, so both run as executions of the ingest job, as `id-usnm-ingest`.
 //!
-//! Each writes a ledger row for every message before it puts it: a page in
-//! the ledger whose message never went out is queued again by the seeder
-//! after its timeout (Step 10), while a message with no ledger row would
-//! have its part refused as not asked for.
+//! Each writes a ledger row for every message before it puts it, since a
+//! message with no ledger row would have its part refused as not asked
+//! for. If a put fails, the pages after it get a `not_sent` outcome, so
+//! they aren't outstanding and can be queued again; the page whose put
+//! failed may have gone out and stays outstanding (`--include-outstanding`,
+//! or the seeder's timeout, Step 10). Outside a dry run both hold the
+//! `ocr-sync` lock, as the seeder does, so its window count never races
+//! them.
+
+use super::ledger::{Outcome, NOT_SENT};
+use super::sync::Lease;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -44,7 +51,7 @@ pub struct QueueReport {
     pub ledger: Option<String>,
 }
 
-fn skip(r: &mut QueueReport, why: &str, doc_id: &str) {
+pub(super) fn skip(r: &mut QueueReport, why: &str, doc_id: &str) {
     tracing::info!(doc_id, why, "page not queued");
     *r.skipped.entry(why.to_owned()).or_default() += 1;
 }
@@ -59,28 +66,66 @@ pub fn message_language(detected: Option<&str>, title_languages: &[String]) -> O
         .or_else(|| title_languages.first().and_then(|l| iso(l)))
 }
 
-/// Send messages after writing their ledger rows.
-async fn send_all(
+/// Record pages whose ledger rows are written but whose messages were
+/// never put, so they aren't outstanding; returns how many.
+async fn record_not_sent(
+    curated: &dyn ObjectStore,
+    run: &str,
+    rest: &[(Queued, OcrMessage)],
+) -> usize {
+    let at = Utc::now();
+    let rows: Vec<Outcome> = rest
+        .iter()
+        .map(|(q, _)| Outcome {
+            doc_id: q.doc_id.clone(),
+            outcome: NOT_SENT.to_owned(),
+            cause: None,
+            kind: None,
+            source: run.to_owned(),
+            at,
+            run: run.to_owned(),
+        })
+        .collect();
+    if let Err(w) = ledger::write_outcomes(curated, &rows, at, run).await {
+        tracing::error!(
+            error = %format!("{w:#}"),
+            pages = rows.len(),
+            "could not record the pages not sent; they stay outstanding until they time out"
+        );
+    }
+    rows.len()
+}
+
+/// Send messages after writing their ledger rows, checking the lock (when
+/// held) before the write and before each put.
+pub(super) async fn send_all(
     curated: &dyn ObjectStore,
     queue: &Arc<dyn Queue>,
+    lease: Option<&Lease>,
     run: &str,
     now: DateTime<Utc>,
     batch: Vec<(Queued, OcrMessage)>,
     report: &mut QueueReport,
 ) -> anyhow::Result<()> {
+    if let Some(l) = lease {
+        l.check()?;
+    }
     let rows: Vec<Queued> = batch.iter().map(|(q, _)| q.clone()).collect();
     report.ledger = ledger::write_queued(curated, &rows, now, run).await?;
-    for (q, m) in &batch {
-        queue
-            .send(queue_for(m.reason), &m.encode())
-            .await
-            .with_context(|| {
-                format!(
-                    "queueing {} (its ledger row is written: run again with \
-                     --include-outstanding to queue the pages not sent)",
-                    q.doc_id
-                )
-            })?;
+    for (i, (q, m)) in batch.iter().enumerate() {
+        if let Some(Err(e)) = lease.map(Lease::check) {
+            let n = record_not_sent(curated, run, &batch[i..]).await;
+            return Err(e.context(format!("{n} pages recorded as not sent")));
+        }
+        if let Err(e) = queue.send(queue_for(m.reason), &m.encode()).await {
+            // The pages after this one never went out: not outstanding.
+            let n = record_not_sent(curated, run, &batch[i + 1..]).await;
+            return Err(e.context(format!(
+                "queueing {} ({n} pages after it are recorded as not sent; this one's ledger row \
+                 is written and may have gone out: --include-outstanding queues it again)",
+                q.doc_id
+            )));
+        }
         report.queued += 1;
     }
     Ok(())
@@ -146,6 +191,32 @@ pub struct EnqueueOptions {
     pub dry_run: bool,
 }
 
+/// Take the `ocr-sync` lock, unless it is a dry run.
+async fn take(state: &State, owner: &str, dry_run: bool) -> anyhow::Result<Option<Lease>> {
+    Ok(if dry_run {
+        None
+    } else {
+        Some(Lease::take(state, owner).await?)
+    })
+}
+
+/// Give the lock back, if held, and return the run's result.
+async fn release<T>(
+    state: &State,
+    owner: &str,
+    lease: Option<Lease>,
+    result: anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let Some(lease) = lease else {
+        return result;
+    };
+    drop(lease);
+    let unlocked = state.unlock(super::LOCK, owner).await;
+    let out = result?;
+    unlocked?;
+    Ok(out)
+}
+
 /// Queue chosen pages.
 pub async fn enqueue(
     state: &State,
@@ -153,6 +224,20 @@ pub async fn enqueue(
     reference: &dyn ObjectStore,
     queue: &Arc<dyn Queue>,
     opts: &EnqueueOptions,
+) -> anyhow::Result<QueueReport> {
+    let owner = crate::owner_id();
+    let lease = take(state, &owner, opts.dry_run).await?;
+    let result = enqueue_locked(state, curated, reference, queue, opts, lease.as_ref()).await;
+    release(state, &owner, lease, result).await
+}
+
+async fn enqueue_locked(
+    state: &State,
+    curated: &dyn ObjectStore,
+    reference: &dyn ObjectStore,
+    queue: &Arc<dyn Queue>,
+    opts: &EnqueueOptions,
+    lease: Option<&Lease>,
 ) -> anyhow::Result<QueueReport> {
     if opts.pages.len() > MAX_PAGES {
         bail!(
@@ -262,7 +347,7 @@ pub async fn enqueue(
         return Ok(report);
     }
     if !out.is_empty() {
-        send_all(curated, queue, &run, now, out, &mut report).await?;
+        send_all(curated, queue, lease, &run, now, out, &mut report).await?;
     }
     tracing::info!(queued = report.queued, skipped = ?report.skipped, ledger = ?report.ledger, "ocr-enqueue finished");
     Ok(report)
@@ -316,6 +401,20 @@ pub async fn requeue(
     reference: &dyn ObjectStore,
     queue: &Arc<dyn Queue>,
     opts: &RequeueOptions,
+) -> anyhow::Result<QueueReport> {
+    let owner = crate::owner_id();
+    let lease = take(state, &owner, opts.dry_run).await?;
+    let result = requeue_locked(state, curated, reference, queue, opts, lease.as_ref()).await;
+    release(state, &owner, lease, result).await
+}
+
+async fn requeue_locked(
+    state: &State,
+    curated: &dyn ObjectStore,
+    reference: &dyn ObjectStore,
+    queue: &Arc<dyn Queue>,
+    opts: &RequeueOptions,
+    lease: Option<&Lease>,
 ) -> anyhow::Result<QueueReport> {
     const CAUSES: [&str; 4] = ["dequeue_count", "invalid", "permanent", "unroutable"];
     if !CAUSES.contains(&opts.cause.as_str()) {
@@ -421,7 +520,7 @@ pub async fn requeue(
         return Ok(report);
     }
     if !out.is_empty() {
-        send_all(curated, queue, &run, now, out, &mut report).await?;
+        send_all(curated, queue, lease, &run, now, out, &mut report).await?;
     }
     tracing::info!(queued = report.queued, skipped = ?report.skipped, ledger = ?report.ledger, "ocr-requeue finished");
     Ok(report)
