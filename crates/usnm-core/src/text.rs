@@ -1,6 +1,15 @@
 //! Text normalization shared by ingest (04 §4.5) and the query parser, so the
-//! index and queries agree. `tokenize` mirrors the `usnm_text` analyzer
-//! (05 §5.5): Unicode word split, lowercase, ASCII folding, drop tokens > 40 chars.
+//! index and queries agree. The `usnm_text` analyzer (05 §5.5) splits words
+//! at what isn't a letter or digit, then lowercases and ASCII-folds them.
+//!
+//! Two rules drop over-long OCR runs. Quickwit 0.9.1's `remove_long` filter,
+//! on `text` and `text_as` (layout 1, 05 §5.5.1), drops a word of
+//! [`REMOVE_LONG_BYTES`] or more before folding and keeps its position
+//! ([`index_tokens`], #286), so words of 41 to 254 bytes are indexed there.
+//! Our own code drops words over [`MAX_TOKEN_CHARS`] after folding: queries
+//! ([`tokenize`]), the common-word pairs (`text_cg`), the one searched field
+//! of layout 2 (`text_all`, 05 §5.5.7) and Japanese pages. Snippets read a
+//! page's words as the layout's searched field holds them.
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::char::is_combining_mark;
@@ -8,8 +17,17 @@ use unicode_normalization::char::is_combining_mark;
 use crate::ja::is_ja;
 use unicode_normalization::UnicodeNormalization;
 
-/// Tokens longer than this are OCR garbage and are not indexed.
+/// Folded words longer than this are OCR garbage: the query parser takes
+/// none, and the fields our code writes (`text_cg`, `text_all`, Japanese
+/// pages) drop them. Quickwit's `usnm_text` keeps them in `text` and
+/// `text_as` up to [`REMOVE_LONG_BYTES`].
 pub const MAX_TOKEN_CHARS: usize = 40;
+
+/// Quickwit 0.9.1's `remove_long` filter in `usnm_text` drops a token of this
+/// many bytes or more, measured as split, before lowercasing and ASCII
+/// folding (tantivy's default length, which Quickwit's tokenizer config
+/// can't change). The dropped word keeps its position (#286).
+pub const REMOVE_LONG_BYTES: usize = 255;
 
 /// Pages whose normalized text is shorter than this are `short`.
 pub const MIN_PAGE_CHARS: usize = 20;
@@ -153,9 +171,9 @@ impl Analyzer {
     pub const ALL: [Self; 2] = [Self::V1, Self::V2];
 }
 
-/// The version whose [`tokenize`] is what Quickwit's `usnm_text` analyzer
-/// makes of a text, in every index version: pages' `text` and `text_as`, and
-/// the query terms Quickwit analyzes again (#168).
+/// The version whose folding is what Quickwit's `usnm_text` analyzer makes
+/// of a text, in every index version: pages' `text` and `text_as`
+/// ([`index_tokens`]), and the query terms Quickwit analyzes again (#168).
 pub const USNM_TEXT: Analyzer = Analyzer::V2;
 
 impl Default for Analyzer {
@@ -266,13 +284,29 @@ fn push_folded(decomposed: impl Iterator<Item = char>, out: &mut String) {
     }
 }
 
-/// Split into folded index tokens, exactly as the `usnm_text` analyzer does
-/// (with [`Analyzer::V1`], except that it decomposes `½` and the like).
+/// Split into folded tokens as the `usnm_text` analyzer does (with
+/// [`Analyzer::V1`], except that it decomposes `½` and the like), dropping
+/// words over [`MAX_TOKEN_CHARS`] and their positions: the words of a query,
+/// which never has a longer one. A page's words as Quickwit indexes them in
+/// `text` and `text_as` are [`index_tokens`].
 pub fn tokenize(text: &str, analyzer: Analyzer) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
         .map(|t| fold(t, analyzer))
         .filter(|t| t.chars().count() <= MAX_TOKEN_CHARS)
+        .collect()
+}
+
+/// A text's words as Quickwit's `usnm_text` analyzer indexes them in `text`
+/// and `text_as` (layout 1, 05 §5.5.1), one per position: split as
+/// [`tokenize`] splits (tantivy's `simple` tokenizer splits at what isn't
+/// alphanumeric), `None` for a word of [`REMOVE_LONG_BYTES`] or more as
+/// split, which `remove_long` drops but whose position still counts, and
+/// otherwise the word folded, however long (#286).
+pub fn index_tokens(text: &str, analyzer: Analyzer) -> Vec<Option<String>> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| (t.len() < REMOVE_LONG_BYTES).then(|| fold(t, analyzer)))
         .collect()
 }
 
@@ -352,6 +386,47 @@ mod tests {
                 .all(|t| t.is_ascii()));
             let long = "x".repeat(41);
             assert!(tokenize(&long, a).is_empty());
+        }
+    }
+
+    #[test]
+    fn index_tokens_drop_words_of_255_bytes_keeping_their_positions() {
+        // Quickwit 0.9.1's `remove_long` measures the word as split, in
+        // bytes, before folding: 254 bytes stay, 255 go, and the position
+        // stays either way (#286).
+        for a in Analyzer::ALL {
+            let kept = "x".repeat(REMOVE_LONG_BYTES - 1);
+            let dropped = "x".repeat(REMOVE_LONG_BYTES);
+            let text = format!("Gold {} of {dropped}, silver", "X".repeat(41));
+            assert_eq!(
+                index_tokens(&text, a),
+                vec![
+                    Some("gold".to_owned()),
+                    Some("x".repeat(41)),
+                    Some("of".to_owned()),
+                    None,
+                    Some("silver".to_owned())
+                ]
+            );
+            assert_eq!(index_tokens(&kept, a), vec![Some(kept.clone())]);
+            // `tokenize` drops both, and their positions.
+            assert_eq!(tokenize(&text, a), vec!["gold", "of", "silver"]);
+            // Bytes, not characters: `é` is two bytes, folded to `e`.
+            let e254 = format!("Q{}x", "é".repeat(126));
+            let e255 = format!("Q{}", "é".repeat(127));
+            assert_eq!((e254.len(), e255.len()), (254, 255));
+            assert_eq!(
+                index_tokens(&format!("{e254} {e255}"), a),
+                vec![Some(format!("q{}x", "e".repeat(126))), None]
+            );
+            // Measured before folding, which can lengthen a word (`Æ` is `ae`).
+            let ae = "Æ".repeat(127);
+            assert_eq!(ae.len(), 254);
+            assert_eq!(index_tokens(&ae, a), vec![Some("ae".repeat(127))]);
+            // Otherwise the words are `tokenize`'s.
+            let s = "Crucify mankind upon a CROSS of Gold! Café—ſo ½ 61¼ ㊀ a㊁";
+            let words: Vec<String> = index_tokens(s, a).into_iter().flatten().collect();
+            assert_eq!(words, tokenize(s, a));
         }
     }
 

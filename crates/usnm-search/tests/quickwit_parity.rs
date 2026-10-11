@@ -147,7 +147,59 @@ fn queries() -> Vec<(&'static str, Node)> {
         // the analyzer has them: `b㊁` is one word.
         ("circled ideograph", parse("㊀").unwrap()),
         ("circled ideograph in a word", parse("b㊁").unwrap()),
+        // OCR runs of 254 and 255 bytes (#286): `text` and `text_as` keep
+        // the first as a word and drop the second, `text_all` drops both,
+        // and each keeps its position. No phrase spans either; one word of
+        // slop does. A prefix or wildcard reaches the first on `text` only.
+        (
+            "phrase across a 254-byte word",
+            parse(r#""garbled wharfage""#).unwrap(),
+        ),
+        (
+            "near across a 254-byte word",
+            parse(r#""garbled wharfage"~1"#).unwrap(),
+        ),
+        (
+            "phrase across a 255-byte word",
+            parse(r#""signal semaphore""#).unwrap(),
+        ),
+        (
+            "near across a 255-byte word",
+            parse(r#""signal semaphore"~1"#).unwrap(),
+        ),
+        ("prefix into a 254-byte word", parse("qzxwy*").unwrap()),
+        ("wildcard into a 254-byte word", parse("qzxwy?e*x").unwrap()),
+        ("prefix into a 255-byte word", parse("vyxwz*").unwrap()),
     ]
+}
+
+/// The fixtures' 254-byte word (#286) is found where the layout indexes it,
+/// and phrases count its position and the dropped 255-byte word's.
+#[tokio::test]
+async fn long_ocr_runs_are_searched_as_each_layout_indexes_them() {
+    let mem = memory();
+    let f = filters("1895-01-01", "1897-12-31");
+    let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
+    let [(_, loc), (_, both), (_, one)] = <[_; 3]>::try_from(searched_sets()).ok().unwrap();
+    let total = |set: &IndexSet, q: &str| {
+        let (mem, f, spec, set, q) = (&mem, &f, &spec, set.clone(), parse(q).unwrap());
+        async move { mem.summary(&set, &q, f, spec).await.unwrap().total_hits }
+    };
+    let pages = total(&loc, "wharfage").await;
+    assert!(pages > 0);
+    for set in [&loc, &both, &one] {
+        for q in [r#""garbled wharfage""#, r#""signal semaphore""#, "vyxwz*"] {
+            assert_eq!(total(set, q).await, 0, "{q}");
+        }
+        for q in [r#""garbled wharfage"~1"#, r#""signal semaphore"~1"#] {
+            assert_eq!(total(set, q).await, pages, "{q}");
+        }
+    }
+    for q in ["qzxwy*", "qzxwy?e*x"] {
+        assert_eq!(total(&loc, q).await, pages, "{q}");
+        assert_eq!(total(&both, q).await, pages, "{q}");
+        assert_eq!(total(&one, q).await, 0, "{q}");
+    }
 }
 
 /// Queries parsed with analyzer version 1, as the API parses them on an

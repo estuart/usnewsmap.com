@@ -205,9 +205,19 @@ def page_text(rng, topics):
 # fractions are each one word in the index (`½`, `61¼`), and `1/2` is two
 # (#168); the two forms are on different pages. The circled ideographs are
 # kept as they are, and `B㊁` is one word, not `b` and `二` (#241).
+#
+# In June, a garbled telegraph item with two OCR runs (#286): one of 254
+# bytes (130 characters, `é` being two bytes), which Quickwit's `usnm_text`
+# keeps as a word of `text`, and one of 255 bytes, which its `remove_long`
+# drops. Both keep their positions, and the one searched field (`text_all`)
+# drops both, as it drops every word over 40 characters.
+LONG_RUN_KEPT = "Qzxwy" + "é" * 124 + "x"
+LONG_RUN_DROPPED = "Vyxwz" + "é" * 125
 MARKET = {3: "Wheat closed ½ higher at 61¼ and oats steady.",
           4: "Oats closed 1/2 lower at 20¾ and wheat steady.",
-          5: "Auction lots ㊀ and B㊁ withdrawn."}
+          5: "Auction lots ㊀ and B㊁ withdrawn.",
+          6: f"Cable garbled {LONG_RUN_KEPT} wharfage tolls; signal {LONG_RUN_DROPPED} semaphore lamps."}
+assert len(LONG_RUN_KEPT.encode()) == 254 and len(LONG_RUN_DROPPED.encode()) == 255
 
 
 def market(pid, d, seq):
