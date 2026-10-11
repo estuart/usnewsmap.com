@@ -177,8 +177,8 @@ async fn version_1_queries_match_the_reference_backend() {
         "b㊁",
     ] {
         let node = parse_with(q, v1).unwrap();
-        let want = sorted(mem.summary(&set, &node, &f, &spec).await.unwrap());
-        let got = sorted(qw.summary(&set, &node, &f, &spec).await.expect(q));
+        let want = mem.summary(&set, &node, &f, &spec).await.unwrap();
+        let got = qw.summary(&set, &node, &f, &spec).await.expect(q);
         assert_eq!(got, want, "summary: {q}");
         found += usize::from(want.total_hits > 0);
         let page = HitsQuery {
@@ -259,11 +259,6 @@ fn specs(f: &Filters) -> Vec<BucketSpec> {
     out
 }
 
-fn sorted(mut s: Summary) -> Summary {
-    s.places.sort_by(|a, b| a.place_id.cmp(&b.place_id));
-    s
-}
-
 fn sorted_cells(mut c: Vec<CubeCell>) -> Vec<CubeCell> {
     c.sort_by(|a, b| (&a.place_id, a.bucket).cmp(&(&b.place_id, b.bucket)));
     c
@@ -289,8 +284,8 @@ async fn summaries_and_cubes_match_the_reference_backend() {
                 f.from = spec.from;
                 f.to = spec.to;
                 let ctx = format!("{sname} / {qname} / {fname} / {:?}", spec.unit);
-                let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
-                let got = sorted(qw.summary(set, &q, &f, &spec).await.expect(&ctx));
+                let want = mem.summary(set, &q, &f, &spec).await.unwrap();
+                let got = qw.summary(set, &q, &f, &spec).await.expect(&ctx);
                 assert_eq!(got, want, "summary: {ctx}");
 
                 let all: Vec<u8> = (0..8).collect();
@@ -616,7 +611,7 @@ async fn fuzzy_terms_match_the_reference_backend_or_are_refused() {
                     "fuzzy query ran but capability is off"
                 );
                 let want = mem.summary(&set, &node, &f, &spec).await.unwrap();
-                assert_eq!(sorted(got), sorted(want), "fuzzy {q}~{fuzzy}");
+                assert_eq!(got, want, "fuzzy {q}~{fuzzy}");
             }
             Err(SearchError::Unsupported(_)) => assert!(!qw.capabilities().fuzzy),
             Err(e) => panic!("fuzzy {q}~{fuzzy}: {e}"),
@@ -684,8 +679,8 @@ async fn japanese_searches_match_the_reference_backend() {
                 f.from = spec.from;
                 f.to = spec.to;
                 let ctx = format!("{qname} / {fname} / {:?}", spec.unit);
-                let want = sorted(mem.summary(&set, q, &f, &spec).await.unwrap());
-                let got = sorted(qw.summary(&set, q, &f, &spec).await.expect(&ctx));
+                let want = mem.summary(&set, q, &f, &spec).await.unwrap();
+                let got = qw.summary(&set, q, &f, &spec).await.expect(&ctx);
                 assert_eq!(got, want, "summary: {ctx}");
                 nonzero += usize::from(want.total_hits > 0);
                 let all: Vec<u8> = (0..8).collect();
@@ -869,8 +864,8 @@ async fn common_word_phrases(
             set.american_stories(),
             set.analyzer()
         );
-        let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
-        let got = sorted(qw.summary(grams, &q, &f, &spec).await.expect(&ctx));
+        let want = mem.summary(set, &q, &f, &spec).await.unwrap();
+        let got = qw.summary(grams, &q, &f, &spec).await.expect(&ctx);
         assert_eq!(got, want, "summary: {ctx}");
         if want.total_hits > 0 {
             matched += 1;
@@ -1051,8 +1046,8 @@ async fn searches_by_decade_match_the_reference_backend() {
             );
             named += u32::from(clause.is_some());
             let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
-            let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
-            let got = sorted(qw.summary(set, &q, &f, &spec).await.expect(&ctx));
+            let want = mem.summary(set, &q, &f, &spec).await.unwrap();
+            let got = qw.summary(set, &q, &f, &spec).await.expect(&ctx);
             // Days with a match are a HyperLogLog estimate in Quickwit,
             // merged over more splits here than in the other tests: within
             // 2%, not exact.
@@ -1292,8 +1287,8 @@ async fn congress_searches_match_the_reference_backend() {
                     f.from = spec.from;
                     f.to = spec.to;
                     let ctx = format!("{sname} / {qname} / {fname} / {:?}", spec.unit);
-                    let want = sorted(mem.summary(set, q, &f, &spec).await.unwrap());
-                    let got = sorted(qw.summary(set, q, &f, &spec).await.expect(&ctx));
+                    let want = mem.summary(set, q, &f, &spec).await.unwrap();
+                    let got = qw.summary(set, q, &f, &spec).await.expect(&ctx);
                     assert_eq!(got, want, "summary: {ctx}");
                     nonzero += usize::from(want.total_hits > 0);
                     let shards: Vec<u8> = (0..8).collect();

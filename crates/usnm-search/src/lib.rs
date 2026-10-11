@@ -267,6 +267,7 @@ pub struct Summary {
     pub last_day: Option<u32>,
     /// One entry per bucket of the request's [`BucketSpec`].
     pub series: Vec<u64>,
+    /// One entry per place with matches, by place id, so both backends agree.
     pub places: Vec<PlaceSummary>,
     /// Matching pages per newspaper (LCCN), most first, ties by LCCN (#121).
     pub papers: Vec<KeyCount>,

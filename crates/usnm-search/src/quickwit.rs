@@ -789,7 +789,7 @@ pub fn parse_summary(resp: &SearchResponse, spec: &BucketSpec) -> Result<Summary
         }
     }
     // Every place bucket has at least one page, so both days must be there.
-    let places = agg::<Buckets<PlaceBucket>>(resp, "places")?
+    let mut places: Vec<PlaceSummary> = agg::<Buckets<PlaceBucket>>(resp, "places")?
         .buckets
         .into_iter()
         .map(|b| {
@@ -803,6 +803,9 @@ pub fn parse_summary(resp: &SearchResponse, spec: &BucketSpec) -> Result<Summary
             })
         })
         .collect::<Result<_, SearchError>>()?;
+    // By id, as the memory backend gives them: Quickwit orders tied buckets
+    // differently from one split layout to another (#293).
+    places.sort_by(|a, b| a.place_id.cmp(&b.place_id));
     // Null when nothing matched; otherwise both days must be there.
     let day = |name| -> Result<Option<u32>, SearchError> {
         if resp.num_hits == 0 {
@@ -1818,6 +1821,45 @@ mod tests {
                 hits: 3
             }
         );
+    }
+
+    #[test]
+    fn places_come_by_id_whatever_order_quickwit_gives_them_in() {
+        // Two layouts of one index gave these tied buckets in opposite orders (#293).
+        let spec = BucketSpec::new(BucketUnit::Year, d("1895-01-01"), d("1897-12-31"));
+        let place = |key: &str, n: u64| {
+            let (first, last) = (json!({"value": 71000.0}), json!({"value": 71200.0}));
+            json!({"key": key, "doc_count": n, "first": first, "last": last})
+        };
+        let summary = |places: Vec<Value>| {
+            let resp: SearchResponse = serde_json::from_value(json!({
+                "num_hits": 128,
+                "aggregations": {
+                    "series": { "buckets": [] },
+                    "first": {"value": 71000.0},
+                    "last": {"value": 71200.0},
+                    "places": { "buckets": places },
+                    "papers": { "buckets": [] },
+                    "languages": { "buckets": [] },
+                    "days": { "value": 3.0 }
+                }
+            }))
+            .unwrap();
+            parse_summary(&resp, &spec).unwrap()
+        };
+        let a = summary(vec![
+            place("P00009", 16),
+            place("P00003", 56),
+            place("P00004", 56),
+        ]);
+        let b = summary(vec![
+            place("P00004", 56),
+            place("P00003", 56),
+            place("P00009", 16),
+        ]);
+        assert_eq!(a, b);
+        let ids: Vec<&str> = a.places.iter().map(|p| p.place_id.as_str()).collect();
+        assert_eq!(ids, ["P00003", "P00004", "P00009"]);
     }
 
     #[test]
