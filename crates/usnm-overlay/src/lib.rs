@@ -105,6 +105,22 @@ fn from_unix_days(n: i32) -> Option<NaiveDate> {
 
 /// A part holding `rows`, zstd-compressed.
 pub fn write_part(rows: &[OverlayRow]) -> anyhow::Result<Vec<u8>> {
+    let record = RecordBatch::try_new(schema(), columns(rows)?)?;
+    let props = WriterProperties::builder()
+        .set_compression(Compression::ZSTD(
+            ZstdLevel::try_new(6).expect("valid level"),
+        ))
+        .build();
+    let mut buf = Vec::new();
+    let mut w = ArrowWriter::try_new(&mut buf, schema(), Some(props))?;
+    w.write(&record)?;
+    w.close()?;
+    Ok(buf)
+}
+
+/// The [`schema`]'s columns for `rows`, in order: for a writer that adds
+/// columns of its own after them (`usnm-ingest ocr-sync`'s merged parts).
+pub fn columns(rows: &[OverlayRow]) -> anyhow::Result<Vec<ArrayRef>> {
     let n = rows.len();
     let mut doc_id = StringBuilder::new();
     let mut page_key = StringBuilder::new();
@@ -160,17 +176,7 @@ pub fn write_part(rows: &[OverlayRow]) -> anyhow::Result<Vec<u8>> {
         Arc::new(image.finish()),
         Arc::new(at.finish()),
     ];
-    let record = RecordBatch::try_new(schema(), cols)?;
-    let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(
-            ZstdLevel::try_new(6).expect("valid level"),
-        ))
-        .build();
-    let mut buf = Vec::new();
-    let mut w = ArrowWriter::try_new(&mut buf, schema(), Some(props))?;
-    w.write(&record)?;
-    w.close()?;
-    Ok(buf)
+    Ok(cols)
 }
 
 /// One row as a release reads it: the columns it needs.

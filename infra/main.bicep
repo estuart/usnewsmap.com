@@ -183,6 +183,9 @@ param ocrNodeIps string = ''
 @description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
 
+@description('Schedule for the OCR pickup job usnm-ocrsync-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
+param ocrSyncCron string = '17 * * * *'
+
 @description('Entra object ids (people or groups), comma separated, given Key Vault Secrets Officer on the OCR nodes\' Key Vault, usnmocrkv<env><suffix> (with ocrNodes): the operators who set and read the fleet\'s secrets, such as the Red Hat activation key. Settings only, never in the repository (#295).')
 param ocrKeyVaultAdmins string = ''
 
@@ -638,6 +641,10 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     jaOcrImage: jaOcrJob ? '${registry.outputs.loginServer}/usnewsmap-ja-ocr:${imageTag}' : ''
     jaOcrReplicas: jaOcrReplicas
     rootImage: '${registry.outputs.loginServer}/${quickwitPin.image}@${quickwitPin.digest}'
+    ocrSync: ocrNodes
+    ocrQueueEndpoint: ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
+    ocrBlobEndpoint: ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
+    ocrSyncCron: ocrSyncCron == 'manual' ? '' : ocrSyncCron
     rawUrl: !empty(archiveAccountId)
       ? 'https://${archiveAccount}.blob.${environment().suffixes.storage}/raw'
       : (retainRaw ? '${storage.outputs.blobEndpoint}${rawStore!.outputs.container}' : '')
@@ -702,6 +709,7 @@ module ingestAlerts 'modules/ingest-alerts.bicep' = if (!empty(emails) && ingest
     nameSuffix: env
     workspaceId: monitoring.outputs.workspaceId
     actionGroupId: monitoring.outputs.actionGroupId
+    ocrSync: ocrNodes
   }
 }
 
@@ -813,6 +821,9 @@ output INGEST_JOB string = ingestJobs && useAcr ? ingest!.outputs.ingestJobName 
 output BACKFILL_JOB string = ingestJobs && useAcr ? ingest!.outputs.backfillJobName : ''
 output JA_OCR_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaOcrJobName : ''
 output JA_AUDIT_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaAuditJobName : ''
+// The OCR pickup job (12 §12.5 Step 8); scripts/start-job.sh --job OCR_SYNC_JOB
+// runs ocr-enqueue and ocr-requeue as executions of it.
+output OCR_SYNC_JOB string = ingestJobs && useAcr ? ingest!.outputs.ocrSyncJobName : ''
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
 // For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).
