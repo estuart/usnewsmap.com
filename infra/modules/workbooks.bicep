@@ -8,15 +8,17 @@
 // Their definitions are infra/workbooks/*.json in the portal's own format
 // (Advanced Editor, gallery template). The files query the workspace named
 // by the placeholder __WORKSPACE_ID__, replaced here with this
-// environment's (the nodes' workspace for the OCR nodes workbook). To
-// change one, edit it in the portal, copy its JSON back into the file with
-// the workspace's resource id turned back into the placeholder (and, in
-// ocr-nodes.json, the cap back into __CAP_GB__), and provision. sourceId
-// attaches each workbook to Application Insights, so it's listed under the
-// component's Workbooks: appi-usnm-<env> for the pipeline and API
-// workbooks, the nodes' usnm-ocr-appi-<env> for the OCR nodes workbook,
-// whose telemetry it reads (that component's tables are in the nodes'
-// workspace). Each is also a resource of the group (type Azure Workbook).
+// environment's (the nodes' workspace for the OCR nodes workbook); the API
+// workbook's replica CPU chart reads the container app's platform metrics,
+// named by __API_APP_ID__. To change one, edit it in the portal, copy its
+// JSON back into the file with the resource ids turned back into the
+// placeholders (and, in ocr-nodes.json, the cap back into __CAP_GB__), and
+// provision. sourceId attaches each workbook to Application Insights, so
+// it's listed under the component's Workbooks: appi-usnm-<env> for the
+// pipeline and API workbooks, the nodes' usnm-ocr-appi-<env> for the OCR
+// nodes workbook, whose telemetry it reads (that component's tables are in
+// the nodes' workspace). Each is also a resource of the group (type Azure
+// Workbook).
 
 param location string
 param tags object
@@ -31,6 +33,9 @@ param pipeline bool
 @description('Create the API workbook (the API app exists).')
 param api bool
 
+@description('The API\'s container app, for its platform metrics; empty without the API.')
+param apiAppName string = ''
+
 @description('Create the OCR nodes workbook (the on-prem OCR nodes\' monitoring exists).')
 param ocrNodes bool = false
 
@@ -44,6 +49,8 @@ param ocrNodeAppInsightsId string = ''
 param ocrNodeDailyCapGb string = ''
 
 var placeholder = '__WORKSPACE_ID__'
+var apiAppPlaceholder = '__API_APP_ID__'
+var apiAppId = empty(apiAppName) ? '' : resourceId('Microsoft.App/containerApps', apiAppName)
 // Azure stores sourceId in lowercase; matching it avoids a change on every
 // deployment.
 var sourceId = toLower(appInsightsId)
@@ -74,7 +81,11 @@ resource apiWorkbook 'Microsoft.Insights/workbooks@2023-06-01' = if (api) {
     category: 'workbook'
     sourceId: sourceId
     version: 'Notebook/1.0'
-    serializedData: replace(loadTextContent('../workbooks/api.json'), placeholder, workspaceId)
+    serializedData: replace(
+      replace(loadTextContent('../workbooks/api.json'), placeholder, workspaceId),
+      apiAppPlaceholder,
+      apiAppId
+    )
   }
 }
 

@@ -721,9 +721,9 @@ module ingestAlerts 'modules/ingest-alerts.bicep' = if (!empty(emails) && ingest
   }
 }
 
-// API server errors and latency, from the requests it exports; availability
-// tests of the site and the API on the custom domain once its certificates
-// are bound.
+// API server errors and latency, from the requests it exports; search
+// capacity (queue wait and replica CPU, #238); availability tests of the
+// site and the API on the custom domain once its certificates are bound.
 module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
   scope: rg
   name: 'api-alerts'
@@ -734,6 +734,8 @@ module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
     workspaceId: monitoring.outputs.workspaceId
     appInsightsId: monitoring.outputs.appInsightsId
     actionGroupId: monitoring.outputs.actionGroupId
+    apiAppName: api!.outputs.name
+    replicaCpu: apiMinReplicas > 0
     siteUrl: !empty(dnsZoneName) && !empty(siteCertificateId) ? 'https://${dnsZoneName}/' : ''
     availabilityFrequency: availabilityFrequency
   }
@@ -753,6 +755,7 @@ module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deplo
     env: env
     pipeline: ingestJobs && useAcr
     api: deployApi
+    apiAppName: deployApi ? api!.outputs.name : ''
     ocrNodes: ocrNodes
     ocrNodeWorkspaceId: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceId : ''
     ocrNodeAppInsightsId: ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsId : ''

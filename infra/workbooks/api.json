@@ -422,6 +422,65 @@
     {
       "type": 1,
       "content": {
+        "json": "## Search capacity\nWhen to revisit a second searcher (#238, deferred 10 October 2026): either of these holding for a week. The p90 of the wait for a computation slot (`api.search_queue_wait_seconds`) above 3 s, or a replica's CPU above 3 vCPU (of 4) outside releases. Both cover the last 14 days, whatever the time range; the table is by UTC day. `AppMetrics` keeps a histogram's sum, count, min and max per 30 s export, not its buckets, so the p90 is an estimate: each export row's searches are counted at the row's mean wait (close to exact while a row holds one search or a few). Two severity 4 alerts watch the same numbers: _Search capacity: searches waiting for a slot_ (both of the last two days over, emailed daily while it holds) and `alert-usnm-api-replica-cpu-<env>` (a replica's 6-hour average over 3 vCPU)."
+      },
+      "name": "capacity-title"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.search_queue_wait_seconds\"\n| where ItemCount > 0\n| extend Mean = Sum / ItemCount\n| summarize Searches = sum(ItemCount), Over3s = sumif(ItemCount, Mean > 3.0),\n    P90Secs = percentilew(Mean, ItemCount, 90), MeanSecs = sum(Sum) / sum(ItemCount), MaxSecs = max(Max)\n    by Day = startofday(TimeGenerated)\n| extend OverPct = round(100.0 * Over3s / Searches, 1), P90Secs = round(P90Secs, 2),\n    MeanSecs = round(MeanSecs, 2), MaxSecs = round(MaxSecs, 1)\n| project Day, Searches, P90Secs, OverPct, MeanSecs, MaxSecs\n| order by Day desc",
+        "size": 0,
+        "title": "Wait for a computation slot by day, last 14 days: searches that needed one, p90 estimate (s), % over 3 s, mean and max (s)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContext": {
+          "durationMs": 1209600000
+        },
+        "noDataMessage": "No search needed a computation slot in the last 14 days."
+      },
+      "name": "capacity-queue-wait",
+      "customWidth": "50"
+    },
+    {
+      "type": 10,
+      "content": {
+        "chartId": "workbook-usnm-api-replica-cpu",
+        "version": "MetricsItem/2.0",
+        "size": 0,
+        "chartType": 2,
+        "resourceType": "microsoft.app/containerapps",
+        "metricScope": 0,
+        "resourceIds": [
+          "__API_APP_ID__"
+        ],
+        "timeContext": {
+          "durationMs": 1209600000
+        },
+        "metrics": [
+          {
+            "namespace": "microsoft.app/containerapps",
+            "metric": "microsoft.app/containerapps--UsageNanoCores",
+            "aggregation": 4,
+            "splitBy": "podName"
+          }
+        ],
+        "title": "Replica CPU, average per replica, last 14 days (nanocores; 3,000,000,000 = 3 vCPU)",
+        "gridSettings": {
+          "rowLimit": 10000
+        }
+      },
+      "name": "capacity-replica-cpu",
+      "customWidth": "50"
+    },
+    {
+      "type": 1,
+      "content": {
         "json": "## Traffic\nPage views the web app reports through `POST /v1/beacon`, which the API forwards to `AppPageViews` (cloud role `usnm-web`). Each is a page name (`search`, `status`, `privacy`, `not-found`), never a path or query string. Referrers are origins only (`direct` for none, `internal` for the site itself). The country comes from the visitor's address at ingestion; Application Insights stores `0.0.0.0` in its place. Visitors with Do Not Track or Global Privacy Control, and crawlers, are not counted (`api.beacons` by outcome)."
       },
       "name": "traffic-title"
