@@ -191,11 +191,23 @@ pub fn parse_records(xml: &[u8]) -> anyhow::Result<(Vec<Item>, Option<String>)> 
                 path.push(name);
                 text.clear();
             }
-            Event::Empty(e) => {
-                if e.local_name().as_ref() == "resumptionToken" {
-                    token = None;
+            Event::Empty(e) => match e.local_name().as_ref() {
+                "resumptionToken" => token = None,
+                // `<error code="badResumptionToken"/>`: an error all the same.
+                "error" => {
+                    let mut code = String::from("unknown");
+                    for a in e.attributes().with_checks(true) {
+                        let a = a?;
+                        if a.key.local_name().as_ref() == "code" {
+                            code = a
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                                .into_owned();
+                        }
+                    }
+                    error = Some(code);
                 }
-            }
+                _ => {}
+            },
             Event::Text(t) => text.push_str(&t.into_inner()),
             Event::GeneralRef(r) => match &*r {
                 "amp" => text.push('&'),
@@ -1225,6 +1237,12 @@ mod tests {
                 .0
                 .is_empty()
         );
+        // A self-closing error is an error, not an empty last page.
+        let err = parse_records(b"<OAI-PMH><error code=\"badResumptionToken\"/></OAI-PMH>")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("badResumptionToken"), "{err}");
+        assert!(parse_records(b"<OAI-PMH><error/></OAI-PMH>").is_err());
     }
 
     /// Answers every request with the same body, counting them.
