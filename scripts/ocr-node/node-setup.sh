@@ -645,6 +645,8 @@ if grep -q "[[:space:]]${OCR_DATA_DIR}[[:space:]]" /etc/fstab; then
   cat /etc/fstab.usnm-tmp > /etc/fstab
   rm -f /etc/fstab.usnm-tmp
   systemctl daemon-reload
+  # The automount outlives its fstab line until it is stopped.
+  systemctl stop "$(systemd-escape --path "$OCR_DATA_DIR").automount" 2> /dev/null || true
   umount -l "$OCR_DATA_DIR/scans" 2> /dev/null || true
   umount -l "$OCR_DATA_DIR" 2> /dev/null || true
   rmdir "$OCR_DATA_DIR" 2> /dev/null || true
