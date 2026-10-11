@@ -4,8 +4,8 @@ use usnm_api::config::{BackendKind, Config};
 use usnm_api::searchlog::{LogConfig, SearchLog};
 use usnm_api::status::PipelineSource;
 use usnm_api::{
-    app, searcher_metrics, spawn_background, spawn_startup_warm_up, telemetry, AppState, Engine,
-    Loader,
+    app, searcher_metrics, spawn_background, spawn_searcher_warm_up, spawn_startup_warm_up,
+    telemetry, AppState, Engine, Loader,
 };
 use usnm_search::quickwit::QuickwitBackend;
 use usnm_state::cosmos::CosmosDocs;
@@ -143,15 +143,20 @@ async fn serve(
         &state,
         &opentelemetry::global::meter(telemetry::SERVICE.name),
     );
-    // The searcher sidecar's caches, thread pools and runtimes (#125,
-    // #251), read over localhost.
+    // The searcher's caches, thread pools and runtimes (#125, #251), read
+    // from the sidecar on localhost or the searcher app (#267). A restart
+    // they show warms the new searcher.
     if let Some(qw) = searcher.filter(|_| !state.config.searcher_metrics_interval.is_zero()) {
+        let warm = state.clone();
         searcher_metrics::spawn(
             state.config.searcher_metrics_interval,
             &opentelemetry::global::meter(telemetry::SERVICE.name),
             move || {
                 let qw = qw.clone();
                 async move { qw.searcher_metrics().await.map_err(|e| e.to_string()) }
+            },
+            move || {
+                spawn_searcher_warm_up(warm.clone());
             },
         );
     }
@@ -175,8 +180,8 @@ async fn serve(
     Ok(())
 }
 
-/// The first snapshot, retried while the search sidecar starts alongside the
-/// API (and while a new identity's role assignments propagate).
+/// The first snapshot, retried while the searcher starts alongside the API
+/// (and while a new identity's role assignments propagate).
 async fn initial_snapshot(loader: &Loader) -> Result<usnm_api::Snapshot, String> {
     const ATTEMPTS: u32 = 30;
     let mut delay = std::time::Duration::from_secs(1);

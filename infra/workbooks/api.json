@@ -164,6 +164,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 3,
         "timeContextFromParameter": "TimeRange"
       },
       "name": "latency-p95",
@@ -201,6 +202,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 2,
         "timeContextFromParameter": "TimeRange",
         "noDataMessage": "No search reached the backend in the time range."
       },
@@ -277,6 +279,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 3,
         "timeContextFromParameter": "TimeRange",
         "noDataMessage": "No cache lookups in the time range."
       },
@@ -314,6 +317,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 5,
         "timeContextFromParameter": "TimeRange",
         "noDataMessage": "No searcher cache metrics in the time range."
       },
@@ -371,6 +375,7 @@
           "__WORKSPACE_ID__"
         ],
         "visualization": "timechart",
+        "aggregation": 3,
         "timeContextFromParameter": "TimeRange",
         "noDataMessage": "No availability results in the time range."
       },

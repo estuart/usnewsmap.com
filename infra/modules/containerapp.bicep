@@ -13,6 +13,18 @@
 // (spike S-2). Our build of Quickwit (ADR-0013) keeps that credential and
 // shares one of it, and one pooled HTTP client, across the process. Needs
 // indexes and a current.json published by the ingest jobs.
+//
+// searcherApp (#267, off by default): the same searcher runs as its own app,
+// `searcherName`, instead of a sidecar in each API replica, so a new API
+// image (and with it the site) never restarts it. The API app then has the
+// api container alone and calls the searcher at its internal ingress; the
+// searcher app gets a system-assigned identity and its read-only role on
+// `qw-index`. The API app keeps its own identity and role meanwhile: the
+// old revision's sidecar serves until the new revision is ready, and turning
+// the setting off brings the sidecar back to a role that has already
+// reached Blob. They go in a later change, once the searcher app is kept
+// (docs/operations.md, "Searcher app"). Off, this module deploys exactly
+// what it did before.
 
 param location string
 param tags object
@@ -44,10 +56,30 @@ param ingestCron string = ''
 param americanStoriesSearch bool = true
 @description('Search the Congress pages on a version with a Congress index set (#229). False sets USNM_CONGRESS_SEARCH=false.')
 param congressSearch bool = true
+@description('Run the searcher as its own app, `searcherName`, with internal ingress, instead of a sidecar in each API replica (#267). Needs searchBackend quickwit.')
+param searcherApp bool = false
+@description('The searcher app\'s name (with searcherApp); a container app name is under 32 characters (ADR-0017).')
+@maxLength(31)
+param searcherName string = ''
+@description('The searcher app\'s minimum replicas: 1 keeps it, and its caches, warm; 0 lets it scale to zero with the API.')
+@minValue(0)
+@maxValue(1)
+param searcherMinReplicas int = 1
 @description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
 param customDomains array = []
 
 var quickwit = searchBackend == 'quickwit'
+// Where the searcher runs: a sidecar in each API replica, or its own app.
+var sidecar = quickwit && !searcherApp
+var searcherOn = quickwit && searcherApp
+// The API app's system-assigned identity and its role on the index stay with
+// any Quickwit backend, not only with the sidecar. Turning the searcher app
+// on doesn't remove them: identity is the app's, not a revision's, so
+// removing it would cut off the old revision's sidecar, which serves until
+// the new revision is ready (and the stack would delete its role). Turning
+// it off then needs no new identity or role propagation for the sidecar.
+// Dropping them is a deliberate later change (docs/operations.md).
+var apiSystemIdentity = quickwit
 
 // The searcher sidecar's node config, from infra/quickwit/searcher.yaml.
 // CI applies the same file on every deploy (scripts/ci/roll-api.sh), so it
@@ -107,7 +139,9 @@ var startupProbeSecs = holdReadyForWarmUp ? 20 : 10
 var backendEnv = quickwit
   ? [
       { name: 'USNM_BACKEND', value: 'quickwit' }
-      { name: 'USNM_QUICKWIT_URL', value: 'http://127.0.0.1:7280' }
+      // The searcher app's internal ingress answers on port 80 at its name,
+      // inside the environment only.
+      { name: 'USNM_QUICKWIT_URL', value: searcherOn ? 'http://${searcherName}' : 'http://127.0.0.1:7280' }
       { name: 'USNM_REFERENCE_URL', value: '${storageBlobEndpoint}reference' }
     ]
   : [{ name: 'USNM_BACKEND', value: 'memory' }]
@@ -207,13 +241,95 @@ var quickwitContainer = {
   ]
 }
 
+// The same searcher as its own app (searcherApp): the sidecar's container,
+// listening on all interfaces so the app's ingress can reach it. Quickwit
+// refuses 0.0.0.0 without an advertise address, so it advertises the
+// replica's own address (its hostname resolved, as the search cluster's
+// nodes do, #239). It still runs alone: a cluster id of its own and no
+// peers. A readiness probe keeps the ingress off a starting searcher.
+var searcherStart = '''
+set -e
+printf '%s\n' "$USNM_QW_CONFIG" > /tmp/node.yaml
+host=$(cat /proc/sys/kernel/hostname)
+addr=$(getent ahostsv4 "$host" | head -n 1 | cut -d ' ' -f 1)
+[ -n "$addr" ] || { echo "no IPv4 address for this replica's hostname $host" >&2; exit 1; }
+export QW_ADVERTISE_ADDRESS="$addr"
+exec quickwit run --config /tmp/node.yaml
+'''
+var searcherContainer = union(quickwitContainer, {
+  command: ['/bin/sh', '-c', searcherStart]
+  env: map(
+    quickwitContainer.env,
+    e => e.name == 'QW_LISTEN_ADDRESS' ? { name: e.name, value: '0.0.0.0' } : e
+  )
+  probes: concat(quickwitContainer.probes, [
+    {
+      type: 'Readiness'
+      httpGet: { path: '/health/readyz', port: 7280 }
+      periodSeconds: 10
+    }
+  ])
+})
+
+// The searcher app (searcherApp): one replica holds the caches, so a
+// second would start cold and split the searches' cache hits between them;
+// more search capacity is a cluster (#239), not more replicas. It takes no
+// traffic from outside the environment.
+resource searcher 'Microsoft.App/containerApps@2024-03-01' = if (searcherOn) {
+  name: searcherName
+  location: location
+  tags: tags
+  identity: {
+    // Quickwit uses the system-assigned identity (see above); the API's
+    // user-assigned one pulls the image, as it does for the sidecar.
+    type: 'SystemAssigned,UserAssigned'
+    userAssignedIdentities: { '${identityId}': {} }
+  }
+  properties: {
+    environmentId: environmentId
+    workloadProfileName: 'Consumption'
+    configuration: {
+      activeRevisionsMode: 'Single'
+      registries: empty(registryServer) ? [] : [{ server: registryServer, identity: identityId }]
+      // Plain HTTP on the environment's internal network, at
+      // http://<searcherName> (port 80); nothing outside it can connect.
+      ingress: {
+        external: false
+        targetPort: 7280
+        transport: 'http'
+        allowInsecure: true
+      }
+    }
+    template: {
+      containers: [searcherContainer]
+      scale: { minReplicas: searcherMinReplicas, maxReplicas: 1 }
+    }
+  }
+}
+
+var blobReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
+
+// The same read-only role on the index as the sidecar's (below).
+resource searcherIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (searcherOn) {
+  scope: account::blobs::index
+  name: guid(account::blobs::index.id, searcher.id, blobReader)
+  properties: {
+    principalId: searcher!.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
+  }
+}
+
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name
   location: location
   tags: tags
+  // With the searcher app, the new API revision starts once the searcher
+  // and its role exist.
+  dependsOn: [searcherIndexReader]
   identity: {
     // Quickwit can use only the system-assigned identity (see above).
-    type: quickwit ? 'SystemAssigned,UserAssigned' : 'UserAssigned'
+    type: apiSystemIdentity ? 'SystemAssigned,UserAssigned' : 'UserAssigned'
     userAssignedIdentities: { '${identityId}': {} }
   }
   properties: {
@@ -237,7 +353,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       }
     }
     template: {
-      containers: quickwit ? [apiContainer, quickwitContainer] : [apiContainer]
+      containers: sidecar ? [apiContainer, quickwitContainer] : [apiContainer]
       scale: {
         minReplicas: minReplicas
         maxReplicas: maxReplicas
@@ -264,11 +380,10 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   }
 }
 
-var blobReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
-
 // Read-only, and only the index: the sidecar can't write splits or the
-// metastore, and can't read anything else.
-resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (quickwit) {
+// metastore, and can't read anything else. Kept with the searcher app too
+// (apiSystemIdentity).
+resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (apiSystemIdentity) {
   scope: account::blobs::index
   name: guid(account::blobs::index.id, app.id, blobReader)
   properties: {
@@ -280,3 +395,5 @@ resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01
 
 output name string = app.name
 output fqdn string = app.properties.configuration.ingress.fqdn
+// The searcher app's name; empty without one.
+output searcherName string = searcherOn ? searcher.name : ''
