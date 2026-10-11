@@ -1,0 +1,14 @@
+// The API's search backend time per day and endpoint, successful calls only
+// (api.backend_duration_seconds, 08 §8.1.2): calls, and their average,
+// fastest and slowest time in ms. For the searcher app (#267): compare days
+// with the searcher in its own app against days with the sidecar on
+// localhost, leaving out days with a release or a new index version. MinMs,
+// a response the searcher had cached, is the closest to the hop alone.
+AppMetrics
+| where AppRoleName == "usnm-api" and Name == "api.backend_duration_seconds"
+| where tostring(Properties.outcome) == "ok"
+| summarize Calls = sum(ItemCount), Total = sum(Sum), Fastest = min(Min), Slowest = max(Max)
+    by Day = startofday(TimeGenerated), Endpoint = tostring(Properties.endpoint)
+| project Day, Endpoint, Calls = tolong(Calls), AvgMs = round(1000 * Total / Calls, 1),
+    MinMs = round(1000 * Fastest, 1), MaxMs = round(1000 * Slowest)
+| order by Day desc, Endpoint asc
