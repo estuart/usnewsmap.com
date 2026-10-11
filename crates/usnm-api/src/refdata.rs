@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use usnm_core::params::{ParamError, RawParams, SearchRequest, Source};
 use usnm_core::query::Node;
 use usnm_core::text::{Analyzer, Analyzers};
+use usnm_core::text_layout::TextLayout;
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
 use usnm_state::state::{
@@ -63,6 +64,11 @@ pub struct Current {
     /// deltas tag their splits with theirs. Absent for versions without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decades: Option<u32>,
+    /// The `usnm_core::text_layout::TextLayout` of every main index (05
+    /// §5.5.7, #283): absent for a searched field per text (1), 2 for one
+    /// field for both. A layout this API doesn't know isn't loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_layout: Option<u32>,
     /// The Congress index set (#229), when the version has one: the
     /// Congressional Globe, the Serial Set, the Annals and the Register,
     /// searched only with `source=congress`.
@@ -327,6 +333,48 @@ impl RefData {
             .enumerate()
             .map(|(i, p)| (p.id.clone(), i))
             .collect();
+        // The fields a search names depend on the layout: one this API
+        // doesn't know may not have them, so the loader keeps serving the
+        // version it has (05 §5.5.7).
+        match TextLayout::from_version(current.text_layout) {
+            None => {
+                return Err(format!(
+                    "current.json's text_layout {:?} isn't one this API knows (up to {})",
+                    current.text_layout,
+                    TextLayout::LATEST.version()
+                ))
+            }
+            // One field for both texts holds the words as the version's
+            // analyzer folded them, and American Stories' text if the
+            // version has any: queries folded by another analyzer would
+            // silently miss, and text of an unknown version would be
+            // searched without `matched_in` saying so. So both versions must
+            // be ones this API knows.
+            Some(TextLayout::Single) => {
+                if current
+                    .common_grams
+                    .and_then(usnm_core::common_grams::analyzer)
+                    .is_none()
+                {
+                    return Err(format!(
+                        "current.json's text_layout 2 needs a common_grams version this API \
+                         knows, not {:?}",
+                        current.common_grams
+                    ));
+                }
+                if current
+                    .american_stories
+                    .is_some_and(|v| v != usnm_core::american_stories::VERSION)
+                {
+                    return Err(format!(
+                        "current.json's text_layout 2 holds American Stories' text of version \
+                         {:?}, which this API doesn't know",
+                        current.american_stories
+                    ));
+                }
+            }
+            Some(TextLayout::Separate) => {}
+        }
         let place_pages: HashMap<String, u64> = baselines
             .iter()
             .map(|(id, series)| (id.clone(), series.iter().map(|&(_, n)| u64::from(n)).sum()))
@@ -440,17 +488,36 @@ impl RefData {
         self.current.american_stories == Some(usnm_core::american_stories::VERSION)
     }
 
+    /// The version's text layout (05 §5.5.7): [`TextLayout::Separate`]
+    /// when `current.json` has none. A version with one this API doesn't
+    /// know is never loaded.
+    pub fn text_layout(&self) -> TextLayout {
+        TextLayout::from_version(self.current.text_layout).unwrap_or_default()
+    }
+
     /// Whether searches cover American Stories' text: the version has it and
-    /// `USNM_AMERICAN_STORIES_SEARCH` doesn't switch it off.
+    /// `USNM_AMERICAN_STORIES_SEARCH` doesn't switch it off. With one field
+    /// for both texts the setting can't: the text is searched whatever it
+    /// says (05 §5.5.7).
     pub fn searches_american_stories(&self) -> bool {
-        self.has_american_stories() && self.american_stories_search
+        self.has_american_stories()
+            && (self.american_stories_search || self.text_layout() == TextLayout::Single)
     }
 
     /// Whether the setting leaves out the American Stories' text the version
     /// has. Searches then answer as if it had none, and their cache keys say
-    /// so ([`Self::search_key`]).
+    /// so ([`Self::search_key`]). Never with one field for both texts.
     pub fn american_stories_switched_off(&self) -> bool {
-        self.has_american_stories() && !self.american_stories_search
+        self.has_american_stories() && !self.searches_american_stories()
+    }
+
+    /// Whether `USNM_AMERICAN_STORIES_SEARCH=false` asks for something the
+    /// version can't do: leave out American Stories' text it holds in one
+    /// field with LoC's (05 §5.5.7).
+    pub fn american_stories_setting_ignored(&self) -> bool {
+        self.has_american_stories()
+            && !self.american_stories_search
+            && self.text_layout() == TextLayout::Single
     }
 
     /// The response caches' key (in process and, hashed, in Blob, 06 §6.5)
@@ -494,6 +561,7 @@ impl RefData {
             .with_analyzer(self.analyzers().main)
             .with_common_grams(grams)
             .with_american_stories(american)
+            .with_text_layout(self.text_layout())
             .with_decades(decades)
             .hiding(
                 self.hidden

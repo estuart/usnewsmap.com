@@ -135,6 +135,7 @@ async fn serve(
             setting = state.config.american_stories_search,
             in_version = snap.refdata.has_american_stories(),
             searched = snap.refdata.searches_american_stories(),
+            text_layout = snap.refdata.text_layout().version(),
             "American Stories' text search (USNM_AMERICAN_STORIES_SEARCH)"
         );
     }

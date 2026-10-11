@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use usnm_core::params::Filters;
 use usnm_core::query::Node;
+use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
 
 use crate::cache_metrics::{self, CacheReport};
@@ -288,6 +289,8 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 /// 05 §5.5.4), each term or phrase matches in either text: `(text:… OR
 /// text_as:…)`. A phrase stays within one text, and `NOT x` excludes a page
 /// with `x` in either. Without it, the string is exactly LoC's text alone.
+/// This is [`TextLayout::Separate`]'s rendering; [`query_for`] picks the
+/// one of a set's layout.
 pub fn query_string(
     node: &Node,
     grams: bool,
@@ -297,6 +300,20 @@ pub fn query_string(
         render(node, grams, &[&LOC, &AMERICAN_STORIES])
     } else {
         render(node, grams, &[&LOC])
+    }
+}
+
+/// The query string for `indexes`, as their text layout has the texts
+/// (05 §5.5.7): [`query_string`] on a field per text, and on one field for
+/// both, each term or phrase once in `text_all` (and `text_all_cg`). The
+/// release puts a gap between the texts there, so a phrase still can't
+/// span them, and `NOT x` still excludes a page with `x` in either.
+pub fn query_for(node: &Node, indexes: &IndexSet) -> Result<String, SearchError> {
+    match indexes.text_layout() {
+        TextLayout::Separate => {
+            query_string(node, indexes.common_grams(), indexes.american_stories())
+        }
+        TextLayout::Single => render(node, indexes.common_grams(), &[&BOTH]),
     }
 }
 
@@ -348,6 +365,12 @@ const LOC: TextFields = TextFields {
 const AMERICAN_STORIES: TextFields = TextFields {
     text: "text_as",
     pairs: "text_as_cg",
+};
+
+/// Both texts in one field, with a gap between them (05 §5.5.7).
+const BOTH: TextFields = TextFields {
+    text: usnm_core::text_layout::FIELD,
+    pairs: usnm_core::text_layout::PAIRS_FIELD,
 };
 
 /// A term or phrase in one text's fields.
@@ -464,7 +487,7 @@ fn full_query(
     indexes: &IndexSet,
     extra: Vec<String>,
 ) -> Result<String, SearchError> {
-    let query = query_string(node, indexes.common_grams(), indexes.american_stories())?;
+    let query = query_for(node, indexes)?;
     Ok(scoped(query, filters, indexes, extra))
 }
 
@@ -606,12 +629,18 @@ pub fn hits_request(
 
 /// How many pages only American Stories' text finds
 /// ([`american_stories_only_string`]): no hits, no aggregations, no sort.
-/// Quickwit still counts every match (`num_hits`).
+/// Quickwit still counts every match (`num_hits`). Refused with one field
+/// for both texts (05 §5.5.7): LoC's alone isn't indexed there.
 pub fn american_stories_only_request(
     node: &Node,
     filters: &Filters,
     indexes: &IndexSet,
 ) -> Result<Value, SearchError> {
+    if indexes.text_layout() == TextLayout::Single {
+        return Err(SearchError::Unsupported(
+            "counting the pages only American Stories' text matches, on these indexes".into(),
+        ));
+    }
     let query = american_stories_only_string(node, indexes.common_grams())?;
     Ok(json!({
         "query": scoped(query, filters, indexes, Vec::new()),
@@ -1244,6 +1273,85 @@ mod tests {
                 .starts_with("(text:gold OR text_as:gold) AND "),
             "{r}"
         );
+    }
+
+    /// One field for both texts (05 §5.5.7): each term or phrase once, in
+    /// `text_all` and `text_all_cg`, never in a field of one text.
+    #[test]
+    fn one_field_for_both_texts_is_searched_once() {
+        let single = |grams: bool| {
+            none()
+                .with_american_stories(true)
+                .with_common_grams(grams)
+                .with_text_layout(TextLayout::Single)
+        };
+        let qs = |q: &str, grams| query_for(&parse(q).unwrap(), &single(grams)).unwrap();
+        assert_eq!(qs("gold", true), "text_all:gold");
+        assert_eq!(qs("silve*", true), "text_all:silve*");
+        assert_eq!(qs("presi?ent", true), "text_all:presi?ent");
+        assert_eq!(
+            qs(r#""gold silver"~3"#, true),
+            r#"text_all:"gold silver"~3"#
+        );
+        assert_eq!(qs(r#""yellow fever""#, true), r#"text_all:"yellow fever""#);
+        assert_eq!(
+            qs(r#""cross of gold""#, true),
+            "(text_all_cg:\"cross of_gold gold\" AND text_all:cross AND text_all:gold)"
+        );
+        // Without pairs it knows (a newer `common_grams`): the phrase itself.
+        assert_eq!(
+            qs(r#""cross of gold""#, false),
+            r#"text_all:"cross of gold""#
+        );
+        assert_eq!(
+            qs("bryan -silver (free OR orator)", true),
+            "(NOT text_all:silver AND text_all:bryan AND (text_all:free OR text_all:orator))"
+        );
+        assert!(matches!(
+            query_for(&parse("gold~1").unwrap(), &single(true)),
+            Err(SearchError::Unsupported(_))
+        ));
+        // Whether the set says American Stories' text is there or not.
+        assert_eq!(
+            query_for(
+                &parse("gold").unwrap(),
+                &none().with_text_layout(TextLayout::Single)
+            )
+            .unwrap(),
+            "text_all:gold"
+        );
+        // Every request takes it from the set, and none names a field of
+        // one text.
+        let q = parse(r#""cross of gold" bryan"#).unwrap();
+        let spec = BucketSpec::new(BucketUnit::Year, d("1896-01-01"), d("1896-12-31"));
+        for r in [
+            summary_request(&q, &filters(), &single(true), &spec).unwrap(),
+            cube_request(&q, &filters(), &single(true), &spec, &[0, 1]).unwrap(),
+            place_cube_request(&q, &filters(), &single(true), &spec, &["P1".into()]).unwrap(),
+            hits_request(&q, &filters(), &single(true), &HitsQuery::default()).unwrap(),
+        ] {
+            let s = r["query"].as_str().unwrap();
+            assert!(s.starts_with("((text_all_cg:"), "{s}");
+            for field in ["text:", "text_cg:", "text_as:", "text_as_cg:"] {
+                assert!(!s.contains(&format!(" {field}")), "{s}");
+                assert!(!s.contains(&format!("({field}")), "{s}");
+            }
+        }
+        // A field per text is as before.
+        assert_eq!(
+            query_for(&parse("gold").unwrap(), &stories(true)).unwrap(),
+            "(text:gold OR text_as:gold)"
+        );
+        assert_eq!(
+            query_for(&parse("gold").unwrap(), &stories(false)).unwrap(),
+            "text:gold"
+        );
+        // The count of pages only American Stories' text matches needs
+        // LoC's text on its own: refused.
+        assert!(matches!(
+            american_stories_only_request(&q, &filters(), &single(true)),
+            Err(SearchError::Unsupported(_))
+        ));
     }
 
     #[test]

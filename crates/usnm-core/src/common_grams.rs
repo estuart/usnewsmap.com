@@ -117,6 +117,22 @@ pub fn index_text(text: &str, analyzer: Analyzer) -> String {
     out
 }
 
+/// The page's words for a field with the `whitespace` tokenizer (`text_all`,
+/// [`crate::text_layout`]): one token per position, as [`index_text`] has
+/// them, but each word on its own, with [`GAP`] where the analyzer drops
+/// one. Folded by `analyzer`.
+pub fn index_words(text: &str, analyzer: Analyzer) -> String {
+    let words = positions(text, analyzer);
+    let mut out = String::with_capacity(text.len());
+    for (i, w) in words.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(w.as_deref().unwrap_or(GAP));
+    }
+    out
+}
+
 /// The `text_cg` tokens for an exact phrase of folded words, when searching
 /// there gives the same pages as searching `text`: two or more words, at
 /// least one of them common, the last one not. `None` otherwise. The words
@@ -226,7 +242,20 @@ mod tests {
                 .collect();
             let atoms: Vec<String> = tokenize(&text, a).iter().map(|t| atom(t)).collect();
             assert_eq!(kept, atoms, "{a:?}");
+            // The words alone: the same positions, each word itself.
+            let words = index_words(&text, a);
+            assert_eq!(words.split(' ').count(), seen, "{a:?}");
+            let kept: Vec<&str> = words.split(' ').filter(|t| *t != GAP).collect();
+            assert_eq!(kept, atoms, "{a:?}");
         }
+        assert_eq!(
+            index_words(
+                &format!("Gold of {} the.", "x".repeat(41)),
+                Analyzer::LATEST
+            ),
+            "gold of _ the"
+        );
+        assert_eq!(index_words(" -- ", Analyzer::LATEST), "");
     }
 
     #[test]

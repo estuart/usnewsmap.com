@@ -146,6 +146,11 @@ enum Command {
         /// it; deltas follow the published version.
         #[arg(long)]
         partition_decade: bool,
+        /// Search a full base's texts, LoC's and American Stories', in one
+        /// field (#283, 05 §5.5.7), so a search looks each word up once.
+        /// Only a full base takes it; deltas follow the published version.
+        #[arg(long)]
+        single_text_field: bool,
         #[command(flatten)]
         target: IndexTarget,
     },
@@ -213,6 +218,9 @@ enum Command {
         /// As for `release`.
         #[arg(long)]
         partition_decade: bool,
+        /// As for `release`.
+        #[arg(long)]
+        single_text_field: bool,
         /// As `curate --max-runtime-secs`, counted from the start of `run`:
         /// batches still queued then wait for the next run, and what was
         /// curated is released. Leave room for titles-sync and the release
@@ -423,6 +431,7 @@ async fn release(
     american_stories: bool,
     ja_latin: bool,
     partition_decade: bool,
+    single_text_field: bool,
     titles_left: Option<String>,
     t: &IndexTarget,
     report: &Reporter,
@@ -439,6 +448,7 @@ async fn release(
         american_stories,
         ja_latin,
         partition_decade,
+        single_text_field,
     };
     // Held from before the writer node starts until after it stops, and
     // released on every path.
@@ -759,6 +769,7 @@ async fn command(
             american_stories,
             ja_latin,
             partition_decade,
+            single_text_field,
             target,
         } => {
             release(
@@ -769,6 +780,7 @@ async fn command(
                 *american_stories,
                 *ja_latin,
                 *partition_decade,
+                *single_text_field,
                 None,
                 target,
                 report,
@@ -783,6 +795,7 @@ async fn command(
             american_stories,
             ja_latin,
             partition_decade,
+            single_text_field,
             curate_max_runtime_secs,
             titles_max_runtime_secs,
             target,
@@ -827,6 +840,7 @@ async fn command(
                 *american_stories,
                 *ja_latin,
                 *partition_decade,
+                *single_text_field,
                 titles_left,
                 target,
                 report,
@@ -934,6 +948,7 @@ mod tests {
             "--american-stories",
             "--ja-latin",
             "--partition-decade",
+            "--single-text-field",
             "--titles-max-runtime-secs",
             "28800",
             "--index-dir",
@@ -946,6 +961,7 @@ mod tests {
             american_stories,
             ja_latin,
             partition_decade,
+            single_text_field,
             ..
         } = cli.command
         else {
@@ -957,9 +973,10 @@ mod tests {
                 full,
                 american_stories,
                 ja_latin,
-                partition_decade
+                partition_decade,
+                single_text_field
             ),
-            (Some(28800), true, true, true, true)
+            (Some(28800), true, true, true, true, true)
         );
     }
 
@@ -1016,6 +1033,7 @@ mod tests {
             american_stories,
             ja_latin,
             partition_decade,
+            single_text_field,
             ..
         } = cli.command
         else {
@@ -1024,6 +1042,7 @@ mod tests {
         assert!(!american_stories, "off unless asked for");
         assert!(!ja_latin, "off unless asked for");
         assert!(!partition_decade, "off unless asked for");
+        assert!(!single_text_field, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
         assert_eq!(target.min_free_gib, 0);
     }

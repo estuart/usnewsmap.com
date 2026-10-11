@@ -55,6 +55,8 @@ param americanStories bool = false
 param jaLatin bool = false
 @description('Lay a full rebuild\'s base out by decade (#123, 05 §5.5.5), so date-limited searches skip the other decades\' splits. Only a full base takes it; deltas follow the published version.')
 param partitionDecade bool = false
+@description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.7). Only a full base takes it; deltas follow the published version.')
+param singleTextField bool = false
 @minValue(1)
 @maxValue(32)
 param workers int = 8
@@ -218,7 +220,8 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             full ? ['--full'] : [],
             americanStories ? ['--american-stories'] : [],
             jaLatin ? ['--ja-latin'] : [],
-            partitionDecade ? ['--partition-decade'] : []
+            partitionDecade ? ['--partition-decade'] : [],
+            singleTextField ? ['--single-text-field'] : []
           )
           resources: ingestResources
           env: concat(env, rawEnv, scratchEnv, writerTuningEnv, [

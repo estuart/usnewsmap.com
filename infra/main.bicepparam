@@ -17,6 +17,7 @@ param americanStoriesSearch = bool(readEnvironmentVariable('USNM_AMERICAN_STORIE
 param congressSearch = bool(readEnvironmentVariable('USNM_CONGRESS_SEARCH', 'true'))
 param jaLatin = bool(readEnvironmentVariable('USNM_JA_LATIN', 'false'))
 param partitionDecade = bool(readEnvironmentVariable('USNM_PARTITION_DECADE', 'false'))
+param singleTextField = bool(readEnvironmentVariable('USNM_SINGLE_TEXT_FIELD', 'false'))
 param dedicatedProfile = bool(readEnvironmentVariable('USNM_DEDICATED_PROFILE', 'false'))
 param ingestOnDedicated = bool(readEnvironmentVariable('USNM_INGEST_ON_DEDICATED', 'false'))
 param archiveAccountId = readEnvironmentVariable('USNM_ARCHIVE_ACCOUNT', '')

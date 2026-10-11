@@ -203,14 +203,14 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::sink::Decades;
+    use crate::sink::MainLayout;
 
     #[derive(Default, Clone)]
     struct Recorder(Arc<Mutex<Vec<Value>>>);
 
     #[async_trait]
     impl IndexSink for Recorder {
-        async fn create(&mut self, _: &str, _: Decades) -> anyhow::Result<()> {
+        async fn create(&mut self, _: &str, _: MainLayout) -> anyhow::Result<()> {
             Ok(())
         }
         async fn add(&mut self, doc: &Value) -> anyhow::Result<()> {

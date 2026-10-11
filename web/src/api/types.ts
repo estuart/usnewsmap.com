@@ -42,6 +42,11 @@ export interface Meta {
    */
   ja?: { indexes: string[]; fold: number; pages: number } | null;
   /**
+   * The main indexes' text fields (#285): 1, a searched field per text; 2,
+   * one field for both. Absent from older APIs.
+   */
+  text_layout?: 1 | 2;
+  /**
    * The Congress pages (#229), searched with `source=congress`: their series
    * and the one place they all sit at for now. Null or absent when the
    * version has none, or the API's setting leaves them off.
@@ -126,7 +131,9 @@ export interface AggregateResponse {
     /**
      * Matching pages that match in American Stories' text but not in LoC's
      * (#218): the pages whose `matched_in` is `["american_stories"]`. Only
-     * when the version searches American Stories' text.
+     * when the version searches American Stories' text in fields of its own:
+     * absent on a version with one field for both texts (`text_layout` 2,
+     * #285), where the hits still carry `matched_in`.
      */
     american_stories_only?: number;
   };

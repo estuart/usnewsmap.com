@@ -14,6 +14,8 @@ use opentelemetry::KeyValue;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
+use usnm_core::text_layout::TextLayout;
+
 use crate::merges::{self, IndexLayout, MergeWait, NodeEvents};
 use crate::progress;
 use crate::telemetry;
@@ -137,10 +139,103 @@ impl Decades {
     }
 }
 
+/// How this run's new main index lays its pages out: by decade (05
+/// §5.5.5) and in which text fields (05 §5.5.7). Only the main index takes
+/// it; the Japanese index keeps its own mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MainLayout {
+    pub decades: Decades,
+    pub text: TextLayout,
+}
+
+impl From<Decades> for MainLayout {
+    fn from(decades: Decades) -> Self {
+        MainLayout {
+            decades,
+            text: TextLayout::Separate,
+        }
+    }
+}
+
 /// The main index's config for this run: the template with the writer's
-/// tuning and the decade layout.
-pub fn main_template(tuning: &WriterTuning, decades: Decades) -> anyhow::Result<String> {
-    decades.apply(&tuning.apply(INDEX_TEMPLATE)?)
+/// tuning, the decade layout and the text fields.
+pub fn main_template(tuning: &WriterTuning, layout: MainLayout) -> anyhow::Result<String> {
+    let template = text_fields(layout.text, &tuning.apply(INDEX_TEMPLATE)?)?;
+    layout.decades.apply(&template)
+}
+
+/// The template's text field mappings for [`TextLayout::Separate`], in the
+/// order they appear: LoC's text and pairs, American Stories' text and pairs.
+const TEMPLATE_TEXT_FIELDS: [&str; 4] = [
+    "- { name: text, type: text, tokenizer: usnm_text, record: position, stored: true, fieldnorms: false }",
+    "- { name: text_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+    "- { name: text_as, type: text, tokenizer: usnm_text, record: position, stored: true, fieldnorms: false }",
+    "- { name: text_as_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+];
+const TEMPLATE_SEARCH_FIELDS: &str = "default_search_fields: [text]";
+
+/// `template` with the text fields of `layout` (05 §5.5.7). `Separate`
+/// leaves it as it is. `Single` keeps `text` and `text_as` stored but not
+/// indexed, drops their pairs, and adds `text_all` and `text_all_cg`, each
+/// with the comment lines above it replaced. Each line it changes must be
+/// there exactly once, so a template change can't silently keep a searched
+/// field of one text.
+pub fn text_fields(layout: TextLayout, template: &str) -> anyhow::Result<String> {
+    if layout == TextLayout::Separate {
+        return Ok(template.to_owned());
+    }
+    let mut found = [0usize; 5];
+    let mut out: Vec<String> = Vec::new();
+    for line in template.lines() {
+        let indent = &line[..line.len() - line.trim_start().len()];
+        let trimmed = line.trim();
+        if let Some(i) = TEMPLATE_TEXT_FIELDS.iter().position(|f| *f == trimmed) {
+            found[i] += 1;
+            // The comment above the field described its old role.
+            while out
+                .last()
+                .is_some_and(|l| l.trim_start().starts_with('#') && l.starts_with(indent))
+            {
+                out.pop();
+            }
+            if i == 0 {
+                for l in [
+                    "# One searched field for both texts (05 §5.5.7, #283). LoC's text (or",
+                    "# our OCR's Latin text, #203) and American Stories' (05 §5.5.4) are",
+                    "# stored for snippets and `matched_in`, not searched.",
+                    "- { name: text, type: text, indexed: false, stored: true }",
+                    "- { name: text_as, type: text, indexed: false, stored: true }",
+                    "# Both texts' words, one token per word as the release folds them,",
+                    "# with 32 positions no query can match between the texts",
+                    "# (usnm_core::text_layout::index_fields), and their common-word",
+                    "# pairs (05 §5.5.3), made separately for each text.",
+                    "- { name: text_all, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+                    "- { name: text_all_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+                ] {
+                    out.push(format!("{indent}{l}"));
+                }
+            }
+        } else if trimmed == TEMPLATE_SEARCH_FIELDS {
+            found[4] += 1;
+            out.push(format!(
+                "{indent}default_search_fields: [{}]",
+                usnm_core::text_layout::FIELD
+            ));
+        } else {
+            out.push(line.to_owned());
+        }
+    }
+    if found != [1; 5] {
+        bail!(
+            "the index template needs each of its four text fields and `{TEMPLATE_SEARCH_FIELDS}` \
+             exactly once to lay them out in one field, not {found:?}"
+        );
+    }
+    let mut out = out.join("\n");
+    if template.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// The template lines [`WriterTuning`] replaces.
@@ -253,13 +348,14 @@ const INGEST_RETRY_FOR: Duration = Duration::from_secs(600);
 
 #[async_trait]
 pub trait IndexSink: Send {
-    /// Start a new, empty main index, laid out by decade as `decades` says
-    /// (05 §5.5.5). Fails if it already exists.
-    async fn create(&mut self, index_id: &str, decades: Decades) -> anyhow::Result<()>;
+    /// Start a new, empty main index, laid out as `layout` says: by decade
+    /// (05 §5.5.5) and in its text fields (05 §5.5.7). Fails if it already
+    /// exists.
+    async fn create(&mut self, index_id: &str, layout: MainLayout) -> anyhow::Result<()>;
     /// Create an index with another mapping (the Japanese pages',
     /// `ocr_ja::JA_TEMPLATE`). Sinks without mappings just create it.
     async fn create_with(&mut self, index_id: &str, _template: &str) -> anyhow::Result<()> {
-        self.create(index_id, Decades::Off).await
+        self.create(index_id, MainLayout::default()).await
     }
     async fn add(&mut self, doc: &Value) -> anyhow::Result<()>;
     /// One document as the JSON line `add` would send, without its newline:
@@ -360,7 +456,7 @@ impl JsonlSink {
 impl IndexSink for JsonlSink {
     /// The memory backend has no splits: the layout only changes the
     /// documents, which the release writes.
-    async fn create(&mut self, index_id: &str, _decades: Decades) -> anyhow::Result<()> {
+    async fn create(&mut self, index_id: &str, _layout: MainLayout) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(format!("{index_id}.jsonl"));
         let file = std::fs::OpenOptions::new()
@@ -561,17 +657,24 @@ impl QuickwitSink {
 
 #[async_trait]
 impl IndexSink for QuickwitSink {
-    async fn create(&mut self, index_id: &str, decades: Decades) -> anyhow::Result<()> {
-        // The main index takes this run's writer tuning and decade layout;
-        // the Japanese index (about 11k pages) keeps its template's.
+    async fn create(&mut self, index_id: &str, layout: MainLayout) -> anyhow::Result<()> {
+        // The main index takes this run's writer tuning and layout; the
+        // Japanese index (about 11k pages) keeps its template's.
         let tuning = WriterTuning::from_env()?;
         if tuning != WriterTuning::default() {
             tracing::info!(heap = %tuning.heap, commit_timeout_secs = tuning.commit_timeout_secs, queue = %tuning.queue, "writer tuning");
         }
-        if decades.on() {
-            tracing::info!(index = index_id, layout = ?decades, "decade layout");
+        if layout.decades.on() {
+            tracing::info!(index = index_id, layout = ?layout.decades, "decade layout");
         }
-        let template = main_template(&tuning, decades)?;
+        if layout.text != TextLayout::Separate {
+            tracing::info!(
+                index = index_id,
+                text_layout = layout.text.version(),
+                "one searched text field"
+            );
+        }
+        let template = main_template(&tuning, layout)?;
         self.create_with(index_id, &template).await
     }
 
@@ -1438,12 +1541,69 @@ mod tests {
             commit_timeout_secs: 120,
             queue: "4GiB".into(),
         };
-        let yaml = main_template(&t, Decades::Partitioned).unwrap();
+        let yaml = main_template(&t, Decades::Partitioned.into()).unwrap();
         assert!(yaml.contains("heap_size: 6GiB") && yaml.contains("partition_key: decade"));
         // A template without the lines it adds to is refused.
         assert!(Decades::Tagged.apply("version: 0.9").is_err());
         let twice = format!("{INDEX_TEMPLATE}\n  timestamp_field: date\n");
         assert!(Decades::Partitioned.apply(&twice).is_err());
+    }
+
+    #[test]
+    fn one_text_field_keeps_the_texts_stored_and_searches_text_all() {
+        assert_eq!(
+            text_fields(TextLayout::Separate, INDEX_TEMPLATE).unwrap(),
+            INDEX_TEMPLATE
+        );
+        let yaml = text_fields(TextLayout::Single, INDEX_TEMPLATE).unwrap();
+        let fields: Vec<&str> = yaml
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("- { name: text"))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "- { name: text, type: text, indexed: false, stored: true }",
+                "- { name: text_as, type: text, indexed: false, stored: true }",
+                "- { name: text_all, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+                "- { name: text_all_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+            ]
+        );
+        assert!(
+            yaml.contains("\n  default_search_fields: [text_all]"),
+            "{yaml}"
+        );
+        assert!(!yaml.contains("default_search_fields: [text]"));
+        // The comments about the old fields went with them.
+        assert!(!yaml.contains("Searched only when"), "{yaml}");
+        assert!(!yaml.contains("Phrases holding a common"), "{yaml}");
+        // Everything but the text fields is the template's.
+        let settings = |t: &str| t[t.find("    - { name: date").unwrap()..].to_owned();
+        assert_eq!(
+            settings(&yaml).replace("[text_all]", "[text]"),
+            settings(INDEX_TEMPLATE)
+        );
+        assert!(
+            yaml.starts_with(&INDEX_TEMPLATE[..INDEX_TEMPLATE.find("field_mappings:").unwrap()])
+        );
+        // With the writer's tuning and a decade layout too.
+        let t = WriterTuning {
+            heap: "6GiB".into(),
+            commit_timeout_secs: 120,
+            queue: "4GiB".into(),
+        };
+        let layout = MainLayout {
+            decades: Decades::Partitioned,
+            text: TextLayout::Single,
+        };
+        let yaml = main_template(&t, layout).unwrap();
+        assert!(yaml.contains("heap_size: 6GiB") && yaml.contains("partition_key: decade"));
+        assert!(yaml.contains("name: text_all,") && yaml.contains("name: decade,"));
+        // A template without one of the lines it changes is refused.
+        let no_pairs = INDEX_TEMPLATE.replace(TEMPLATE_TEXT_FIELDS[1], "");
+        assert!(text_fields(TextLayout::Single, &no_pairs).is_err());
+        assert!(text_fields(TextLayout::Single, "version: 0.9").is_err());
     }
 
     #[test]

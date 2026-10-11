@@ -32,8 +32,9 @@ pub struct Aggregate {
     /// The earliest and latest matching page; `None` when nothing matches.
     pub first: Option<Hit>,
     pub last: Option<Hit>,
-    /// When the search covers American Stories' text: how many of the
-    /// matching pages match in it but not in LoC's text (05 §5.5.4).
+    /// When the search covers American Stories' text in fields of its own:
+    /// how many of the matching pages match in it but not in LoC's text
+    /// (05 §5.5.4). `None` with one field for both texts (05 §5.5.7).
     pub american_stories_only: Option<u64>,
 }
 
@@ -62,7 +63,7 @@ pub async fn aggregate(
             cube_calls: 0,
             first: None,
             last: None,
-            american_stories_only: indexes.american_stories().then_some(0),
+            american_stories_only: indexes.counts_american_stories_only().then_some(0),
         })));
     }
     let upper_bound = summary.places.len().saturating_mul(spec.len());
@@ -83,7 +84,8 @@ pub async fn aggregate(
     );
     // One count-only query.
     let american_stories_only = async {
-        if !indexes.american_stories() {
+        // Not with one field for both texts (05 §5.5.7).
+        if !indexes.counts_american_stories_only() {
             return Ok(None);
         }
         backend
@@ -331,7 +333,15 @@ mod tests {
         assert_eq!((a.summary.total_hits, a.american_stories_only), (10, None));
         // Nothing matches: nothing found only in American Stories' text.
         let none = usnm_core::query::parse("zyzzyva").unwrap();
-        assert_eq!(run(on, none).await.american_stories_only, Some(0));
+        assert_eq!(
+            run(on.clone(), none.clone()).await.american_stories_only,
+            Some(0)
+        );
+        // One field for both texts (05 §5.5.7): the same pages, no count.
+        let single = on.with_text_layout(usnm_core::text_layout::TextLayout::Single);
+        let a = run(single.clone(), q).await;
+        assert_eq!((a.summary.total_hits, a.american_stories_only), (25, None));
+        assert_eq!(run(single, none).await.american_stories_only, None);
     }
 
     #[tokio::test]

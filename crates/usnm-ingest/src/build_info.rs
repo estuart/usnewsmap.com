@@ -42,6 +42,9 @@ pub struct Built {
     /// and of the version's main indexes, which all have the `decade` field
     /// or none does.
     pub decades: crate::sink::Decades,
+    /// The text fields (05 §5.5.7): of the main index this run writes, and
+    /// of the version's main indexes, which all have the same ones.
+    pub text_layout: usnm_core::text_layout::TextLayout,
     /// The analyzer the run's indexes fold words with (#168): the latest for
     /// a full base, the published version's for a delta. The record's
     /// `common_grams` and `ja_fold` name it.
@@ -53,8 +56,13 @@ fn templates(b: &Built) -> Vec<(&'static str, String)> {
     let mut t = Vec::new();
     if b.main_index {
         // As the writer applies it: the run's tuning in place of the
-        // template's heap and commit timeout, and its decade layout.
-        let pages = crate::sink::main_template(&b.writer, b.decades)
+        // template's heap and commit timeout, its decade layout and its
+        // text fields.
+        let layout = crate::sink::MainLayout {
+            decades: b.decades,
+            text: b.text_layout,
+        };
+        let pages = crate::sink::main_template(&b.writer, layout)
             .unwrap_or_else(|_| crate::sink::INDEX_TEMPLATE.to_owned());
         t.push(("pages", pages));
     }
@@ -102,6 +110,10 @@ pub fn summary(b: &Built) -> Value {
     if b.decades.on() {
         features["decades"] = json!(usnm_core::decade::VERSION);
     }
+    // Likewise, as its `text_layout`.
+    if b.text_layout != usnm_core::text_layout::TextLayout::Separate {
+        features["text_layout"] = json!(b.text_layout.version());
+    }
     json!({
         "commit": std::env::var(COMMIT_ENV).ok().filter(|s| !s.is_empty()),
         "ingest": env!("CARGO_PKG_VERSION"),
@@ -127,8 +139,21 @@ mod tests {
             american_stories: false,
             ja_latin: false,
             decades: crate::sink::Decades::Off,
+            text_layout: usnm_core::text_layout::TextLayout::Separate,
             analyzer: usnm_core::text::Analyzer::LATEST,
         }
+    }
+
+    #[test]
+    fn records_one_text_field_and_its_template() {
+        let off = record(&built(true, false));
+        assert!(off["features"].get("text_layout").is_none(), "{off}");
+        let mut b = built(true, false);
+        b.text_layout = usnm_core::text_layout::TextLayout::Single;
+        let v = record(&b);
+        assert_eq!(v["features"]["text_layout"], 2);
+        let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(yaml.contains("name: text_all,") && !yaml.contains("name: text_cg,"));
     }
 
     #[test]

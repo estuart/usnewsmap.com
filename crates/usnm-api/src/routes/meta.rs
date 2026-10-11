@@ -48,8 +48,11 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         // The Japanese pages we OCR (#139): searched by queries with Japanese words.
         "ja": c.ja,
         // Whether searches cover American Stories' text (05 §5.5.4): the
-        // version has it and `USNM_AMERICAN_STORIES_SEARCH` leaves it on.
+        // version has it and `USNM_AMERICAN_STORIES_SEARCH` leaves it on,
+        // or it shares one field with LoC's (05 §5.5.7).
         "american_stories": rd.searches_american_stories(),
+        // A searched field per text (1) or one for both (2), 05 §5.5.7.
+        "text_layout": rd.text_layout().version(),
         // The Congress pages (#229), searched with `source=congress`: null
         // unless the version has a Congress set this API can search and
         // `USNM_CONGRESS_SEARCH` leaves it on. Every page sits at one

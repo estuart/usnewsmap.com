@@ -68,6 +68,9 @@ param jaLatin bool = false
 @description('Lay the next full rebuild\'s base out by decade (#123): every split holds one decade, so a date-limited search skips the others. Only a full base takes it; deltas follow the published version, and a full rebuild without it lays nothing out by decade (docs/operations.md, "Full rebuild").')
 param partitionDecade bool = false
 
+@description('Search the next full rebuild\'s texts, LoC\'s and American Stories\', in one field (#283, 05 §5.5.7), so a search looks each word up once. Only a full base takes it; deltas follow the published version, and a full rebuild without it searches a field per text again (docs/operations.md, "Full rebuild").')
+param singleTextField bool = false
+
 @description('Add a memory-optimized E4 workload profile (4 vCPU / 32 GiB, no minimum nodes) for full index rebuilds (#172). The environment pays the Dedicated plan management fee while it exists: turn it on for a rebuild, off afterwards (docs/operations.md, "Full rebuild").')
 param dedicatedProfile bool = false
 
@@ -530,6 +533,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     americanStories: americanStories
     jaLatin: jaLatin
     partitionDecade: partitionDecade
+    singleTextField: singleTextField
     workers: backfillWorkers
     backfillCron: backfillCron
     scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''

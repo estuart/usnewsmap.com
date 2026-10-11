@@ -15,6 +15,7 @@ use thiserror::Error;
 use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::text::Analyzer;
+use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
 
 pub mod cache_metrics;
@@ -127,9 +128,14 @@ pub struct IndexSet {
     /// version the API supports, the one of [`IndexSet::analyzer`]
     /// (05 §5.5.3).
     common_grams: bool,
-    /// Every index has American Stories' text, `text_as` and `text_as_cg`,
-    /// at the API's `usnm_core::american_stories::VERSION` (05 §5.5.4).
+    /// Every index has American Stories' text at the API's
+    /// `usnm_core::american_stories::VERSION` (05 §5.5.4), and searches
+    /// cover it: in `text_as` and `text_as_cg`, or in the one searched
+    /// field of [`TextLayout::Single`].
     american_stories: bool,
+    /// Which fields the texts are searched in (05 §5.5.7, #283): a field
+    /// per text, or one for both.
+    text_layout: TextLayout,
     /// Every index has the `decade` field at the API's
     /// `usnm_core::decade::VERSION`, and the decades its pages span (05
     /// §5.5.5): a date-limited search names its decades, so Quickwit skips
@@ -146,6 +152,7 @@ impl IndexSet {
             analyzer: Analyzer::LATEST,
             common_grams: false,
             american_stories: false,
+            text_layout: TextLayout::Separate,
             decades: None,
             hidden: Arc::default(),
         }
@@ -180,6 +187,23 @@ impl IndexSet {
 
     pub fn american_stories(&self) -> bool {
         self.american_stories
+    }
+
+    /// The indexes' text fields (05 §5.5.7).
+    pub fn with_text_layout(mut self, layout: TextLayout) -> Self {
+        self.text_layout = layout;
+        self
+    }
+
+    pub fn text_layout(&self) -> TextLayout {
+        self.text_layout
+    }
+
+    /// Whether the aggregate can count the pages only American Stories'
+    /// text matches (05 §5.5.4): searches cover it, in fields of its own.
+    /// With one field for both texts, LoC's alone can't be searched.
+    pub fn counts_american_stories_only(&self) -> bool {
+        self.american_stories && self.text_layout == TextLayout::Separate
     }
 
     /// Whether searches name their decades, and the decades the version's
@@ -437,7 +461,9 @@ pub trait SearchBackend: Send + Sync {
     /// How many of the pages a search of both texts finds match the query
     /// in American Stories' text but not in LoC's (05 §5.5.4): the hits
     /// whose [`Hit::matched_in`] is American Stories' text alone. One
-    /// count-only request. A backend without it refuses.
+    /// count-only request. A backend without it refuses, and so does every
+    /// backend on a set with one field for both texts (05 §5.5.7), where
+    /// LoC's alone can't be searched.
     async fn american_stories_only(
         &self,
         _indexes: &IndexSet,

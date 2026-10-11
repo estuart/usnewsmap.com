@@ -276,7 +276,7 @@ async fn measure(bin: &Path, run: Run, docs: u64, port: u16) {
             finalize_stall: Duration::from_secs(120),
             report: Default::default(),
         });
-    sink.create(id, decades).await.unwrap();
+    sink.create(id, decades.into()).await.unwrap();
     let seen = Arc::new(Mutex::new(Seen::default()));
     let watcher = watch(
         node.url.clone(),

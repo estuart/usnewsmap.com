@@ -461,6 +461,109 @@ async fn search_cache_keys_mark_american_stories_switched_off() {
         .contains(&format!("fixture-v1|aggregate|{canonical}")));
 }
 
+/// A state on a version whose main indexes search both texts in one field
+/// (`text_layout` 2, 05 §5.5.7), with `USNM_AMERICAN_STORIES_SEARCH` as
+/// `search` says.
+async fn single_field_state(search: bool) -> Arc<AppState> {
+    let mut rd = refdata().await;
+    rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+    rd.current.text_layout = Some(usnm_core::text_layout::TextLayout::Single.version());
+    let mut cfg = config();
+    cfg.american_stories_search = search;
+    Arc::new(AppState::new(cfg, Arc::new(fixture_backend()), rd))
+}
+
+/// One field for both texts answers as a field per text with both
+/// searched: the same pages, snippets and `matched_in`, but no
+/// `total.american_stories_only`, which needs LoC's text on its own. The
+/// setting can't leave American Stories' text out, so it changes nothing,
+/// cache keys included.
+#[tokio::test]
+async fn one_text_field_answers_as_both_texts_without_the_american_stories_only_count() {
+    let single = single_field_state(true).await;
+    let switched = single_field_state(false).await;
+    let on = american_stories_state(true).await;
+    let strip = |mut v: Value| {
+        if let Some(o) = v.as_object_mut() {
+            o.remove("timing_ms");
+            if let Some(t) = o.get_mut("total").and_then(Value::as_object_mut) {
+                t.remove("american_stories_only");
+            }
+        }
+        v
+    };
+    for uri in AMERICAN_STORIES_URIS {
+        let (status, _, got) = get(&single, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {got}");
+        if uri.starts_with("/v1/aggregate") {
+            assert!(got["total"].get("american_stories_only").is_none(), "{uri}");
+        }
+        let (_, _, want) = get(&on, uri).await;
+        assert_eq!(strip(got.clone()), strip(want), "{uri}");
+        let (_, _, off) = get(&switched, uri).await;
+        assert_eq!(strip(off), strip(got), "{uri}");
+    }
+    let (_, _, agg) = get(&single, "/v1/aggregate?q=bimetallism").await;
+    assert!(agg["total"]["hits"].as_u64() > Some(0));
+    assert_eq!(
+        agg["total"]["first"]["matched_in"],
+        json!(["american_stories"])
+    );
+    for s in [&single, &switched] {
+        let (_, _, meta) = get(s, "/v1/meta").await;
+        assert_eq!(meta["american_stories"], true);
+        assert_eq!(meta["text_layout"], 2);
+        assert!(cached_keys(s)
+            .await
+            .iter()
+            .all(|k| !k.contains("american_stories")));
+    }
+    let (_, _, meta) = get(&on, "/v1/meta").await;
+    assert_eq!(meta["text_layout"], 1);
+}
+
+/// A version with a text layout newer than the API's isn't loaded: its
+/// fields may not be the ones a search would name.
+#[tokio::test]
+async fn a_text_layout_this_api_does_not_know_is_not_loaded() {
+    let store = LocalStore::new(data_dir());
+    let mut current = refdata().await.current;
+    current.common_grams = Some(usnm_core::common_grams::VERSION);
+    current.american_stories = Some(usnm_core::american_stories::VERSION);
+    for known in [None, Some(1), Some(2)] {
+        current.text_layout = known;
+        assert!(
+            RefData::load_for(&store, current.clone()).await.is_ok(),
+            "{known:?}"
+        );
+    }
+    let mut newer = current.clone();
+    newer.text_layout = Some(usnm_core::text_layout::TextLayout::LATEST.version() + 1);
+    let err = RefData::load_for(&store, newer).await.unwrap_err();
+    assert!(err.contains("text_layout"), "{err}");
+    // One field for both texts holds words folded by the version's
+    // analyzer, and American Stories' text of its version: both must be
+    // ones the API knows, or queries would silently miss.
+    for (grams, stories) in [
+        (None, Some(usnm_core::american_stories::VERSION)),
+        (Some(usnm_core::common_grams::VERSION + 1), None),
+        (
+            Some(usnm_core::common_grams::VERSION),
+            Some(usnm_core::american_stories::VERSION + 1),
+        ),
+    ] {
+        let mut c = current.clone();
+        c.text_layout = Some(2);
+        c.common_grams = grams;
+        c.american_stories = stories;
+        let err = RefData::load_for(&store, c.clone()).await.unwrap_err();
+        assert!(err.contains("text_layout 2"), "{err}");
+        // A field per text still loads, as before.
+        c.text_layout = None;
+        assert!(RefData::load_for(&store, c).await.is_ok());
+    }
+}
+
 /// The persistent cache too: a response persisted with American Stories'
 /// text on is never read with it off, and the other way round.
 #[tokio::test]

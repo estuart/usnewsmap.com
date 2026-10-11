@@ -35,6 +35,7 @@ use sha2::{Digest, Sha256};
 use tracing::field::Empty;
 use tracing::Instrument;
 use usnm_core::text::{Analyzer, TextStatus};
+use usnm_core::text_layout::TextLayout;
 use usnm_core::time::{date_from_day, day_number, ym_number};
 use usnm_store::ObjectStore;
 
@@ -48,7 +49,7 @@ use crate::dedup::{self, Plan};
 use crate::merges::{self, IndexLayout};
 use crate::ocr_ja;
 use crate::progress::{self, Progress};
-use crate::sink::{Decades, IndexSink};
+use crate::sink::{Decades, IndexSink, MainLayout};
 use crate::source::hex;
 use crate::state::{
     Curated, IndexRun, JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, RunBatch, RunStatus,
@@ -98,6 +99,13 @@ pub struct Release {
     /// says. Off: the documents, the index config and `current.json` are as
     /// before.
     pub partition_decade: bool,
+    /// Search a full base's texts in one field (05 §5.5.7, #283): `text_all`
+    /// and `text_all_cg` hold LoC's and American Stories' words with a gap
+    /// between them, `text` and `text_as` are stored only, and
+    /// `current.json` says so (`text_layout`). Only a full base takes it: a
+    /// delta follows the published version, whatever this says. Off: the
+    /// documents, the index config and `current.json` are as before.
+    pub single_text_field: bool,
 }
 
 /// A full release refused to start because titles-sync left titles unfetched
@@ -172,8 +180,11 @@ pub struct Published {
 pub struct DocFormat {
     /// The page's decade partition too (05 §5.5.5).
     pub decade: bool,
-    /// The analyzer that folds the common-word pairs (05 §5.5.3, #168).
+    /// The analyzer that folds the common-word pairs (05 §5.5.3, #168), and
+    /// the words of `text_all`.
     pub analyzer: Analyzer,
+    /// Which fields the texts are searched in (05 §5.5.7).
+    pub text: TextLayout,
 }
 
 /// One engine document for a curated page (05 §5.5), with American
@@ -227,11 +238,25 @@ pub fn main_doc(
         "sort_key": (u64::from(title.ordinal) << 32) | (u64::from(k.edition) << 16) | u64::from(k.seq),
         "date": k.date.to_string(),
         "batch": batch,
-        "text_cg": usnm_core::common_grams::index_text(text, format.analyzer),
         "text": text,
     });
+    match format.text {
+        TextLayout::Separate => {
+            doc["text_cg"] = usnm_core::common_grams::index_text(text, format.analyzer).into();
+            if let Some(t) = text_as {
+                doc["text_as_cg"] = usnm_core::common_grams::index_text(t, format.analyzer).into();
+            }
+        }
+        // One searched field for both texts; `text` and `text_as` are
+        // stored for snippets (05 §5.5.7).
+        TextLayout::Single => {
+            let (words, pairs) =
+                usnm_core::text_layout::index_fields(text, text_as, format.analyzer);
+            doc[usnm_core::text_layout::FIELD] = words.into();
+            doc[usnm_core::text_layout::PAIRS_FIELD] = pairs.into();
+        }
+    }
     if let Some(t) = text_as {
-        doc["text_as_cg"] = usnm_core::common_grams::index_text(t, format.analyzer).into();
         doc["text_as"] = t.into();
     }
     if format.decade {
@@ -272,6 +297,8 @@ struct PublishedPointer {
     american_stories: Option<u32>,
     /// `decades`: every index of the version has the `decade` field (05 §5.5.5).
     decades: Option<u32>,
+    /// `text_layout`: the text fields of every main index (05 §5.5.7).
+    text_layout: Option<u32>,
 }
 
 /// How long the writer lock lasts without renewal, and how often it's renewed.
@@ -409,6 +436,7 @@ impl Release {
         let previous_grams = pointer.as_ref().and_then(|p| p.grams);
         let previous_as = pointer.as_ref().and_then(|p| p.american_stories);
         let previous_decades = pointer.as_ref().and_then(|p| p.decades);
+        let previous_layout = pointer.as_ref().map(|p| p.text_layout);
         // Every batch's last committed curation, whatever its current status.
         let curated: BTreeMap<String, Curated> = self
             .state
@@ -456,14 +484,40 @@ impl Release {
                 "American Stories' text is new to the published version; building a full base"
             );
         }
+        // The text fields (05 §5.5.7): a delta is laid out as the published
+        // version is, so a layout this release doesn't know can't take one.
+        let published_layout = previous_layout.map(TextLayout::from_version);
+        let relayouting = matches!(published_layout, Some(None));
+        if relayouting {
+            tracing::info!(
+                from = ?previous_layout.flatten(),
+                "the published version's text fields are laid out in a way this release \
+                 doesn't know; building a full base"
+            );
+        }
+        // With one field for both texts, American Stories' text can't be
+        // left out of the indexes a delta keeps, as it is from a field of
+        // its own: a release without it rebuilds them all.
+        let dropping_stories = !self.american_stories
+            && previous_as.is_some()
+            && published_layout == Some(Some(TextLayout::Single));
+        if dropping_stories {
+            tracing::info!(
+                "the published version searches American Stories' text in one field with \
+                 LoC's, and this release leaves it out; building a full base"
+            );
+        }
         let full = self.full
             || switching
             || regramming
             || adding_stories
+            || relayouting
+            || dropping_stories
             || previous
                 .as_ref()
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
         let decades = self.decade_layout(full, previous_decades);
+        let text_layout = self.text_layout(full, published_layout.flatten());
         let analyzer = match published_analyzer {
             Some(a) if !full => a,
             _ => Analyzer::LATEST,
@@ -814,6 +868,7 @@ impl Release {
             american_stories: self.american_stories,
             ja_latin: self.ja_latin,
             decades,
+            text_layout,
             analyzer,
         };
         let mut run = IndexRun {
@@ -844,7 +899,7 @@ impl Release {
         span.record("version", version.as_str());
         span.record("full", full);
         span.record("batches", scope.len());
-        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, "building index");
+        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, text_layout = text_layout.version(), "building index");
 
         report.version(&version);
         report.step(Step::Indexing).await;
@@ -864,7 +919,10 @@ impl Release {
                     &latin_new,
                     &latin_curated,
                     &latin_owned,
-                    decades,
+                    MainLayout {
+                        decades,
+                        text: text_layout,
+                    },
                     analyzer,
                     report,
                 )
@@ -960,6 +1018,13 @@ impl Release {
         if decades.on() {
             pointer["decades"] = json!(usnm_core::decade::VERSION);
         }
+        // Every main index of the version has one searched field for both
+        // texts: a base this run built with it, or one the published version
+        // has, with deltas written like it (05 §5.5.7). Absent: a field per
+        // text, as before the setting.
+        if text_layout != TextLayout::Separate {
+            pointer["text_layout"] = json!(text_layout.version());
+        }
         // The Japanese pages' index (#139), folded with the same analyzer
         // as the main indexes. An API without Japanese search ignores the
         // field; one with it folds Japanese queries as `fold` says.
@@ -1037,6 +1102,7 @@ impl Release {
             grams: feature("common_grams"),
             american_stories: feature("american_stories"),
             decades: feature("decades"),
+            text_layout: feature("text_layout"),
         };
         Ok(Some((run, published)))
     }
@@ -1078,6 +1144,30 @@ impl Release {
                 Decades::Off
             }
         }
+    }
+
+    /// The text fields of this release's main index (05 §5.5.7): a full
+    /// base's as `single_text_field` says; a delta's (or an overlay-only
+    /// release's, which keeps the main indexes) as the published version
+    /// has them, so every main index of a version has the same fields.
+    /// `published` is `None` for a version this code doesn't know, which
+    /// takes a full base (`relayouting`).
+    fn text_layout(&self, full: bool, published: Option<TextLayout>) -> TextLayout {
+        if full {
+            return if self.single_text_field {
+                TextLayout::Single
+            } else {
+                TextLayout::Separate
+            };
+        }
+        let layout = published.unwrap_or_default();
+        if self.single_text_field && layout == TextLayout::Separate {
+            tracing::info!(
+                "the published version searches a field per text: --single-text-field \
+                 takes effect at the next full release"
+            );
+        }
+        layout
     }
 
     /// `pages-v{date}-{n}` and its new index, `pages-{base|delta}-{date}-{n}`.
@@ -1190,7 +1280,7 @@ impl Release {
         latin: &[(&ocr_ja::JaPage, String)],
         latin_curated: &HashMap<String, (&ocr_ja::JaPage, String)>,
         latin_owned: &HashMap<String, String>,
-        decades: Decades,
+        layout: MainLayout,
         analyzer: Analyzer,
         report: &Reporter,
     ) -> anyhow::Result<(
@@ -1210,14 +1300,15 @@ impl Release {
         if !missing.is_empty() {
             bail!("titles missing from the catalog: {missing:?}");
         }
-        sink.create(index_id, decades).await?;
+        sink.create(index_id, layout).await?;
         let format = DocFormat {
-            decade: decades.on(),
+            decade: layout.decades.on(),
             analyzer,
+            text: layout.text,
         };
         // A partitioned base's pages go out a decade at a time, through
         // files on the writer's scratch disk (`crate::decade_order`).
-        let mut order = match decades {
+        let mut order = match layout.decades {
             Decades::Partitioned => {
                 let work = sink
                     .stats()
@@ -1859,7 +1950,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl IndexSink for Stuck {
-        async fn create(&mut self, _: &str, _: Decades) -> anyhow::Result<()> {
+        async fn create(&mut self, _: &str, _: crate::sink::MainLayout) -> anyhow::Result<()> {
             Ok(())
         }
         async fn add(&mut self, _: &Value) -> anyhow::Result<()> {

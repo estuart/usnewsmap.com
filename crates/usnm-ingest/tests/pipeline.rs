@@ -250,6 +250,7 @@ impl Env {
             american_stories: false,
             ja_latin: false,
             partition_decade: false,
+            single_text_field: false,
         }
     }
 
@@ -287,6 +288,7 @@ impl Env {
             american_stories,
             ja_latin,
             partition_decade: false,
+            single_text_field: false,
         };
         let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
         r.run(&mut sink).await
@@ -330,6 +332,50 @@ impl Env {
             );
         }
         docs
+    }
+
+    /// A main index laid out with one searched field for both texts (05
+    /// §5.5.7): each document's `text_all` and `text_all_cg` checked against
+    /// its stored texts and returned without them, as the fixtures hold.
+    /// None has a pairs field of one text.
+    fn index_single(&self, id: &str) -> BTreeMap<String, Value> {
+        let mut docs = by_id(read_jsonl(
+            &self.root.join(format!("reference/indexes/{id}.jsonl")),
+        ));
+        for (doc_id, doc) in &mut docs {
+            let o = doc.as_object_mut().unwrap();
+            assert!(
+                o.get("text_cg").is_none() && o.get("text_as_cg").is_none(),
+                "{doc_id}"
+            );
+            let words = o.remove("text_all").unwrap_or_else(|| panic!("{doc_id}"));
+            let pairs = o
+                .remove("text_all_cg")
+                .unwrap_or_else(|| panic!("{doc_id}"));
+            let want = usnm_core::text_layout::index_fields(
+                doc["text"].as_str().unwrap(),
+                doc["text_as"].as_str(),
+                Analyzer::LATEST,
+            );
+            assert_eq!(
+                (words, pairs),
+                (Value::from(want.0), Value::from(want.1)),
+                "{doc_id}"
+            );
+        }
+        docs
+    }
+
+    /// A release with American Stories' text, and `--single-text-field` as
+    /// `single` says.
+    async fn release_single(&self, day: u32, full: bool, single: bool) -> Published {
+        let r = Release {
+            american_stories: true,
+            single_text_field: single,
+            ..self.releaser(day, full)
+        };
+        let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
+        r.run(&mut sink).await.unwrap().unwrap()
     }
 
     async fn reference_json(&self, path: &str) -> Value {
@@ -717,6 +763,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         american_stories: false,
         ja_latin: false,
         partition_decade: false,
+        single_text_field: false,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     assert!(r.run(&mut sink).await.is_err());
@@ -770,6 +817,7 @@ async fn releases_into_a_quickwit_writer_node() {
             american_stories: false,
             ja_latin: false,
             partition_decade: false,
+            single_text_field: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -1014,7 +1062,7 @@ async fn a_writer_seals_an_index_that_received_no_documents() {
             timeout: std::time::Duration::from_secs(45),
             ..quick_merges()
         });
-    sink.create(id, usnm_ingest::sink::Decades::Off)
+    sink.create(id, usnm_ingest::sink::MainLayout::default())
         .await
         .unwrap();
     sink.finish(0).await.unwrap();
@@ -1177,7 +1225,7 @@ impl usnm_ingest::sink::IndexSink for OtherBackend {
     async fn create(
         &mut self,
         _index_id: &str,
-        _: usnm_ingest::sink::Decades,
+        _: usnm_ingest::sink::MainLayout,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1227,6 +1275,7 @@ async fn a_backend_switch_forces_a_full_release() {
         american_stories: false,
         ja_latin: false,
         partition_decade: false,
+        single_text_field: false,
     };
     let mut sink = OtherBackend(0);
     let p = r.run(&mut sink).await.unwrap().unwrap();
@@ -1266,6 +1315,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         american_stories: false,
         ja_latin: false,
         partition_decade: false,
+        single_text_field: false,
     };
     let lease = r.lock().await.unwrap();
     // Another writer takes the lock over (e.g. after this one stalled).
@@ -1349,6 +1399,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         american_stories: false,
         ja_latin: false,
         partition_decade: false,
+        single_text_field: false,
     };
     let why = Some("LoC rate limited titles-sync with 5 of 9 titles left".to_owned());
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
@@ -1772,6 +1823,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         american_stories: false,
         ja_latin: false,
         partition_decade: false,
+        single_text_field: false,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     let err = format!("{:#}", r.run(&mut sink).await.unwrap_err());
@@ -1786,7 +1838,7 @@ impl usnm_ingest::sink::IndexSink for FailingSink {
     async fn create(
         &mut self,
         _index_id: &str,
-        _: usnm_ingest::sink::Decades,
+        _: usnm_ingest::sink::MainLayout,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1829,6 +1881,7 @@ async fn a_failed_release_records_when_it_failed() {
         american_stories: false,
         ja_latin: false,
         partition_decade: false,
+        single_text_field: false,
     };
     let before = Utc::now();
     let err = r.run(&mut FailingSink).await.unwrap_err();
@@ -2098,6 +2151,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             american_stories: false,
             ja_latin: false,
             partition_decade: false,
+            single_text_field: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -3139,6 +3193,7 @@ async fn our_latin_text_follows_the_decade_layout() {
     .await;
     let release = |day, full| Release {
         partition_decade: true,
+        single_text_field: false,
         ja_latin: true,
         ..e.releaser(day, full)
     };
@@ -3535,6 +3590,121 @@ async fn a_version_without_american_stories_is_rebuilt_in_full_when_it_is_turned
     assert!(p3.full);
 }
 
+/// A full release with `--single-text-field` searches both texts in one
+/// field (05 §5.5.7): the documents have `text_all` and `text_all_cg` and
+/// no pairs field of one text, and the version says so. Deltas follow the
+/// published version whatever the setting says; a full release without it
+/// goes back to a field per text.
+#[tokio::test]
+async fn one_text_field_is_built_by_a_full_release_and_followed_by_deltas() {
+    let e = env().await;
+    let (early, late, ..) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    curate(&e, early).await;
+    let p1 = e.release_single(1, true, true).await;
+    assert!(p1.full);
+    assert_eq!(
+        e.index_single(&p1.indexes[0]),
+        fixture("pages-base-fixture")
+    );
+    let current = e.reference_json("current.json").await;
+    assert_eq!(current["text_layout"], 2);
+    assert_eq!(
+        current["american_stories"],
+        usnm_core::american_stories::VERSION
+    );
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", p1.index_version))
+        .await;
+    assert_eq!(manifest["build"]["features"]["text_layout"], 2);
+    let yaml = manifest["build"]["templates"]["pages"]["yaml"]
+        .as_str()
+        .unwrap();
+    assert!(yaml.contains("name: text_all,") && !yaml.contains("name: text_cg,"));
+    let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    let set = refdata.index_set();
+    assert_eq!(
+        set.text_layout(),
+        usnm_core::text_layout::TextLayout::Single
+    );
+    assert!(set.american_stories() && !set.counts_american_stories_only());
+
+    // A delta without the setting is laid out as the version is.
+    curate(&e, late).await;
+    let p2 = e.release_single(8, false, false).await;
+    assert!(!p2.full);
+    assert_eq!(
+        e.index_single(p2.indexes.last().unwrap()),
+        fixture("pages-delta-fixture-1")
+    );
+    assert_eq!(e.reference_json("current.json").await["text_layout"], 2);
+
+    // Leaving American Stories' text out can't be done in a delta here:
+    // a full base, with a field per text again.
+    let pages = fixture_pages();
+    let extra: Vec<&Page> = pages.iter().take(3).collect();
+    let path = e.root.join("batch_zz_ver01.tar.gz");
+    write_archive(&path, &extra, false, true);
+    curate(&e, vec![listed("batch_zz_ver01", &path, None)]).await;
+    let p3 = e.release_with(9, false, false).await.unwrap().unwrap();
+    assert!(p3.full, "the indexes it keeps would hold the text");
+    let current = e.reference_json("current.json").await;
+    assert!(current.get("text_layout").is_none(), "{current}");
+    assert!(current.get("american_stories").is_none(), "{current}");
+    let mut both = loc_fixture("pages-base-fixture");
+    both.extend(loc_fixture("pages-delta-fixture-1"));
+    assert_eq!(e.index(&p3.indexes[0]), both);
+
+    // On a field per text, the setting waits for a full release.
+    let more: Vec<&Page> = pages.iter().skip(3).take(3).collect();
+    let path = e.root.join("batch_zy_ver01.tar.gz");
+    write_archive(&path, &more, false, true);
+    curate(&e, vec![listed("batch_zy_ver01", &path, None)]).await;
+    let r = Release {
+        single_text_field: true,
+        ..e.releaser(10, false)
+    };
+    let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
+    let p4 = r.run(&mut sink).await.unwrap().unwrap();
+    assert!(!p4.full);
+    assert!(e
+        .reference_json("current.json")
+        .await
+        .get("text_layout")
+        .is_none());
+    e.index(p4.indexes.last().unwrap());
+}
+
+/// A published version laid out in a way the release doesn't know (a
+/// newer one) can't take a delta: the release builds a full base.
+#[tokio::test]
+async fn a_text_layout_the_release_does_not_know_is_rebuilt_in_full() {
+    let e = env().await;
+    let (early, late, ..) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    curate(&e, early).await;
+    e.release_single(1, true, true).await;
+    let mut pointer = e.reference_json("current.json").await;
+    pointer["text_layout"] = serde_json::json!(3);
+    e.reference
+        .put(
+            "current.json",
+            serde_json::to_vec(&pointer).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    curate(&e, late).await;
+    let p = e.release_single(8, false, true).await;
+    assert!(p.full);
+    assert_eq!(e.reference_json("current.json").await["text_layout"], 2);
+    let mut both = fixture("pages-base-fixture");
+    both.extend(fixture("pages-delta-fixture-1"));
+    assert_eq!(e.index_single(&p.indexes[0]), both);
+}
+
 /// With the setting on and no American Stories text written yet (no
 /// finished year), nothing is released: the version would claim text it
 /// doesn't have.
@@ -3698,6 +3868,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
             american_stories: true,
             ja_latin: false,
             partition_decade: false,
+            single_text_field: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -3750,6 +3921,139 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
         ))
         .await,
         want
+    );
+    node.stop().await.unwrap();
+}
+
+/// One searched field for both texts (05 §5.5.7) goes into a real Quickwit
+/// writer under the strict mapping: a base and a delta with `text_all` and
+/// `text_all_cg`, `text` and `text_as` stored, and a phrase can't span the
+/// two texts. Runs when `QUICKWIT_BIN` is set.
+#[tokio::test]
+async fn releases_one_text_field_into_a_quickwit_writer_node() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use usnm_ingest::sink::{QuickwitNode, QuickwitSink};
+    let e = env().await;
+    let (early, late, ..) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    let qw = e.root.join("qw");
+    std::fs::create_dir_all(&qw).unwrap();
+    let meta = format!("file://{}/meta", qw.display());
+    let root = format!("file://{}/indexes", qw.display());
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7405, &meta, &root)
+        .await
+        .unwrap();
+    let mut published = Vec::new();
+    for (day, full, list) in [(1, true, early), (8, false, late)] {
+        curate(&e, list).await;
+        let r = Release {
+            american_stories: true,
+            single_text_field: true,
+            ..e.releaser(day, full)
+        };
+        let mut sink = QuickwitSink::new(&node.url, &root)
+            .unwrap()
+            .watching(&node)
+            .merges(quick_merges());
+        published.push(r.run(&mut sink).await.unwrap().unwrap());
+    }
+    let p = published.last().unwrap();
+    assert_eq!(p.indexes.len(), 2);
+    assert_eq!(e.reference_json("current.json").await["text_layout"], 2);
+    let http = reqwest::Client::new();
+    let search = |q: String| {
+        let url = format!("{}/api/v1/{}/search", node.url, p.indexes.join(","));
+        let http = http.clone();
+        async move {
+            let v: Value = http
+                .post(url)
+                .json(&serde_json::json!({"query": q, "max_hits": 1}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v
+        }
+    };
+    let count = |q: String| {
+        let s = search(q);
+        async move {
+            let v = s.await;
+            v["num_hits"].as_u64().unwrap_or_else(|| panic!("{v}"))
+        }
+    };
+    let docs: Vec<Value> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|f| fixture(f).into_values())
+        .collect();
+    assert_eq!(count("*".into()).await, docs.len() as u64);
+    let has = |phrase: &str| {
+        docs.iter()
+            .filter(|d| {
+                ["text", "text_as"].iter().any(|f| {
+                    d[*f]
+                        .as_str()
+                        .is_some_and(|t| t.to_lowercase().contains(phrase))
+                })
+            })
+            .count() as u64
+    };
+    let want = has("cross of gold");
+    assert!(want > 0);
+    assert_eq!(count("text_all:\"cross of gold\"".into()).await, want);
+    let pairs = usnm_core::common_grams::index_text("cross of gold", Analyzer::LATEST);
+    assert_eq!(
+        count(format!(
+            "text_all_cg:\"{pairs}\" AND text_all:cross AND text_all:gold"
+        ))
+        .await,
+        want
+    );
+    // A word only American Stories' headlines have.
+    assert_eq!(
+        count("text_all:bimetallism".into()).await,
+        has("bimetallism")
+    );
+    // The texts are stored for snippets, and not searched on their own.
+    let hit = search("text_all:bimetallism".into()).await;
+    assert!(hit["hits"][0]["text_as"].as_str().is_some(), "{hit}");
+    assert!(hit["hits"][0].get("text_all").is_none(), "{hit}");
+    let refused = search("text:gold".into()).await;
+    assert!(refused.get("num_hits").is_none(), "{refused}");
+    // No phrase across the end of LoC's text and the start of American
+    // Stories': a word near the end of one page's LoC text that its
+    // American Stories text lacks, and one near the start of that text that
+    // LoC's lacks, are within the largest slop a query may have of each
+    // other but for the gap.
+    let tokens = |d: &Value, f: &str| {
+        usnm_core::text::tokenize(d[f].as_str().unwrap_or_default(), Analyzer::LATEST)
+    };
+    let (id, a, b) = docs
+        .iter()
+        .find_map(|d| {
+            let (loc, american) = (tokens(d, "text"), tokens(d, "text_as"));
+            let a = loc.iter().rev().take(10).find(|w| !american.contains(w))?;
+            let b = american.iter().take(10).find(|w| !loc.contains(w))?;
+            Some((d["doc_id"].as_str()?.to_owned(), a.clone(), b.clone()))
+        })
+        .expect("a page with words only near the end of LoC's text and the start of the other");
+    let slop = usnm_core::query::MAX_SLOP;
+    assert_eq!(
+        count(format!("text_all:\"{a} {b}\"~{slop} AND doc_id:{id}")).await,
+        0
+    );
+    assert_eq!(
+        count(format!("text_all:\"{b} {a}\"~{slop} AND doc_id:{id}")).await,
+        0
+    );
+    assert_eq!(
+        count(format!("text_all:{a} AND text_all:{b} AND doc_id:{id}")).await,
+        1
     );
     node.stop().await.unwrap();
 }
@@ -3947,6 +4251,7 @@ async fn releases_a_base_laid_out_by_decade_into_a_quickwit_writer_node() {
         curate(&e, vec![batch]).await;
         let r = Release {
             partition_decade: true,
+            single_text_field: false,
             ..e.releaser(day, full)
         };
         let mut sink = QuickwitSink::new(&node.url, &root)

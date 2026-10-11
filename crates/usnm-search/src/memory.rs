@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use usnm_core::params::Filters;
 use usnm_core::query::{wildcard_matches, Node, Term};
 use usnm_core::text::{fold, tokenize, Analyzer, USNM_TEXT};
+use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
 
 use crate::snippet::{matched_in, page_snippets};
@@ -323,6 +324,13 @@ impl SearchBackend for MemoryBackend {
         query: &Node,
         filters: &Filters,
     ) -> Result<u64, SearchError> {
+        // As the engine: one field for both texts can't be searched for
+        // LoC's alone (05 §5.5.7).
+        if indexes.text_layout() == TextLayout::Single {
+            return Err(SearchError::Unsupported(
+                "counting the pages only American Stories' text matches, on these indexes".into(),
+            ));
+        }
         let both = indexes.clone().with_american_stories(true);
         let analyzed = as_analyzed(query);
         let only = self
@@ -675,6 +683,31 @@ mod shard_tests {
         let gold = usnm_core::query::parse("gold").unwrap();
         assert_eq!(b.american_stories_only(&on, &gold, &f).await.unwrap(), 1);
         assert_eq!(b.american_stories_only(&on, &q, &f).await.unwrap(), 0);
+
+        // One field for both texts (05 §5.5.7) finds the same pages, with
+        // the same snippets and `matched_in`, and can't count the pages
+        // only American Stories' text matches.
+        let single = on
+            .clone()
+            .with_text_layout(usnm_core::text_layout::TextLayout::Single);
+        for q in [
+            "gold",
+            r#""cross of gold""#,
+            "bryan",
+            "bryan goid",
+            r#""speaks a cross of goid""#,
+            "cross -bryan",
+        ] {
+            assert_eq!(total(&single, q).await, total(&on, q).await, "{q}");
+        }
+        assert_eq!(
+            b.hits(&single, &gold, &f, &page).await.unwrap(),
+            b.hits(&on, &gold, &f, &page).await.unwrap()
+        );
+        assert!(matches!(
+            b.american_stories_only(&single, &gold, &f).await,
+            Err(SearchError::Unsupported(_))
+        ));
     }
 
     /// Pages are read as Quickwit's `usnm_text` reads them whatever the
