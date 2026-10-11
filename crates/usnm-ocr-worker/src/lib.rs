@@ -11,5 +11,4 @@ pub mod queue;
 pub mod telemetry;
 pub mod worker;
 
-#[cfg(test)]
-mod testimg;
+pub mod testimg;

@@ -1,7 +1,7 @@
 //! The work message: one page to OCR.
 //!
 //! ```json
-//! {"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"nbu_gage_ver01",
+//! {"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"nbu_gage",
 //!  "language":"deu","reason":"bulk","score":0.62,"queued_at":"2026-10-10T12:00:00Z"}
 //! ```
 //!
@@ -125,6 +125,11 @@ impl OcrMessage {
         {
             return Err(MessageError::Batch(b.clone()));
         }
+        // The base batch name: curated rows and the release use it, so a
+        // versioned name (`_ver01`) would be skipped at release silently.
+        if is_versioned_batch(b) {
+            return Err(MessageError::Batch(b.clone()));
+        }
         let l = &self.language;
         if l.len() != 3 || !l.bytes().all(|c| c.is_ascii_lowercase()) {
             return Err(MessageError::Language(l.clone()));
@@ -143,6 +148,14 @@ impl OcrMessage {
         let json = serde_json::to_string(self).expect("serializable");
         base64::engine::general_purpose::STANDARD.encode(json)
     }
+}
+
+/// Whether `batch` ends in a curation version, `_ver` and digits
+/// (`nbu_gage_ver01`), as LoC's batch directories do.
+pub fn is_versioned_batch(batch: &str) -> bool {
+    batch.rsplit_once("_ver").is_some_and(|(base, n)| {
+        !base.is_empty() && !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit())
+    })
 }
 
 /// A queue message's text as a checked message and its page.
@@ -172,7 +185,7 @@ mod tests {
         OcrMessage {
             v: 1,
             page: "sn83045462/1890-05-03/ed-1/seq-7".into(),
-            batch: "nbu_gage_ver01".into(),
+            batch: "nbu_gage".into(),
             language: "deu".into(),
             reason: Reason::Bulk,
             score: Some(0.62),
@@ -186,7 +199,7 @@ mod tests {
         let (back, key) = decode(&m.encode()).unwrap();
         assert_eq!(back, m);
         assert_eq!(key.doc_id(), "sn83045462_1890-05-03_ed-1_seq-7");
-        let raw = r#"{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"nbu_gage_ver01","language":"eng","reason":"user","queued_at":"2026-10-10T08:00:00-04:00"}"#;
+        let raw = r#"{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"nbu_gage","language":"eng","reason":"user","queued_at":"2026-10-10T08:00:00-04:00"}"#;
         let (m, _) = decode(raw).unwrap();
         assert_eq!(m.reason, Reason::User);
         assert_eq!(m.score, None);
@@ -214,6 +227,16 @@ mod tests {
             bad(|m| m.batch = "../x".into()),
             MessageError::Batch(_)
         ));
+        // The base name only: `_verNN` would be skipped at release.
+        assert!(matches!(
+            bad(|m| m.batch = "nbu_gage_ver01".into()),
+            MessageError::Batch(_)
+        ));
+        assert!(is_versioned_batch("batch_nn_kant_ver1"));
+        assert!(!is_versioned_batch("batch_nn_kant"));
+        assert!(!is_versioned_batch("_ver01"));
+        assert!(!is_versioned_batch("nn_kant_ver"));
+        assert!(!is_versioned_batch("nn_kant_version"));
         assert!(matches!(
             bad(|m| m.language = "de".into()),
             MessageError::Language(_)
