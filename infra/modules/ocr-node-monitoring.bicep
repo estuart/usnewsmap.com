@@ -220,14 +220,16 @@ resource rule 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
 // name. Each source falls back to an empty table, since a table with no
 // rows yet may not exist. The Application Insights tables are listed by
 // name: log search alert rules don't support a wildcard union such as
-// App* (Microsoft). The threshold is a tenth of the daily cap (__CAP_GB__
+// App* (Microsoft). Node names are lowercased on both sides, since Log
+// Analytics lowercases _ResourceId and the role instance keeps the Arc
+// name's case. The threshold is a tenth of the daily cap (__CAP_GB__
 // GB), so one node that keeps it up fills the cap within 10 hours; the
 // estimate is under 1 MB an hour.
 var nodeVolume = '''
 let cap_mb = todouble("__CAP_GB__") * 1000;
 let component = "__COMPONENT_ID__";
 let machines = "/providers/microsoft.hybridcompute/machines/";
-let node_of = (id: string) { extract(@"(?i)/machines/([^/]+)$", 1, id) };
+let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) };
 let agent = union isfuzzy=true
     (Syslog | where _ResourceId has machines | project Node = node_of(_ResourceId), Size = _BilledSize),
     (Perf | where _ResourceId has machines | project Node = node_of(_ResourceId), Size = _BilledSize),
@@ -238,7 +240,7 @@ let worker = union isfuzzy=true AppAvailabilityResults, AppBrowserTimings, AppDe
         AppExceptions, AppMetrics, AppPageViews, AppPerformanceCounters, AppRequests, AppSystemEvents, AppTraces,
         (datatable(_ResourceId: string, AppRoleInstance: string, _BilledSize: real)[])
     | where _ResourceId =~ component
-    | summarize WorkerMB = sum(_BilledSize) / 1e6 by Node = coalesce(AppRoleInstance, "(no instance)")
+    | summarize WorkerMB = sum(_BilledSize) / 1e6 by Node = tolower(coalesce(AppRoleInstance, "(no instance)"))
     | extend AgentMB = 0.0;
 union agent, worker
 | summarize AgentMB = sum(AgentMB), WorkerMB = sum(WorkerMB) by Node

@@ -8,7 +8,7 @@
 // time and one example, cut to 300 characters. No Syslog table yet (a new
 // workspace) gives no rows, not an error.
 let machines = "/providers/microsoft.hybridcompute/machines/";
-let node_of = (id: string) { extract(@"(?i)/machines/([^/]+)$", 1, id) };
+let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) };
 let syslog = union isfuzzy=true
     (Syslog
     | where _ResourceId has machines

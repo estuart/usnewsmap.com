@@ -20,7 +20,7 @@
 // change both together.
 let cap_gb = 0.1;
 let machines = "/providers/microsoft.hybridcompute/machines/";
-let node_of = (id: string) { extract(@"(?i)/machines/([^/]+)$", 1, id) };
+let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) };
 let heartbeat = union isfuzzy=true
     (Heartbeat
     | where _ResourceId has machines
@@ -69,9 +69,10 @@ let worker = syslog
 let perf_mb = perf | summarize PerfMB = round(sum(Size) / 1e6, 2) by Node;
 let syslog_mb = syslog | summarize SyslogMB = round(sum(Size) / 1e6, 2) by Node;
 // Only the nodes' component sends Application Insights rows to this
-// workspace.
+// workspace. Lowercased to join the other rows: Log Analytics lowercases
+// _ResourceId, and the role instance keeps the Arc name's case.
 let worker_mb = union isfuzzy=true App*, (datatable(AppRoleInstance: string, _BilledSize: real)[])
-    | summarize WorkerMB = round(sum(_BilledSize) / 1e6, 2) by Node = AppRoleInstance;
+    | summarize WorkerMB = round(sum(_BilledSize) / 1e6, 2) by Node = tolower(AppRoleInstance);
 let day_mb = toscalar(union isfuzzy=true
     (Usage | where TimeGenerated > ago(1d) and IsBillable | project Quantity),
     (datatable(Quantity: real)[])
