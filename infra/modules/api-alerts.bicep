@@ -28,6 +28,16 @@
 //   don't work with Entra-only ingestion doesn't include availability tests.
 //   Each run is billed ($0.0005 per location per run in East US 2): every
 //   15 minutes from 3 locations is about $4 a month.
+// - Search capacity (#238): when to revisit a second searcher. The owner
+//   deferred a Quickwit cluster on 10 October 2026 until, for a week,
+//   either the p90 of api.search_queue_wait_seconds stays above a few
+//   seconds (3 s here) or the replica's CPU stays above 3 vCPU outside
+//   releases. A log search alert can read at most 2 days, so neither rule
+//   sees a week: the queue-wait rule emails once a day while the last two
+//   days were both over, and the CPU rule once per episode of a 6-hour
+//   average over 3 vCPU; the API workbook's capacity tiles chart both by
+//   day over two weeks, which is where the week is judged. Severity 4:
+//   planning signals, not incidents.
 
 param location string
 param tags object
@@ -35,6 +45,9 @@ param nameSuffix string
 param workspaceId string
 param appInsightsId string
 param actionGroupId string
+
+@description('The API\'s container app (ca-usnm-<env>), for the replica CPU alert.')
+param apiAppName string
 
 @description('Site home page to test, e.g. https://usnewsmap.com/; empty skips the test.')
 param siteUrl string = ''
@@ -119,6 +132,30 @@ AppRequests
 | where Requests >= 20 and Slow >= 3 and P95 > 3000
 '''
 
+// p90 of the wait for a computation slot above 3 s on each of the last two
+// days (24-hour spans back from the check, not calendar days), with at
+// least 20 searches that needed a slot in each. AppMetrics keeps a
+// histogram's sum, count, min and max per export interval (30 s), not its
+// buckets, so there is no exact percentile: p90 above 3 s means more than
+// 10% of the searches waited over 3 s, and a row's searches count as over
+// when the row's mean wait is. At today's traffic a row holds one search
+// or a few, so this is close to exact. Searches refused as busy count with
+// the time they waited. The rule reads 2 days, the most a log search alert
+// can, once a day, and is stateless (Azure doesn't resolve rules checked
+// less often than every 12 hours), so it emails every day the condition
+// holds: seven in a row is the week #238 asks for.
+var queueWait = '''
+AppMetrics
+| where _ResourceId =~ "__COMPONENT_ID__" and AppRoleName == "usnm-api" and Name == "api.search_queue_wait_seconds"
+| where ItemCount > 0
+| extend Day = toint((now() - TimeGenerated) / 1d)
+| where Day in (0, 1)
+| summarize Searches = sum(ItemCount), Over = sumif(ItemCount, Sum / ItemCount > 3.0) by Day
+| where Searches >= 20 and Over * 10 > Searches
+| summarize Days = count()
+| where Days == 2
+'''
+
 var rules = [
   {
     name: 'api-server-errors'
@@ -129,6 +166,7 @@ var rules = [
     window: 'PT10M'
     query: serverErrors
     dimensions: ['Kind', 'TopRoute']
+    autoMitigate: true
   }
   {
     name: 'api-aggregate-slow'
@@ -139,6 +177,7 @@ var rules = [
     window: 'PT15M'
     query: slowAggregate
     dimensions: []
+    autoMitigate: true
   }
   {
     name: 'api-searches-slow'
@@ -149,6 +188,18 @@ var rules = [
     window: 'PT1H'
     query: slowSearches
     dimensions: ['Endpoint', 'Outcome']
+    autoMitigate: true
+  }
+  {
+    name: 'api-search-queue-wait'
+    displayName: 'Search capacity: searches waiting for a slot'
+    description: 'On each of the last two days more than 10% of the searches that needed a computation slot waited over 3 s for one (p90 of api.search_queue_wait_seconds above 3 s), with at least 20 such searches a day. Sent once a day while it holds. #238 (deferred 10 October 2026): if it holds for a week, revisit more search capacity (a second searcher, #239, after moving Quickwit out of the API replica, #267). Next: the capacity tiles in the API workbook (daily share over 3 s and p90 estimate), and whether a new index version or a traffic spike explains it.'
+    severity: 4
+    frequency: 'P1D'
+    window: 'P2D'
+    query: queueWait
+    dimensions: []
+    autoMitigate: false
   }
 ]
 
@@ -168,7 +219,7 @@ resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
       scopes: [workspaceId]
       // AppRequests exists only once the first request has been exported.
       skipQueryValidation: true
-      autoMitigate: true
+      autoMitigate: r.autoMitigate
       criteria: {
         allOf: [
           {
@@ -258,3 +309,45 @@ resource unavailable 'Microsoft.Insights/metricAlerts@2018-03-01' = [
     }
   }
 ]
+
+resource apiApp 'Microsoft.App/containerApps@2024-03-01' existing = {
+  name: apiAppName
+}
+
+// A replica's CPU (the API and the Quickwit sidecar together, 4 vCPU since
+// #251) averaging over 3 vCPU for 6 hours, per replica (podName), checked
+// hourly. A release's new replica warms its caches for minutes, which can't
+// hold a 6-hour average there, so releases are left out without a list of
+// them. Stateful: one email when it starts, one when it clears. Platform
+// metrics stay in Azure Monitor 93 days; the API workbook charts them.
+resource replicaCpu 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+  name: 'alert-usnm-api-replica-cpu-${nameSuffix}'
+  location: 'global'
+  tags: tags
+  properties: {
+    description: 'A replica of ${apiAppName} averaged over 3 vCPU (of 4) for the last 6 hours. #238 (deferred 10 October 2026): if it keeps happening outside releases for a week, revisit more search capacity (a second searcher, #239, after moving Quickwit out of the API replica, #267). Next: the capacity tiles in the API workbook (replica CPU and the queue wait by day), and scripts/logs.sh <env> api-requests 24h for the traffic.'
+    severity: 4
+    enabled: true
+    scopes: [apiApp.id]
+    evaluationFrequency: 'PT1H'
+    windowSize: 'PT6H'
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          criterionType: 'StaticThresholdCriterion'
+          name: 'replica-cpu'
+          metricNamespace: 'Microsoft.App/containerApps'
+          metricName: 'UsageNanoCores'
+          timeAggregation: 'Average'
+          operator: 'GreaterThan'
+          // 3 vCPU in nanocores.
+          threshold: 3000000000
+          dimensions: [{ name: 'podName', operator: 'Include', values: ['*'] }]
+        }
+      ]
+    }
+    autoMitigate: true
+    actions: [{ actionGroupId: actionGroupId }]
+  }
+}
