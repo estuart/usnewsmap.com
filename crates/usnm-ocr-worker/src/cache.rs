@@ -147,8 +147,12 @@ impl ScanSource for CachedScans {
         }
     }
 
+    /// Never: a LoC hold doesn't stop pages being read from the cache, so
+    /// the worker keeps taking messages. A page that misses the cache
+    /// during a hold waits in LoC's pacer, and may be abandoned if the hold
+    /// outlasts its budget, as a page did before the hold check.
     fn held_until(&self) -> Option<tokio::time::Instant> {
-        self.inner.held_until()
+        None
     }
 }
 
