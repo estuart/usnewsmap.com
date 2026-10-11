@@ -139,6 +139,9 @@ const CONTAINER_LABEL: &str = "usnm.engine=tesseract";
 /// What the worker learns from the engine runtime at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Sandbox {
+    podman: PathBuf,
+    url: String,
+    image: String,
     scratch: PathBuf,
     info: RuntimeInfo,
 }
@@ -222,17 +225,25 @@ struct PageDir {
 }
 
 impl Drop for PageDir {
+    /// What [`Sandbox::release`] didn't remove (a page cut short).
     fn drop(&mut self) {
+        if !self.path.exists() {
+            return;
+        }
         if let Err(e) = std::fs::remove_dir_all(&self.path) {
             tracing::warn!(dir = %self.path.display(), error = %e, "couldn't remove a page's scratch directory");
         }
     }
 }
 
+/// The MCS level of slot `slot` (13 §13.3).
+fn slot_level(slot: u32) -> String {
+    format!("s0:c{},c{}", 2 * slot, 2 * slot + 1)
+}
+
 impl PageDir {
-    /// The MCS level of the slot (13 §13.3).
     fn level(&self) -> String {
-        format!("s0:c{},c{}", 2 * self.slot, 2 * self.slot + 1)
+        slot_level(self.slot)
     }
 }
 
@@ -270,10 +281,12 @@ fn claim_slot(scratch: &Path) -> anyhow::Result<PageDir> {
 }
 
 /// Removes slots older than `age`: left by a worker that was killed. No
-/// page runs that long.
-fn remove_stale_slots(scratch: &Path, age: Duration) {
+/// page runs that long. Returns the ones it couldn't remove, with their
+/// slot numbers.
+fn remove_stale_slots(scratch: &Path, age: Duration) -> Vec<(PathBuf, u32)> {
+    let mut left = Vec::new();
     let Ok(entries) = std::fs::read_dir(scratch) else {
-        return;
+        return left;
     };
     for e in entries.flatten() {
         let name = e.file_name();
@@ -286,10 +299,17 @@ fn remove_stale_slots(scratch: &Path, age: Duration) {
             .ok()
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|d| d > age);
-        if old {
-            let _ = std::fs::remove_dir_all(e.path());
+        if old && std::fs::remove_dir_all(e.path()).is_err() {
+            if let Some(slot) = name
+                .to_string_lossy()
+                .strip_prefix("slot-")
+                .and_then(|n| n.parse().ok())
+            {
+                left.push((e.path(), slot));
+            }
         }
     }
+    left
 }
 
 /// The owner and group of `path`.
@@ -326,7 +346,7 @@ async fn checked(cmd: &mut tokio::process::Command) -> anyhow::Result<()> {
 }
 
 impl Sandbox {
-    async fn detect(podman: &Path, remote: &Remote) -> anyhow::Result<Self> {
+    async fn detect(podman: &Path, remote: &Remote, image: &str) -> anyhow::Result<Self> {
         let meta = std::fs::metadata(&remote.scratch)
             .with_context(|| format!("scratch directory {}", remote.scratch.display()))?;
         if !meta.is_dir() {
@@ -347,7 +367,6 @@ impl Sandbox {
             );
         }
         let info = parse_info(&String::from_utf8_lossy(&out.stdout))?;
-        remove_stale_slots(&remote.scratch, Duration::from_secs(6 * 3600));
         // Containers left by a worker that was killed: the ones that have
         // exited. A running one may belong to another worker process (an
         // install's check-engine), so it's left to finish.
@@ -361,10 +380,17 @@ impl Sandbox {
         if !matches!(pruned, Ok(s) if s.success()) {
             tracing::warn!("couldn't remove stale engine containers");
         }
-        Ok(Self {
+        let sandbox = Self {
+            podman: podman.to_owned(),
+            url: remote.url.clone(),
+            image: image.to_owned(),
             scratch: remote.scratch.clone(),
             info,
-        })
+        };
+        for (path, slot) in remove_stale_slots(&remote.scratch, Duration::from_secs(6 * 3600)) {
+            sandbox.purge(&path, slot).await;
+        }
+        Ok(sandbox)
     }
 
     /// A page's scratch directory, which the engine container can use:
@@ -375,6 +401,55 @@ impl Sandbox {
     /// level. The container runs at that level, so no volume is mounted
     /// with `:Z`, which the engine account couldn't apply to a directory it
     /// doesn't own (13 §13.3).
+    /// Removes a page's slot. The container user owns what it made there
+    /// and can make it unreadable to the worker (a directory with mode
+    /// 000), so when the worker can't remove it, a container as that user
+    /// at the slot's level empties it first.
+    async fn release(&self, dir: PageDir) {
+        if std::fs::remove_dir_all(&dir.path).is_ok() {
+            return;
+        }
+        self.purge(&dir.path, dir.slot).await;
+    }
+
+    async fn purge(&self, path: &Path, slot: u32) {
+        let mut cmd = podman_command(&self.podman, Some(&self.url));
+        cmd.args([
+            "run",
+            "--rm",
+            "--pull=never",
+            "--network=none",
+            "--read-only",
+        ])
+        .args(["--cap-drop=all", "--security-opt=no-new-privileges"])
+        .args(["--label", CONTAINER_LABEL, "--log-driver=none"])
+        .args(["--user", &format!("{ENGINE_USER}:{ENGINE_USER}")])
+        .args([
+            "--memory",
+            "128m",
+            "--memory-swap",
+            "128m",
+            "--pids-limit",
+            "16",
+        ]);
+        if self.info.selinux {
+            cmd.args([
+                "--security-opt",
+                &format!("label=level:{}", slot_level(slot)),
+            ]);
+        }
+        cmd.args(["--volume", &format!("{}:/work:rw", path.display())])
+            .args(["--entrypoint", "sh", &self.image, "-c"])
+            .arg("chmod -R u+rwX /work; find /work -mindepth 1 -delete")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let ran = tokio::time::timeout(Duration::from_secs(120), cmd.status()).await;
+        if let Err(e) = std::fs::remove_dir_all(path) {
+            tracing::warn!(dir = %path.display(), error = %e, ran = ?ran.ok(), "couldn't empty a page's scratch slot");
+        }
+    }
+
     async fn page_dir(&self) -> anyhow::Result<(PageDir, Option<String>)> {
         let dir = claim_slot(&self.scratch)?;
         let (me, _) = owner(&dir.path)?;
@@ -732,7 +807,7 @@ impl Tesseract {
         {
             check_image_ref(image)?;
             if let Some(r) = remote {
-                sandbox = Some(Sandbox::detect(podman, r).await?);
+                sandbox = Some(Sandbox::detect(podman, r, image).await?);
             }
         }
         let version = parse_version(&run(&opts.runner, &["--version"]).await?)
@@ -837,17 +912,33 @@ impl Engine for Tesseract {
     ) -> Result<EngineOutput, EngineError> {
         let models = route(language, &self.installed)
             .ok_or_else(|| EngineError::Unsupported(language.to_owned()))?;
-        // Under the engine runtime, the page gets a directory on the shared
+        // Under the engine runtime, the page gets a slot on the shared
         // scratch tmpfs instead of `work`, which the engine account's
-        // containers can't reach; the scan is copied in below.
-        let own = match &self.sandbox {
-            Some(sb) => Some(sb.page_dir().await?),
-            None => None,
-        };
-        let (work, level) = match &own {
-            Some((dir, level)) => (dir.path.as_path(), level.as_deref()),
-            None => (work, None),
-        };
+        // containers can't reach; the scan is copied in.
+        match &self.sandbox {
+            Some(sb) => {
+                let (dir, level) = sb.page_dir().await?;
+                let out = self
+                    .read_page(image, &models, &dir.path, level.as_deref())
+                    .await;
+                sb.release(dir).await;
+                out
+            }
+            None => self.read_page(image, &models, work, None).await,
+        }
+    }
+}
+
+impl Tesseract {
+    /// Reads `image` with `models` in `work`, labelled `level` under the
+    /// engine runtime.
+    async fn read_page(
+        &self,
+        image: &Path,
+        models: &str,
+        work: &Path,
+        level: Option<&str>,
+    ) -> Result<EngineOutput, EngineError> {
         // Tesseract runs in `work`, on paths relative to it, so the same
         // arguments serve the host binary and a container with `work` as
         // /work. A scan from elsewhere is copied in first.
@@ -873,7 +964,7 @@ impl Engine for Tesseract {
         // (page.txt, page.xml), written in one pass.
         let child = cmd
             .args([input_name.as_str(), "page"])
-            .args(["-l", &models, "--psm", &self.psm.to_string()])
+            .args(["-l", models, "--psm", &self.psm.to_string()])
             .args(["--dpi", &self.dpi.to_string()])
             .args(["txt", "alto"])
             .kill_on_drop(true)
