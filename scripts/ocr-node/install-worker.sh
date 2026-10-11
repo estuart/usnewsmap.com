@@ -5,7 +5,7 @@
 #   scripts/ocr-node/install-worker.sh --env prod --name usnm-ocr-node1 \
 #     --host claude@node1.example.org [--ssh-key ~/.ssh/id_ed25519] \
 #     [--release ocr-worker-YYYYMMDD-SHA7] [--nodes N] [--concurrency N] \
-#     [--enable] [--rollback] [--dry-run]
+#     [--scan-cache /srv/ocr-data/scans] [--enable] [--rollback] [--dry-run]
 #
 # Steps:
 #   1. picks the release (--release, or the newest ocr-worker-* release) and
@@ -22,7 +22,9 @@
 #      LoC gaps of 3500 x N and 1000 x N ms for N nodes, and the nodes'
 #      Application Insights connection string (OCR_NODE_APPINSIGHTS; left
 #      out when empty, so the worker sends no telemetry). N is the number
-#      of members in the nodes' Entra group; --nodes must match it.
+#      of members in the nodes' Entra group; --nodes must match it. With
+#      --scan-cache, the worker reads prefetched scans from that directory
+#      first (node-setup.sh --ocr-data mounts it; ADR-0015 decision 9).
 #   3. over ssh with sudo (scripts/ocr-node/install-worker-node.sh): puts
 #      the binary in /usr/local/lib/usnm-ocr-worker/<release>/, loads the
 #      Tesseract image into the engine account's (usnmeng's) podman
@@ -53,7 +55,7 @@ step() { printf '\n== %s\n' "$*"; }
 
 REPO=tgoodyear/usnewsmap.com
 WORKFLOW="$REPO/.github/workflows/ci.yml"
-ENV_NAME="" HOST="" NAME="" SSH_KEY="" RELEASE="" NODES="" CONCURRENCY=""
+ENV_NAME="" HOST="" NAME="" SSH_KEY="" RELEASE="" NODES="" CONCURRENCY="" SCAN_CACHE=""
 ENABLE=false ROLLBACK=false DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -64,6 +66,7 @@ while [ $# -gt 0 ]; do
     --release) RELEASE=${2:-}; shift 2 ;;
     --nodes) NODES=${2:-}; shift 2 ;;
     --concurrency) CONCURRENCY=${2:-}; shift 2 ;;
+    --scan-cache) SCAN_CACHE=${2:-}; shift 2 ;;
     --enable) ENABLE=true; shift ;;
     --rollback) ROLLBACK=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -79,6 +82,7 @@ done
 [ -z "$RELEASE" ] || [[ $RELEASE =~ ^ocr-worker-[0-9]{8}-[0-9a-f]{7}$ ]] || die "--release: ocr-worker-<yyyymmdd>-<sha7>"
 [ -z "$NODES" ] || [[ $NODES =~ ^[1-9][0-9]?$ ]] || die "--nodes: 1 to 99"
 [ -z "$CONCURRENCY" ] || [[ $CONCURRENCY =~ ^[1-9][0-9]?$ ]] || die "--concurrency: 1 to 99"
+[ -z "$SCAN_CACHE" ] || [[ $SCAN_CACHE =~ ^/[A-Za-z0-9/_.-]+$ ]] || die "--scan-cache: an absolute path"
 [ "$ROLLBACK" = false ] || [ "$ENABLE" = false ] || die "--rollback and --enable don't go together"
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -199,6 +203,7 @@ echo "binary sha256 $BIN_SUM; Tesseract image $IMAGE_ID"
   echo "USNM_OCR_API_GAP_MS=$((3500 * NODES))"
   echo "USNM_OCR_TILE_GAP_MS=$((1000 * NODES))"
   echo "USNM_OCR_TESSERACT_IMAGE=$IMAGE_ID"
+  [ -z "$SCAN_CACHE" ] || echo "USNM_OCR_SCAN_CACHE=$SCAN_CACHE"
   [ -z "$CONN" ] || echo "APPLICATIONINSIGHTS_CONNECTION_STRING=\"$CONN\""
 } > "$TMP/ocr-worker.env"
 

@@ -16,7 +16,7 @@ use usnm_core::ids::PageKey;
 use usnm_overlay::OverlayRow;
 use usnm_store::{ObjectStore, StoreError};
 
-use crate::engine::{set_alto_file_name, Engine, EngineError};
+use crate::engine::{set_alto_source, Engine, EngineError};
 use crate::loc::{FetchError, LocClient, Scan};
 use crate::message::{self, Cause, DeadLetter, OcrMessage};
 use crate::queue::{random_token, LeaseLost, Queue, Received, BULK, DEADLETTER, PRIORITY};
@@ -25,7 +25,8 @@ use crate::telemetry::{page_attrs, Metrics};
 /// Where a page's scan comes from (loc.gov, or a stand-in in tests).
 #[async_trait]
 pub trait ScanSource: Send + Sync + std::fmt::Debug {
-    async fn scan(&self, key: &PageKey) -> Result<Scan, FetchError>;
+    /// The page's full scan. `batch` (the message's) finds it in the cache.
+    async fn scan(&self, key: &PageKey, batch: &str) -> Result<Scan, FetchError>;
     /// Until when the source holds every request (loc.gov said to wait).
     fn held_until(&self) -> Option<tokio::time::Instant> {
         None
@@ -34,7 +35,7 @@ pub trait ScanSource: Send + Sync + std::fmt::Debug {
 
 #[async_trait]
 impl ScanSource for LocClient {
-    async fn scan(&self, key: &PageKey) -> Result<Scan, FetchError> {
+    async fn scan(&self, key: &PageKey, _batch: &str) -> Result<Scan, FetchError> {
         LocClient::scan(self, key).await
     }
 
@@ -460,15 +461,25 @@ impl Worker {
         }
         let read = async {
             let t = Instant::now();
-            let scan = self.scans.scan(key).await;
+            let scan = self.scans.scan(key, &m.batch).await;
             self.metrics.image_fetch_seconds.record(
                 t.elapsed().as_secs_f64(),
-                &[KeyValue::new(
-                    "outcome",
-                    if scan.is_ok() { "ok" } else { "error" },
-                )],
+                &[
+                    KeyValue::new("outcome", if scan.is_ok() { "ok" } else { "error" }),
+                    KeyValue::new(
+                        "source",
+                        match &scan {
+                            Ok(s) if s.from_cache => "cache",
+                            _ => "loc",
+                        },
+                    ),
+                ],
             );
             let scan = scan?;
+            let scan_sha256 = crate::prefetch::sha256(&scan.jpeg);
+            if scan.from_cache {
+                tracing::debug!(doc_id = %key.doc_id(), "scan read from the cache");
+            }
             let image = work.path().join("page.jpg");
             tokio::fs::write(&image, &scan.jpeg)
                 .await
@@ -496,15 +507,16 @@ impl Worker {
                     KeyValue::new("language", m.language.clone()),
                 ],
             );
-            Ok((scan.iiif_base, out))
+            Ok((scan.iiif_base, scan_sha256, out))
         };
-        let (iiif_base, out) = tokio::time::timeout_at(deadline.into(), read)
+        let (iiif_base, scan_sha256, out) = tokio::time::timeout_at(deadline.into(), read)
             .await
             .map_err(|_| Failure::Abandoned)??;
         let text = usnm_core::text::normalize_ocr(&out.text);
-        let alto = set_alto_file_name(
+        let alto = set_alto_source(
             &String::from_utf8_lossy(&out.alto),
             &format!("{iiif_base}/full/full/0/default.jpg"),
+            &scan_sha256,
         );
         let row = OverlayRow {
             key: key.clone(),
@@ -592,7 +604,7 @@ mod tests {
             *self.held_until.lock().unwrap()
         }
 
-        async fn scan(&self, key: &PageKey) -> Result<Scan, FetchError> {
+        async fn scan(&self, key: &PageKey, _batch: &str) -> Result<Scan, FetchError> {
             self.requests
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if key.seq == 99 {
@@ -608,6 +620,7 @@ mod tests {
                 ),
                 jpeg: bytes::Bytes::from_static(b"jpeg"),
                 download: std::time::Duration::ZERO,
+                from_cache: false,
             })
         }
     }
@@ -725,9 +738,13 @@ mod tests {
             .strip_suffix(".xml")
             .unwrap();
         let alto = out.get(&altos[0]).await.unwrap().unwrap();
+        // The scan's URL, and the sha256 of the bytes read (ADR-0015 decision 9).
         assert_eq!(
             String::from_utf8(alto).unwrap(),
-            "<alto><fileName>https://tile.loc.gov/image-services/iiif/service:ndnp:x:7/full/full/0/default.jpg</fileName></alto>"
+            format!(
+                "<alto><fileName>https://tile.loc.gov/image-services/iiif/service:ndnp:x:7/full/full/0/default.jpg</fileName><fileIdentifier fileIdentifierLocation=\"sha256\">{}</fileIdentifier></alto>",
+                crate::prefetch::sha256(b"jpeg")
+            )
         );
         let parts = out.list("pages").await.unwrap();
         assert_eq!(parts.len(), 1, "{parts:?}");

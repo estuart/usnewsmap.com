@@ -50,7 +50,9 @@ pub struct Metrics {
     pub loc_slowdowns: Counter<u64>,
     /// Engine time per page, by `engine`, `models` and `language`.
     pub ocr_seconds: Histogram<f64>,
-    /// Time to fetch a page's scan (the issue lookup and the image), by `outcome`.
+    /// Time to get a page's scan, by `outcome` and `source`: `loc` (the
+    /// issue lookup and the image from loc.gov, a cache miss included) or
+    /// `cache` (read and checked from the prefetch cache).
     pub image_fetch_seconds: Histogram<f64>,
 }
 
@@ -89,7 +91,7 @@ impl Metrics {
             image_fetch_seconds: meter
                 .f64_histogram("ocr.image_fetch_seconds")
                 .with_unit("s")
-                .with_description("Time to fetch a page's scan from loc.gov")
+                .with_description("Time to get a page's scan, from loc.gov or the prefetch cache")
                 .build(),
         }
     }

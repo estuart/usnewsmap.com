@@ -7,13 +7,14 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use tokio::sync::watch;
+use usnm_ocr_worker::cache::CachedScans;
 use usnm_ocr_worker::engine::{Engine, Limits, Remote, Runner, Tesseract, TesseractOptions};
 use usnm_ocr_worker::loc::{ImageSize, LocClient, LocConfig};
 use usnm_ocr_worker::message::{OcrMessage, Reason};
 use usnm_ocr_worker::prefetch;
 use usnm_ocr_worker::queue::{self, BULK, PRIORITY};
 use usnm_ocr_worker::telemetry::{self, Metrics};
-use usnm_ocr_worker::worker::{check_node_id, Config, Worker};
+use usnm_ocr_worker::worker::{check_node_id, Config, ScanSource, Worker};
 
 /// `--version`: the crate version and the commit CI built it from
 /// (`USNM_GIT_SHA` at build time), or `unknown commit` for a local build.
@@ -168,6 +169,10 @@ enum Command {
         /// Gap between image requests to LoC's IIIF server.
         #[arg(long, env = "USNM_OCR_TILE_GAP_MS", default_value_t = 1000)]
         tile_gap_ms: u64,
+        /// The prefetched scans (`/srv/ocr-data/scans`): a page's scan is
+        /// read from here when it matches its sidecar, else fetched.
+        #[arg(long, env = "USNM_OCR_SCAN_CACHE")]
+        scan_cache: Option<PathBuf>,
         /// How long a taken message stays hidden. It isn't renewed, so it
         /// must cover the slowest page; a page not done by 80% of it is
         /// abandoned without output.
@@ -355,6 +360,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             once,
             api_gap_ms,
             tile_gap_ms,
+            scan_cache,
             visibility_secs,
             shutdown_grace_secs,
             engine,
@@ -379,11 +385,24 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             let worker = Arc::new(Worker {
                 queue: queue::open(&queue_url)?,
                 out: usnm_store::open(&out_url)?,
-                scans: Arc::new(LocClient::new(LocConfig {
-                    api_gap: Duration::from_millis(api_gap_ms),
-                    tile_gap: Duration::from_millis(tile_gap_ms),
-                    ..LocConfig::default()
-                })?),
+                scans: {
+                    let cfg = LocConfig {
+                        api_gap: Duration::from_millis(api_gap_ms),
+                        tile_gap: Duration::from_millis(tile_gap_ms),
+                        ..LocConfig::default()
+                    };
+                    let iiif_root = cfg.iiif_root.clone();
+                    let loc: Arc<dyn ScanSource> = Arc::new(LocClient::new(cfg)?);
+                    match scan_cache.filter(|p| !p.as_os_str().is_empty()) {
+                        Some(dir) => {
+                            tracing::info_span!("ocr_worker_start").in_scope(|| {
+                                tracing::info!(dir = %dir.display(), "reading prefetched scans first")
+                            });
+                            Arc::new(CachedScans::new(dir, iiif_root, loc))
+                        }
+                        None => loc,
+                    }
+                },
                 engine: engine.engine().await?,
                 cfg,
                 metrics: Metrics::global(),

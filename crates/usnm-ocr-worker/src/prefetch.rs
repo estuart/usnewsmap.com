@@ -139,18 +139,40 @@ pub fn tag(size: ImageSize) -> String {
 
 /// Where a page's scan goes.
 pub fn scan_path(out: &Path, row: &ManifestRow, size: ImageSize) -> PathBuf {
+    page_path(
+        out,
+        &row.batch,
+        &row.lccn,
+        row.date,
+        row.edition,
+        row.seq,
+        size,
+    )
+}
+
+/// Where the scan of page `seq` of an issue goes, under `out`.
+pub fn page_path(
+    out: &Path,
+    batch: &str,
+    lccn: &str,
+    date: chrono::NaiveDate,
+    edition: u16,
+    seq: u16,
+    size: ImageSize,
+) -> PathBuf {
     let ext = match size {
         ImageSize::Full => "jpg".to_owned(),
         ImageSize::Pct(p) => format!("pct{p}.jpg"),
     };
-    out.join(&row.batch)
-        .join(&row.lccn)
-        .join(row.date.format("%Y-%m-%d").to_string())
-        .join(row.edition.to_string())
-        .join(format!("{}.{ext}", row.seq))
+    out.join(batch)
+        .join(lccn)
+        .join(date.format("%Y-%m-%d").to_string())
+        .join(edition.to_string())
+        .join(format!("{seq}.{ext}"))
 }
 
-fn sidecar_path(scan: &Path) -> PathBuf {
+/// The sidecar beside a scan.
+pub fn sidecar_path(scan: &Path) -> PathBuf {
     let mut p = scan.as_os_str().to_owned();
     p.push(".json");
     PathBuf::from(p)
@@ -215,7 +237,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn sha256(bytes: &[u8]) -> String {
+/// A sha256 as lowercase hex.
+pub fn sha256(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }
 
