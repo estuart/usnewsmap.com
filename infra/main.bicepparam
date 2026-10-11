@@ -16,6 +16,7 @@ param americanStories = bool(readEnvironmentVariable('USNM_AMERICAN_STORIES', 'f
 param americanStoriesSearch = bool(readEnvironmentVariable('USNM_AMERICAN_STORIES_SEARCH', 'true'))
 param congressSearch = bool(readEnvironmentVariable('USNM_CONGRESS_SEARCH', 'true'))
 param jaLatin = bool(readEnvironmentVariable('USNM_JA_LATIN', 'false'))
+param ocrLocal = bool(readEnvironmentVariable('USNM_OCR_LOCAL', 'false'))
 param partitionDecade = bool(readEnvironmentVariable('USNM_PARTITION_DECADE', 'false'))
 param singleTextField = bool(readEnvironmentVariable('USNM_SINGLE_TEXT_FIELD', 'false'))
 param dedicatedProfile = bool(readEnvironmentVariable('USNM_DEDICATED_PROFILE', 'false'))
