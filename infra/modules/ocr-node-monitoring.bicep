@@ -365,7 +365,7 @@ resource capAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!emp
   kind: 'LogAlert'
   properties: {
     displayName: 'OCR nodes\' daily cap reached'
-    description: 'The OCR nodes\' workspace ${workspaceName} reached its daily cap of ${dailyCapGb} GB: no node heartbeats, counters, syslog, worker telemetry or exchange-account queue logs, and no node log alerts, until the cap resets. The environment\'s own workspace isn\'t affected. A node in a crash loop, with debug logging or tampered with can fill it. Next: in ${workspaceName}, Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h) for what filled it, and scripts/logs.sh <env> ocr-node-health for which node; stop that node\'s worker (systemctl stop usnm-ocr-worker), or raise the cap (dailyCapGb of ocr-node-monitoring in infra/main.bicep, and cap_gb in ops/queries/ocr-node-health.kql) and provision.'
+    description: 'The OCR nodes\' workspace ${workspaceName} reached its daily cap of ${dailyCapGb} GB: no node heartbeats, counters, syslog, worker telemetry or exchange-account queue logs, and no node log alerts, until the cap resets. The environment\'s own workspace isn\'t affected. A node in a crash loop, with debug logging or tampered with can fill it. Next: in ${workspaceName}, Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h) for what filled it, and scripts/logs.sh <env> ocr-node-health for which node; stop that node\'s worker (systemctl stop usnm-ocr-worker), or raise the cap (ocrNodeDailyCapGb in infra/main.bicep, and cap_gb in ops/queries/ocr-node-health.kql) and provision.'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT15M'

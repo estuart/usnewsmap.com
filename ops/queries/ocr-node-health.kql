@@ -16,8 +16,8 @@
 // (scripts/logs.sh prod ocr-node-health 7d) or check the Arc machine's
 // status. A table with no rows yet (a new workspace) gives no rows, not an
 // error.
-// The daily cap, as dailyCapGb of ocr-node-monitoring in infra/main.bicep;
-// change both together.
+// The daily cap, as ocrNodeDailyCapGb in infra/main.bicep (which also gives
+// it to the nodes' workspace and the OCR nodes workbook); change both together.
 let cap_gb = 0.1;
 let machines = "/providers/microsoft.hybridcompute/machines/";
 let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) };
