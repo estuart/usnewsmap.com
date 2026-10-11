@@ -8,6 +8,7 @@ Data files compiled into `usnm-core`. The crate's code is MIT; these files keep 
 | `damage-words/<code>.txt`, except `haw.txt` and `yi.txt` | `usnm_core::lang`, feature `damage` (12 §12.5, #296) | `scripts/build-damage-words.py`                    | wordfreq 3.1.1, `top_n_list(code, 5000)` | CC BY-SA 4.0 |
 | `damage-words/haw.txt`                                   | the same                                             | copied from `ja-ocr/wordlists/` by the same script | Hawaiian Corpus Project frequency list   | CC0          |
 | `damage-words/yi.txt`                                    | the same                                             | copied from `ja-ocr/wordlists/` by the same script | Yiddish Wikipedia and Wikisource         | CC BY-SA 4.0 |
+| `page-language-words.txt`                                | `usnm_core::page_language` (05 §5.5.6, #289)         | `scripts/build-page-language-words.py`             | the function words of the 30 lists above | CC BY-SA 4.0 |
 
 `ja-ocr/wordlists/README.md` describes how the Hawaiian and Yiddish lists were built.
 
@@ -23,6 +24,19 @@ scripts/build-damage-words.py --out-dir crates/usnm-core/data/damage-words
 ```
 
 Nothing in the pipeline runs the script; the files are committed data.
+
+## The page-language word lists
+
+`page-language-words.txt` holds each word list's function words: its 100 most frequent words of 2 letters or more, most frequent first, then for Danish and Norwegian their `aa` spellings (`paa` for `på`). One line per list: the list's code, the script of its words, then the words. The script builds it from `ja-ocr/damage_v2.py`'s own models, so the words are the ones the OCR audit finds a page's language by; it is about 18 KB, and every binary that uses `usnm_core::page_language` embeds it (the damage lists stay behind the `damage` feature). It is derived from the wordfreq lists and from our Hawaiian (CC0) and Yiddish (CC BY-SA 4.0) lists, so it is shared under CC BY-SA 4.0, as its header says.
+
+Rebuild or check it with wordfreq 3.1.1 installed:
+
+```sh
+scripts/build-page-language-words.py --check
+scripts/build-page-language-words.py
+```
+
+The Japanese OCR image's tests run the same check (`ja-ocr/test_page_language_parity.py`).
 
 ## wordfreq
 

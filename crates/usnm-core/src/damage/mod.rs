@@ -17,12 +17,11 @@
 
 mod model;
 pub mod parity;
-mod text;
 
 use std::collections::{BTreeMap, HashMap};
 
+pub use crate::page_language::{serbian_latin, text_words, Decision, TextWords};
 pub use model::{model, script, scripts_of, LangModel};
-pub use text::{text_words, TextWords};
 
 use crate::lang;
 
@@ -54,28 +53,6 @@ const MIN_TAIL: usize = WINDOW / 2;
 const MIXED_SHARE: f64 = 0.2;
 /// Languages with words of no vowel (Czech "smrt"): the no-vowel rule would flag real words.
 const SYLLABIC_CONSONANTS: &[&str] = &["cze", "slo", "hrv", "srp", "slv"];
-
-/// How a page's language was decided.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Decision {
-    /// One language clearly wins.
-    Detected,
-    /// Two languages each win a share of the page.
-    Mixed,
-    /// No language clearly wins: too short, garbled, or no word list.
-    Und,
-}
-
-impl Decision {
-    /// As `damage_v2.py` writes it.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Decision::Detected => "detected",
-            Decision::Mixed => "mixed",
-            Decision::Und => UNKNOWN,
-        }
-    }
-}
 
 /// Counts of a page's words against a language (`damage_v2.py`'s `Damage`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -376,52 +353,6 @@ fn latin_language(words: &[&str], languages: &[&str], min_types: usize) -> Langu
         out.lang = best.to_owned();
         out.decision = Decision::Detected;
         out.damage = Some(damage(model_of(best), words.iter().copied(), &others(best)));
-    }
-    out
-}
-
-/// Serbian Cyrillic in Latin letters (Vuk's Cyrillic and Gaj's Latin match
-/// one to one), on case-folded words.
-pub fn serbian_latin(word: &str) -> String {
-    let mut out = String::with_capacity(word.len());
-    for c in word.chars() {
-        let s = match c {
-            'а' => "a",
-            'б' => "b",
-            'в' => "v",
-            'г' => "g",
-            'д' => "d",
-            'ђ' => "đ",
-            'е' => "e",
-            'ж' => "ž",
-            'з' => "z",
-            'и' => "i",
-            'ј' => "j",
-            'к' => "k",
-            'л' => "l",
-            'љ' => "lj",
-            'м' => "m",
-            'н' => "n",
-            'њ' => "nj",
-            'о' => "o",
-            'п' => "p",
-            'р' => "r",
-            'с' => "s",
-            'т' => "t",
-            'ћ' => "ć",
-            'у' => "u",
-            'ф' => "f",
-            'х' => "h",
-            'ц' => "c",
-            'ч' => "č",
-            'џ' => "dž",
-            'ш' => "š",
-            c => {
-                out.push(c);
-                continue;
-            }
-        };
-        out.push_str(s);
     }
     out
 }

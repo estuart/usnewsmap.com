@@ -2,12 +2,12 @@
 //! the head words' OCR near-misses (`damage_v2.py`'s `LangModel`,
 //! `build_model` and `Models`).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::hash::{BuildHasherDefault, Hasher};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::OnceLock;
 
-use super::text::{latin_char, str_is_alpha};
 use crate::lang;
+use crate::page_language::text::{latin_char, str_is_alpha};
+pub use crate::page_language::{script, scripts_of, WordMap, WordSet};
 
 /// The most frequent words that count as function words.
 pub const TOP_FUNCTION: usize = 100;
@@ -27,107 +27,6 @@ const RELATED: &[(&str, &[&str])] = &[
 ];
 /// "paa" for "på", as Danish and Norwegian were printed until the 1900s.
 const AA_SPELLING: &[&str] = &["da", "nb"];
-
-/// Scripts other than Latin, by code point.
-const SCRIPT_RANGES: &[(&str, u32, u32)] = &[
-    ("hebrew", 0x0590, 0x05FF),
-    ("hebrew", 0xFB1D, 0xFB4F),
-    ("cyrillic", 0x0400, 0x052F),
-    ("greek", 0x0370, 0x03FF),
-    ("greek", 0x1F00, 0x1FFF),
-    ("arabic", 0x0600, 0x06FF),
-    ("arabic", 0x0750, 0x077F),
-    ("arabic", 0xFB50, 0xFDFF),
-    ("arabic", 0xFE70, 0xFEFF),
-    ("cherokee", 0x13A0, 0x13FF),
-    ("cherokee", 0xAB70, 0xABBF),
-    ("cjk", 0x3040, 0x30FF),
-    ("cjk", 0x3400, 0x9FFF),
-    ("cjk", 0xAC00, 0xD7AF),
-];
-
-/// Catalog languages written in a script other than Latin. Serbian is either.
-const LANGUAGE_SCRIPTS: &[(&str, &[&str])] = &[
-    ("yid", &["hebrew"]),
-    ("heb", &["hebrew"]),
-    ("lad", &["hebrew"]),
-    ("rus", &["cyrillic"]),
-    ("ukr", &["cyrillic"]),
-    ("bul", &["cyrillic"]),
-    ("bel", &["cyrillic"]),
-    ("mac", &["cyrillic"]),
-    ("srp", &["latin", "cyrillic"]),
-    ("gre", &["greek"]),
-    ("ara", &["arabic"]),
-    ("per", &["arabic"]),
-    ("chr", &["cherokee"]),
-    ("chi", &["cjk"]),
-    ("kor", &["cjk"]),
-    ("jpn", &["cjk"]),
-];
-
-/// The script of a word, by its first character: `latin`, `hebrew`,
-/// `cyrillic`, `greek`, `arabic`, `cherokee`, `cjk` or `other`.
-pub fn script(word: &str) -> &'static str {
-    let Some(c) = word.chars().next() else {
-        return "other";
-    };
-    if latin_char(c) {
-        return "latin";
-    }
-    let o = c as u32;
-    SCRIPT_RANGES
-        .iter()
-        .find(|(_, lo, hi)| (*lo..=*hi).contains(&o))
-        .map_or("other", |(name, _, _)| name)
-}
-
-/// The scripts a catalog language (MARC code) is written in.
-pub fn scripts_of(marc: &str) -> &'static [&'static str] {
-    LANGUAGE_SCRIPTS
-        .iter()
-        .find(|(l, _)| *l == marc)
-        .map_or(&["latin"], |(_, s)| s)
-}
-
-/// FxHash (rustc's): fast for short keys. Only the models' fixed word sets
-/// use it; maps keyed by a page's words keep the standard hasher, so text
-/// can't be chosen to collide.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WordHasher(u64);
-
-impl WordHasher {
-    fn add(&mut self, w: u64) {
-        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
-    }
-}
-
-impl Hasher for WordHasher {
-    fn write(&mut self, bytes: &[u8]) {
-        for chunk in bytes.chunks(8) {
-            let mut b = [0u8; 8];
-            b[..chunk.len()].copy_from_slice(chunk);
-            self.add(u64::from_le_bytes(b));
-        }
-    }
-
-    fn write_u8(&mut self, i: u8) {
-        self.add(u64::from(i));
-    }
-
-    fn write_usize(&mut self, i: usize) {
-        self.add(i as u64);
-    }
-
-    fn finish(&self) -> u64 {
-        self.0
-    }
-}
-
-/// A fixed set of words.
-pub type WordSet = HashSet<String, BuildHasherDefault<WordHasher>>;
-/// A fixed map from words.
-pub type WordMap<V> = HashMap<String, V, BuildHasherDefault<WordHasher>>;
 
 /// A language's function words (top 100), its head words (top 20), their
 /// OCR near-misses that aren't real words, and its real words (top 5,000).

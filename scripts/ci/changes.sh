@@ -71,7 +71,7 @@ quickwit='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/qu
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|fixtures/|scripts/ci/|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
-image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$)"
+image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$)"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
 # The OCR worker's release: the worker, the crates it uses, the workspace's

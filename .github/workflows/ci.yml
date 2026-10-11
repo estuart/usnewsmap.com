@@ -194,9 +194,11 @@ jobs:
           load: true
           cache-from: type=gha,scope=ja-ocr
           cache-to: type=gha,scope=ja-ocr,mode=max
+      # The whole checkout, read-only: test_page_language_parity.py checks
+      # the Rust port's word list and parity fixture against this Python.
       - name: The Japanese OCR job's tests pass
         run: |
-          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD/ja-ocr:/t:ro" -w /t --entrypoint python3 usnm-ja-ocr-check \
+          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo/ja-ocr --entrypoint python3 usnm-ja-ocr-check \
             -m unittest discover -v -p 'test_*.py'
       - name: The Japanese OCR image reads Japanese
         run: scripts/ci/check-ja-ocr-image.sh usnm-ja-ocr-check
