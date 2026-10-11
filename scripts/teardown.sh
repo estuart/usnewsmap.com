@@ -15,7 +15,7 @@
 # (scripts/archive-store.sh deploy), whether or not those steps succeed. The
 # account and its data are never changed (#275).
 #
-#   scripts/teardown.sh <env> [--subscription ID] [--repo OWNER/NAME]
+#   scripts/teardown.sh --env NAME [--subscription ID] [--repo OWNER/NAME]
 #
 # The subscription defaults to the environment's own (from its settings).
 # Passing another --subscription removes the copy left there after a move:
@@ -28,17 +28,23 @@
 set -euo pipefail
 
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; exit 2; }
-[ $# -ge 1 ] || usage
-ENV_NAME=$1; shift
-case "$ENV_NAME" in -*|"") usage ;; esac
-SUBSCRIPTION="" REPO=""
+# The positional form (`teardown.sh prod [options]`) works for one release,
+# with a warning (#277).
+if [ $# -ge 1 ] && [[ $1 != -* ]]; then
+  echo "warning: \`scripts/teardown.sh ENV [options]\` is deprecated; use --env (#277)" >&2
+  set -- --env "$@"
+fi
+ENV_NAME="" SUBSCRIPTION="" REPO=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --subscription) SUBSCRIPTION=$2; shift 2 ;;
-    --repo) REPO=$2; shift 2 ;;
-    *) usage ;;
+    --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
+    --subscription) [ $# -ge 2 ] || usage; SUBSCRIPTION=$2; shift 2 ;;
+    --repo) [ $# -ge 2 ] || usage; REPO=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
 done
+[ -n "$ENV_NAME" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 . scripts/lib/env.sh

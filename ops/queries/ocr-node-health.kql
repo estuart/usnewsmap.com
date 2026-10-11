@@ -14,7 +14,7 @@
 // associated with, so a lost association shows as "no heartbeat". Nodes
 // come from the agent's heartbeats in the span: a node with no heartbeat in
 // the whole span isn't listed at all, so widen the span
-// (scripts/logs.sh prod ocr-node-health 7d) or check the Arc machine's
+// (scripts/logs.sh --env prod --query-name ocr-node-health --span 7d) or check the Arc machine's
 // status. A table with no rows yet (a new workspace) gives no rows, not an
 // error.
 // The daily cap, as ocrNodeDailyCapGb in infra/main.bicep (which also gives

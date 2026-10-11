@@ -5,16 +5,30 @@
 # without timestamps. The audit's own outputs (audit/*.json, CSVs) are in the
 # curated store, which the network rules keep private; the logs are not.
 #
-#   scripts/ja-ocr/quality-rows.sh prod caj-usnm-jaocr-prod-a6wvy42 > rows.jsonl
-#   scripts/ja-ocr/quality-rows.sh prod caj-usnm-jaocr-prod-a6wvy42 3d
-#   scripts/ja-ocr/quality-rows.sh prod caj-usnm-jaone-prod-x1y2z3a   # a mixed or american-stories run
+#   scripts/ja-ocr/quality-rows.sh --env prod --execution caj-usnm-jaocr-prod-a6wvy42 > rows.jsonl
+#   scripts/ja-ocr/quality-rows.sh --env prod --execution caj-usnm-jaocr-prod-a6wvy42 --span 3d
+#   scripts/ja-ocr/quality-rows.sh --env prod --execution caj-usnm-jaone-prod-x1y2z3a   # a mixed or american-stories run
 #
 # Needs az signed in with an account that can read the workspace and jq.
 set -euo pipefail
-[ $# -ge 2 ] && [ $# -le 3 ] || { sed -n '2,13s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-ENV_NAME=$1
-EXECUTION=$2
-SPAN=${3:-2d}
+usage() { sed -n '2,12s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+# The positional form (`quality-rows.sh prod EXECUTION [SPAN]`) works for
+# one release, with a warning (#277).
+if [ $# -ge 2 ] && [ $# -le 3 ] && [[ $1 != -* ]]; then
+  echo "warning: \`scripts/ja-ocr/quality-rows.sh ENV EXECUTION [SPAN]\` is deprecated; use --env, --execution and --span (#277)" >&2
+  set -- --env "$1" --execution "$2" --span "${3:-2d}"
+fi
+ENV_NAME="" EXECUTION="" SPAN=2d
+while [ $# -gt 0 ]; do
+  case $1 in
+    --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
+    --execution) [ $# -ge 2 ] || usage; EXECUTION=$2; shift 2 ;;
+    --span) [ $# -ge 2 ] || usage; SPAN=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
+[ -n "$ENV_NAME" ] && [ -n "$EXECUTION" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/../.."
 . scripts/lib/env.sh

@@ -4,20 +4,34 @@
 # basemap style and serve a local one, so no third-party tile service is
 # needed.
 #
-#   web-e2e.sh build   install, build the site and precompress it
-#   web-e2e.sh test    run the suite (the API must be up)
+#   web-e2e.sh --step build   install, build the site and precompress it
+#   web-e2e.sh --step test    run the suite (the API must be up)
 #
 # CI runs them as separate steps so the API's build (started in the
-# background beforehand) overlaps the site's; with no argument, both run.
+# background beforehand) overlaps the site's; without --step, both run.
 # Chromium and its system packages install in the background while the site
 # builds (playwright-install.log).
 set -euo pipefail
-cd web
-step=${1:-all}
+usage() { echo "usage: scripts/ci/web-e2e.sh [--step build|test]" >&2; exit 2; }
+# The positional form (`web-e2e.sh build`) works for one release, with a
+# warning (#277).
+if [ $# -eq 1 ] && [[ $1 != -* ]]; then
+  echo "warning: \`scripts/ci/web-e2e.sh STEP\` is deprecated; use --step (#277)" >&2
+  set -- --step "$1"
+fi
+step=all
+while [ $# -gt 0 ]; do
+  case $1 in
+    --step) [ $# -ge 2 ] || usage; step=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
 case "$step" in
   build | test | all) ;;
-  *) echo "usage: web-e2e.sh [build|test]" >&2; exit 2 ;;
+  *) usage ;;
 esac
+cd web
 if [ "$step" = build ] || [ "$step" = all ]; then
   npm ci
   npx playwright install --with-deps chromium > ../playwright-install.log 2>&1 &

@@ -4,13 +4,14 @@ against their schema (ops/version-snapshots/schema.json), and what a schema
 can't say: the file is named after its index_version, and each answered
 search's per-bucket hits number the bucket count and add up to its total.
 
-    scripts/check-version-snapshots.py [file ...]    (default: every snapshot, whatever its name)
+    scripts/check-version-snapshots.py [--path FILE ...]    (default: every snapshot, whatever its name)
 
 Needs fastjsonschema (scripts/ci/requirements-ops.txt). CI runs it whenever a
 snapshot, the schema, this script or scripts/compare-versions.py changes.
 Exits 1 listing every problem.
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -46,7 +47,16 @@ def problems(path: Path, validate) -> list[str]:
 
 def main() -> int:
     validate = fastjsonschema.compile(json.loads((DIR / "schema.json").read_text(encoding="utf-8")))
-    paths = [Path(p) for p in sys.argv[1:]] or sorted(p for p in DIR.glob("*.json") if p.name != "schema.json")
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--path", type=Path, action="append", default=[],
+                    help="a snapshot to check (repeatable; default every snapshot)")
+    # The positional form (`check-version-snapshots.py FILE ...`) works for
+    # one release, with a warning (#277).
+    ap.add_argument("legacy_paths", nargs="*", type=Path, help=argparse.SUPPRESS)
+    a = ap.parse_args()
+    if a.legacy_paths:
+        print("warning: positional files are deprecated; use --path (#277)", file=sys.stderr)
+    paths = a.path + a.legacy_paths or sorted(p for p in DIR.glob("*.json") if p.name != "schema.json")
     if not paths:
         print("no snapshots to check", file=sys.stderr)
         return 1

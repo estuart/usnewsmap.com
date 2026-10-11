@@ -4,7 +4,7 @@
     {
       "type": 1,
       "content": {
-        "json": "## usnm OCR nodes\nThe on-prem OCR nodes (#296, 12 Step 3), from their own workspace `usnm-ocr-log-<env>`: the Azure Monitor Agent's `Heartbeat`, `Perf` (every 60 s) and `Syslog`, the worker's Application Insights telemetry (component `usnm-ocr-appi-<env>`, tables `AppTraces`, `AppExceptions` and `AppMetrics`, once the worker sends it) and the workspace's `Usage`. Nodes are listed from their heartbeats in the last 30 days. Times are UTC. The same views as text: `scripts/logs.sh <env> ocr-node-health` and `ocr-node-errors`."
+        "json": "## usnm OCR nodes\nThe on-prem OCR nodes (#296, 12 Step 3), from their own workspace `usnm-ocr-log-<env>`: the Azure Monitor Agent's `Heartbeat`, `Perf` (every 60 s) and `Syslog`, the worker's Application Insights telemetry (component `usnm-ocr-appi-<env>`, tables `AppTraces`, `AppExceptions` and `AppMetrics`, once the worker sends it) and the workspace's `Usage`. Nodes are listed from their heartbeats in the last 30 days. Times are UTC. The same views as text: `scripts/logs.sh --env <env> --query-name ocr-node-health` and `ocr-node-errors`."
       },
       "name": "title"
     },

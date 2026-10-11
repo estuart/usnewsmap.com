@@ -294,7 +294,7 @@ resource volumeAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!
   kind: 'LogAlert'
   properties: {
     displayName: 'OCR node log volume high'
-    description: 'An on-prem OCR node sent more than a tenth of ${workspaceName}\'s daily cap of ${dailyCapGb} GB in the last hour (the estimate is under 2 MB an hour). Kept up, it fills the cap within 10 hours, and then the nodes have no monitoring until the reset (the environment\'s own workspace isn\'t affected). Node says which; the results split the total into AgentMB (Syslog, Perf and InsightsMetrics from the Azure Monitor Agent) and WorkerMB (the nodes\' Application Insights telemetry, by the role instance the sender set). Next: scripts/logs.sh <env> ocr-node-health and ocr-node-errors; on the node, check RUST_LOG in /etc/usnm/ocr-worker.local.env and journalctl -u usnm-ocr-worker; stop the worker (systemctl stop usnm-ocr-worker) if it keeps on.'
+    description: 'An on-prem OCR node sent more than a tenth of ${workspaceName}\'s daily cap of ${dailyCapGb} GB in the last hour (the estimate is under 2 MB an hour). Kept up, it fills the cap within 10 hours, and then the nodes have no monitoring until the reset (the environment\'s own workspace isn\'t affected). Node says which; the results split the total into AgentMB (Syslog, Perf and InsightsMetrics from the Azure Monitor Agent) and WorkerMB (the nodes\' Application Insights telemetry, by the role instance the sender set). Next: scripts/logs.sh --env <env> --query-name ocr-node-health and ocr-node-errors; on the node, check RUST_LOG in /etc/usnm/ocr-worker.local.env and journalctl -u usnm-ocr-worker; stop the worker (systemctl stop usnm-ocr-worker) if it keeps on.'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT15M'
@@ -346,7 +346,7 @@ resource locCappedAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if
   kind: 'LogAlert'
   properties: {
     displayName: 'OCR node: loc.gov asked to wait over an hour'
-    description: 'loc.gov answered an OCR node with a Retry-After of more than an hour; the worker waits an hour (its cap) and takes no pages meanwhile, then tries again. Node, Server (api or tile) and Status (429, 503 or 403) say where. Next: scripts/logs.sh <env> ocr-node-errors for the node\'s lines; if loc.gov keeps asking, stop the workers (systemctl stop usnm-ocr-worker on each node) and raise the LoC gaps (install-worker.sh) before starting them again.'
+    description: 'loc.gov answered an OCR node with a Retry-After of more than an hour; the worker waits an hour (its cap) and takes no pages meanwhile, then tries again. Node, Server (api or tile) and Status (429, 503 or 403) say where. Next: scripts/logs.sh --env <env> --query-name ocr-node-errors for the node\'s lines; if loc.gov keeps asking, stop the workers (systemctl stop usnm-ocr-worker on each node) and raise the LoC gaps (install-worker.sh) before starting them again.'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT1H'
@@ -400,7 +400,7 @@ resource capAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!emp
   kind: 'LogAlert'
   properties: {
     displayName: 'OCR nodes\' daily cap reached'
-    description: 'The OCR nodes\' workspace ${workspaceName} reached its daily cap of ${dailyCapGb} GB: no node heartbeats, counters, syslog, worker telemetry or exchange-account queue logs, and no node log alerts, until the cap resets. The environment\'s own workspace isn\'t affected. A node in a crash loop, with debug logging or tampered with can fill it. Next: in ${workspaceName}, Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h) for what filled it, and scripts/logs.sh <env> ocr-node-health for which node; stop that node\'s worker (systemctl stop usnm-ocr-worker), or raise the cap (ocrNodeDailyCapGb in infra/main.bicep, and cap_gb in ops/queries/ocr-node-health.kql) and provision.'
+    description: 'The OCR nodes\' workspace ${workspaceName} reached its daily cap of ${dailyCapGb} GB: no node heartbeats, counters, syslog, worker telemetry or exchange-account queue logs, and no node log alerts, until the cap resets. The environment\'s own workspace isn\'t affected. A node in a crash loop, with debug logging or tampered with can fill it. Next: in ${workspaceName}, Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h) for what filled it, and scripts/logs.sh --env <env> --query-name ocr-node-health for which node; stop that node\'s worker (systemctl stop usnm-ocr-worker), or raise the cap (ocrNodeDailyCapGb in infra/main.bicep, and cap_gb in ops/queries/ocr-node-health.kql) and provision.'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT15M'

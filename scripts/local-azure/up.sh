@@ -9,19 +9,36 @@
 #   cosmos.py: Cosmos DB           127.0.0.1:10030
 #
 # Creates the curated, reference and cache containers, then writes
-# WORKDIR/env with the variables the binaries read.
+# DIR/env with the variables the binaries read.
 #
-#   scripts/local-azure/up.sh [workdir]     # prints the env file's path
-#   . workdir/env
-#   scripts/local-azure/down.sh workdir
+#   scripts/local-azure/up.sh [--workdir DIR]     # prints the env file's path
+#   . DIR/env
+#   scripts/local-azure/down.sh --workdir DIR
+#
+# Without --workdir it works in a new temporary directory.
 #
 # AZURITE_BIN   azurite-blob binary (default: azurite-blob on PATH;
 #               `npm install -g azurite`)
 # COSMOS_PAGE, COSMOS_429, COSMOS_SEED   passed to cosmos.py
 set -euo pipefail
 
+usage() { sed -n '2,22s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+# The positional form (`up.sh DIR`) works for one release, with a warning
+# (#277).
+if [ $# -eq 1 ] && [[ $1 != -* ]]; then
+  echo "warning: \`scripts/local-azure/up.sh DIR\` is deprecated; use --workdir (#277)" >&2
+  set -- --workdir "$1"
+fi
+work=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --workdir) [ $# -ge 2 ] || usage; work=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
 here="$(cd "$(dirname "$0")" && pwd)"
-work="${1:-$(mktemp -d)}"
+[ -n "$work" ] || work=$(mktemp -d)
 mkdir -p "$work"
 work="$(cd "$work" && pwd)"
 azurite="${AZURITE_BIN:-azurite-blob}"

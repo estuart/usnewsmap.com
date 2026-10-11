@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Time a few known-slow searches, cold then warm, one request at a time.
 
-    scripts/bench-cold-searches.py [base-url]    (default https://usnewsmap.com)
+    scripts/bench-cold-searches.py [--base-url URL]    (default https://usnewsmap.com)
 
 For each search it asks /v1/aggregate as the web app does, waits out each
 `202 Accepted` for its Retry-After (06 §6.3.5), and records the time to the
@@ -25,6 +25,7 @@ neither header and a script's user agent (`admit` in
 crates/usnm-api/src/searchlog.rs). They do show in request telemetry.
 """
 
+import argparse
 import json
 import sys
 import time
@@ -77,7 +78,18 @@ def backend_ms(body):
 
 
 def main():
-    base = (sys.argv[1] if len(sys.argv) > 1 else "https://usnewsmap.com").rstrip("/")
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--base-url", help="the site to time (default https://usnewsmap.com)")
+    # The positional form (`bench-cold-searches.py URL`) works for one
+    # release, with a warning (#277).
+    ap.add_argument("legacy_base_url", nargs="?", help=argparse.SUPPRESS)
+    a = ap.parse_args()
+    if a.legacy_base_url is not None:
+        if a.base_url is not None:
+            ap.error("give the base URL once, as --base-url")
+        print("warning: a positional base URL is deprecated; use --base-url (#277)", file=sys.stderr)
+        a.base_url = a.legacy_base_url
+    base = (a.base_url or "https://usnewsmap.com").rstrip("/")
     _, _, meta = get(base + "/v1/meta")
     version = json.loads(meta)["index_version"]
     print(f"{base}, index version {version}")

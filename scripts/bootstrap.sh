@@ -3,8 +3,9 @@
 # subscription or tenant, and wire this GitHub repository to deploy it
 # (08 §8.9). Safe to re-run: every step is idempotent.
 #
-#   scripts/bootstrap.sh <env> [options]
+#   scripts/bootstrap.sh --env NAME [options]
 #
+#   --env NAME            the environment (1-16 lowercase letters and digits)
 #   --subscription ID     Azure subscription (default: az's current one)
 #   --location REGION     default eastus2 (new environments only)
 #   --repo OWNER/NAME     GitHub repository that deploys it (default: this clone's)
@@ -28,29 +29,35 @@
 set -euo pipefail
 
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; exit 2; }
-[ $# -ge 1 ] || usage
-ENV_NAME=$1; shift
-case "$ENV_NAME" in -*|"") usage ;; esac
+# The positional form (`bootstrap.sh prod [options]`) works for one
+# release, with a warning (#277).
+if [ $# -ge 1 ] && [[ $1 != -* ]]; then
+  echo "warning: \`scripts/bootstrap.sh ENV [options]\` is deprecated; use --env (#277)" >&2
+  set -- --env "$@"
+fi
+ENV_NAME="" SUBSCRIPTION="" LOCATION="eastus2" REPO="" DOMAIN="" EMAIL="" INGEST=false CLEANUP=false MOVE=false
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
+    --subscription) [ $# -ge 2 ] || usage; SUBSCRIPTION=$2; shift 2 ;;
+    --location) [ $# -ge 2 ] || usage; LOCATION=$2; shift 2 ;;
+    --repo) [ $# -ge 2 ] || usage; REPO=$2; shift 2 ;;
+    --domain) [ $# -ge 2 ] || usage; DOMAIN=$2; shift 2 ;;
+    --alert-email) [ $# -ge 2 ] || usage; EMAIL=$2; shift 2 ;;
+    --ingest) INGEST=true; shift ;;
+    --cleanup-legacy) CLEANUP=true; shift ;;
+    --move) MOVE=true; shift ;;
+    -h|--help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
+[ -n "$ENV_NAME" ] || usage
 # It becomes part of resource names (the registry allows only lowercase
 # letters and digits) and of the CI identity's OIDC subject.
 if ! [[ $ENV_NAME =~ ^[a-z][a-z0-9]{0,15}$ ]] || [ "$ENV_NAME" = guardrails ]; then
   echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter (not \"guardrails\", the shared policy stack)" >&2
   exit 2
 fi
-SUBSCRIPTION="" LOCATION="eastus2" REPO="" DOMAIN="" EMAIL="" INGEST=false CLEANUP=false MOVE=false
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --subscription) SUBSCRIPTION=$2; shift 2 ;;
-    --location) LOCATION=$2; shift 2 ;;
-    --repo) REPO=$2; shift 2 ;;
-    --domain) DOMAIN=$2; shift 2 ;;
-    --alert-email) EMAIL=$2; shift 2 ;;
-    --ingest) INGEST=true; shift ;;
-    --cleanup-legacy) CLEANUP=true; shift ;;
-    --move) MOVE=true; shift ;;
-    *) usage ;;
-  esac
-done
 
 step() { printf '\n==> %s\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
