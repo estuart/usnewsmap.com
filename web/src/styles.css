@@ -892,7 +892,7 @@ select {
 .skew-list__note {
   margin-top: 14px;
 }
-/* Under each Clearest differences list: how many there are, and Show more / Show fewer. */
+/* Under each Clearest differences and Pages list: how many there are, and Show more / Show fewer. */
 .skew-list__count {
   color: var(--muted);
   font-size: 0.85rem;

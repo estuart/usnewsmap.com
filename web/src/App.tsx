@@ -29,7 +29,8 @@ import { baselineNote } from "./lib/baseline";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { PagesLists, WhenLists, exactMedian, medianCandidates, type MedianStatus } from "./components/PlaceLists";
-import { DownloadCsv, SkewLists, StateTable, clearest, useListLengths, type SkewRow } from "./components/SkewPanels";
+import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
+import { useListLengths } from "./components/ListLength";
 import { hasWebGL2 } from "./lib/webgl";
 import { MIN_PLACES, prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
 import { maxWindowExpected, scoreFrame } from "./engine/skewModel";
@@ -40,6 +41,8 @@ import { congressFeature } from "./lib/congress";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
+/** The side panel lists that show more on request: Clearest differences (relative rate) and Pages. */
+const LIST_NAMES = ["above", "below", "places", "states"] as const;
 
 export function App() {
   const [view, setView] = useView();
@@ -458,9 +461,9 @@ export function App() {
   // Phones show the legend and the place lists after the playback controls, in the DOM as well as
   // on screen, so the controls sit right under the map. They move, not the controls: the legend and
   // lists keep no state of their own, so a rotation across the breakpoint loses nothing. How many
-  // places the Clearest differences lists show is kept here for that reason.
+  // places the Clearest differences and Pages lists show is kept here for that reason.
   const narrow = useMediaQuery("(max-width: 640px)");
-  const [skewShown, setSkewShown] = useListLengths(`${key}|${view.bucket}|${view.win}|${norm}`);
+  const [listShown, setListShown] = useListLengths(`${key}|${view.bucket}|${view.win}|${norm}`, LIST_NAMES);
   const legend = !data ? null : norm === "skew" && skewModel ? (
     <SkewLegend
       places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
@@ -478,9 +481,17 @@ export function App() {
   const sidePanel = !data ? null : (
     <>
       {norm === "skew" && !view.place && (
-        <SkewLists rows={skewListed} onSelect={select} shown={skewShown} onShown={setSkewShown} />
+        <SkewLists rows={skewListed} onSelect={select} shown={listShown} onShown={setListShown} />
       )}
-      {norm === "raw" && !view.place && <PagesLists rows={visible} onSelect={select} trailing={view.win !== null} />}
+      {norm === "raw" && !view.place && (
+        <PagesLists
+          rows={visible}
+          onSelect={select}
+          trailing={view.win !== null}
+          shown={listShown}
+          onShown={setListShown}
+        />
+      )}
       {norm === "when" && !view.place && (
         <WhenLists
           rows={visible}

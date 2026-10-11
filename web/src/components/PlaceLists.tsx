@@ -1,7 +1,7 @@
 import { useId, useState, type ReactNode } from "react";
 import { dateFromDay, formatDate } from "../lib/time";
+import { LIST_LENGTH, ShownList, type ListLengths } from "./ListLength";
 
-const LIST_LENGTH = 5;
 /** The Median date lists leave out places with fewer matching pages than this: one page has a date, not a median. */
 export const MIN_MEDIAN_PAGES = 5;
 const STORAGE_KEY = "usnm.lists";
@@ -24,15 +24,12 @@ export interface StateRow {
   places: number;
 }
 
-/** The places with the most matching pages, most first; ties by name. */
+/** The places with the most matching pages, most first; ties by name. All of them: the list chooses how many to show. */
 export function mostPages<R extends ListRow>(rows: R[]): R[] {
-  return rows
-    .filter((r) => r.value > 0)
-    .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name))
-    .slice(0, LIST_LENGTH);
+  return rows.filter((r) => r.value > 0).sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
 }
 
-/** The states with the most matching pages: each place counts toward its own state. */
+/** The states with the most matching pages: each place counts toward its own state. All of them, as `mostPages`. */
 export function statePages(rows: ListRow[]): StateRow[] {
   const by = new Map<string, StateRow>();
   for (const r of rows) {
@@ -42,7 +39,7 @@ export function statePages(rows: ListRow[]): StateRow[] {
     s.places += 1;
     by.set(r.state, s);
   }
-  return [...by.values()].sort((a, b) => b.pages - a.pages || a.state.localeCompare(b.state)).slice(0, LIST_LENGTH);
+  return [...by.values()].sort((a, b) => b.pages - a.pages || a.state.localeCompare(b.state));
 }
 
 /**
@@ -184,25 +181,6 @@ export function ListsPanel({
   );
 }
 
-function List<R>({
-  heading,
-  items,
-  empty,
-  render,
-}: {
-  heading: string;
-  items: R[];
-  empty: string;
-  render: (r: R) => ReactNode;
-}) {
-  return (
-    <section className="skew-list">
-      <h3>{heading}</h3>
-      {items.length === 0 ? <p className="skew-list__empty">{empty}</p> : <ol>{items.map(render)}</ol>}
-    </section>
-  );
-}
-
 const pages = (n: number) => `${n.toLocaleString("en-US")} ${n === 1 ? "page" : "pages"}`;
 
 function share(part: number, total: number): string {
@@ -229,37 +207,56 @@ interface ListsProps {
   trailing: boolean;
 }
 
+/** The two Pages lists, as `useListLengths` names them. */
+export type PagesListName = "places" | "states";
+
 /** Pages: where the matching pages are, by place and by state. */
-export function PagesLists({ rows, onSelect, trailing }: ListsProps) {
+export function PagesLists({
+  rows,
+  onSelect,
+  trailing,
+  shown,
+  onShown,
+}: ListsProps & {
+  /** How many places and states the lists show, from `useListLengths`. */
+  shown: ListLengths<PagesListName>;
+  onShown: (list: PagesListName, n: number) => void;
+}) {
   const total = rows.reduce((a, r) => a + Math.max(r.value, 0), 0);
   return (
     <ListsPanel title="Most pages" label="Places and states with the most pages">
-      <List
+      <ShownList
         heading="Places"
         items={mostPages(rows)}
         empty={`No matching pages ${scope(trailing)}.`}
+        itemKey={(r) => r.id}
         render={(r) => (
-          <li key={r.id}>
+          <>
             <PlaceButton row={r} onSelect={onSelect} />{" "}
             <span className="skew-list__value">
               {pages(r.value)} ({share(r.value, total)})
             </span>
-          </li>
+          </>
         )}
+        limit={shown.places}
+        onLimit={(n) => onShown("places", n)}
       />
-      <List
+      <ShownList
         heading="States"
         items={statePages(rows)}
         empty={`No matching pages ${scope(trailing)}.`}
+        itemKey={(s) => s.state}
         render={(s) => (
-          <li key={s.state}>
+          <>
             {s.state}{" "}
             <span className="skew-list__value">
               {pages(s.pages)} ({share(s.pages, total)}) in {s.places.toLocaleString("en-US")}{" "}
               {s.places === 1 ? "place" : "places"}
             </span>
-          </li>
+          </>
         )}
+        limit={shown.states}
+        onLimit={(n) => onShown("states", n)}
       />
       <p className="skew-list__note">Matching pages {scope(trailing)}; shares are of all of them.</p>
     </ListsPanel>
@@ -329,18 +326,18 @@ export function WhenLists({
       ? `Only one place has ${MIN_MEDIAN_PAGES} or more matching pages ${scope(trailing)}.`
       : `No place has ${MIN_MEDIAN_PAGES} or more matching pages ${scope(trailing)}.`;
   const item = (r: ListRow) => (
-    <li key={r.id}>
+    <>
       <PlaceButton row={r} onSelect={onSelect} />{" "}
       <span className="skew-list__value">
         {r.whenLabel} · {pages(r.value)}
       </span>
-    </li>
+    </>
   );
   return (
     <ListsPanel title="Earliest and latest" label="Places with the earliest and latest median dates">
       <div className={status === "updating" ? "lists--updating" : undefined} aria-busy={status === "updating"}>
-        <List heading="Earliest median date" items={earliest} empty={empty} render={item} />
-        <List heading="Latest median date" items={latest} empty={empty} render={item} />
+        <ShownList heading="Earliest median date" items={earliest} empty={empty} itemKey={(r) => r.id} render={item} />
+        <ShownList heading="Latest median date" items={latest} empty={empty} itemKey={(r) => r.id} render={item} />
       </div>
       <p className="skew-list__note" role="status">
         {status === "updating" ? "Updating for the new date…" : ""}
