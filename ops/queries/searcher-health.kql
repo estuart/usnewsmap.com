@@ -1,5 +1,5 @@
 // The Quickwit searcher, the sidecar in ca-usnm or its own app
-// usnm-searcher-ca (#267), newest first: its warning and error lines
+// usnm-search-ca (#267), newest first: its warning and error lines
 // counted by level and module (Quickwit's own messages can echo a search's
 // query, so only where they came from is shown, never their text, 09
 // §9.4.2), and the platform's events for the apps' replicas from
@@ -23,7 +23,7 @@ let searcher = ContainerAppConsoleLogs
     | extend Source = "quickwit";
 let platform = ContainerAppSystemLogs
     | where ContainerAppName == "ca-usnm" or ContainerAppName startswith "ca-usnm-"
-        or ContainerAppName startswith "usnm-searcher-ca-"
+        or ContainerAppName startswith "usnm-search-ca-"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Type != "Normal"
         or Reason has_any ("OOM", "Kill", "BackOff", "Restart", "Unhealthy", "Fail", "Terminat", "Probe")

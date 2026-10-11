@@ -18,8 +18,12 @@
 // `searcherName`, instead of a sidecar in each API replica, so a new API
 // image (and with it the site) never restarts it. The API app then has the
 // api container alone and calls the searcher at its internal ingress; the
-// searcher app gets the system-assigned identity and its read-only role on
-// `qw-index`, and the API app neither. Off, this module deploys exactly
+// searcher app gets a system-assigned identity and its read-only role on
+// `qw-index`. The API app keeps its own identity and role meanwhile: the
+// old revision's sidecar serves until the new revision is ready, and turning
+// the setting off brings the sidecar back to a role that has already
+// reached Blob. They go in a later change, once the searcher app is kept
+// (docs/operations.md, "Searcher app"). Off, this module deploys exactly
 // what it did before.
 
 param location string
@@ -54,7 +58,8 @@ param americanStoriesSearch bool = true
 param congressSearch bool = true
 @description('Run the searcher as its own app, `searcherName`, with internal ingress, instead of a sidecar in each API replica (#267). Needs searchBackend quickwit.')
 param searcherApp bool = false
-@description('The searcher app\'s name (with searcherApp).')
+@description('The searcher app\'s name (with searcherApp); a container app name is under 32 characters (ADR-0017).')
+@maxLength(31)
 param searcherName string = ''
 @description('The searcher app\'s minimum replicas: 1 keeps it, and its caches, warm; 0 lets it scale to zero with the API.')
 @minValue(0)
@@ -67,6 +72,14 @@ var quickwit = searchBackend == 'quickwit'
 // Where the searcher runs: a sidecar in each API replica, or its own app.
 var sidecar = quickwit && !searcherApp
 var searcherOn = quickwit && searcherApp
+// The API app's system-assigned identity and its role on the index stay with
+// any Quickwit backend, not only with the sidecar. Turning the searcher app
+// on doesn't remove them: identity is the app's, not a revision's, so
+// removing it would cut off the old revision's sidecar, which serves until
+// the new revision is ready (and the stack would delete its role). Turning
+// it off then needs no new identity or role propagation for the sidecar.
+// Dropping them is a deliberate later change (docs/operations.md).
+var apiSystemIdentity = quickwit
 
 // The searcher sidecar's node config, from infra/quickwit/searcher.yaml.
 // CI applies the same file on every deploy (scripts/ci/roll-api.sh), so it
@@ -316,7 +329,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   dependsOn: [searcherIndexReader]
   identity: {
     // Quickwit can use only the system-assigned identity (see above).
-    type: sidecar ? 'SystemAssigned,UserAssigned' : 'UserAssigned'
+    type: apiSystemIdentity ? 'SystemAssigned,UserAssigned' : 'UserAssigned'
     userAssignedIdentities: { '${identityId}': {} }
   }
   properties: {
@@ -368,8 +381,9 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
 }
 
 // Read-only, and only the index: the sidecar can't write splits or the
-// metastore, and can't read anything else.
-resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (sidecar) {
+// metastore, and can't read anything else. Kept with the searcher app too
+// (apiSystemIdentity).
+resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (apiSystemIdentity) {
   scope: account::blobs::index
   name: guid(account::blobs::index.id, app.id, blobReader)
   properties: {

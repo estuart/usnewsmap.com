@@ -30,7 +30,7 @@ param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
 @allowed(['fixtures', 'quickwit'])
 param searchBackend string = 'fixtures'
 
-@description('Run the Quickwit searcher as its own Container App, usnm-searcher-ca-{env}, with internal ingress, instead of a sidecar in each API replica (#267): a new API image, and so a site change, then doesn\'t restart it. Needs searchBackend quickwit. Off (the default) keeps the sidecar; turning it off again deletes the searcher app (docs/operations.md, "Searcher app").')
+@description('Run the Quickwit searcher as its own Container App, usnm-search-ca-{env}, with internal ingress, instead of a sidecar in each API replica (#267): a new API image, and so a site change, then doesn\'t restart it. Needs searchBackend quickwit. Off (the default) keeps the sidecar; turning it off again deletes the searcher app (docs/operations.md, "Searcher app").')
 param searcherApp bool = false
 
 @description('Pull images from the private registry (08 §8.6). Turn on once CI has pushed them there.')
@@ -246,8 +246,10 @@ var quickwitUpstream = '${quickwitPins.upstream.image}:${quickwitPins.upstream.t
 // matter for the tiles account's CORS (and any cross-origin API caller).
 var appName = 'ca-usnm-${env}'
 // The searcher's own app (searcherApp, #267); a new resource, so it takes
-// ADR-0017's name.
-var searcherName = 'usnm-searcher-ca-${env}'
+// ADR-0017's form. 'search', not 'searcher': with a 16-character
+// environment name (environmentName's limit) the name is 31 characters,
+// within the container app limit (containerapp.bicep checks it).
+var searcherName = 'usnm-search-ca-${env}'
 var appOrigin = 'https://${appName}.${containerEnv.outputs.defaultDomain}'
 var domainOrigins = empty(dnsZoneName) ? [] : ['https://${dnsZoneName}', 'https://www.${dnsZoneName}']
 var siteOrigins = union(allowedOrigins, domainOrigins, [appOrigin])

@@ -49,7 +49,7 @@ param actionGroupId string
 @description('The API\'s container app (ca-usnm-<env>), for the replica CPU alert.')
 param apiAppName string
 
-@description('The searcher\'s own app (usnm-searcher-ca-<env>, #267), whose CPU the replica CPU alert then watches; empty while the searcher is the API\'s sidecar.')
+@description('The searcher\'s own app (usnm-search-ca-<env>, #267), whose CPU the replica CPU alert then watches; empty while the searcher is the API\'s sidecar.')
 param searcherAppName string = ''
 
 @description('Create the replica CPU alert: the app keeps a replica running (minReplicas above 0), so its CPU has a sample every minute.')
