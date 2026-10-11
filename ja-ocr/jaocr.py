@@ -8,6 +8,8 @@
     python3 jaocr.py audit            titles LoC ships pages without text for (audit.py)
     python3 jaocr.py quality [--sample-pct 2] [--min-pages 50] [--metric v2]
                                       how good LoC's OCR is, by language and decade (quality.py)
+    python3 jaocr.py damage-parity [--pages 400] [--audit-version pages-v20261003-1]
+                                      pages scored by damage_v2.py, to check the Rust port against (damage_parity.py)
     python3 jaocr.py mixed            text on the Japanese titles' pages search can't reach yet (mixed.py)
     python3 jaocr.py american-stories --year 1865 [--year ...] [--sample-pct 10] [--diff]
                                       American Stories' text against LoC's on our pages (american_stories.py)
@@ -754,7 +756,8 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed", "american-stories", "american-stories-write"])
+    ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed", "american-stories", "american-stories-write",
+                                        "damage-parity"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
     ap.add_argument("--mixed-below", type=float,
                     help=f"targets, run: OCR pages whose LoC text is under this word-like share, a whole "
@@ -770,6 +773,9 @@ def main() -> None:
                     help="american-stories: also measure indexing its text only where it differs from LoC's (#251)")
     ap.add_argument("--metric", choices=["v1", "v2"], default="v2",
                     help="quality: v2 (page language, function words, damage rate; default) or v1 (dict_share)")
+    ap.add_argument("--pages", type=int, default=400, help="damage-parity: pages to sample (default 400)")
+    ap.add_argument("--audit-version", default="pages-v20261003-1",
+                    help="damage-parity: the index version of the 10%% audit to sample from")
     a = ap.parse_args()
     reference = store(os.environ["USNM_REFERENCE_URL"])
     curated = store(os.environ["USNM_CURATED_URL"])
@@ -786,6 +792,10 @@ def main() -> None:
 
         pct = 10.0 if a.sample_pct is None else a.sample_pct
         american_stories.american_stories(reference, curated, a.year or [], pct, diff=a.diff)
+    elif a.command == "damage-parity":
+        import damage_parity
+
+        damage_parity.damage_parity(reference, curated, a.pages, a.audit_version)
     elif a.command == "mixed":
         import mixed
 

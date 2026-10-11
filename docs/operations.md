@@ -210,7 +210,7 @@ Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would re
 
 The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #218) only with `USNM_AMERICAN_STORIES` (the job's `--american-stories`), off by default. The first release with it builds a full base, so turn it on for a full rebuild, after step 4 of #218 has measured the index size and rebuild time, and with an explicit go-ahead:
 
-1. Run the writer to the end: `scripts/ja-ocr/start-quality.sh prod american-stories-write` on the one-replica job. It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages only at the next full rebuild.
+1. Run the writer to the end: `scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write` on the one-replica job. It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages only at the next full rebuild.
 2. Do the [full rebuild](#full-rebuild), with the setting added to its first provision:
 
    ```sh
@@ -241,12 +241,12 @@ On a version with one searched text field (`text_layout: 2`, [Full rebuild](#ful
 
 ```sh
 RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
-scripts/ja-ocr/start-quality.sh prod targets            # caj-usnm-jaone: writes ocr-ja/targets-v3.jsonl
+scripts/ja-ocr/start-quality.sh --env prod --command targets            # caj-usnm-jaone: writes ocr-ja/targets-v3.jsonl
 # its log ends with `targets written` and the pages by loc_text (mixed: about 2,000); then
 az containerapp job start -n caj-usnm-jaocr-prod -g "$RG"   # `run`: OCRs the targets not done yet
 ```
 
-Listing streams the archive of every batch with a Japanese title again, as the first listing did, to find the pages LoC ships without text; pages already read are skipped by the run. Another cut: `start-quality.sh prod targets --mixed-below 0.8`, then `start-quality.sh prod run --mixed-below 0.8` (its own list and claims, `targets-v3-mixed80`); 0.35 or less lists no mixed pages. At the job's pace in October 2026 (a 2-page issue in about 21 s and a 4-page one in about 38 s per replica, mostly loc.gov's pacing) the 2,000 pages take about 5 hours on the two replicas, about $4.50 of Consumption time (2 × 4 vCPU and 8 GiB at about $0.43 an hour each), plus the listing. The next release publishes their Japanese text (an overlay-only release when nothing else is new). A mixed page joins the Japanese index only with Japanese on it: expect about 200 (Rocky Shimpo's front pages).
+Listing streams the archive of every batch with a Japanese title again, as the first listing did, to find the pages LoC ships without text; pages already read are skipped by the run. Another cut: `start-quality.sh --env prod --command targets --mixed-below 0.8`, then `start-quality.sh --env prod --command run --mixed-below 0.8` (its own list and claims, `targets-v3-mixed80`); 0.35 or less lists no mixed pages. At the job's pace in October 2026 (a 2-page issue in about 21 s and a 4-page one in about 38 s per replica, mostly loc.gov's pacing) the 2,000 pages take about 5 hours on the two replicas, about $4.50 of Consumption time (2 × 4 vCPU and 8 GiB at about $0.43 an hour each), plus the listing. The next release publishes their Japanese text (an overlay-only release when nothing else is new). A mixed page joins the Japanese index only with Japanese on it: expect about 200 (Rocky Shimpo's front pages).
 
 **English text of our OCR** (#203, 04 §4.8). Off by default. With `USNM_JA_LATIN` (the job's `--ja-latin`), a release gives the pages LoC ships without text a main-index document with the Latin-script text our OCR read on them (their English ads, mastheads and sections), and gives a page LoC read badly our text in place of LoC's where ours reads more words. No full rebuild is forced:
 
@@ -291,7 +291,7 @@ Then it scores the page against its language:
 Start it as one execution of the job with `quality` and its options as the arguments; the script prints the execution's name:
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod --sample-pct 10 --min-pages 50
+scripts/ja-ocr/start-quality.sh --env prod --sample-pct 10 --min-pages 50
 ```
 
 `az containerapp job start --args quality` alone doesn't work: when any container flag is given, the CLI sends a container override named after the job, with no image, settings or resources. The script sends the job's own template with only the arguments changed.
@@ -324,6 +324,17 @@ Read the numbers with these limits in mind:
 - Detection only chooses among the title's catalog languages and English: a German page in a title catalogued as English only is `und`, not German. English is always a candidate, so a page counted as English in a title that doesn't list English is English text (ads, a column) by its function words.
 - Pages of titles that list Japanese are left out (our own OCR covers them) and counted in the `japanese_skipped` row.
 
+### Damage metric parity (#296)
+
+The v2 metric's per-page code is `ja-ocr/damage_v2.py`, which `quality.py` imports. `usnm_core::damage` (cargo feature `damage`) is its Rust port, which the OCR pipeline uses (12 §12.5 Steps 5 and 6). Two checks keep them the same: the same language, decision, second language and script, equal token, word, head, near-miss and function-word counts, and rates within 1e-9.
+
+- In CI, `cargo test -p usnm-core --features damage` scores the pages of `crates/usnm-core/tests/data/damage-parity.jsonl.zst` again: 66 pages of loc.gov's OCR text from 33 titles in 25 catalog languages, and 17 made-up pages for the traps between Python's string handling and Rust's. It fails when `damage_v2.py`'s sha256 isn't the one the file records. After a change to `damage_v2.py`, port the change and score the same pages again: `python3 ja-ocr/damage_parity.py --rescore <old file> --out <new file>` (wordfreq 3.1.1; no loc.gov requests). `--pages-from <file> --out <path> --synthetic` builds a new one from loc.gov, with jaocr.py's pacing.
+- In the cloud, on curated text: `jaocr.py damage-parity` samples 400 pages of the 10% audit's per-page CSV, spread across languages, decisions and scripts, and writes `audit/damage-parity/<stamp>.jsonl.zst` in the curated container. It logs each page's doc_id and title languages (`damage parity page`), never text. `usnm-ingest ocr-damage --parity <that path>` (12 §12.5 Step 6) scores them in Rust.
+
+```sh
+scripts/ja-ocr/start-quality.sh --env prod --command damage-parity --pages 400
+```
+
 ## Text the Japanese titles' pages hold that search can't reach
 
 `jaocr.py mixed` (`ja-ocr/mixed.py`) measures two gaps the Japanese OCR leaves. The OCR job read a page only when LoC's text for it was missing, empty, short or under 35% word-like; a Japanese query searches only our OCR, any other query only LoC's text. Its October 2026 results led to the `mixed` targets and the English text of our OCR in the main index ([above](#japanese-ocr-mixed-pages-and-english-text)); the command still measures by the 35% test.
@@ -332,7 +343,7 @@ Read the numbers with these limits in mind:
 - English on the pages we read: NDLOCR-Lite reads some English (mastheads, short lines), but only into the Japanese index. For every page of our OCR it counts the tokens that are among English's 5,000 most frequent words (3 letters or more).
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod mixed          # prints the execution's name
+scripts/ja-ocr/start-quality.sh --env prod --command mixed          # prints the execution's name
 scripts/ja-ocr/quality-rows.sh prod <execution>     # its "mixed pages" rows, once it has finished
 ```
 
@@ -343,7 +354,7 @@ It writes `audit/mixed-pages-<version>-<execution>.json` and a CSV per table in 
 `jaocr.py american-stories --year Y [--year …] [--sample-pct 10]` (`ja-ocr/american_stories.py`, #205) compares [American Stories](https://huggingface.co/datasets/dell-research-harvard/AmericanStories) (Dell et al. 2023, CC BY 4.0), a re-OCR of Chronicling America, with LoC's text on our pages. It streams each year's tarball from Hugging Face (0.4 to 7.6 GB; nothing is written to disk), joins scans to our pages by their file names, read in a first pass (a scan named `<date>_p<page>_<lccn>_<reel>_<date><ed>_<image>.json` is our `<lccn>_<date>_ed-<ed>_seq-<page>`; one with no page, `pNone`, about 3% of 1865, takes its image's place in the issue, a rule that agrees with 92.8% of 1865's named pages; a second copy of a page is skipped), keeps the audit's fixed sample (`quality.sampled`), and reads LoC's text for the sampled pages of those years from the batches whose dates overlap them. For pages of titles whose first language is English it reports the join, words per page, the audit's English damage rate and function-word share for each text, pages matching a fixed term list in either text, and LoC's damage rate by the share of regions American Stories marked Illegible.
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925
+scripts/ja-ocr/start-quality.sh --env prod --command american-stories --year 1865 --year 1925
 scripts/ja-ocr/quality-rows.sh prod <execution>    # its "american stories" rows
 ```
 
@@ -358,7 +369,7 @@ It writes `audit/american-stories-<version>-<execution>.json`. It runs on the on
 - `diff_edge_examples`: up to 10 pages a year with a phrase whose words are all in LoC's text but together only in American Stories', with loc.gov links.
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925 --diff
+scripts/ja-ocr/start-quality.sh --env prod --command american-stories --year 1865 --year 1925 --diff
 ```
 
 The diff runs after the comparison and takes about 40 s per 1,000 pages of 8,000 tokens (measured on synthetic pages; the run logs its own figure in `american stories diff year`).
@@ -368,8 +379,8 @@ The diff runs after the comparison and takes about 40 s per 1,000 pages of 8,000
 `jaocr.py american-stories-write [--year Y …]` (`ja-ocr/american_stories_write.py`, #218) writes American Stories' text (Dell et al. 2023, CC BY 4.0) for our pages to the curated container, for the release to index beside LoC's. It streams each year's tarball from Hugging Face once, places every scan on our page as `american-stories` does, and writes `american-stories/pages/<lccn>/<year>-<nnn>.parquet`: one row per page with `doc_id`, `lccn`, `date`, `text` (each article's headline, byline and text in American Stories' order, separated by blank lines), `articles` (JSON: each article's headline, byline, `start`/`end` in `text`, bounding boxes in scan pixels and the legibility of its regions), `legibility` (the page's text regions by legibility) and the scan's `width` and `height`. A page's second copy is skipped. Each year ends with a marker `american-stories/years/<year>.json` holding its counts; a rerun skips marked years, so an interrupted run resumes. A download that goes 5 minutes without data, or breaks off, fails and the year starts again from the top (up to 3 tries, a minute apart, each logged as `american stories year failed; retrying`); a retry writes the same parts under the same names. A year counts as read only when the gzip stream reached its end marker and, when Hugging Face sends one, the byte count matches `Content-Length`, so a download that stops at a file boundary inside the tarball is retried rather than marked. All 180 years are about 340 GB to stream.
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod american-stories-write          # every year
-scripts/ja-ocr/start-quality.sh prod american-stories-write --year 1865
+scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write          # every year
+scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write --year 1865
 ```
 
 It runs on the one-replica job and logs `american stories year written` per year. `jaocr.py american-stories` also lists, per term and year, up to 8 pages that match only in American Stories' text with the words around the match (`only_american_stories`), for checking those matches by hand.

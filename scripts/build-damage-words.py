@@ -7,12 +7,12 @@ Step 4): crates/usnm-core/data/damage-words/<code>.txt.
 Needs wordfreq 3.1.1 (`pip install wordfreq==3.1.1`, the version the OCR
 audit pins in ja-ocr/requirements.txt).
 
-For each wordfreq code in `ja-ocr/quality.py`'s WORDFREQ table, the list is
-`wordfreq.top_n_list(code, 5000)`, the call `quality.py` makes
+For each wordfreq code in `ja-ocr/damage_v2.py`'s WORDFREQ table, the list is
+`wordfreq.top_n_list(code, 5000)`, the call `damage_v2.py` makes
 (`wordfreq_ranked`): wordfreq's 5,000 most frequent words, most frequent
 first, as wordfreq stores them. Hawaiian (`haw`) and Yiddish (`yi`) have no
 wordfreq list; theirs are copied from ja-ocr/wordlists/, first 5,000 words,
-as `quality.py` reads them. One word per line, in rank order; the order
+as `damage_v2.py` reads them. One word per line, in rank order; the order
 matters, since the metric takes the top 100 and top 20 from the front.
 
 `usnm_core::damage` (cargo feature `damage`) embeds these files. Nothing in
@@ -31,7 +31,7 @@ LOCAL_DIR = ROOT / "ja-ocr" / "wordlists"
 WORDFREQ_VERSION = "3.1.1"
 TOP_REAL = 5000
 
-# quality.py's WORDFREQ values and LOCAL_WORDLISTS values, as wordfreq codes.
+# damage_v2.py's WORDFREQ values and LOCAL_WORDLISTS values, as wordfreq codes.
 # usnm_core::lang holds the same table; a test there checks that every code
 # it names has a file here.
 WORDFREQ_CODES = ["ar", "bg", "cs", "da", "de", "el", "en", "es", "fi", "fil", "fr", "he", "hu", "is", "it",
