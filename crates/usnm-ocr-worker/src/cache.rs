@@ -23,6 +23,15 @@ use crate::loc::{image_url, FetchError, ImageSize, Scan, MAX_IMAGE_BYTES};
 use crate::prefetch::{page_path, sha256, sidecar_path, Sidecar};
 use crate::worker::ScanSource;
 
+/// Cache reads in flight at once. The cache is an NFS mount (`hard`), so
+/// a read can block for as long as the server is away, and a blocking read
+/// can't be cancelled: at most this many threads can be stuck that way, and
+/// pages that find no free slot go to LoC.
+pub const MAX_CACHE_READS: usize = 2;
+/// How long a page waits for its cache read before it goes to LoC (the
+/// read itself carries on, holding its slot, until it returns).
+pub const CACHE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The cache in front of another source (LoC).
 #[derive(Debug)]
 pub struct CachedScans {
@@ -30,6 +39,19 @@ pub struct CachedScans {
     /// Where IIIF bases must point (`https://tile.loc.gov/image-services/iiif/`).
     pub iiif_root: String,
     pub inner: Arc<dyn ScanSource>,
+    /// Bounds the blocking cache reads ([`MAX_CACHE_READS`]).
+    pub reads: Arc<tokio::sync::Semaphore>,
+}
+
+impl CachedScans {
+    pub fn new(dir: PathBuf, iiif_root: String, inner: Arc<dyn ScanSource>) -> Self {
+        Self {
+            dir,
+            iiif_root,
+            inner,
+            reads: Arc::new(tokio::sync::Semaphore::new(MAX_CACHE_READS)),
+        }
+    }
 }
 
 /// A file of at most `max` bytes.
@@ -91,16 +113,34 @@ impl CachedScans {
 #[async_trait]
 impl ScanSource for CachedScans {
     async fn scan(&self, key: &PageKey, batch: &str) -> Result<Scan, FetchError> {
-        let cache = CachedScans {
-            dir: self.dir.clone(),
-            iiif_root: self.iiif_root.clone(),
-            inner: Arc::clone(&self.inner),
+        let found = match Arc::clone(&self.reads).try_acquire_owned() {
+            Ok(slot) => {
+                let cache = CachedScans {
+                    dir: self.dir.clone(),
+                    iiif_root: self.iiif_root.clone(),
+                    inner: Arc::clone(&self.inner),
+                    reads: Arc::clone(&self.reads),
+                };
+                let (k, b) = (key.clone(), batch.to_owned());
+                // The slot goes with the read, so a read stuck on the mount
+                // keeps it until it returns.
+                let read = tokio::task::spawn_blocking(move || {
+                    let _slot = slot;
+                    cache.read(&k, &b)
+                });
+                match tokio::time::timeout(CACHE_READ_TIMEOUT, read).await {
+                    Ok(r) => r.ok().flatten(),
+                    Err(_) => {
+                        tracing::warn!(doc_id = %key.doc_id(), "the scan cache didn't answer; fetching");
+                        None
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!(doc_id = %key.doc_id(), "every scan cache read is busy; fetching");
+                None
+            }
         };
-        let (k, b) = (key.clone(), batch.to_owned());
-        let found = tokio::task::spawn_blocking(move || cache.read(&k, &b))
-            .await
-            .ok()
-            .flatten();
         match found {
             Some(s) => Ok(s),
             None => self.inner.scan(key, batch).await,
@@ -167,14 +207,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn goes_to_loc_when_every_cache_read_is_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let loc = Arc::new(Loc::default());
+        let cache = CachedScans::new(dir.path().to_owned(), ROOT.into(), loc.clone());
+        let key: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
+        put(dir.path(), &key, "batch_x", b"jpeg bytes", |_| {});
+        // Reads stuck on the mount hold every slot.
+        let _stuck = Arc::clone(&cache.reads)
+            .acquire_many_owned(MAX_CACHE_READS as u32)
+            .await
+            .unwrap();
+        assert!(!cache.scan(&key, "batch_x").await.unwrap().from_cache);
+        assert_eq!(loc.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn reads_a_verified_scan_and_falls_back_to_loc_otherwise() {
         let dir = tempfile::tempdir().unwrap();
         let loc = Arc::new(Loc::default());
-        let cache = CachedScans {
-            dir: dir.path().to_owned(),
-            iiif_root: ROOT.into(),
-            inner: loc.clone(),
-        };
+        let cache = CachedScans::new(dir.path().to_owned(), ROOT.into(), loc.clone());
         let key: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
         // Nothing cached: LoC.
         let s = cache.scan(&key, "batch_x").await.unwrap();

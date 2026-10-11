@@ -420,11 +420,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                             tracing::info_span!("ocr_worker_start").in_scope(|| {
                                 tracing::info!(dir = %dir.display(), "reading prefetched scans first")
                             });
-                            Arc::new(CachedScans {
-                                dir,
-                                iiif_root,
-                                inner: loc,
-                            })
+                            Arc::new(CachedScans::new(dir, iiif_root, loc))
                         }
                         None => loc,
                     }
