@@ -423,7 +423,7 @@ impl LocClient {
     }
 }
 
-async fn read_limited(mut resp: reqwest::Response, max: usize) -> Result<Bytes, String> {
+pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Result<Bytes, String> {
     if resp.content_length().is_some_and(|n| n > max as u64) {
         return Err(format!("response over {max} bytes"));
     }

@@ -36,6 +36,8 @@ command -v jq > /dev/null || die "jq is needed"
 
 rel="manifests/$VERSION${STAMP:+/partial-$STAMP}"
 dest="$VERSION${STAMP:+-partial-$STAMP}"
+# The server takes one safe path segment of at most 128 characters.
+[ "${#dest}" -le 128 ] || die "$dest is longer than the scan server's 128-character limit"
 
 # A storage token from the Arc agent: its first answer is 401 with a
 # challenge file, whose contents go back as Basic auth.

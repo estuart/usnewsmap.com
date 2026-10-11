@@ -546,7 +546,9 @@ impl Worker {
         // The output is uploaded: a buffer-set scan isn't needed any more.
         // Best effort; a failure is logged, never the page's.
         if let Some(url) = evict {
-            self.scans.evict(&url).await;
+            // Within the page's deadline, so a slow server can't push the
+            // message past its hide.
+            let _ = tokio::time::timeout_at(deadline.into(), self.scans.evict(&url)).await;
         }
         Ok(Done {
             alto: alto_path,

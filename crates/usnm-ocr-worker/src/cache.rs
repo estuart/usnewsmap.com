@@ -105,17 +105,8 @@ impl CachedScans {
         if !resp.status().is_success() {
             return Err(format!("HTTP {}", resp.status().as_u16()));
         }
-        if resp.content_length().is_some_and(|n| n > max as u64) {
-            return Err(format!("over {max} bytes"));
-        }
-        let b = resp
-            .bytes()
-            .await
-            .map_err(|e| e.without_url().to_string())?;
-        if b.len() > max {
-            return Err(format!("over {max} bytes"));
-        }
-        Ok(Some(b))
+        // Read in chunks and stop at the cap, as for LoC.
+        crate::loc::read_limited(resp, max).await.map(Some)
     }
 
     async fn lookup(&self, set: Set, key: &PageKey, batch: &str) -> Found {

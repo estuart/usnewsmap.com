@@ -169,7 +169,7 @@ USNM_PREFETCH_MAX_TOTAL_BYTES=$MAX_BYTES"
 fi
 
 if $SERVE; then
-  [[ $PORT =~ ^[0-9]{2,5}$ ]] || die "--port: a port number"
+  [[ $PORT =~ ^[0-9]{2,5}$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "--port: 1 to 65535"
   IFS=, read -r -a IPS <<< "$ALLOW"
   [ "${#IPS[@]}" -gt 0 ] || die "--serve needs --allow"
   for ip in "${IPS[@]}"; do

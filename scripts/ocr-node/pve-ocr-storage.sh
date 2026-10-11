@@ -77,8 +77,7 @@ for d in "$ROOT" "$ROOT/scans" "$ROOT/text" "$ROOT/manifests"; do
 done
 
 # No NFS export: remove the one an earlier version wrote.
-if [ -f "$EXPORTS" ]; then
-  run rm -f "$EXPORTS"
-  if command -v exportfs > /dev/null; then run exportfs -ra; fi
-fi
+[ ! -f "$EXPORTS" ] || run rm -f "$EXPORTS"
+# Reloaded every run, so an export left active by a failed earlier run goes.
+if command -v exportfs > /dev/null; then run exportfs -ra; fi
 run zfs list -o name,mountpoint,quota,compression,recordsize,atime -r "$POOL/ocr"
