@@ -10,19 +10,24 @@ license = "MIT AND CC-BY-SA-4.0 AND CC0-1.0"
 rust-version.workspace = true
 
 [dependencies]
+caseless = { workspace = true, optional = true }
 chrono.workspace = true
 form_urlencoded.workspace = true
 serde.workspace = true
+serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
+unicode-general-category = { workspace = true, optional = true }
 unicode-normalization.workspace = true
 
 [features]
 # The damage metric and its word lists (12 §12.5 Steps 4 and 5): off by
 # default, so the API binary doesn't embed the lists.
-damage = []
+damage = ["dep:caseless", "dep:serde_json", "dep:unicode-general-category"]
 
 [dev-dependencies]
 serde_json.workspace = true
+sha2.workspace = true
+zstd.workspace = true
 
 [lints]
 workspace = true

@@ -9,11 +9,11 @@
 //!   For these languages it is ISO 639-2/T, which differs from the MARC code
 //!   only for the twenty or so languages with a bibliographic code.
 //! - **Word lists**: the code of the damage metric's word list for the
-//!   language, copied from `ja-ocr/quality.py`'s `WORDFREQ` table (wordfreq's
+//!   language, copied from `ja-ocr/damage_v2.py`'s `WORDFREQ` table (wordfreq's
 //!   codes: `hrv` and `srp` are both `sh`, `nor` is `nb`, `tgl` is `fil`) and
 //!   its `LOCAL_WORDLISTS` (Hawaiian `haw`, Yiddish `yi`, our own lists). A
 //!   language with no list (Chinese, Korean, the indigenous languages, Latin,
-//!   Welsh...) has none, as in `quality.py`.
+//!   Welsh...) has none, as in `damage_v2.py`.
 //!
 //! With the cargo feature `damage`, [`wordlist`] returns a list's words,
 //! embedded from `data/damage-words/` (`scripts/build-damage-words.py`
@@ -43,7 +43,7 @@ const fn lang(marc: &'static str, iso3: &'static str, wordlist: Option<&'static 
 }
 
 /// Every language the catalog lists ([`crate::names::LANGUAGES`]) and every
-/// one `quality.py` names, sorted by MARC code.
+/// one `damage_v2.py` names, sorted by MARC code.
 pub static LANGUAGES: &[Language] = &[
     lang("alb", "sqi", None),
     lang("ara", "ara", Some("ar")),
@@ -124,7 +124,7 @@ pub fn iso3_to_marc(code: &str) -> Option<&'static str> {
     by_iso3(code).map(|l| l.marc)
 }
 
-/// The word list for a MARC code: `quality.py`'s
+/// The word list for a MARC code: `damage_v2.py`'s
 /// `WORDFREQ.get(lang) or LOCAL_WORDLISTS.get(lang)`.
 pub fn wordlist_code(marc: &str) -> Option<&'static str> {
     by_marc(marc).and_then(|l| l.wordlist)
@@ -202,11 +202,11 @@ mod tests {
         }
     }
 
-    /// `quality.py`'s `WORDFREQ` and `LOCAL_WORDLISTS`, parsed from its source,
+    /// `damage_v2.py`'s `WORDFREQ` and `LOCAL_WORDLISTS`, parsed from its source,
     /// so the two tables can't drift apart.
-    fn quality_py_tables() -> BTreeMap<String, String> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ja-ocr/quality.py");
-        let src = std::fs::read_to_string(path).expect("ja-ocr/quality.py");
+    fn damage_v2_tables() -> BTreeMap<String, String> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ja-ocr/damage_v2.py");
+        let src = std::fs::read_to_string(path).expect("ja-ocr/damage_v2.py");
         let mut out = BTreeMap::new();
         for start in ["WORDFREQ = {", "LOCAL_WORDLISTS = {"] {
             let i = src.find(start).expect(start) + start.len();
@@ -225,12 +225,12 @@ mod tests {
     }
 
     #[test]
-    fn wordlists_match_quality_py() {
+    fn wordlists_match_damage_v2() {
         let ours: BTreeMap<String, String> = LANGUAGES
             .iter()
             .filter_map(|l| l.wordlist.map(|w| (l.marc.to_owned(), w.to_owned())))
             .collect();
-        assert_eq!(ours, quality_py_tables());
+        assert_eq!(ours, damage_v2_tables());
         assert_eq!(wordlist_code("hrv"), Some("sh"));
         assert_eq!(wordlist_code("srp"), Some("sh"));
         assert_eq!(wordlist_code("nor"), Some("nb"));
@@ -269,6 +269,31 @@ mod tests {
             .collect();
         let codes: BTreeSet<String> = wordlist_codes().into_iter().map(str::to_owned).collect();
         assert_eq!(files, codes);
+    }
+
+    #[cfg(feature = "damage")]
+    #[test]
+    fn local_lists_are_ja_ocrs() {
+        // damage_v2.py reads ja-ocr/wordlists/<code>.txt itself: the embedded
+        // copies must be its first 5,000 words.
+        for l in LANGUAGES.iter().filter(|l| l.local_list) {
+            let code = l.wordlist.unwrap();
+            let path = format!(
+                "{}/../../ja-ocr/wordlists/{code}.txt",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let src = std::fs::read_to_string(&path).expect("the local word list");
+            let want: Vec<&str> = src
+                .split('\n')
+                .filter(|w| !w.is_empty())
+                .take(5000)
+                .collect();
+            assert_eq!(
+                wordlist(code).unwrap().lines().collect::<Vec<_>>(),
+                want,
+                "{code}"
+            );
+        }
     }
 
     #[cfg(feature = "damage")]
