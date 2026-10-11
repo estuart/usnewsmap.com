@@ -311,6 +311,10 @@ enum Command {
         /// Look for the pages only in this base batch.
         #[arg(long)]
         batch: Option<String>,
+        /// Queue pages the ledger already has outstanding: after a run that
+        /// wrote its ledger rows but failed to put some messages.
+        #[arg(long)]
+        include_outstanding: bool,
         /// Count what would be queued; write and send nothing.
         #[arg(long)]
         dry_run: bool,
@@ -955,6 +959,7 @@ async fn command(
             reason,
             plan,
             batch,
+            include_outstanding,
             dry_run,
         } => {
             let opts = usnm_ingest::ocr_local::enqueue::EnqueueOptions {
@@ -962,6 +967,7 @@ async fn command(
                 reason: (*reason).into(),
                 plan: plan.clone(),
                 batch: batch.clone(),
+                include_outstanding: *include_outstanding,
                 dry_run: *dry_run,
             };
             usnm_ingest::ocr_local::enqueue::enqueue(

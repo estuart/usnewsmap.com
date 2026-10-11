@@ -585,8 +585,17 @@ async fn drains_dead_letters_and_quarantines_bad_ones() {
         queued_at: "2026-10-10T12:00:00Z".into(),
     };
     fx.ask(&[queued(&key(5).doc_id(), BATCH, "bulk")]).await;
-    for cause in [Cause::Permanent, Cause::Unroutable, Cause::DequeueCount] {
+    // One page per cause.
+    for (seq, cause) in [
+        (5, Cause::Permanent),
+        (6, Cause::Unroutable),
+        (7, Cause::DequeueCount),
+    ] {
         let engines = (cause == Cause::Unroutable).then(|| vec!["tesseract-5.5".to_owned()]);
+        let msg = OcrMessage {
+            page: key(seq).to_string(),
+            ..msg.clone()
+        };
         let d = DeadLetter::new(
             "ocr-bulk",
             "m1",
@@ -684,6 +693,38 @@ async fn drains_dead_letters_and_quarantines_bad_ones() {
     .await
     .unwrap();
     assert_eq!(again.queued, 0);
+    // The requeued page then dead-letters for another cause: no longer
+    // `permanent`, so not queued again under that cause.
+    ledger::write_outcomes(
+        fx.stores.curated.as_ref(),
+        &[ledger::Outcome {
+            doc_id: key(5).doc_id(),
+            outcome: ledger::DEAD_LETTERED.into(),
+            cause: Some("dequeue_count".into()),
+            kind: None,
+            source: "m9".into(),
+            at: Utc::now() + chrono::Duration::seconds(5),
+            run: "later".into(),
+        }],
+        Utc::now(),
+        "later",
+    )
+    .await
+    .unwrap();
+    let third = enqueue::requeue(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+        &fx.queue,
+        &opts,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        third.skipped.get("latest_cause_differs"),
+        Some(&1),
+        "{third:?}"
+    );
 }
 
 #[tokio::test]
@@ -720,6 +761,7 @@ async fn enqueue_finds_the_page_and_writes_the_ledger_first() {
         reason: Reason::User,
         plan: "pilot-test".into(),
         batch: None,
+        include_outstanding: false,
         dry_run: false,
     };
     let r = enqueue::enqueue(
@@ -761,6 +803,22 @@ async fn enqueue_finds_the_page_and_writes_the_ledger_first() {
     .await
     .unwrap();
     assert_eq!(again.skipped.get("outstanding"), Some(&1));
+    // A send that failed after the ledger was written: queued again on request.
+    let retry = enqueue::enqueue(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+        &fx.queue,
+        &EnqueueOptions {
+            include_outstanding: true,
+            ..opts.clone()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry.queued, 1);
+    let l = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(l.outstanding(&doc).unwrap().attempt, 2);
 }
 
 #[test]
@@ -861,4 +919,61 @@ async fn report_counts_the_imported_pages() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn every_import_gets_loc_scores_from_curated_text() {
+    // No damage tables: LoC's scores come from the curated text, for each
+    // import's own pages.
+    let fx = fixture(false).await;
+    fx.ask(&[
+        queued(&key(3).doc_id(), BATCH, "bulk"),
+        queued(&key(4).doc_id(), BATCH, "bulk"),
+    ])
+    .await;
+    fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(1))
+        .await;
+    fx.node_writes(&row(4, &GERMAN.repeat(4)), ALTO, &stamp(2))
+        .await;
+    let opts = Options {
+        chunk: 1,
+        ..Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &fx.stores, &opts)
+        .await
+        .unwrap();
+    assert_eq!(status.last_run.imported, 2);
+    let c = &fx.stores.curated;
+    let mut rows = Vec::new();
+    for p in c.list(&format!("{ROOT}/pages/{LCCN}")).await.unwrap() {
+        let b = bytes::Bytes::from(c.get(&p).await.unwrap().unwrap());
+        rows.extend(pages::read_scores(b).unwrap());
+    }
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.loc.damage_rate.is_some()), "{rows:?}");
+}
+
+#[tokio::test]
+async fn an_alto_already_imported_with_other_bytes_stops_the_run() {
+    let fx = fixture(false).await;
+    let doc = key(3).doc_id();
+    fx.ask(&[queued(&doc, BATCH, "bulk")]).await;
+    fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(1))
+        .await;
+    // An earlier run's copy, then the node rewrote the source.
+    fx.stores
+        .curated
+        .put_new(
+            &super::alto_path(&doc, NODE, &stamp(1)),
+            b"<alto/>".to_vec(),
+            "x",
+        )
+        .await
+        .unwrap();
+    let err = sync::run(&fx.state, "test", &fx.stores, &Options::default())
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("other bytes"), "{err:#}");
+    // Nothing was deleted.
+    assert_eq!(fx.out_paths().await.len(), 2);
 }

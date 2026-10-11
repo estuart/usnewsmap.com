@@ -822,14 +822,14 @@ Each run:
 3. Checks each part in `ocr-out`, oldest first, at most `--max-parts` (2,000) per run in imports of `--chunk` (200). A part passes when its name and size are right, the strict reader takes it, the page is outstanding in the ledger with the same batch and reason, its text matches its hash and length, the engine, batch, title and image check out, and its ALTO passes the bounded reader. Its ALTO goes to `curated/ocr-local/alto/`, its row to one merged part per title, `curated/ocr-local/pages/<lccn>/<run>.parquet`, with both texts' scores, and an `imported` outcome goes to the ledger. A part that fails moves to `ocr-quarantine` with its ALTO. Then the sources are deleted with If-Match.
 4. Writes `status/ocr-local.json` to the reference container: the last run's and the running totals of imports, rejects by reason and dead letters by cause, the queue depths, pages outstanding, and the parts left with the oldest one's age.
 
-**Queue pages for the pilot.** Nobody but `id-usnm-ingest` can add messages, so `ocr-enqueue` runs as an execution of the pickup job, which has the exchange account's endpoints. It finds each page in the published version (Step 6's damage tables, or the curated text where they lack the batch). It then writes a ledger row, `curated/ocr-local/queued/<day>/<run>.parquet`, and puts the message: the base batch, the page's detected language in ISO 639-3 (its title's first language for `und`), and LoC's damage rate as the score. It skips pages already outstanding and Japanese titles. `--dry-run` only counts.
+**Queue pages for the pilot.** Nobody but `id-usnm-ingest` can add messages, so `ocr-enqueue` runs as an execution of the pickup job, which has the exchange account's endpoints. It finds each page in the published version (Step 6's damage tables, or the curated text where they lack the batch). It then writes a ledger row, `curated/ocr-local/queued/<day>/<run>.parquet`, and puts the message: the base batch, the page's detected language in ISO 639-3 (its title's first language for `und`), and LoC's damage rate as the score. It skips pages already outstanding and Japanese titles. `--dry-run` only counts. The ledger rows are written before the messages, so if a send fails, run it again with `--include-outstanding` to queue the pages that weren't sent.
 
 ```sh
 scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-enqueue --pages sn83045462_1890-05-03_ed-1_seq-7,... \
   --reason bulk --plan pilot-german [--batch nbu_gage] [--dry-run]
 ```
 
-**Queue dead-lettered pages again,** by cause (`dequeue_count`, `invalid`, `permanent`, `unroutable`) and, for `invalid`, kind. Pages queued since their dead letter, or imported since, are skipped.
+**Queue dead-lettered pages again,** by cause (`dequeue_count`, `invalid`, `permanent`, `unroutable`) and, for `invalid`, kind. Pages queued since their dead letter, imported since, or whose latest dead letter has another cause, are skipped.
 
 ```sh
 scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-requeue --cause dequeue_count [--since 2026-10-20] [--dry-run]

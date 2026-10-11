@@ -74,7 +74,13 @@ async fn send_all(
         queue
             .send(queue_for(m.reason), &m.encode())
             .await
-            .with_context(|| format!("queueing {} (its ledger row is written)", q.doc_id))?;
+            .with_context(|| {
+                format!(
+                    "queueing {} (its ledger row is written: run again with \
+                     --include-outstanding to queue the pages not sent)",
+                    q.doc_id
+                )
+            })?;
         report.queued += 1;
     }
     Ok(())
@@ -123,6 +129,9 @@ pub struct EnqueueOptions {
     pub plan: String,
     /// Only look for the pages in this base batch.
     pub batch: Option<String>,
+    /// Queue pages the ledger has outstanding too: to recover from a run
+    /// that wrote its ledger rows but failed to put some messages.
+    pub include_outstanding: bool,
     pub dry_run: bool,
 }
 
@@ -175,7 +184,7 @@ pub async fn enqueue(
             skip(&mut report, "bad_doc_id", doc_id);
             continue;
         };
-        if ledger.outstanding(doc_id).is_some() {
+        if !opts.include_outstanding && ledger.outstanding(doc_id).is_some() {
             skip(&mut report, "outstanding", doc_id);
             continue;
         }
@@ -348,6 +357,17 @@ pub async fn requeue(
         }
         if last.is_some_and(|o| o.outcome != DEAD_LETTERED) {
             skip(&mut report, "imported", &doc_id);
+            continue;
+        }
+        // The page's latest dead letter must be the one asked for: one
+        // requeued for `permanent` that then failed as `invalid` isn't
+        // `permanent` any more.
+        let matches = last.is_none_or(|o| {
+            o.cause.as_deref() == Some(opts.cause.as_str())
+                && (opts.kind.is_none() || o.kind == opts.kind)
+        });
+        if !matches {
+            skip(&mut report, "latest_cause_differs", &doc_id);
             continue;
         }
         let Some(&batch_version) = published.get(&old.batch) else {

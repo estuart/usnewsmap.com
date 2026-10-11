@@ -319,22 +319,40 @@ impl LocScores {
         titles: &HashMap<String, Vec<String>>,
         doc_ids: &HashSet<String>,
     ) -> anyhow::Result<HashMap<String, Scores>> {
-        if !self.cache.contains_key(&batch.batch) {
-            if self.cache.len() >= TABLE_CACHE {
-                self.cache.clear();
-            }
-            let table = self.tables.as_ref().and_then(|t| t.get(&batch.batch));
-            let scores = match table {
-                Some(path) => {
-                    let bytes = curated
-                        .get(path)
-                        .await?
-                        .with_context(|| format!("damage table {path} not found"))?;
-                    ocr_damage::read_scores(Bytes::from(bytes), None)?
+        let table_path = self
+            .tables
+            .as_ref()
+            .and_then(|t| t.get(&batch.batch))
+            .cloned();
+        if let Some(path) = table_path {
+            // A page table covers the whole batch: read it once.
+            if !self.cache.contains_key(&batch.batch) {
+                if self.cache.len() >= TABLE_CACHE {
+                    self.cache.clear();
                 }
-                None => score_from_curated(curated, batch, titles, doc_ids).await?,
-            };
-            self.cache.insert(batch.batch.clone(), scores);
+                let bytes = curated
+                    .get(&path)
+                    .await?
+                    .with_context(|| format!("damage table {path} not found"))?;
+                let scores = ocr_damage::read_scores(Bytes::from(bytes), None)?;
+                self.cache.insert(batch.batch.clone(), scores);
+            }
+        } else {
+            // From the curated text, only the pages asked for: score those
+            // not scored yet and add them.
+            let have = self.cache.entry(batch.batch.clone()).or_default();
+            let missing: HashSet<String> = doc_ids
+                .iter()
+                .filter(|d| !have.contains_key(*d))
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                let found = score_from_curated(curated, batch, titles, &missing).await?;
+                self.cache
+                    .get_mut(&batch.batch)
+                    .expect("inserted above")
+                    .extend(found);
+            }
         }
         let table = &self.cache[&batch.batch];
         Ok(doc_ids
@@ -739,10 +757,19 @@ async fn import(
                 // (1) The ALTO, the bytes that were checked.
                 let doc_id = row.key.doc_id();
                 let dest = alto_path(&doc_id, &name.node, &name.stamp);
-                stores
+                if !stores
                     .curated
-                    .put_new(&dest, alto_bytes, "application/xml")
-                    .await?;
+                    .put_new(&dest, alto_bytes.clone(), "application/xml")
+                    .await?
+                {
+                    // An earlier run wrote it and stopped before its record.
+                    // The node may have rewritten the source since: only the
+                    // same bytes are the same import.
+                    let existing = stores.curated.get(&dest).await?;
+                    if existing.as_deref() != Some(alto_bytes.as_slice()) {
+                        bail!("{dest} exists with other bytes than the checked source's");
+                    }
+                }
                 let queued = ctx
                     .ledger
                     .outstanding(&doc_id)
@@ -940,12 +967,12 @@ async fn quarantine_part(
 ) -> anyhow::Result<()> {
     let content = match bytes {
         Some(b) => Some(b),
-        None if part.size <= checks::MAX_PART_BYTES => stores
-            .out
-            .get_if_match(&part.path, &part.etag, checks::MAX_PART_BYTES)
-            .await
-            .ok()
-            .flatten(),
+        None if part.size <= checks::MAX_PART_BYTES => {
+            stores
+                .out
+                .get_if_match(&part.path, &part.etag, checks::MAX_PART_BYTES)
+                .await?
+        }
         None => None,
     };
     quarantine::put(
@@ -965,12 +992,12 @@ async fn quarantine_part(
     if let Some((a, bytes)) = alto {
         let content = match bytes {
             Some(b) => Some(b.clone()),
-            None if a.size <= checks::MAX_ALTO_BYTES => stores
-                .out
-                .get_if_match(&a.path, &a.etag, checks::MAX_ALTO_BYTES)
-                .await
-                .ok()
-                .flatten(),
+            None if a.size <= checks::MAX_ALTO_BYTES => {
+                stores
+                    .out
+                    .get_if_match(&a.path, &a.etag, checks::MAX_ALTO_BYTES)
+                    .await?
+            }
             None => None,
         };
         quarantine::put(
