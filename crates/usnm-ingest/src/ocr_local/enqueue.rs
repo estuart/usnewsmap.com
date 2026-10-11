@@ -92,6 +92,7 @@ async fn find_page(
     curated: &dyn ObjectStore,
     batches: &[RunBatch],
     tables: &Option<HashMap<String, String>>,
+    cache: &mut HashMap<String, HashMap<String, StoredScore>>,
     titles: &HashMap<String, Vec<String>>,
     key: &PageKey,
     only: Option<&str>,
@@ -104,13 +105,23 @@ async fn find_page(
         }
         let found = match tables.as_ref().and_then(|t| t.get(&b.batch)) {
             Some(path) => {
-                let bytes = curated
-                    .get(path)
-                    .await?
-                    .with_context(|| format!("damage table {path} not found"))?;
-                ocr_damage::read_scores(Bytes::from(bytes), Some(&wanted))?
+                // Each table is read once per run, whatever the pages asked.
+                if !cache.contains_key(&b.batch) {
+                    let bytes = curated
+                        .get(path)
+                        .await?
+                        .with_context(|| format!("damage table {path} not found"))?;
+                    let all = ocr_damage::read_scores(Bytes::from(bytes), None)?;
+                    cache.insert(b.batch.clone(), all);
+                }
+                &cache[&b.batch]
             }
-            None => super::sync::score_from_curated(curated, b, titles, &wanted).await?,
+            None => {
+                let key = format!("curated:{}", b.batch);
+                let scored = super::sync::score_from_curated(curated, b, titles, &wanted).await?;
+                cache.entry(key.clone()).or_default().extend(scored);
+                &cache[&key]
+            }
         };
         if let Some(s) = found.get(&doc_id) {
             return Ok(Some(s.clone()));
@@ -176,6 +187,7 @@ pub async fn enqueue(
     let mut report = QueueReport::default();
     let mut out = Vec::new();
     let mut seen = HashSet::new();
+    let mut table_cache = HashMap::new();
     for doc_id in &opts.pages {
         if !seen.insert(doc_id.clone()) {
             continue;
@@ -197,6 +209,7 @@ pub async fn enqueue(
             curated,
             &batches,
             &tables,
+            &mut table_cache,
             &titles,
             &key,
             opts.batch.as_deref(),

@@ -431,6 +431,10 @@ fn dead_letter_key(d: &DeadLetter) -> String {
     }
 }
 
+/// Dead letters received, written and deleted at a time: well inside
+/// [`DEAD_LETTER_HIDE`], so none comes back while the run holds it.
+const DEAD_LETTER_BATCH: usize = 100;
+
 async fn drain_dead_letters(
     stores: &Stores,
     run: &str,
@@ -439,6 +443,31 @@ async fn drain_dead_letters(
     written: &mut Vec<Outcome>,
     lease: &Lease,
 ) -> anyhow::Result<()> {
+    let mut drained = 0;
+    let mut n = 0;
+    while drained < max {
+        let limit = DEAD_LETTER_BATCH.min(max - drained);
+        let tag = format!("{run}-dl{n:03}");
+        let got = drain_batch(stores, &tag, limit, counts, written, lease).await?;
+        drained += got;
+        n += 1;
+        if got < limit {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Receive up to `max` dead letters, write them, then delete them; the
+/// number received.
+async fn drain_batch(
+    stores: &Stores,
+    run: &str,
+    max: usize,
+    counts: &mut Counts,
+    written: &mut Vec<Outcome>,
+    lease: &Lease,
+) -> anyhow::Result<usize> {
     let mut valid: Vec<(Received, DeadLetter)> = Vec::new();
     let mut rejected: Vec<Received> = Vec::new();
     while valid.len() + rejected.len() < max {
@@ -501,13 +530,7 @@ async fn drain_dead_letters(
         {
             bail!("{path} already exists");
         }
-        ledger::write_outcomes(
-            stores.curated.as_ref(),
-            &outcomes,
-            now,
-            &format!("{run}-dl"),
-        )
-        .await?;
+        ledger::write_outcomes(stores.curated.as_ref(), &outcomes, now, run).await?;
         written.extend(outcomes);
         tracing::info!(path, dead_letters = valid.len(), "dead letters written");
     }
@@ -516,7 +539,7 @@ async fn drain_dead_letters(
             tracing::warn!(message_id = %msg.id, error = %format!("{e:#}"), "dead letter not deleted; it comes back and is drained again");
         }
     }
-    Ok(())
+    Ok(valid.len() + rejected.len())
 }
 
 /// The run.
