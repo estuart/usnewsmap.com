@@ -210,7 +210,7 @@ async fn put_manifest(
         tokio::fs::create_dir_all(&dir).await?;
         let tmp = dir.join(format!(".{file}.part"));
         tokio::fs::write(&tmp, &body).await?;
-        tokio::fs::rename(&tmp, dir.join(&file)).await
+        tokio::fs::rename(&tmp, dir.join(file)).await
     };
     match write.await {
         Ok(()) => StatusCode::CREATED.into_response(),
