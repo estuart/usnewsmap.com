@@ -12,10 +12,13 @@ use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
 
 use crate::snippet::{matched_in, page_snippets};
+
+mod phrase;
 use crate::{
     ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
     KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
 };
+pub use phrase::Scoring;
 
 /// One position of an indexed text: the word there, or none where the
 /// engine drops a word but still counts its position, so no term matches it
@@ -181,11 +184,14 @@ impl MemoryBackend {
         }));
     }
 
+    /// The pages `query` matches, as the engine finds them with `scoring`
+    /// (a NEAR search of three or more words differs, [`Scoring`]).
     fn matching<'a>(
         &'a self,
         indexes: &'a IndexSet,
         query: &'a Node,
         filters: &'a Filters,
+        scoring: Scoring,
     ) -> Result<impl Iterator<Item = &'a Indexed> + 'a, SearchError> {
         let mut selected = Vec::new();
         for id in indexes.ids() {
@@ -213,7 +219,7 @@ impl MemoryBackend {
                         .as_ref()
                         .is_some_and(|s| filters.series.contains(s)))
                 && !indexes.hides(&doc.doc_id, &doc.batch)
-                && eval_texts(d.reads(query, &analyzed), &d.texts(indexes))
+                && eval_scored(d.reads(query, &analyzed), &d.texts(indexes), scoring)
         }))
     }
 }
@@ -242,7 +248,7 @@ impl SearchBackend for MemoryBackend {
         let mut days = std::collections::BTreeSet::new();
         let mut papers: BTreeMap<&str, u64> = BTreeMap::new();
         let mut languages: BTreeMap<&str, u64> = BTreeMap::new();
-        for d in self.matching(indexes, query, filters)? {
+        for d in self.matching(indexes, query, filters, Scoring::Off)? {
             let day = d.doc.day;
             total += 1;
             days.insert(day);
@@ -286,7 +292,7 @@ impl SearchBackend for MemoryBackend {
         shards: &[u8],
     ) -> Result<Vec<CubeCell>, SearchError> {
         Ok(cells(
-            self.matching(indexes, query, filters)?
+            self.matching(indexes, query, filters, Scoring::Off)?
                 .filter(|d| shards.contains(&d.doc.place_shard)),
             spec,
         ))
@@ -301,7 +307,7 @@ impl SearchBackend for MemoryBackend {
         places: &[String],
     ) -> Result<Vec<CubeCell>, SearchError> {
         Ok(cells(
-            self.matching(indexes, query, filters)?
+            self.matching(indexes, query, filters, Scoring::Off)?
                 .filter(|d| places.contains(&d.doc.place_id)),
             spec,
         ))
@@ -315,8 +321,14 @@ impl SearchBackend for MemoryBackend {
         page: &HitsQuery,
     ) -> Result<HitsPage, SearchError> {
         let analyzed = as_analyzed(query);
+        // Quickwit scores the search only to sort by relevance (`_score`),
+        // and then finds the pages, and counts them, as it scores them.
+        let scoring = match page.sort {
+            HitSort::Relevant => Scoring::On,
+            HitSort::Oldest | HitSort::Newest => Scoring::Off,
+        };
         let mut docs: Vec<(usize, &PageDoc)> = self
-            .matching(indexes, query, filters)?
+            .matching(indexes, query, filters, scoring)?
             .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.doc.place_id == p))
             .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.doc.lccn == l))
             .map(|d| {
@@ -400,7 +412,7 @@ impl SearchBackend for MemoryBackend {
         let both = indexes.clone().with_american_stories(true);
         let analyzed = as_analyzed(query);
         let only = self
-            .matching(&both, query, filters)?
+            .matching(&both, query, filters, Scoring::Off)?
             .filter(|d| {
                 let q = d.reads(query, &analyzed);
                 let layout = TextLayout::Separate;
@@ -443,18 +455,24 @@ pub fn eval<T: Position>(node: &Node, tokens: &[T]) -> bool {
 /// Evaluate the AST against a document's texts (05 §5.5.4): a term or
 /// phrase matches when it matches in any one of them (a phrase within one
 /// text), and the operators combine those as usual, so `NOT x` excludes a
-/// page with `x` in any text.
+/// page with `x` in any text. Unscored, as the engine counts pages.
 pub fn eval_texts<T: Position>(node: &Node, texts: &[&[T]]) -> bool {
+    eval_scored(node, texts, Scoring::Off)
+}
+
+/// [`eval_texts`] as the engine runs it with `scoring`, which decides how a
+/// NEAR search of three or more words matches (05 §5.6).
+pub fn eval_scored<T: Position>(node: &Node, texts: &[&[T]], scoring: Scoring) -> bool {
     match node {
         Node::Term(t) => texts
             .iter()
             .any(|tokens| tokens.iter().any(|tok| term_at(t, tok))),
         Node::Phrase { terms, slop } => texts
             .iter()
-            .any(|tokens| phrase_matches(terms, *slop, tokens)),
-        Node::And(c) => c.iter().all(|n| eval_texts(n, texts)),
-        Node::Or(c) => c.iter().any(|n| eval_texts(n, texts)),
-        Node::Not(n) => !eval_texts(n, texts),
+            .any(|tokens| phrase_count(terms, *slop, tokens, scoring) > 0),
+        Node::And(c) => c.iter().all(|n| eval_scored(n, texts, scoring)),
+        Node::Or(c) => c.iter().any(|n| eval_scored(n, texts, scoring)),
+        Node::Not(n) => !eval_scored(n, texts, scoring),
     }
 }
 
@@ -493,31 +511,28 @@ pub(crate) fn word_matches(word: &str, token: &str) -> bool {
     }
 }
 
-/// Ordered phrase match where the total number of extra words between
-/// consecutive terms is at most `slop`. A dropped word's position counts as
-/// an extra word.
-fn phrase_matches<T: Position>(terms: &[String], slop: u8, tokens: &[T]) -> bool {
-    phrase_starts(terms, slop, tokens).next().is_some()
-}
-
-/// Where in `tokens` the phrase starts a match, within `slop` extra words.
-fn phrase_starts<'a, T: Position>(
-    terms: &'a [String],
-    slop: u8,
-    tokens: &'a [T],
-) -> impl Iterator<Item = usize> + 'a {
-    fn from<T: Position>(terms: &[String], tokens: &[T], pos: usize, budget: usize) -> bool {
-        let Some((first, rest)) = terms.split_first() else {
-            return true;
-        };
-        let end = (pos + budget + 1).min(tokens.len());
-        (pos..end)
-            .any(|i| word_at(first, &tokens[i]) && from(rest, tokens, i + 1, budget - (i - pos)))
+/// How the engine matches a phrase in one text ([`phrase::phrase_count`]):
+/// with scoring on, how often it occurs, and with it off, 1 when it does;
+/// 0 when it doesn't. Words count by position, a dropped word's too, and
+/// each term's positions are shifted by how many terms follow it, as
+/// tantivy's phrase scorer reads them, so with slop the words may come out
+/// of order, a swap costing 2. A one-word phrase is that word's occurrences.
+fn phrase_count<T: Position>(terms: &[String], slop: u8, tokens: &[T], scoring: Scoring) -> u32 {
+    let n = terms.len();
+    let positions: Vec<Vec<u32>> = (0..n)
+        .map(|i| {
+            let shift = (n - 1 - i) as u32;
+            (0u32..)
+                .zip(tokens)
+                .filter(|(_, tok)| word_at(&terms[i], *tok))
+                .map(|(p, _)| p + shift)
+                .collect()
+        })
+        .collect();
+    match positions.as_slice() {
+        [one] => one.len() as u32,
+        _ => phrase::phrase_count(&positions, u32::from(slop), scoring),
     }
-    tokens.iter().enumerate().filter_map(move |(i, t)| {
-        let (first, rest) = terms.split_first()?;
-        (word_at(first, t) && from(rest, tokens, i + 1, usize::from(slop))).then_some(i)
-    })
 }
 
 pub(crate) fn levenshtein_within(a: &str, b: &str, max: usize) -> bool {
@@ -552,13 +567,14 @@ fn counts(m: BTreeMap<&str, u64>) -> Vec<KeyCount> {
 }
 
 /// How often the page mentions the query's positive parts: each word a term
-/// matches, and each place an exact or NEAR phrase matches as a phrase (not
-/// its words one by one, so the `of` in "cross of gold" counts only there).
-/// The reference for "most mentions first" (`HitSort::Relevant`).
+/// matches, and each time an exact or NEAR phrase matches as a phrase (not
+/// its words one by one, so the `of` in "cross of gold" counts only there),
+/// as the engine's scorer counts a phrase ([`Scoring::On`]). The reference
+/// for "most mentions first" (`HitSort::Relevant`).
 fn mentions<T: Position>(node: &Node, tokens: &[T]) -> usize {
     match node {
         Node::Term(t) => tokens.iter().filter(|tok| term_at(t, *tok)).count(),
-        Node::Phrase { terms, slop } => phrase_starts(terms, *slop, tokens).count(),
+        Node::Phrase { terms, slop } => phrase_count(terms, *slop, tokens, Scoring::On) as usize,
         Node::And(c) | Node::Or(c) => c.iter().map(|n| mentions(n, tokens)).sum(),
         Node::Not(_) => 0,
     }
@@ -591,6 +607,43 @@ mod tests {
         assert!(eval(&parse("manki*d").unwrap(), &t));
         assert!(!eval(&parse("manki??d").unwrap(), &t));
         assert!(!eval(&parse("cross*ld").unwrap(), &t));
+    }
+
+    /// NEAR searches as Quickwit 0.9.1's phrase scorer runs them (#243, 05
+    /// §5.6): out of order once the slop allows, and with three or more
+    /// words, counted where they aren't scored.
+    #[test]
+    fn near_searches_match_as_the_engine_does() {
+        let t = toks("You shall not crucify mankind upon a cross of gold said Bryan");
+        // `gold` 2 words after `cross`, swapped: 3.
+        assert!(!eval(&parse(r#""gold cross"~2"#).unwrap(), &t));
+        assert!(eval(&parse(r#""gold cross"~3"#).unwrap(), &t));
+        assert!(!eval(&parse(r#""gold of cross""#).unwrap(), &t));
+
+        let t = toks("Corn held firm, barley was quiet, rye dull.");
+        assert!(!eval(&parse(r#""barley corn"~3"#).unwrap(), &t));
+        assert!(eval(&parse(r#""barley corn"~4"#).unwrap(), &t));
+        // Two words apart each time: the last word is checked against the
+        // whole slop unscored, and charged the slop spent when scored.
+        let q = parse(r#""corn barley rye"~2"#).unwrap();
+        assert!(eval(&q, &t));
+        assert!(!eval_scored(&q, &[&t], Scoring::On));
+        assert_eq!(mentions(&q, &t), 0);
+        let q = parse(r#""corn barley rye"~4"#).unwrap();
+        assert!(eval_scored(&q, &[&t], Scoring::On));
+        assert_eq!(mentions(&q, &t), 1);
+        assert!(!eval(&parse(r#""corn barley rye"~1"#).unwrap(), &t));
+        // Swapped.
+        let q = parse(r#""barley corn rye"~4"#).unwrap();
+        assert!(eval(&q, &t));
+        assert!(!eval_scored(&q, &[&t], Scoring::On));
+
+        // A dropped word keeps its position either way.
+        let gapped = [Some("b".to_owned()), None, Some("a".to_owned())];
+        assert!(!eval(&parse(r#""a b"~2"#).unwrap(), &gapped));
+        assert!(eval(&parse(r#""a b"~3"#).unwrap(), &gapped));
+        assert!(eval(&parse(r#""b a"~1"#).unwrap(), &gapped));
+        assert!(!eval(&parse(r#""b a""#).unwrap(), &gapped));
     }
 
     #[test]

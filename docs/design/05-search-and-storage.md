@@ -349,6 +349,14 @@ The user-facing syntax is simple and matches LoC's modes. The API parses it into
 
 Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range and term filters on `day`, `state`, etc. They are never free text.
 
+**Near and slop (#243).** A NEAR search, or any phrase with slop (`"a b"~n`), matches as Quickwit 0.9.1's phrase scorer runs it (tantivy revision 057458b, `phrase_scorer.rs`), and the memory backend copies that code (`usnm_search::memory::phrase`), quirks included:
+
+- **Two words** match when their positions, each shifted by how many words follow it in the query, are at most `n` apart either way. In order, that is the words between them; out of order it is 2 more, so a swap costs 2 and with enough slop the words match in either order. On "said the speaker to the convention", `"speaker convention"~2` matches, `"convention speaker"~3` doesn't, and `~4` does.
+- **Three or more words.** Each middle word carries the slop spent so far. The last word is then checked differently depending on whether the engine scores the search. Counts, aggregations (the summary, cubes, days) and hits sorted by date are unscored: the last word only has to be within `n` of a match so far, ignoring the slop already spent. Hits sorted by relevance (`_score`) are scored, and the last word is charged the slop spent. So `"a b c"~2` on "a x x b x x c" (2 spent on each gap) is counted and listed by date, but not listed by relevance, and `/v1/hits?sort=relevant` reports a smaller total than the summary for it. With two words, and for exact phrases, the two agree.
+- A dropped word (§5.5) keeps its position, so it counts toward the distance either way.
+
+Snippets mark a NEAR search's words one by one, wherever they are, and `matched_in` uses the unscored match. "Most mentions first" in the memory backend counts a phrase as the scorer does. The parity fixtures have a grain report ("Corn held firm, barley was quiet, rye dull.") that `"corn barley rye"~2` counts and relevance doesn't list, and the parity queries search out of order with two and three words.
+
 ## 5.7 Aggregation strategy
 
 **Bucket choice.** The API chooses the finest bucket that keeps the result cube bounded, unless the client pins one:

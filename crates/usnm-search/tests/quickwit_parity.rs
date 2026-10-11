@@ -112,6 +112,35 @@ fn queries() -> Vec<(&'static str, Node)> {
             "mode near",
             build("speaker convention", Some(Mode::Near), 3, 0).unwrap(),
         ),
+        // NEAR searches out of order (#243): a swap costs 2, so "said the
+        // speaker to the convention" is 4 apart reversed. With three words
+        // the slop spent carries, and the last word is charged it only when
+        // hits are sorted by relevance: the grain report's words, two apart
+        // each time, are counted with slop 2 and not listed by relevance.
+        (
+            "near out of order",
+            parse(r#""convention speaker"~3"#).unwrap(),
+        ),
+        (
+            "near out of order within the slop",
+            parse(r#""convention speaker"~4"#).unwrap(),
+        ),
+        (
+            "mode near with two words swapped",
+            build("wheat higher ½", Some(Mode::Near), 2, 0).unwrap(),
+        ),
+        (
+            "near three words carrying the slop",
+            parse(r#""corn barley rye"~2"#).unwrap(),
+        ),
+        (
+            "near three words swapped",
+            parse(r#""barley corn rye"~4"#).unwrap(),
+        ),
+        (
+            "near three words within the slop",
+            parse(r#""corn barley rye"~4"#).unwrap(),
+        ),
         ("no match", parse("zyzzyva").unwrap()),
         // American Stories' text (05 §5.5.4): words only in its headlines,
         // words each OCR misread where the other didn't, and a query whose
@@ -199,6 +228,44 @@ async fn long_ocr_runs_are_searched_as_each_layout_indexes_them() {
         assert_eq!(total(&loc, q).await, pages, "{q}");
         assert_eq!(total(&both, q).await, pages, "{q}");
         assert_eq!(total(&one, q).await, 0, "{q}");
+    }
+}
+
+/// NEAR searches out of order and of three words (#243), as Quickwit's
+/// phrase scorer runs them: the fixtures' grain report is counted, and
+/// listed by date, for a three-word search its words are too far apart for
+/// when scored, so hits by relevance don't list it.
+#[tokio::test]
+async fn near_searches_count_what_relevance_does_not_list() {
+    let mem = memory();
+    let f = filters("1895-01-01", "1897-12-31");
+    let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
+    for (_, set) in searched_sets() {
+        let total = |q: &str| {
+            let (mem, f, spec, set, q) = (&mem, &f, &spec, set.clone(), parse(q).unwrap());
+            async move { mem.summary(&set, &q, f, spec).await.unwrap().total_hits }
+        };
+        let listed = |q: &str, sort| {
+            let (mem, f, set, q) = (&mem, &f, set.clone(), parse(q).unwrap());
+            let page = HitsQuery {
+                sort,
+                limit: 500,
+                ..Default::default()
+            };
+            async move { mem.hits(&set, &q, f, &page).await.unwrap().total }
+        };
+        let pages = total("corn").await;
+        assert!(pages > 0);
+        assert_eq!(total(r#""convention speaker"~3"#).await, 0);
+        assert!(total(r#""convention speaker"~4"#).await > 0);
+        for q in [r#""corn barley rye"~2"#, r#""barley corn rye"~4"#] {
+            assert_eq!(total(q).await, pages, "{q}");
+            assert_eq!(listed(q, HitSort::Newest).await, pages, "{q}");
+            assert_eq!(listed(q, HitSort::Relevant).await, 0, "{q}");
+        }
+        let q = r#""corn barley rye"~4"#;
+        assert_eq!(listed(q, HitSort::Relevant).await, pages);
+        assert_eq!(total(r#""corn barley rye"~1"#).await, 0);
     }
 }
 
