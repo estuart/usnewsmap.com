@@ -216,8 +216,9 @@ enum Command {
         /// of tables is written only by a run over every batch.
         #[arg(long, value_delimiter = ',')]
         batches: Vec<String>,
-        /// Score only the pages the audit samples at this percentage (the gate).
-        #[arg(long, requires = "index_version")]
+        /// The gate: score only the pages the audit samples at this
+        /// percentage, and compare them with `--compare-csv`.
+        #[arg(long, requires_all = ["index_version", "compare_csv"])]
         sample_pct: Option<f64>,
         /// The audit's per-page CSV (`.csv.gz`, a curated path) to compare the sample with.
         #[arg(long, requires = "sample_pct")]
@@ -1133,6 +1134,19 @@ mod tests {
             parse(&["--version", "v1", "--compare-csv", "x.csv.gz"]).is_err(),
             "--compare-csv needs --sample-pct"
         );
+        assert!(
+            parse(&["--version", "v1", "--sample-pct", "10"]).is_err(),
+            "the gate needs --compare-csv"
+        );
+        assert!(parse(&[
+            "--version",
+            "v1",
+            "--sample-pct",
+            "10",
+            "--compare-csv",
+            "x.csv.gz"
+        ])
+        .is_ok());
         let cli = parse(&[
             "--version",
             "v1",

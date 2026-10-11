@@ -498,7 +498,7 @@ A set packages a sample for reuse in `sets/{name}/`, built once by the search cl
 - `manifest.json`, written last: name and version, how the batches were chosen, the batch list with each archive's bytes and sha256, page and document counts, each file's bytes and sha256, the corpus bounds, the common-word pairs' and American Stories' versions, the index config's sha256, the builder's commit and `created_at`.
 
 ```sh
-J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 J bundle --name loc-1pct-v1 --sample dev1pct \
   --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
 J load --set loc-1pct-v1 --index s1ixset          # the cluster loads straight from the set
@@ -558,9 +558,9 @@ scripts/provision.sh dev
 # The 1%: every 100th batch of LoC's listing by name, from the 40th (offset 39):
 # 30 batches, 238,057 pages of 23,838,683 (0.999%), 26 awardees, 23.8 GB of archives.
 B=arhi_beatles_ver01,az_fireant_ver01,ct_fairfield_ver01,curiv_plasse_ver01,dlc_alpha_ver03,dlc_debaptiste_ver01,dlc_goldenrod_ver01,dlc_leibovitz_ver01,dlc_saluki_ver01,gu_drteeth_ver01,iahi_hypno_ver01,in_irvington_ver01,khi_garwood_ver02,lu_juggernaut_ver01,me_calais_ver03,mnhi_dassel_ver01,mohi_berenice_ver01,mthi_goldeneye_ver01,ncu_cotton_ver04,nhd_lafayette_ver01,nn_keddy_ver01,ohi_himilco_ver01,oru_longspur_ver01,rp_hobgoblin_ver02,tu_eddie_ver02,uuml_anderson_ver01,vi_fezza_ver01,vnstcsc_duggan_ver01,whi_brie_ver01,wvu_jolie_ver02
-scripts/start-job.sh dev INGEST_JOB enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
-scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
-scripts/start-job.sh dev INGEST_JOB run --batches $B --full --curate-max-runtime-secs 21600 \
+scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
+scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
+scripts/start-job.sh --env dev --job INGEST_JOB -- run --batches $B --full --curate-max-runtime-secs 21600 \
   --titles-max-runtime-secs 28800 --quickwit-bin /usr/local/bin/quickwit \
   --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index
 scripts/logs.sh dev release-progress 6h    # the single-writer baseline on the same pages
@@ -570,7 +570,7 @@ scripts/settings.sh dev USNM_SEARCH_CLUSTER true
 scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 1
 scripts/settings.sh dev USNM_SEARCH_CLUSTER_INDEXERS 1
 scripts/provision.sh dev
-J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 J members
 J sample --name dev1pct --pct 100          # dev's whole version is the 1%
 J bundle --name loc-1pct-v1 --sample dev1pct \
@@ -632,7 +632,7 @@ scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
 scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODE_VCPU 4
 scripts/settings.sh dev USNM_SEARCH_COMPARE_TAGS "$TAG,$TAG-qw2509"
 scripts/provision.sh dev
-J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 JOB=$(scripts/settings.sh dev SEARCH_CLUSTER_JOB)
 wait_for() {  # until execution $1 has ended; prints how
   local s; while :; do

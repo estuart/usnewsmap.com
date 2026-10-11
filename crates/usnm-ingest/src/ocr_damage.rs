@@ -833,7 +833,7 @@ pub fn compare_with_csv(
     g
 }
 
-/// The gate: score the sample, compare with the CSV if given, write the result.
+/// The gate: score the sample, compare it with the audit's CSV, write the result.
 pub async fn gate(
     curated: Arc<dyn ObjectStore>,
     reference: &dyn ObjectStore,
@@ -843,16 +843,15 @@ pub async fn gate(
     let cut = sample_cut(pct)?;
     let batches = version_batches(reference, &opts.index_version, &opts.batches).await?;
     let titles = Arc::new(title_languages(reference, &opts.index_version).await?);
-    let csv = match &opts.compare_csv {
-        Some(path) => {
-            let gz = curated
-                .get(path)
-                .await?
-                .with_context(|| format!("{path} not found"))?;
-            Some(tokio::task::spawn_blocking(move || read_audit_csv(&gz)).await??)
-        }
-        None => None,
-    };
+    let path = opts
+        .compare_csv
+        .as_deref()
+        .context("the gate needs --compare-csv")?;
+    let gz = curated
+        .get(path)
+        .await?
+        .with_context(|| format!("{path} not found"))?;
+    let csv = tokio::task::spawn_blocking(move || read_audit_csv(&gz)).await??;
     let started = Instant::now();
     tracing::info!(index_version = %opts.index_version, batches = batches.len(), sample_pct = pct, "ocr damage gate starting");
     let rows: Vec<PageRow> = futures::stream::iter(batches.iter())
@@ -864,16 +863,10 @@ pub async fn gate(
         .buffer_unordered(opts.parallel.max(1))
         .try_concat()
         .await?;
-    let mut report = match &csv {
-        Some(csv) => compare_with_csv(&rows, csv, &titles),
-        None => GateReport::default(),
-    };
+    let mut report = compare_with_csv(&rows, &csv, &titles);
     report.index_version = opts.index_version.clone();
     report.sample_pct = Some(pct);
     report.sampled = rows.len() as u64;
-    if csv.is_none() {
-        report.passed = true;
-    }
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ");
     let path = format!(
         "{}/gate/{}-{pct}pct-{stamp}.json",
@@ -973,11 +966,11 @@ pub async fn run(
                 r.pages
             );
         }
-        if opts.sample_pct.is_none() && opts.compare_csv.is_none() {
+        if opts.sample_pct.is_none() {
             return Ok(());
         }
     }
-    if opts.sample_pct.is_some() || opts.compare_csv.is_some() {
+    if opts.sample_pct.is_some() {
         let g = gate(curated, reference, opts).await?;
         if !g.passed {
             bail!(
@@ -1248,15 +1241,15 @@ mod tests {
     #[tokio::test]
     async fn gate_compares_the_sample_with_the_audit_csv() {
         let f = fixture().await;
-        // What the Rust scores are, formatted as the CSV formats them.
+        // Without the audit's CSV there is nothing to pass.
         let o = Options {
             sample_pct: Some(100.0),
             ..opts()
         };
-        let report = gate(Arc::clone(&f.curated), f.reference.as_ref(), &o)
+        assert!(gate(Arc::clone(&f.curated), f.reference.as_ref(), &o)
             .await
-            .unwrap();
-        assert_eq!((report.sampled, report.passed), (4, true));
+            .is_err());
+        // The CSV as the audit would write it for the Rust scores.
         let titles = title_languages(f.reference.as_ref(), "v1").await.unwrap();
         let rows = score_batch(
             f.curated.as_ref(),
