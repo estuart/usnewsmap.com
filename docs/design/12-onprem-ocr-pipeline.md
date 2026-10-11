@@ -518,6 +518,16 @@ Rust, as a `seed` step of `ocr-sync`; no new job.
 - **Ledger.** The seeder writes the ledger as `ocr-enqueue` does (Step 8). A page outstanding for 14 days with no result is queued again, at most 3 times. A dead-lettered page is queued again only when its cause was `dequeue_count`, within the same limit, or `unroutable`. An `unroutable` page is queued again outside that limit, after 6 hours doubling to 48 hours per `unroutable` cycle of the same page (13 §13.7.6).
 - **Verify.** `--dry-run` counts per unit; a dev run into a directory queue; the ledger matches the queue count; the worker accepts every message.
 
+Built in #345, which differs from the plan above in these ways:
+
+- **Command.** `usnm-ingest ocr-seed` runs the step on its own, as an execution of the pickup job. Its `--dry-run` prints the units and page ids it would queue as JSON and writes nothing. Each setting has a flag (`--seed-plan`, `--bulk-window` and so on) that overrides it.
+- **Settings.** Also `USNM_OCR_BULK_REFILL_BELOW` (default half the window), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000 pages) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; question 8). `USNM_OCR_SEED_LANGUAGES` defaults to the Tesseract pilot's languages: ces, deu, eng, pol, rus and srp. The automatic window is at least 500 pages, for a start with no imports to measure.
+- **Window.** Outstanding means bulk pages in the ledger with no result, not timed out and not waiting out an `unroutable` dead letter, or `ocr-bulk`'s approximate count if that is larger. The automatic window measures the rate from the ledger's `imported` outcomes, since an import record lists merged parts rather than pages. `ocr-enqueue` and `ocr-requeue` now hold the `ocr-sync` lock too, so nothing queues while the seeder counts. Get Queue Metadata needs `queueServices/queues/read`, which `id-usnm-ingest`'s Storage Queue Data Contributor already has.
+- **Ledger.** When a send fails, the pages after it get a new outcome, `not_sent`, so they aren't outstanding; the seeder sends its own plan's again in the next run, within the retry limit. `unroutable` cycles are counted by dead letter message id, so a dead letter drained twice counts once.
+- **Ranks** are worked out per batch version, filter set and title languages, and kept under `curated/ocr-local/seed/rank/`. A run that hits its deadline before every batch is ranked queues no new pages, and the next run continues. Units a plan has finished go under `curated/ocr-local/seed/plans/<plan>/done/`, per filter set. A `name_verNN` batch filter must name the published version.
+- **Skips.** Duplicate copies follow the release's rule: a copy is skipped when a batch sorting first has the page with text, or the version's `duplicates.json` hides it. `ocr-ja` pages are skipped by title.
+- **Retries** cover the plan's own pages. Pages that `ocr-enqueue` queued use its `--include-outstanding`, or `ocr-requeue`.
+
 ### Step 11: Pilot on node 1 (ops and a draft report, S)
 
 Needs an engine picked for one group (the survey, ADR-0016) with its container on node 1, and Steps 2, 3, 8, 9 and 10 deployed.

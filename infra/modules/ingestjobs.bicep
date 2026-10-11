@@ -25,9 +25,11 @@
 //   `usnm-ingest ocr-sync` on `ocrSyncCron` (hourly), one replica, as
 //   id-usnm-ingest: picks the nodes' output up from the exchange account,
 //   checks it and imports it into curated/ocr-local/ (12 §12.5 Step 8).
-//   Named by ADR-0017. `ocr-enqueue` and `ocr-requeue` run as one-off
-//   executions of it (scripts/start-job.sh --job OCR_SYNC_JOB), since it
-//   has the exchange account's endpoints.
+//   Named by ADR-0017. With a seed plan (`ocrSeed`), each run then tops
+//   `ocr-bulk` up with the pages LoC read worst (12 §12.5 Step 10).
+//   `ocr-enqueue`, `ocr-requeue` and `ocr-seed` run as one-off executions of
+//   it (scripts/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
+//   account's endpoints.
 // - `caj-usnm-jaone-{env}` (with the jaocr job): manual, one replica, the
 //   same image and settings, for jaocr.py's one-off measurements (`mixed`,
 //   `american-stories`) that one replica does anyway; a second replica only
@@ -97,6 +99,8 @@ param ocrQueueEndpoint string = ''
 param ocrBlobEndpoint string = ''
 @description('Schedule for the OCR pickup job (UTC cron). Empty: manual only.')
 param ocrSyncCron string = '17 * * * *'
+@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name: USNM_OCR_SEED_PLAN (empty: no seeding), USNM_OCR_SEED_BATCHES, USNM_OCR_SEED_LANGUAGES, USNM_OCR_SEED_YEARS, USNM_OCR_SEED_MIN_DAMAGE, USNM_OCR_SEED_MAX_PAGES, USNM_OCR_SEED_PILOT, USNM_OCR_SEED_SKIP_AMERICAN_STORIES, USNM_OCR_BULK_WINDOW, USNM_OCR_BULK_REFILL_BELOW. Empty values are left out, so the job\'s defaults apply.')
+param ocrSeed object = {}
 
 // Both jobs: the platform kills a replica after replicaTimeout, which the
 // ingest-job-failed alert reports as a failure. Curation stops claiming at a
@@ -375,6 +379,7 @@ resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
 // telemetry flush. An hourly run normally takes a few minutes.
 var ocrSyncReplicaTimeoutSecs = 3600
 var ocrSyncMaxRuntimeSecs = 3000
+var ocrSeedEnv = filter(map(items(ocrSeed), s => { name: s.key, value: string(s.value) }), e => !empty(e.value))
 
 resource ocrSyncJob 'Microsoft.App/jobs@2025-01-01' = if (ocrSync) {
   name: 'usnm-ocrsync-caj-${jobNameSuffix}'
@@ -410,7 +415,7 @@ resource ocrSyncJob 'Microsoft.App/jobs@2025-01-01' = if (ocrSync) {
             { name: 'USNM_OCR_QUEUE_URL', value: ocrQueueEndpoint }
             { name: 'USNM_OCR_OUT_URL', value: '${ocrBlobEndpoint}ocr-out' }
             { name: 'USNM_OCR_QUARANTINE_URL', value: '${ocrBlobEndpoint}ocr-quarantine' }
-          ])
+          ], ocrSeedEnv)
         }
       ]
     }

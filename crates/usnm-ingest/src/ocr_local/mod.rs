@@ -1,6 +1,6 @@
 //! Our own OCR of pages LoC read badly, from the on-prem nodes into the
-//! lake (#296, 12 §12.5 Step 8): `usnm-ingest ocr-sync`, `ocr-enqueue` and
-//! `ocr-requeue`.
+//! lake (#296, 12 §12.5 Steps 8 and 10): `usnm-ingest ocr-sync`,
+//! `ocr-enqueue`, `ocr-requeue` and the seeder ([`seed`], `ocr-seed`).
 //!
 //! The nodes write to the exchange account's `ocr-out` and `ocr-deadletter`
 //! (ADR-0015). Everything there is untrusted: any member of the nodes'
@@ -25,6 +25,9 @@
 //!   them without importing them again.
 //! - `ocr-local/queued/<day>/<run>.parquet` and
 //!   `ocr-local/outcomes/<day>/<run>.parquet`: the ledger ([`ledger`]).
+//! - `ocr-local/seed/rank/<key>/<batch>_verNN.json` and
+//!   `ocr-local/seed/plans/<plan>/done/<run>.json`: the seeder's ranked
+//!   units and each plan's finished ones ([`seed`]).
 //! - `ocr-local/deadletter/<day>/<run>.jsonl`: drained dead letters,
 //!   re-encoded from their checked fields.
 //! - `ocr-local/report/<stamp>.json`: `ocr-sync --report` ([`report`]).
@@ -38,6 +41,7 @@ pub mod ledger;
 pub mod pages;
 pub mod quarantine;
 pub mod report;
+pub mod seed;
 pub mod sync;
 
 use chrono::{DateTime, Utc};
@@ -101,3 +105,6 @@ pub fn from_micros(us: i64) -> DateTime<Utc> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod seed_tests;
