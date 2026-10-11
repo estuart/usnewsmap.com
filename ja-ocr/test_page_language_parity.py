@@ -3,9 +3,10 @@ python3 -m unittest discover ja-ocr (wordfreq, and pyarrow for zstd before Pytho
 
 - The function words the port embeds (crates/usnm-core/data/page-language-words.txt) are the ones
   damage_v2.Models builds: scripts/build-page-language-words.py renders the file again and it must match.
-- The pages of the parity fixture (crates/usnm-core/tests/data/damage-parity.jsonl.zst) still get the
-  language, decision, second language, script and shares recorded there, which the Rust test checks
-  the port against (crates/usnm-core/tests/page_language_parity.rs).
+- The pages of the parity fixtures (crates/usnm-core/tests/data/damage-parity.jsonl.zst and
+  page-language-parity.jsonl.zst, scripts/page-language-sample.py) still get the language, decision,
+  second language, script and shares recorded there, which the Rust test checks the port against
+  (crates/usnm-core/tests/page_language_parity.rs).
 
 Both need the repository around this directory (CI mounts it); without it, or without wordfreq, they skip.
 """
@@ -26,7 +27,8 @@ except ImportError:  # the image has it
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILDER = os.path.join(ROOT, "scripts", "build-page-language-words.py")
 WORDS = os.path.join(ROOT, "crates", "usnm-core", "data", "page-language-words.txt")
-FIXTURE = os.path.join(ROOT, "crates", "usnm-core", "tests", "data", "damage-parity.jsonl.zst")
+FIXTURES = [os.path.join(ROOT, "crates", "usnm-core", "tests", "data", f"{name}.jsonl.zst")
+            for name in ("damage-parity", "page-language-parity")]
 
 
 def builder():
@@ -65,19 +67,20 @@ def zstd_available() -> bool:
 
 
 @unittest.skipIf(wordfreq is None, "needs wordfreq")
-@unittest.skipUnless(os.path.exists(FIXTURE), "needs the repository")
+@unittest.skipUnless(all(os.path.exists(f) for f in FIXTURES), "needs the repository")
 @unittest.skipUnless(zstd_available(), "needs zstd (Python 3.14 or pyarrow)")
 class Fixture(unittest.TestCase):
-    def test_detect_gives_what_the_fixture_records(self):
-        with open(FIXTURE, "rb") as f:
-            lines = damage_parity.zstd_decompress(f.read()).decode().splitlines()
+    def test_detect_gives_what_the_fixtures_record(self):
         models = damage_v2.Models()
         fields = ("lang", "decision", "mixed_with", "script", "share", "runner_up", "runner_up_share")
-        pages = [json.loads(line) for line in lines[1:] if line.strip()]
-        self.assertGreaterEqual(len(pages), 60)
-        for p in pages:
-            got = damage_v2.score_v2(p["text"], tuple(p["languages"]), models)
-            self.assertEqual({k: got[k] for k in fields}, {k: p["score"][k] for k in fields}, p["doc_id"])
+        for path in FIXTURES:
+            with open(path, "rb") as f:
+                lines = damage_parity.zstd_decompress(f.read()).decode().splitlines()
+            pages = [json.loads(line) for line in lines[1:] if line.strip()]
+            self.assertGreaterEqual(len(pages), 40, path)
+            for p in pages:
+                got = damage_v2.score_v2(p["text"], tuple(p["languages"]), models)
+                self.assertEqual({k: got[k] for k in fields}, {k: p["score"][k] for k in fields}, p["doc_id"])
 
 
 if __name__ == "__main__":

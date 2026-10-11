@@ -1,10 +1,17 @@
 //! The page-language detector's Rust port against `ja-ocr/damage_v2.py`'s
-//! `detect` (05 §5.5.8, #289): every page of the damage metric's parity
-//! fixture (`tests/data/damage-parity.jsonl.zst`: pages from loc.gov's text
-//! service and made-up pages for the known traps between Python's string
-//! handling and Rust's, scored in Python by `ja-ocr/damage_parity.py`) must
-//! get the same language, decision, second language, script, runner-up and
-//! shares here.
+//! `detect` (05 §5.5.8, #289): every page of two fixtures, scored in Python,
+//! must get the same language, decision, second language, script,
+//! runner-up and shares here:
+//!
+//! - `tests/data/damage-parity.jsonl.zst`, the damage metric's: pages from
+//!   loc.gov's text service and made-up pages for the known traps between
+//!   Python's string handling and Rust's (`ja-ocr/damage_parity.py`);
+//! - `tests/data/page-language-parity.jsonl.zst`: 42 loc.gov pages before
+//!   1929, from Chronicling America's language facets, of titles in 24
+//!   languages (Cherokee, Croatian with Slovenian, and the Yiddish and Hebrew
+//!   papers among them), the first two pages of a multilingual title's
+//!   issue, cut to 8,000 characters but for the two longest
+//!   (`scripts/page-language-sample.py`).
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -13,12 +20,11 @@ use usnm_core::page_language::{self, Decision};
 /// Python rounds the shares to 4 places.
 const SHARE_TOLERANCE: f64 = 0.5e-4 + 1e-12;
 
-fn fixture() -> (Value, Vec<Value>) {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/damage-parity.jsonl.zst"
-    );
-    let bytes = std::fs::read(path).expect("the parity fixture");
+const FIXTURES: [&str; 2] = ["damage-parity", "page-language-parity"];
+
+fn fixture_file(name: &str) -> (Value, Vec<Value>) {
+    let path = format!("{}/tests/data/{name}.jsonl.zst", env!("CARGO_MANIFEST_DIR"));
+    let bytes = std::fs::read(&path).expect("the parity fixture");
     let text = String::from_utf8(zstd::decode_all(&bytes[..]).expect("zstd")).expect("UTF-8");
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let header: Value = serde_json::from_str(lines.next().expect("a header")).expect("JSON");
@@ -26,6 +32,11 @@ fn fixture() -> (Value, Vec<Value>) {
         .map(|l| serde_json::from_str(l).expect("JSON"))
         .collect();
     (header["header"].clone(), records)
+}
+
+/// Every page of both fixtures.
+fn fixture() -> Vec<Value> {
+    FIXTURES.iter().flat_map(|f| fixture_file(f).1).collect()
 }
 
 fn sha256(path: &str) -> String {
@@ -43,16 +54,22 @@ fn languages(r: &Value) -> Vec<&str> {
 }
 
 #[test]
-fn fixture_was_scored_by_this_damage_v2_py() {
-    let (header, records) = fixture();
+fn fixtures_were_scored_by_this_damage_v2_py() {
     let ja_ocr = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ja-ocr");
-    assert_eq!(
-        header["damage_v2_sha256"].as_str(),
-        Some(sha256(&format!("{ja_ocr}/damage_v2.py")).as_str()),
-        "damage_v2.py changed since the fixture was scored: python3 ja-ocr/damage_parity.py --rescore"
-    );
-    assert_eq!(header["wordfreq"].as_str(), Some("3.1.1"));
-    assert_eq!(header["pages"].as_u64(), Some(records.len() as u64));
+    for name in FIXTURES {
+        let (header, records) = fixture_file(name);
+        assert_eq!(
+            header["damage_v2_sha256"].as_str(),
+            Some(sha256(&format!("{ja_ocr}/damage_v2.py")).as_str()),
+            "damage_v2.py changed since {name} was scored: python3 ja-ocr/damage_parity.py --rescore"
+        );
+        assert_eq!(header["wordfreq"].as_str(), Some("3.1.1"), "{name}");
+        assert_eq!(
+            header["pages"].as_u64(),
+            Some(records.len() as u64),
+            "{name}"
+        );
+    }
 }
 
 /// Differences between a page's detection here and Python's.
@@ -96,8 +113,8 @@ fn differences(r: &Value) -> Vec<String> {
 
 #[test]
 fn every_page_agrees() {
-    let (_, records) = fixture();
-    assert!(records.len() >= 60, "{} pages", records.len());
+    let records = fixture();
+    assert!(records.len() >= 120, "{} pages", records.len());
     let mut differ = 0;
     for r in &records {
         let diff = differences(r);
@@ -111,7 +128,7 @@ fn every_page_agrees() {
 
 #[test]
 fn fixture_covers_the_decisions_and_scripts() {
-    let (_, records) = fixture();
+    let records = fixture();
     let found: Vec<(Decision, &str)> = records
         .iter()
         .map(|r| {
@@ -133,7 +150,7 @@ fn fixture_covers_the_decisions_and_scripts() {
 #[test]
 #[ignore = "a measurement, not a check"]
 fn time_per_page() {
-    let (_, records) = fixture();
+    let records = fixture();
     let pages: Vec<(&str, Vec<&str>)> = records
         .iter()
         .map(|r| (r["text"].as_str().unwrap(), languages(r)))
