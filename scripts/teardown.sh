@@ -80,6 +80,8 @@ groups=$(grep -Ei '^/subscriptions/[^/]+/resourceGroups/[^/]+$' <<< "$ids" | sed
 # The environment's custom role outlives its resource group: it's declared
 # in the group but stored with the subscription.
 roles=$(grep -i '/providers/Microsoft.Authorization/roleDefinitions/' <<< "$ids" || true)
+# Key Vaults are soft-deleted with their group; purged below where allowed.
+vaults=$(grep -iE '/providers/Microsoft.KeyVault/vaults/[^/]+$' <<< "$ids" | sed 's|.*/||' || true)
 # The guard-rail definitions go with the last environment in the subscription.
 others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$STACK' && name != '$GUARDRAILS_STACK'].name" -o tsv)
 guardrails=false
@@ -95,6 +97,7 @@ fi
 echo "This deletes environment $ENV_NAME from subscription $SUBSCRIPTION:"
 sed 's/^/  resource group (everything in it) /' <<< "$groups"
 [ -n "$roles" ] && sed 's/^/  /' <<< "$roles"
+[ -n "$vaults" ] && sed 's/^/  Key Vault (then purged, unless purge protection holds it) /' <<< "$vaults"
 if [ "$guardrails" = true ]; then
   echo "  the guard-rail stack $GUARDRAILS_STACK and its policy definitions"
 elif [ -n "$others" ]; then
@@ -191,6 +194,21 @@ for g in $groups; do
   [ "$exists" = true ] || continue
   echo "deleting resource group $g"
   az group delete -n "$g" --yes -o none
+done
+# A deleted Key Vault stays soft-deleted, holding its name, for its retention
+# (7 days outside prod). Purge it so a rebuilt environment can use the name
+# (ADR-0017); prod's has purge protection, which refuses, so say so instead.
+for v in $vaults; do
+  if ! out=$(az keyvault show-deleted --name "$v" --query properties.purgeProtectionEnabled -o tsv 2>&1); then
+    grep -qiE 'NotFound|not found' <<< "$out" || die "can't check deleted Key Vault $v: $out"
+    continue
+  fi
+  if [ "$out" = true ]; then
+    echo "keeping soft-deleted Key Vault $v: purge protection holds it, and its name, until its retention ends"
+    continue
+  fi
+  echo "purging soft-deleted Key Vault $v"
+  az keyvault purge --name "$v" -o none
 done
 for id in $roles; do
   if ! out=$(az resource show --ids "$id" -o none 2>&1); then

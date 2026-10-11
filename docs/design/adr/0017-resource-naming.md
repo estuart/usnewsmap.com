@@ -113,7 +113,7 @@ The registry lives in `infra/naming.bicep`. A new function word is added there i
 | `jaocr`     | The Japanese OCR job, its failure alert, and Document Intelligence, whose endpoint only `scripts/ja-ocr/run.py` reads                                                                                                                                                      |
 | `jaone`     | The one-replica Japanese OCR audit job                                                                                                                                                                                                                                     |
 | `scratch`   | The ingest writer's Premium NFS scratch account and its file private endpoint                                                                                                                                                                                              |
-| `ocr`       | The on-prem OCR pipeline: exchange account, the nodes' Entra group, Arc machines and their VMs, data collection rule, node workspace and Application Insights, node writer role, node alerts                                                                               |
+| `ocr`       | The on-prem OCR pipeline: exchange account, the nodes' Entra group, Arc machines and their VMs, data collection rule, node workspace and Application Insights, node writer role, node alerts, the operator's Key Vault for node setup (`usnmocrkv{env}{sfx}`)              |
 | `ocrsync`   | The planned job that picks up node output (design doc 12)                                                                                                                                                                                                                  |
 | `pipeline`  | The pipeline workbook (ingest, backfill and release in one view)                                                                                                                                                                                                           |
 | `ci`        | The GitHub Actions OIDC identity                                                                                                                                                                                                                                           |
@@ -384,7 +384,7 @@ Three layers. The first needs no Azure access.
 
 The maintainer decided four earlier questions on 10 October 2026: the suffix stays after `env` (Form), Phase 2 runs now (Phase 2), the Spot resource group goes in Phase 1 (Phase 1), and workbook titles stay readable (Display names). One remains:
 
-1. **Key Vault in dev** (Key Vault isn't built yet, #295). A soft-deleted vault holds its name for 7-90 days ([Key Vault soft delete][kvsd]), which blocks a dev rebuild under the same name. Turn off purge protection in dev and purge on teardown, or vary the dev suffix?
+1. **Key Vault in dev** (Key Vault isn't built yet, #295). A soft-deleted vault holds its name for 7-90 days ([Key Vault soft delete][kvsd]), which blocks a dev rebuild under the same name. Turn off purge protection in dev and purge on teardown, or vary the dev suffix? The OCR nodes' vault (`usnmocrkv{env}{sfx}`, #296), the first one built, takes the first option for now: purge protection and 90 days' retention in prod only; elsewhere 7 days, the minimum, with no purge protection, and `teardown.sh` purges every soft-deleted vault the stack held that purge protection doesn't hold.
 
 ## References
 
