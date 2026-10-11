@@ -28,9 +28,11 @@ struct Content {
     chars: String,
 }
 
+/// An OCR annotation list. `resources` is required (an empty list is a page
+/// with no text): a response without it, such as `{}`, isn't an annotation
+/// list, and is refused rather than kept as a textless page.
 #[derive(Debug, Deserialize)]
 struct AnnotationList {
-    #[serde(default)]
     resources: Vec<Annotation>,
 }
 
@@ -570,6 +572,16 @@ mod tests {
         assert_eq!(s[0].how, "surname_state");
         assert_eq!(s[1].how, "unresolved");
         assert_eq!(s[2].state.as_deref(), Some("NY"));
+    }
+
+    #[test]
+    fn an_annotation_list_needs_its_resources() {
+        assert!(page_lines(b"{}").is_err());
+        assert!(page_lines(br#"{"@type": "sc:AnnotationList"}"#).is_err());
+        assert_eq!(
+            page_lines(br#"{"resources": []}"#).unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
