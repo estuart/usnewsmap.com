@@ -6,7 +6,8 @@
 //! the managed identity) or a local directory, and every reference file is
 //! checked against the snapshot's `manifest.json` before it is used.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -16,11 +17,11 @@ use usnm_core::query::Node;
 use usnm_core::text::{Analyzer, Analyzers};
 use usnm_core::text_layout::TextLayout;
 use usnm_core::time::{day_number, BucketSpec};
-use usnm_search::IndexSet;
+use usnm_search::{IndexSet, PageLanguageSets, PageLanguageSide};
 use usnm_state::ocr_local::{OcrLocalPages, OCR_LOCAL_PAGES_FILE};
 use usnm_state::state::{
     JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, DUPLICATES_FILE, JA_LATIN_FILE,
-    LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
+    LANGUAGE_BASELINES_FILE, PAGE_LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
 };
 use usnm_store::{is_safe_segment, ObjectStore};
 
@@ -70,6 +71,12 @@ pub struct Current {
     /// field for both. A layout this API doesn't know isn't loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_layout: Option<u32>,
+    /// The `usnm_core::page_language::VERSION` every main index's page
+    /// languages were found with (05 §5.5.8, #289): `lang=` then means page
+    /// language, and the baselines count pages by theirs. Absent for
+    /// versions without them, where `lang=` means title language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_language: Option<u32>,
     /// The Congress index set (#229), when the version has one: the
     /// Congressional Globe, the Serial Set, the Annals and the Register,
     /// searched only with `source=congress`.
@@ -164,6 +171,14 @@ pub struct RefData {
     /// written before releases recorded it, which have no exact baselines
     /// under a language filter.
     pub language_baselines: Option<Vec<LanguageSet>>,
+    /// The same pages per set of their own languages, from the snapshot's
+    /// `page_language_baselines.json`, on a version with page languages at
+    /// this API's `usnm_core::page_language::VERSION` (05 §5.5.8); `None`
+    /// otherwise, and `lang=` then means title language.
+    pub page_language_baselines: Option<Vec<LanguageSet>>,
+    /// Each set of page languages with its pages, which picks the side a
+    /// `lang=` filter is rendered as (06 §6.3.1); with the baselines above.
+    pub page_language_sets: Option<Arc<PageLanguageSets>>,
     /// Every page in the published version (the sum of the baselines).
     pub pages: u64,
     /// Pages published per place (each place's baselines summed).
@@ -284,6 +299,31 @@ impl RefData {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
         };
+        // Only at this API's version: another's fields may mean something
+        // else, so its `lang=` stays on title languages.
+        let page_language_baselines =
+            if current.page_language == Some(usnm_core::page_language::VERSION) {
+                match optional(PAGE_LANGUAGE_BASELINES_FILE) {
+                    Some(entry) => Some(fetch_checked(store, dir, entry).await?),
+                    None => {
+                        tracing::warn!(
+                            "current.json has page languages, but the snapshot has no \
+                         page_language_baselines.json; `lang=` filters by title language"
+                        );
+                        None
+                    }
+                }
+            } else {
+                if let Some(v) = current.page_language {
+                    tracing::warn!(
+                        index_page_language = v,
+                        api_page_language = usnm_core::page_language::VERSION,
+                        "the version's page languages are of another version; `lang=` filters by \
+                     title language"
+                    );
+                }
+                None
+            };
         let ja_latin = match optional(JA_LATIN_FILE) {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
@@ -318,6 +358,14 @@ impl RefData {
                     series.sort_unstable();
                 }
                 rd.language_baselines = Some(lb.sets);
+            }
+            if let Some((path, bytes)) = page_language_baselines {
+                let mut lb: LanguageBaselines = parse(&path, &bytes)?;
+                for series in lb.sets.iter_mut().flat_map(|s| s.baselines.values_mut()) {
+                    series.sort_unstable();
+                }
+                rd.page_language_sets = Some(Arc::new(page_language_sets(&lb.sets)));
+                rd.page_language_baselines = Some(lb.sets);
             }
             if let Some((path, bytes)) = ja_latin {
                 let latin: JaLatin = parse(&path, &bytes)?;
@@ -467,6 +515,8 @@ impl RefData {
             titles: titles.into_iter().map(|t| (t.lccn.clone(), t)).collect(),
             baselines,
             language_baselines: None,
+            page_language_baselines: None,
+            page_language_sets: None,
             pages,
             place_pages,
             title_pages: None,
@@ -611,6 +661,7 @@ impl RefData {
             .with_american_stories(american)
             .with_text_layout(self.text_layout())
             .with_decades(decades)
+            .with_page_languages(self.page_language_sets.clone())
             .hiding(
                 self.hidden
                     .iter()
@@ -717,7 +768,37 @@ impl RefData {
     /// Whether the baselines are exact under a language filter: always with
     /// none, otherwise only when the snapshot has them per language.
     pub fn has_baselines_for(&self, langs: &[String]) -> bool {
-        langs.is_empty() || self.language_baselines.is_some()
+        langs.is_empty() || self.language_baselines.is_some() || self.uses_page_language()
+    }
+
+    /// Whether `lang=` means page language on this version (05 §5.5.8): its
+    /// main indexes have them at this API's version, and its snapshot their
+    /// baselines. The Japanese index never has them; its pages' language
+    /// is their title's, which a Japanese title's pages keep.
+    pub fn uses_page_language(&self) -> bool {
+        self.page_language_baselines.is_some()
+    }
+
+    /// Render page-language filters on `side` (`USNM_PAGE_LANGUAGE_FILTER`).
+    pub fn set_page_language_filter(&mut self, side: PageLanguageSide) {
+        if let Some(sets) = &self.page_language_sets {
+            if sets.side() != side {
+                self.page_language_sets = Some(Arc::new(sets.as_ref().clone().with_side(side)));
+            }
+        }
+    }
+
+    /// Pages in each language by page language (sets that have it), on a
+    /// version with them.
+    pub fn page_language_pages(&self) -> Option<BTreeMap<String, u64>> {
+        let sets = self.page_language_sets.as_ref()?;
+        let mut out: BTreeMap<String, u64> = BTreeMap::new();
+        for (langs, pages) in sets.sets() {
+            for l in langs {
+                *out.entry(l.clone()).or_default() += pages;
+            }
+        }
+        Some(out)
     }
 
     /// Pages published per bucket for one place: all of them, or only those of
@@ -765,14 +846,32 @@ impl RefData {
         out
     }
 
-    /// The sets of title languages that share one of `langs`; each page is in
-    /// one set, so summing them counts every matching page once.
+    /// The sets of languages that share one of `langs`, by page language on
+    /// a version with them (05 §5.5.8) and by title language otherwise; each
+    /// page is in one set, so summing them counts every matching page once.
     fn language_sets<'a>(&'a self, langs: &'a [String]) -> impl Iterator<Item = &'a LanguageSet> {
-        self.language_baselines
-            .iter()
+        let sets = if self.uses_page_language() {
+            &self.page_language_baselines
+        } else {
+            &self.language_baselines
+        };
+        sets.iter()
             .flatten()
             .filter(move |set| set.languages.iter().any(|l| langs.contains(l)))
     }
+}
+
+/// Each set of page languages with its pages, every place and day summed.
+fn page_language_sets(sets: &[LanguageSet]) -> PageLanguageSets {
+    PageLanguageSets::new(sets.iter().map(|s| {
+        let pages = s
+            .baselines
+            .values()
+            .flatten()
+            .map(|&(_, n)| u64::from(n))
+            .sum();
+        (s.languages.clone(), pages)
+    }))
 }
 
 /// Add a place's sorted `(day, pages)` series that fall inside `spec` to `out`.

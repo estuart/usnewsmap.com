@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Export the function words a page's language is found by (#289, 05
-§5.5.6): crates/usnm-core/data/page-language-words.txt.
+§5.5.8): crates/usnm-core/data/page-language-words.txt.
 
     scripts/build-page-language-words.py [--out path] [--check]
 
@@ -33,7 +33,7 @@ WORDFREQ_VERSION = "3.1.1"
 
 HEADER = """\
 # The function words usnm_core::page_language finds a page's language by
-# (#289, 05 §5.5.6): for each word list, its 100 most frequent words of 2
+# (#289, 05 §5.5.8): for each word list, its 100 most frequent words of 2
 # letters or more, most frequent first, then for Danish and Norwegian their
 # "aa" spellings. One line per list: the list's code, the script of its
 # words, then the words. Built by scripts/build-page-language-words.py from

@@ -8,7 +8,7 @@ Data files compiled into `usnm-core`. The crate's code is MIT; these files keep 
 | `damage-words/<code>.txt`, except `haw.txt` and `yi.txt` | `usnm_core::lang`, feature `damage` (12 §12.5, #296) | `scripts/build-damage-words.py`                    | wordfreq 3.1.1, `top_n_list(code, 5000)` | CC BY-SA 4.0 |
 | `damage-words/haw.txt`                                   | the same                                             | copied from `ja-ocr/wordlists/` by the same script | Hawaiian Corpus Project frequency list   | CC0          |
 | `damage-words/yi.txt`                                    | the same                                             | copied from `ja-ocr/wordlists/` by the same script | Yiddish Wikipedia and Wikisource         | CC BY-SA 4.0 |
-| `page-language-words.txt`                                | `usnm_core::page_language` (05 §5.5.6, #289)         | `scripts/build-page-language-words.py`             | the function words of the 30 lists above | CC BY-SA 4.0 |
+| `page-language-words.txt`                                | `usnm_core::page_language` (05 §5.5.8, #289)         | `scripts/build-page-language-words.py`             | the function words of the 30 lists above | CC BY-SA 4.0 |
 
 `ja-ocr/wordlists/README.md` describes how the Hawaiian and Yiddish lists were built.
 

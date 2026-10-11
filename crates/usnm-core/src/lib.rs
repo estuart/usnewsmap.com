@@ -15,7 +15,7 @@
 //! - [`params`]: request parameters and canonical cache keys (06 §6.3)
 //! - [`cube`]: the sparse place × bucket cube (06 §6.3.3)
 //! - [`names`]: LoC's language and state names (04 §4.6)
-//! - [`page_language`]: a page's own language, found from its words (05 §5.5.6, #289)
+//! - [`page_language`]: a page's own language, found from its words (05 §5.5.8, #289)
 //! - [`skew`]: where a term is printed more or less than corpus volume predicts (11)
 //! - [`text_layout`]: a searched field per text, or one for both (05 §5.5.7, #283)
 

@@ -253,7 +253,7 @@ enum Command {
         #[arg(long)]
         single_text_field: bool,
         /// Give a full base's pages their own languages, found from their
-        /// words (#289, 05 §5.5.6), and the version page-language baselines,
+        /// words (#289, 05 §5.5.8), and the version page-language baselines,
         /// so `lang=` filters by them. Only a full base takes it; deltas
         /// follow the published version.
         #[arg(long)]

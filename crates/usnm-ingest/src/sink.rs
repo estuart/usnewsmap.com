@@ -141,7 +141,7 @@ impl Decades {
 
 /// How this run's new main index lays its pages out: by decade (05
 /// §5.5.5), in which text fields (05 §5.5.7) and with the page languages or
-/// not (05 §5.5.6). Only the main index takes it; the Japanese index keeps
+/// not (05 §5.5.8). Only the main index takes it; the Japanese index keeps
 /// its own mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MainLayout {
@@ -172,7 +172,7 @@ pub fn main_template(tuning: &WriterTuning, layout: MainLayout) -> anyhow::Resul
 const TEMPLATE_LANGUAGE: &str =
     "- { name: language, type: array<text>, tokenizer: raw, fast: true }";
 
-/// `template` with the page-language fields (05 §5.5.6, #289) after the
+/// `template` with the page-language fields (05 §5.5.8, #289) after the
 /// title languages' when `on`; as it is otherwise. That line must be there
 /// exactly once, so a template change can't silently drop the fields.
 pub fn page_language_fields(on: bool, template: &str) -> anyhow::Result<String> {
@@ -188,7 +188,7 @@ pub fn page_language_fields(on: bool, template: &str) -> anyhow::Result<String> 
         if line.trim() == TEMPLATE_LANGUAGE {
             found += 1;
             out.push(format!(
-                "{indent}# The page's own languages, found from its words (05 §5.5.6, #289): \
+                "{indent}# The page's own languages, found from its words (05 §5.5.8, #289): \
                  `lang=` matches them"
             ));
             out.push(format!(

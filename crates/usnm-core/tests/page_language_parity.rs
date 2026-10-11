@@ -1,5 +1,5 @@
 //! The page-language detector's Rust port against `ja-ocr/damage_v2.py`'s
-//! `detect` (05 §5.5.6, #289): every page of the damage metric's parity
+//! `detect` (05 §5.5.8, #289): every page of the damage metric's parity
 //! fixture (`tests/data/damage-parity.jsonl.zst`: pages from loc.gov's text
 //! service and made-up pages for the known traps between Python's string
 //! handling and Rust's, scored in Python by `ja-ocr/damage_parity.py`) must
@@ -128,7 +128,7 @@ fn fixture_covers_the_decisions_and_scripts() {
 }
 
 /// The detector's time per page and per 1,000 words on the fixture (05
-/// §5.5.6's cost): `cargo test --release -p usnm-core --test
+/// §5.5.8's cost): `cargo test --release -p usnm-core --test
 /// page_language_parity -- --ignored --nocapture`.
 #[test]
 #[ignore = "a measurement, not a check"]

@@ -1,4 +1,4 @@
-//! Page languages at release time (05 §5.5.6, #289): each main-index
+//! Page languages at release time (05 §5.5.8, #289): each main-index
 //! document's own languages, found from its words by
 //! `usnm_core::page_language`, and the pages that moves to another set of
 //! languages than its title's, which the page-language baselines count.
@@ -73,7 +73,7 @@ pub fn annotate_one(doc: &mut Value) {
 }
 
 /// Add `page_language` and `page_language_set` to every document, on a few
-/// threads: detection is about 0.5 µs a word (05 §5.5.6), the cost of a
+/// threads: detection is about 0.5 µs a word (05 §5.5.8), the cost of a
 /// long page being written.
 pub fn annotate(docs: &mut [Value]) {
     let threads = std::thread::available_parallelism()

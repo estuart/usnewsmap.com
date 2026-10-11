@@ -113,11 +113,16 @@ struct Papers {
 
 /// Matching pages per title language, most first. A page of a paper
 /// catalogued in several languages counts in each, so these can add up to
-/// more than `total.hits` (#121).
+/// more than `total.hits` (#121). On a version with page languages (05
+/// §5.5.8), per page language instead, a page in two languages counting in
+/// each, and `by` says so.
 #[derive(Serialize)]
 struct Languages {
     code: Vec<String>,
     hits: Vec<u64>,
+    /// `page` when counted by page language; absent for title language.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    by: Option<&'static str>,
 }
 
 /// The pages a search is compared with (#237): those of titles that list
@@ -257,6 +262,9 @@ async fn compute(
     let snap = &ctx.snap;
     let rd = &snap.refdata;
     let indexes = rd.index_set_for_request(&req)?;
+    // Counted by page language when the index set has them (05 §5.5.8):
+    // never the Japanese index's.
+    let by_page = indexes.page_languages().is_some();
     let mut spec = req.bucket_spec();
     let mut coarsened = false;
     if let Some((term, delay)) = &state.config.fixture_slow {
@@ -437,6 +445,7 @@ async fn compute(
                 .map(|l| l.key.clone())
                 .collect(),
             hits: agg.summary.languages.iter().map(|l| l.hits).collect(),
+            by: by_page.then_some("page"),
         },
         cube: CubeOut {
             cells: SparseCube::from_cells(cells),

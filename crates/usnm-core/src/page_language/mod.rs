@@ -1,4 +1,4 @@
-//! A page's own language (05 §5.5.6, #289): a port of `quality.py`'s
+//! A page's own language (05 §5.5.8, #289): a port of `quality.py`'s
 //! `detect` (`ja-ocr/damage_v2.py`) and of the functions it calls, without
 //! the damage half of the audit.
 //!
@@ -16,7 +16,7 @@
 //! Python's results on real pages.
 //!
 //! [`page_languages`] turns the result into the languages the index records
-//! for the page (05 §5.5.6), and [`set_key`] into the one keyword the
+//! for the page (05 §5.5.8), and [`set_key`] into the one keyword the
 //! `lang=` filter's complement side matches (06 §6.3.1).
 //!
 //! Language codes in and out are the catalog's MARC codes.
@@ -427,7 +427,7 @@ fn other_script_language(
     }
 }
 
-/// The languages the index records for a page (05 §5.5.6): the detected
+/// The languages the index records for a page (05 §5.5.8): the detected
 /// language, or a mixed page's two; an und page, or one with no text of its
 /// own (`None`), its title's languages; and every title language with no
 /// word list whatever the result, since the detector can't see those (#251).

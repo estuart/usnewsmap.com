@@ -68,7 +68,7 @@ param ocrLocal bool = false
 param partitionDecade bool = false
 @description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.7). Only a full base takes it; deltas follow the published version.')
 param singleTextField bool = false
-@description('Give a full rebuild\'s pages their own languages, found from their words, so lang= filters by them (#289, 05 §5.5.6). Only a full base takes it; deltas follow the published version.')
+@description('Give a full rebuild\'s pages their own languages, found from their words, so lang= filters by them (#289, 05 §5.5.8). Only a full base takes it; deltas follow the published version.')
 param pageLanguage bool = false
 @minValue(1)
 @maxValue(32)

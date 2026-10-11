@@ -159,6 +159,9 @@ fn configure(config: &Config, snapshot: &mut Snapshot) {
         );
     }
     snapshot.refdata.congress_search = config.congress_search;
+    snapshot
+        .refdata
+        .set_page_language_filter(config.page_language_filter);
 }
 
 pub struct AppState {

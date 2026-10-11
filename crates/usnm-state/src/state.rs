@@ -156,7 +156,7 @@ pub const DUPLICATES_FILE: &str = "duplicates.json";
 pub const LANGUAGE_BASELINES_FILE: &str = "language_baselines.json";
 
 /// The file in a version's reference snapshot with pages published per place
-/// and day for each distinct set of page languages (05 §5.5.6, #289), in
+/// and day for each distinct set of page languages (05 §5.5.8, #289), in
 /// [`LanguageBaselines`]' shape: the title-language counts with every page
 /// whose own languages differ from its title's moved to their set. Only
 /// versions whose `current.json` has `page_language` have it.
@@ -164,7 +164,7 @@ pub const PAGE_LANGUAGE_BASELINES_FILE: &str = "page_language_baselines.json";
 
 /// The file in a version's reference snapshot with the pages its main
 /// indexes hold in a set of page languages other than their title's (05
-/// §5.5.6), so a delta can count them again: the release, not the API,
+/// §5.5.8), so a delta can count them again: the release, not the API,
 /// reads it. Only versions with page languages have it.
 pub const PAGE_LANGUAGES_FILE: &str = "page_languages.json";
 

@@ -18,7 +18,10 @@ use usnm_core::text::Analyzer;
 use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
 
+pub use language::{LanguageMatch, PageLanguageSets, PageLanguageSide};
+
 pub mod cache_metrics;
+pub mod language;
 pub mod memory;
 pub mod plan;
 pub mod quickwit;
@@ -38,6 +41,12 @@ pub struct PageDoc {
     pub state: String,
     #[serde(default)]
     pub language: Vec<String>,
+    /// The page's own languages (05 §5.5.8), on a version with them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub page_language: Vec<String>,
+    /// The same as one keyword (`eng_ger`, `none`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_language_set: Option<String>,
     pub front_page: bool,
     pub edition: u16,
     pub seq: u16,
@@ -141,6 +150,11 @@ pub struct IndexSet {
     /// §5.5.5): a date-limited search names its decades, so Quickwit skips
     /// the splits of the others.
     decades: Option<RangeInclusive<u16>>,
+    /// Every index has the page languages at the API's
+    /// `usnm_core::page_language::VERSION`, and the version's sets of them
+    /// with their pages (05 §5.5.8): `lang=` matches page languages,
+    /// rendered as the smaller side, and pages are counted by them.
+    page_languages: Option<Arc<PageLanguageSets>>,
     /// Batch → ids of its documents to hide.
     hidden: Arc<BTreeMap<String, BTreeSet<String>>>,
 }
@@ -154,6 +168,7 @@ impl IndexSet {
             american_stories: false,
             text_layout: TextLayout::Separate,
             decades: None,
+            page_languages: None,
             hidden: Arc::default(),
         }
     }
@@ -215,6 +230,38 @@ impl IndexSet {
 
     pub fn decades(&self) -> Option<&RangeInclusive<u16>> {
         self.decades.as_ref()
+    }
+
+    /// Whether `lang=` matches page languages, and the version's sets of
+    /// them (05 §5.5.8).
+    pub fn with_page_languages(mut self, sets: Option<Arc<PageLanguageSets>>) -> Self {
+        self.page_languages = sets;
+        self
+    }
+
+    pub fn page_languages(&self) -> Option<&PageLanguageSets> {
+        self.page_languages.as_deref()
+    }
+
+    /// How `langs` (a `lang=` filter) matches pages; `None` without one.
+    pub fn language_match(&self, langs: &[String]) -> Option<LanguageMatch> {
+        if langs.is_empty() {
+            return None;
+        }
+        Some(match &self.page_languages {
+            Some(sets) => sets.matching(langs),
+            None => LanguageMatch::Title(langs.to_vec()),
+        })
+    }
+
+    /// The field matching pages are counted by language in: their own
+    /// languages on a version with them, their title's otherwise.
+    pub fn language_field(&self) -> &'static str {
+        if self.page_languages.is_some() {
+            usnm_core::page_language::FIELD
+        } else {
+            "language"
+        }
     }
 
     /// Hide each `(doc_id, batch)`: that batch's copy of the page.

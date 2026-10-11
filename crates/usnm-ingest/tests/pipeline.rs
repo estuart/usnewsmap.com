@@ -4412,7 +4412,7 @@ fn pages_by_set(baselines: &Value) -> BTreeMap<String, u64> {
     out
 }
 
-/// A full base built with `--page-language` (05 §5.5.6, #289): every page
+/// A full base built with `--page-language` (05 §5.5.8, #289): every page
 /// has its own languages, the snapshot their baselines and the pages that
 /// move to them, and the version says so. A delta follows the published
 /// version whatever the setting says and carries the moves forward, and a
@@ -4641,6 +4641,116 @@ async fn a_base_with_page_languages_and_the_releases_after_it() {
         .await
         .get("page_language")
         .is_none());
+}
+
+/// A base built with `--page-language` on a real Quickwit writer (05
+/// §5.5.8), and a delta on it: the index takes both fields, and the two
+/// renderings of a page-language filter find the same pages, the ones the
+/// detector gives that language. Runs when `QUICKWIT_BIN` is set.
+#[tokio::test]
+async fn releases_page_languages_into_a_quickwit_writer_node() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use usnm_core::page_language::{detect, page_languages, set_key};
+    use usnm_ingest::sink::{QuickwitNode, QuickwitSink};
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let archive = |name: &str, pages: &[&Page]| {
+        let path = e.root.join(format!("{name}.tar.gz"));
+        write_archive(&path, pages, false, true);
+        listed(name, &path, None)
+    };
+    let qw = e.root.join("qw");
+    std::fs::create_dir_all(&qw).unwrap();
+    let meta = format!("file://{}/meta", qw.display());
+    let root = format!("file://{}/indexes", qw.display());
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7404, &meta, &root)
+        .await
+        .unwrap();
+    let mut published = Vec::new();
+    for (day, full, batch) in [
+        (1, true, archive("batch_fx_early_ver01", &early)),
+        (8, false, archive("batch_fx_late_ver01", &late)),
+    ] {
+        curate(&e, vec![batch]).await;
+        let r = Release {
+            page_language: full,
+            ..e.releaser(day, full)
+        };
+        let mut sink = QuickwitSink::new(&node.url, &root)
+            .unwrap()
+            .watching(&node)
+            .merges(quick_merges());
+        published.push(r.run(&mut sink).await.unwrap().unwrap());
+    }
+    let p = published.last().unwrap();
+    assert_eq!(
+        e.reference_json("current.json").await["page_language"],
+        usnm_core::page_language::VERSION
+    );
+    // What the detector gives each fixture page.
+    let mut want: BTreeMap<String, u64> = BTreeMap::new();
+    for doc in ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|f| loc_fixture(f).into_values())
+    {
+        let title: Vec<&str> = doc["language"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l.as_str().unwrap())
+            .collect();
+        let found = detect(doc["text"].as_str().unwrap(), &title);
+        *want
+            .entry(set_key(&page_languages(Some(&found), &title)))
+            .or_default() += 1;
+    }
+    let http = reqwest::Client::new();
+    let count = |q: String| {
+        let url = format!("{}/api/v1/{}/search", node.url, p.indexes.join(","));
+        let http = http.clone();
+        async move {
+            let v: Value = http
+                .post(url)
+                .json(&serde_json::json!({"query": q, "max_hits": 0}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["num_hits"].as_u64().unwrap_or_else(|| panic!("{q}: {v}"))
+        }
+    };
+    for lang in ["eng", "ger", "spa"] {
+        let has = |set: &str| usnm_core::page_language::set_languages(set).any(|l| l == lang);
+        let pages: u64 = want.iter().filter(|(s, _)| has(s)).map(|(_, n)| n).sum();
+        let others: Vec<&str> = want
+            .keys()
+            .map(String::as_str)
+            .filter(|s| !has(s))
+            .chain(["none"])
+            .collect();
+        assert_eq!(
+            count(format!("page_language:IN [{lang}]")).await,
+            pages,
+            "{lang}"
+        );
+        assert_eq!(
+            count(format!(
+                "day:[0 TO 1000000] AND NOT page_language_set:IN [{}]",
+                others.join(" ")
+            ))
+            .await,
+            pages,
+            "{lang}"
+        );
+    }
+    node.stop().await.unwrap();
 }
 
 /// A base built with `--partition-decade` on a real Quickwit writer (05

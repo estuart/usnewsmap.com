@@ -109,7 +109,7 @@ pub struct Release {
     /// documents, the index config and `current.json` are as before.
     pub single_text_field: bool,
     /// Give a full base's pages their own languages, found from their
-    /// words (05 §5.5.6, #289): `page_language` and `page_language_set` on
+    /// words (05 §5.5.8, #289): `page_language` and `page_language_set` on
     /// every main-index document, the page-language baselines and the
     /// pages that move to them in the snapshot, and `current.json` says so
     /// (`page_language`). Only a full base takes it: a delta follows the
@@ -344,7 +344,7 @@ struct PublishedPointer {
     /// `text_layout`: the text fields of every main index (05 §5.5.7).
     text_layout: Option<u32>,
     /// `page_language`: every main index of the version has the page
-    /// languages, and its snapshot their baselines (05 §5.5.6).
+    /// languages, and its snapshot their baselines (05 §5.5.8).
     page_language: Option<u32>,
 }
 
@@ -904,7 +904,7 @@ impl Release {
         }
 
         // The pages the version's main indexes hold in a set of page
-        // languages other than their title's (05 §5.5.6): a delta keeps the
+        // languages other than their title's (05 §5.5.8): a delta keeps the
         // published version's, but for the copies it now hides, and adds its
         // own documents' below; a full base starts afresh.
         let mut moves = if page_language {
@@ -1184,7 +1184,7 @@ impl Release {
         }
         // Every main index of the version has the page languages at this
         // version: a base this run built with them, or one the published
-        // version has, with deltas written like it (05 §5.5.6). Absent: the
+        // version has, with deltas written like it (05 §5.5.8). Absent: the
         // API filters and counts by title language, as before the setting.
         if page_language {
             pointer["page_language"] = json!(usnm_core::page_language::VERSION);
@@ -1336,7 +1336,7 @@ impl Release {
     }
 
     /// Whether this release's main index has the page languages (05
-    /// §5.5.6): a full base's as `page_language` says; a delta's (or an
+    /// §5.5.8): a full base's as `page_language` says; a delta's (or an
     /// overlay-only release's, which keeps the main indexes) as the
     /// published version has them, at this code's version, so every main
     /// index of a version has the fields or none does. A published version
@@ -1712,7 +1712,7 @@ impl Release {
                     Ok(())
                 })
                 .with_context(|| path.clone())?;
-                // Each page's own languages (05 §5.5.6), on a few threads,
+                // Each page's own languages (05 §5.5.8), on a few threads,
                 // and the pages that move to another set than their title's.
                 if let Some(m) = moves.as_deref_mut() {
                     page_lang::annotate(&mut part_docs);
@@ -2032,7 +2032,7 @@ impl Release {
             .into_iter()
             .map(|(k, v)| (k, v.into_iter().collect()))
             .collect();
-        // The same pages by their own languages (05 §5.5.6): the title
+        // The same pages by their own languages (05 §5.5.8): the title
         // sets with the moves applied, so a page still counts once.
         let page_language_baselines = moves
             .map(|m| m.apply(&by_language, catalog).map(language_baselines))
