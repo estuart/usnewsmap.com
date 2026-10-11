@@ -91,8 +91,11 @@ if cost=$(az rest --method post \
     | "\((map(.cost) | add // 0) * 100 | round / 100) \(.[0].cur // "")"' <<< "$cost") ||
     die "can't read Cost Management's answer"
   echo "cost since $from: $cost"
+elif grep -qiE 'AuthorizationFailed|RBACAccessDenied|Forbidden|does not have authorization' <<< "$cost"; then
+  # Reading costs needs Cost Management Reader; the rest of the check doesn't.
+  echo "warning: no cost (needs Cost Management Reader): $cost" >&2
 else
-  echo "warning: no cost (Cost Management Reader?): $cost" >&2
+  die "can't read the cost from Cost Management: $cost"
 fi
 
 if [ "$stack" = false ] && [ -z "$groups" ]; then

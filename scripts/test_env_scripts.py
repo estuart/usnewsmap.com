@@ -6,7 +6,8 @@ The stub answers from environment variables: STUB_STACK (the stack's
 resource count; unset: not found), STUB_GROUPS (group names, one per line),
 STUB_TAGS (the project group's "experiment<TAB>started"; unset: no group),
 STUB_PARAMS (the guard-rail stack's parameters as two tsv rows) and
-STUB_COST (Cost Management's answer). It logs each call to STUB_LOG."""
+STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
+message). It logs each call to STUB_LOG."""
 
 import json
 import os
@@ -36,7 +37,9 @@ case "$1 $2" in
     if [ -n "${STUB_TAGS+x}" ]; then printf '%b\n' "$STUB_TAGS"
     else echo "ERROR: (ResourceGroupNotFound) Resource group 'rg-usnm-dev' could not be found." >&2; exit 3; fi ;;
   "resource list") printf 'Microsoft.Storage/storageAccounts\tstusnmdev\n' ;;
-  "rest --method") printf '%s\n' "${STUB_COST:-}" ;;
+  "rest --method")
+    if [ -n "${STUB_COST_ERROR:-}" ]; then echo "$STUB_COST_ERROR" >&2; exit 1; fi
+    printf '%s\n' "${STUB_COST:-}" ;;
   *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
 esac
 """
@@ -227,6 +230,18 @@ class DevStatus(Stubbed):
         # dev's groups only, whatever their case: not prod's, not dev2's.
         self.assertIn("cost since 2026-10-01T12:00:00Z: 1.75 USD", r.stdout)
         self.assertTrue(re.search(r"group rg-usnm-dev: 1 resources", r.stdout))
+
+    def test_cost_without_the_reader_role_is_a_warning(self):
+        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\\t2026-10-01T12:00:00Z",
+                        STUB_COST_ERROR="ERROR: (AuthorizationFailed) no access")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("needs Cost Management Reader", r.stderr)
+
+    def test_any_other_cost_error_fails(self):
+        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\\t2026-10-01T12:00:00Z",
+                        STUB_COST_ERROR="ERROR: (TooManyRequests) throttled")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't read the cost", r.stderr)
 
 
 if __name__ == "__main__":

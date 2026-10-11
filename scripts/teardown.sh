@@ -74,7 +74,11 @@ configured=$(aget USNM_GITHUB_REPO)
 # cleared the setting is recorded, so running this again finishes it.
 archive_mark="$(dirname "$ENV_FILE")/teardown-$SUBSCRIPTION.archive"
 archive=$(aget USNM_ARCHIVE_ACCOUNT)
-[ -n "$archive" ] || [ ! -s "$archive_mark" ] || archive=$(cat "$archive_mark")
+resuming=false
+if [ -z "$archive" ] && [ -s "$archive_mark" ]; then
+  archive=$(cat "$archive_mark")
+  resuming=true
+fi
 if [ -n "$archive" ]; then
   [ "$old_copy" = false ] ||
     die "$ENV_NAME's settings use the archival account (USNM_ARCHIVE_ACCOUNT), and this is an old copy, which they don't describe; remove its endpoint and roles there by hand first"
@@ -249,9 +253,11 @@ if [ -n "$archive" ]; then
   trap 'exit 143' TERM
   # The identities whose roles must be gone afterwards, read before the
   # provision deletes the search cluster's, and kept beside the marker so a
-  # run that picks up an interrupted detach checks all of them.
+  # run that picks up an interrupted detach checks all of them. Read afresh
+  # while the setting is still on: the detach hasn't started, and the
+  # environment's identities may have changed since an earlier attempt.
   principals_file="${archive_mark%.archive}.principals"
-  if [ -s "$principals_file" ]; then
+  if [ "$resuming" = true ] && [ -s "$principals_file" ]; then
     principals=$(cat "$principals_file")
   else
     principals=""
