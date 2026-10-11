@@ -12,7 +12,7 @@ use usnm_state::state::{Curated, RunBatch, State};
 use usnm_store::queue::{LocalQueue, Queue, BULK};
 use usnm_store::ObjectStore;
 
-use super::ledger::{self, Outcome, Queued, DEAD_LETTERED, IMPORTED};
+use super::ledger::{self, Outcome, Queued, DEAD_LETTERED, IMPORTED, NOT_SENT};
 use super::seed::{self, Options, SeedReport};
 use super::sync;
 use crate::ocr_damage::{self, PageRow, VersionBatch, VersionList};
@@ -224,7 +224,7 @@ impl Fx {
                 outcome: outcome.into(),
                 cause: cause.map(str::to_owned),
                 kind: None,
-                source: "test".into(),
+                source: format!("{doc_id}-{}", at.timestamp_micros()),
                 at,
                 run: "test".into(),
             }],
@@ -490,7 +490,7 @@ async fn retries_after_14_days_dequeue_count_and_unroutable() {
     assert_eq!(r.requeued.values().sum::<u64>(), 3);
     let l = ledger::load(fx.curated.as_ref()).await.unwrap();
     assert_eq!(l.queued[&doc(GER, 3, 1)].attempt, 2);
-    assert_eq!(l.unroutable[&doc(GER, 4, 2)], 1);
+    assert_eq!(l.unroutable_cycles(&doc(GER, 4, 2)), 1);
 }
 
 #[test]
@@ -539,4 +539,157 @@ async fn ocr_sync_seeds_after_its_imports() {
     let status = sync::run(&fx.state, "test", &stores, &opts).await.unwrap();
     assert_eq!(status.seed.as_ref().map(|s| s.queued), Some(4));
     assert_eq!(status.queues.get(BULK), Some(&4));
+    assert_eq!(status.outstanding, 4);
+}
+
+/// A queue whose puts fail after `ok` of them.
+#[derive(Debug)]
+struct Flaky {
+    inner: Arc<dyn Queue>,
+    ok: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Queue for Flaky {
+    async fn receive(
+        &self,
+        queue: &str,
+        visibility: Duration,
+    ) -> anyhow::Result<Option<usnm_store::queue::Received>> {
+        self.inner.receive(queue, visibility).await
+    }
+    async fn delete(&self, msg: &usnm_store::queue::Received) -> anyhow::Result<()> {
+        self.inner.delete(msg).await
+    }
+    async fn send(&self, queue: &str, text: &str) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+        if self
+            .ok
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_err()
+        {
+            anyhow::bail!("queue unavailable");
+        }
+        self.inner.send(queue, text).await
+    }
+    async fn approximate_count(&self, queue: &str) -> anyhow::Result<u64> {
+        self.inner.approximate_count(queue).await
+    }
+}
+
+#[tokio::test]
+async fn a_failed_put_leaves_the_rest_not_sent_and_they_go_out_next_run() {
+    let fx = fixture().await;
+    let flaky: Arc<dyn Queue> = Arc::new(Flaky {
+        inner: Arc::clone(&fx.queue),
+        ok: 2.into(),
+    });
+    let stores = seed::Stores {
+        curated: fx.curated.as_ref(),
+        reference: fx.reference.as_ref(),
+        queue: &flaky,
+    };
+    let err = seed::run(&fx.state, "test", &stores, &plan(5))
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("2 pages after it are recorded as not sent"));
+    let l = ledger::load(fx.curated.as_ref()).await.unwrap();
+    // Two sent, one that may have gone out, two never sent.
+    assert_eq!(l.outstanding_count(), 3);
+    assert_eq!(
+        l.outcomes
+            .values()
+            .filter(|o| o.outcome == NOT_SENT)
+            .count(),
+        2
+    );
+    // The lock was given back, and the next run sends the two.
+    let r = fx
+        .seed(&Options {
+            refill_below: 5,
+            ..plan(5)
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.requeued.get(NOT_SENT), Some(&2));
+    assert_eq!(r.queued, 0);
+    assert_eq!(fx.queue.approximate_count(BULK).await.unwrap(), 4);
+}
+
+#[tokio::test]
+async fn an_unroutable_dead_letter_drained_twice_is_one_cycle() {
+    let fx = fixture().await;
+    let id = doc(GER, 3, 1);
+    let at = Utc::now() - chrono::Duration::hours(8);
+    ledger::write_queued(
+        fx.curated.as_ref(),
+        &[mine(&id, 1, at - chrono::Duration::hours(1))],
+        at,
+        "r1",
+    )
+    .await
+    .unwrap();
+    for run in ["a", "b"] {
+        let o = Outcome {
+            doc_id: id.clone(),
+            outcome: DEAD_LETTERED.into(),
+            cause: Some("unroutable".into()),
+            kind: None,
+            source: "message-1".into(),
+            at,
+            run: run.into(),
+        };
+        ledger::write_outcomes(fx.curated.as_ref(), &[o], at, run)
+            .await
+            .unwrap();
+    }
+    let l = ledger::load(fx.curated.as_ref()).await.unwrap();
+    assert_eq!(l.unroutable_cycles(&id), 1);
+    // One cycle waits 6 hours, not 12: queued again after 8.
+    let r = fx
+        .seed(&Options {
+            dry_run: true,
+            ..plan(100)
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.requeue_pages, [id]);
+}
+
+#[tokio::test]
+async fn the_automatic_window_follows_the_imports() {
+    let fx = fixture().await;
+    let r = fx
+        .seed(&Options {
+            dry_run: true,
+            ..plan(0)
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.window, seed::MIN_AUTO_WINDOW);
+    assert_eq!(r.refill_below, seed::MIN_AUTO_WINDOW / 2);
+    // 1,400 pages imported over two days: 700 a day, a window of 1,400.
+    let now = Utc::now();
+    let rows: Vec<Outcome> = (0..1400)
+        .map(|i| Outcome {
+            doc_id: format!("sn99999999_1890-01-01_ed-1_seq-{i}"),
+            outcome: IMPORTED.into(),
+            cause: None,
+            kind: None,
+            source: format!("pages/p{i}.parquet"),
+            at: now - chrono::Duration::hours(if i % 2 == 0 { 47 } else { 1 }),
+            run: "imp".into(),
+        })
+        .collect();
+    ledger::write_outcomes(fx.curated.as_ref(), &rows, now, "imp")
+        .await
+        .unwrap();
+    let r = fx
+        .seed(&Options {
+            dry_run: true,
+            ..plan(0)
+        })
+        .await
+        .unwrap();
+    assert!((1400..=1440).contains(&r.window), "{}", r.window);
 }

@@ -12,7 +12,7 @@
 //! until `ocr-sync` imports it or drains its dead letter). A run tops up
 //! only when the queue holds fewer than `refill_below` messages. With
 //! `window` 0 the window is about two days of pages, from the pages a day
-//! `ocr-sync`'s import records show over the last week, and never below
+//! `ocr-sync` imported over the last week (its `imported` outcomes), never below
 //! [`MIN_AUTO_WINDOW`]; `refill_below` 0 is half the window.
 //!
 //! **Order.** (batch, lccn) units ranked by summed max(0, damage_rate −
@@ -38,8 +38,11 @@
 //! queued again, and so is one dead-lettered with cause `dequeue_count`,
 //! at most [`MAX_REQUEUES`] times; one dead-lettered as `unroutable` is
 //! queued again outside that limit after 6 hours, doubling per unroutable
-//! cycle of the page up to 48 (13 §13.7.6). Other causes are left to
-//! `ocr-requeue`.
+//! cycle of the page up to 48 (13 §13.7.6). A page whose message a failed
+//! run never put (`not_sent`) is queued again at once, within the limit.
+//! Other causes are left to `ocr-requeue`. `ocr-enqueue` and `ocr-requeue`
+//! hold the same lock as the seeder, so the window count never races them;
+//! bulk pages they queue count toward the window but aren't limited by it.
 //!
 //! **Pilot.** `pilot` limits a plan to one group (one language, or a list
 //! of batches) and a budget of at most [`PILOT_MAX_PAGES`] pages (Step 11).
@@ -66,8 +69,8 @@ use usnm_store::queue::{Queue, BULK};
 use usnm_store::ObjectStore;
 
 use super::enqueue::{self, message_language, QueueReport, MAX_PAGES};
-use super::ledger::{self, Ledger, Queued, DEAD_LETTERED, IMPORTED, UNROUTABLE};
-use super::sync::{ImportRecord, Lease};
+use super::ledger::{self, Ledger, Queued, DEAD_LETTERED, IMPORTED, NOT_SENT, UNROUTABLE};
+use super::sync::Lease;
 use super::{run_id, ROOT};
 use crate::curated::from_unix_days;
 use crate::ocr_damage::{self, VersionList};
@@ -91,7 +94,7 @@ pub const PILOT_MAX_PAGES: u64 = 10_000;
 /// The automatic window's floor, for a start with no imports to measure.
 pub const MIN_AUTO_WINDOW: u64 = 500;
 /// The automatic window: this many days of pages, measured over the last
-/// [`RATE_DAYS`] of import records.
+/// [`RATE_DAYS`] of imports.
 pub const WINDOW_DAYS: u64 = 2;
 pub const RATE_DAYS: i64 = 7;
 /// Page tables held in memory at once.
@@ -531,35 +534,24 @@ async fn rank(
     Ok(Rank { units, pending })
 }
 
-/// Pages a day over the last [`RATE_DAYS`], from the import records.
-async fn import_rate(curated: &dyn ObjectStore, now: DateTime<Utc>) -> anyhow::Result<f64> {
+/// Pages a day over the last [`RATE_DAYS`]: the `imported` outcomes
+/// `ocr-sync` wrote to the ledger with each import.
+fn import_rate(ledger: &Ledger, now: DateTime<Utc>) -> f64 {
     let since = now - chrono::Duration::days(RATE_DAYS);
-    let since_name = since.format("%Y%m%d").to_string();
     let mut pages = 0usize;
     let mut first: Option<DateTime<Utc>> = None;
-    for path in curated.list(&format!("{ROOT}/import")).await? {
-        let name = path.rsplit('/').next().unwrap_or_default();
-        if name.get(..8).is_none_or(|d| d < since_name.as_str()) {
-            continue;
+    for o in ledger.outcomes.values() {
+        if o.outcome == IMPORTED && o.at >= since {
+            pages += 1;
+            first = Some(first.map_or(o.at, |f| f.min(o.at)));
         }
-        let Some(body) = curated.get(&path).await? else {
-            continue;
-        };
-        let Ok(record) = serde_json::from_slice::<ImportRecord>(&body) else {
-            continue;
-        };
-        if record.at < since {
-            continue;
-        }
-        pages += record.pages.len();
-        first = Some(first.map_or(record.at, |f| f.min(record.at)));
     }
     let Some(first) = first else {
-        return Ok(0.0);
+        return 0.0;
     };
-    // Over the days the records span, at least one.
+    // Over the days the imports span, at least one.
     let days = ((now - first).num_seconds() as f64 / 86_400.0).clamp(1.0, RATE_DAYS as f64);
-    Ok(pages as f64 / days)
+    pages as f64 / days
 }
 
 /// The window: the setting, or about [`WINDOW_DAYS`] of pages.
@@ -578,10 +570,11 @@ fn retry_kind(q: &Queued, ledger: &Ledger, now: DateTime<Utc>) -> Option<(&'stat
         None => (now - q.queued_at >= chrono::Duration::days(REQUEUE_AFTER_DAYS))
             .then_some(("timed_out", true)),
         Some(o) if o.outcome == IMPORTED => None,
+        Some(o) if o.outcome == NOT_SENT => Some((NOT_SENT, true)),
         Some(o) if o.outcome == DEAD_LETTERED => match o.cause.as_deref() {
             Some("dequeue_count") => Some(("dequeue_count", true)),
             Some(UNROUTABLE) => {
-                let cycles = ledger.unroutable.get(&q.doc_id).copied().unwrap_or(1);
+                let cycles = ledger.unroutable_cycles(&q.doc_id).max(1);
                 let wait = unroutable_wait_hours(cycles);
                 (now - o.at >= chrono::Duration::hours(wait)).then_some((UNROUTABLE, false))
             }
@@ -789,7 +782,7 @@ pub(super) async fn seed(
     report.window = if opts.window > 0 {
         opts.window
     } else {
-        auto_window(import_rate(curated, now).await?)
+        auto_window(import_rate(&ledger, now))
     };
     report.refill_below = if opts.refill_below > 0 {
         opts.refill_below
@@ -844,7 +837,7 @@ pub(super) async fn seed(
             continue;
         };
         if limited {
-            let unroutable = ledger.unroutable.get(&q.doc_id).copied().unwrap_or(0);
+            let unroutable = ledger.unroutable_cycles(&q.doc_id);
             let used = attempt(&q.doc_id)
                 .saturating_sub(2)
                 .saturating_sub(unroutable);

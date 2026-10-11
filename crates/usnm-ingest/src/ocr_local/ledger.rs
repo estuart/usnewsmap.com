@@ -6,14 +6,15 @@
 //! requests step (Step 12) later. `ocr-sync` writes what became of them to
 //! `ocr-local/outcomes/<day>/<run>.parquet` ([`Outcome`]): `imported` for a
 //! part it imported, `dead_lettered` with the cause and kind for a dead
-//! letter it drained.
+//! letter it drained. A queue job that fails to put a message writes
+//! `not_sent` for the pages after it in that run, which it never sent.
 //!
 //! A page is outstanding while its latest queued row has no outcome after
 //! it, or its latest outcome is a dead letter with cause `unroutable`,
 //! which the seeder queues again ([`super::seed`]). `ocr-sync` imports a part only for an
 //! outstanding page, with the batch and reason the ledger has for it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
@@ -54,6 +55,8 @@ pub struct Queued {
 
 pub const IMPORTED: &str = "imported";
 pub const DEAD_LETTERED: &str = "dead_lettered";
+/// A page whose ledger row was written but whose message was never put.
+pub const NOT_SENT: &str = "not_sent";
 /// The dead-letter cause for a page no node could route.
 pub const UNROUTABLE: &str = "unroutable";
 
@@ -61,7 +64,7 @@ pub const UNROUTABLE: &str = "unroutable";
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
     pub doc_id: String,
-    /// [`IMPORTED`] or [`DEAD_LETTERED`].
+    /// [`IMPORTED`], [`DEAD_LETTERED`] or [`NOT_SENT`].
     pub outcome: String,
     /// A dead letter's cause (`dequeue_count`, `invalid`, `permanent`,
     /// `unroutable`); none for a v1 dead letter or an import.
@@ -259,10 +262,11 @@ pub struct Ledger {
     pub outcomes: HashMap<String, Outcome>,
     /// How often each page was queued under each plan.
     pub attempts: HashMap<(String, String), u32>,
-    /// How many dead letters with cause `unroutable` each page has had:
-    /// the seeder queues those again outside its retry limit, waiting
-    /// longer each time (Step 10).
-    pub unroutable: HashMap<String, u32>,
+    /// The dead letters with cause `unroutable` each page has had, by
+    /// message id (a dead letter drained twice counts once): the seeder
+    /// queues those pages again outside its retry limit, waiting longer
+    /// each time (Step 10).
+    pub unroutable: HashMap<String, HashSet<String>>,
 }
 
 impl Ledger {
@@ -282,7 +286,10 @@ impl Ledger {
 
     pub fn add_outcome(&mut self, o: Outcome) {
         if o.outcome == DEAD_LETTERED && o.cause.as_deref() == Some(UNROUTABLE) {
-            *self.unroutable.entry(o.doc_id.clone()).or_default() += 1;
+            self.unroutable
+                .entry(o.doc_id.clone())
+                .or_default()
+                .insert(o.source.clone());
         }
         match self.outcomes.get(&o.doc_id) {
             Some(old) if old.at > o.at => {}
@@ -303,6 +310,13 @@ impl Ledger {
             }
             Some(_) => None,
         }
+    }
+
+    /// How many distinct `unroutable` dead letters the page has had.
+    pub fn unroutable_cycles(&self, doc_id: &str) -> u32 {
+        self.unroutable
+            .get(doc_id)
+            .map_or(0, |s| u32::try_from(s.len()).unwrap_or(u32::MAX))
     }
 
     /// Whether the page's latest outcome is an import.

@@ -3,10 +3,17 @@
 //! lettered pages again by their cause. The operator has no queue data
 //! role, so both run as executions of the ingest job, as `id-usnm-ingest`.
 //!
-//! Each writes a ledger row for every message before it puts it: a page in
-//! the ledger whose message never went out is queued again by the seeder
-//! after its timeout (Step 10), while a message with no ledger row would
-//! have its part refused as not asked for.
+//! Each writes a ledger row for every message before it puts it, since a
+//! message with no ledger row would have its part refused as not asked
+//! for. If a put fails, the pages after it get a `not_sent` outcome, so
+//! they aren't outstanding and can be queued again; the page whose put
+//! failed may have gone out and stays outstanding (`--include-outstanding`,
+//! or the seeder's timeout, Step 10). Outside a dry run both hold the
+//! `ocr-sync` lock, as the seeder does, so its window count never races
+//! them.
+
+use super::ledger::{Outcome, NOT_SENT};
+use super::sync::Lease;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -70,17 +77,36 @@ pub(super) async fn send_all(
 ) -> anyhow::Result<()> {
     let rows: Vec<Queued> = batch.iter().map(|(q, _)| q.clone()).collect();
     report.ledger = ledger::write_queued(curated, &rows, now, run).await?;
-    for (q, m) in &batch {
-        queue
-            .send(queue_for(m.reason), &m.encode())
-            .await
-            .with_context(|| {
-                format!(
-                    "queueing {} (its ledger row is written: run again with \
-                     --include-outstanding to queue the pages not sent)",
-                    q.doc_id
-                )
-            })?;
+    for (i, (q, m)) in batch.iter().enumerate() {
+        if let Err(e) = queue.send(queue_for(m.reason), &m.encode()).await {
+            // The pages after this one never went out: not outstanding.
+            let at = Utc::now();
+            let rest: Vec<Outcome> = batch[i + 1..]
+                .iter()
+                .map(|(q, _)| Outcome {
+                    doc_id: q.doc_id.clone(),
+                    outcome: NOT_SENT.to_owned(),
+                    cause: None,
+                    kind: None,
+                    source: run.to_owned(),
+                    at,
+                    run: run.to_owned(),
+                })
+                .collect();
+            if let Err(w) = ledger::write_outcomes(curated, &rest, at, run).await {
+                tracing::error!(
+                    error = %format!("{w:#}"),
+                    pages = rest.len(),
+                    "could not record the pages not sent; they stay outstanding until they time out"
+                );
+            }
+            return Err(e.context(format!(
+                "queueing {} ({} pages after it are recorded as not sent; this one's ledger row \
+                 is written and may have gone out: --include-outstanding queues it again)",
+                q.doc_id,
+                rest.len()
+            )));
+        }
         report.queued += 1;
     }
     Ok(())
@@ -146,8 +172,42 @@ pub struct EnqueueOptions {
     pub dry_run: bool,
 }
 
+/// Run `f` under the `ocr-sync` lock, unless it is a dry run.
+async fn locked<T>(
+    state: &State,
+    dry_run: bool,
+    f: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    if dry_run {
+        return f.await;
+    }
+    let owner = crate::owner_id();
+    let lease = Lease::take(state, &owner).await?;
+    let result = f.await;
+    drop(lease);
+    let unlocked = state.unlock(super::LOCK, &owner).await;
+    let out = result?;
+    unlocked?;
+    Ok(out)
+}
+
 /// Queue chosen pages.
 pub async fn enqueue(
+    state: &State,
+    curated: &dyn ObjectStore,
+    reference: &dyn ObjectStore,
+    queue: &Arc<dyn Queue>,
+    opts: &EnqueueOptions,
+) -> anyhow::Result<QueueReport> {
+    locked(
+        state,
+        opts.dry_run,
+        enqueue_unlocked(state, curated, reference, queue, opts),
+    )
+    .await
+}
+
+async fn enqueue_unlocked(
     state: &State,
     curated: &dyn ObjectStore,
     reference: &dyn ObjectStore,
@@ -311,6 +371,21 @@ pub async fn read_dead_letters(
 
 /// Queue dead-lettered pages again, by cause and kind.
 pub async fn requeue(
+    state: &State,
+    curated: &dyn ObjectStore,
+    reference: &dyn ObjectStore,
+    queue: &Arc<dyn Queue>,
+    opts: &RequeueOptions,
+) -> anyhow::Result<QueueReport> {
+    locked(
+        state,
+        opts.dry_run,
+        requeue_unlocked(state, curated, reference, queue, opts),
+    )
+    .await
+}
+
+async fn requeue_unlocked(
     state: &State,
     curated: &dyn ObjectStore,
     reference: &dyn ObjectStore,
