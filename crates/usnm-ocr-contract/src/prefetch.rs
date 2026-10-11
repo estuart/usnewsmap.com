@@ -43,7 +43,8 @@ pub struct ManifestRow {
     pub date: NaiveDate,
     pub edition: u16,
     pub seq: u16,
-    /// The language the damage pass detected; `None` for `und`.
+    /// The language the damage pass detected, as a MARC code (`ger`);
+    /// `None` for `und`.
     pub lang: Option<String>,
     /// `detected` or `mixed` (the damage table's `decision`).
     pub decision: String,
@@ -264,12 +265,10 @@ pub fn decode(bytes: Bytes) -> anyhow::Result<Vec<ManifestRow>> {
 }
 
 /// A batch name safe as one path segment (it becomes a directory on the
-/// node): `[a-z0-9_]`, as LoC names batches.
+/// node): `[A-Za-z0-9_]`. LoC's names are mostly lowercase, but some aren't
+/// (`curiv_joshuaTree`, `lu_Cypher`).
 fn safe_batch(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 #[cfg(test)]
@@ -316,6 +315,9 @@ mod tests {
         let mut r = row("sn1_1890-05-03_ed-1_seq-2", "nbu_gage", 0.5);
         r.item_url = "https://evil.example/".into();
         assert!(decode(Bytes::from(encode(&[r]).unwrap())).is_err());
+        // LoC's mixed-case names are fine; a path isn't.
+        let r = row("sn1_1890-05-03_ed-1_seq-2", "curiv_joshuaTree", 0.5);
+        assert_eq!(decode(Bytes::from(encode(&[r]).unwrap())).unwrap().len(), 1);
         let mut r = row("sn1_1890-05-03_ed-1_seq-2", "nbu_gage", 0.5);
         r.batch = "../x".into();
         assert!(decode(Bytes::from(encode(&[r]).unwrap())).is_err());
