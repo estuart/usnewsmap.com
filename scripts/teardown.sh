@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Delete one usnewsmap environment: its deployment stack with every resource
 # and resource group it manages, and its GitHub Environment (08 §8.9). The
-# last environment in a subscription also takes the guard-rail stack. The
-# data goes with it (a new environment rebuilds it from LoC). Its settings
-# file (scripts/lib/env.sh) is kept, renamed .env.deleted-<time>, without
-# its experiment marker, for scripts/stand-up.sh to start from.
+# last environment in a subscription also takes the guard-rail stack, unless
+# the archival account (usnm-archive) still assigns it. The data goes with
+# it (a new environment rebuilds it from LoC). Its settings file
+# (scripts/lib/env.sh) is kept, renamed .env.deleted-<time>, without its
+# experiment marker, for scripts/stand-up.sh to start from.
 #
 # An environment that uses the archival account (USNM_ARCHIVE_ACCOUNT) is
 # first detached from it: the account's delete lock is lifted, the
@@ -122,6 +123,8 @@ sort_ids() {
 }
 sort_ids
 # The guard-rail definitions go with the last environment in the subscription.
+# Any other usnm- stack keeps them, the archival account's (usnm-archive)
+# too: its group assigns them.
 others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$STACK' && name != '$GUARDRAILS_STACK'].name" -o tsv)
 guardrails=false
 if [ -z "$others" ]; then
@@ -145,7 +148,7 @@ sed 's/^/  resource group (everything in it) /' <<< "$groups"
 if [ "$guardrails" = true ]; then
   echo "  the guard-rail stack $GUARDRAILS_STACK and its policy definitions"
 elif [ -n "$others" ]; then
-  echo "  (the guard-rail stack $GUARDRAILS_STACK stays: other environments use it: $others)"
+  echo "  (the guard-rail stack $GUARDRAILS_STACK stays: other stacks use it: $others)"
 fi
 if [ "$old_copy" = true ]; then
   echo "This is an old copy: $ENV_NAME now lives in subscription $recorded, whose"
@@ -357,7 +360,7 @@ if [ "$guardrails" = true ]; then
   others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$GUARDRAILS_STACK'].name" -o tsv) ||
     die "can't list deployment stacks; kept $GUARDRAILS_STACK (delete it when no environment uses it)"
   if [ -n "$others" ]; then
-    echo "keeping $GUARDRAILS_STACK: another environment was created meanwhile ($others)"
+    echo "keeping $GUARDRAILS_STACK: another stack was created meanwhile ($others)"
     guardrails=false
   fi
 fi

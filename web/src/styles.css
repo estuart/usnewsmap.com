@@ -362,6 +362,97 @@ select {
   height: 18px;
   margin: 0;
 }
+/* Newspaper filter (07 §7.13): a button and the panel it opens, with a box
+   to find papers by title or place, its matches and the papers chosen. */
+.papers-filter {
+  position: relative;
+}
+.papers-filter__button {
+  color: var(--muted);
+  font-size: 0.9rem;
+  max-width: 22em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.papers-filter__panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  width: min(380px, calc(100vw - 32px));
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
+  font-size: 0.9rem;
+}
+.papers-filter__panel[hidden] {
+  display: none;
+}
+.papers-filter__label {
+  font-weight: 600;
+}
+.papers-filter__hint,
+.papers-filter__more {
+  margin: 4px 0 6px;
+  color: var(--muted);
+}
+.papers-filter__panel input {
+  width: 100%;
+}
+.papers-filter__list,
+.papers-filter__chosen {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+}
+.papers-filter__list[hidden] {
+  display: none;
+}
+.papers-filter__option {
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.papers-filter__option:hover,
+.papers-filter__option--active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.papers-filter__option--active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.papers-filter__option[aria-selected="true"] .papers-filter__title::before {
+  content: "✓ ";
+}
+.papers-filter__option[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.papers-filter__title {
+  display: block;
+  font-weight: 600;
+}
+.papers-filter__detail {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.papers-filter__chosen li {
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.papers-filter__actions,
+.papers__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
 
 .notice {
   margin: 10px 16px;
@@ -1172,6 +1263,20 @@ select {
     text-align: left;
   }
   .langs__list {
+    position: static;
+    width: auto;
+    margin-top: 6px;
+    box-shadow: none;
+  }
+  .papers-filter {
+    flex: 1 1 100%;
+  }
+  .papers-filter__button {
+    width: 100%;
+    max-width: none;
+    text-align: left;
+  }
+  .papers-filter__panel {
     position: static;
     width: auto;
     margin-top: 6px;

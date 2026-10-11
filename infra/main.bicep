@@ -407,9 +407,10 @@ module ocrVault 'modules/ocr-vault.bicep' = if (ocrNodes) {
 // much and on the cap. onboard.sh installs the agent on each node and
 // associates it with the rule.
 // The nodes' workspace's daily cap in GB, which the OCR nodes workbook also
-// charts against. 0.1 GB to start: about 8 to 25 MB a day per node is
-// estimated before the worker's telemetry, which isn't measured yet. Raise
-// it with cap_gb in ops/queries/ocr-node-health.kql.
+// charts against. 0.1 GB to start: about 20 to 45 MB a day per node, VM
+// insights included, is estimated before the worker's telemetry, which
+// isn't measured yet (ocr-node-monitoring.bicep). Raise it with cap_gb in
+// ops/queries/ocr-node-health.kql.
 var ocrNodeDailyCapGb = '0.1'
 
 module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {

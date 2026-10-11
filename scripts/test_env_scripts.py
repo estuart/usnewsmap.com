@@ -146,7 +146,7 @@ class GuardrailBudget(Stubbed):
 
     def test_a_new_budget_starts_this_month(self):
         self.settings_file('USNM_ALERT_EMAILS="ops@example.org"\n')
-        r = self.lib("deploy_guardrails")
+        r = self.lib("deploy_env_guardrails")
         self.assertEqual(r.returncode, 0, r.stderr)
         call = self.create_call()
         self.assertIn("devBudgetEmails=ops@example.org", call)
@@ -154,7 +154,7 @@ class GuardrailBudget(Stubbed):
 
     def test_an_environment_without_recipients_keeps_the_budget(self):
         self.settings_file('AZURE_ENV_NAME="dev"\n')
-        r = self.lib("deploy_guardrails",
+        r = self.lib("deploy_env_guardrails",
                      STUB_PARAMS="devbudgetEmails\tDevBudgetStart\nops@example.org\t2026-10-01")
         self.assertEqual(r.returncode, 0, r.stderr)
         call = self.create_call()
@@ -162,23 +162,33 @@ class GuardrailBudget(Stubbed):
 
     def test_new_recipients_keep_the_start(self):
         self.settings_file('USNM_ALERT_EMAILS="new@example.org"\n')
-        self.lib("deploy_guardrails",
+        self.lib("deploy_env_guardrails",
                  STUB_PARAMS="devBudgetEmails\tdevBudgetStart\nops@example.org\t2026-10-01")
         self.assertIn("devBudgetEmails=new@example.org devBudgetStart=2026-10-01 ", self.create_call())
 
 
     def test_dev_names_its_region(self):
         self.settings_file('AZURE_LOCATION="westus3"\n')
-        self.lib("deploy_guardrails")
+        self.lib("deploy_env_guardrails")
         self.assertIn("devBudgetLocation=westus3", self.create_call())
 
     def test_other_environments_keep_the_region(self):
         self.settings_file('AZURE_LOCATION="eastus2"\n', env="prod")
-        r = self.lib("deploy_guardrails", env_name="prod",
+        r = self.lib("deploy_env_guardrails", env_name="prod",
                      STUB_PARAMS="devBudgetEmails\tdevBudgetStart\tdevBudgetLocation\n"
                                  "ops@example.org\t2026-10-01\twestus3")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("devBudgetLocation=westus3", self.create_call())
+
+
+    def test_the_archive_keeps_the_budget(self):
+        # archive-store.sh deploy passes no recipients and no region.
+        r = self.lib("deploy_guardrails eastus2", env_name="prod",
+                     STUB_PARAMS="devBudgetEmails\tdevBudgetStart\tdevBudgetLocation\n"
+                                 "ops@example.org\t2026-10-01\twestus3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("devBudgetEmails=ops@example.org devBudgetStart=2026-10-01 "
+                      "devBudgetLocation=westus3 ", self.create_call())
 
 
 class DevStatus(Stubbed):

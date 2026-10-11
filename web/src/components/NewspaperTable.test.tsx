@@ -43,6 +43,10 @@ describe("newspapers (#121)", () => {
     expect(screen.getAllByRole("row")).toHaveLength(1 + 30);
     fireEvent.click(screen.getByRole("button", { name: "Only this newspaper: Paper 3" }));
     expect(onOnly).toHaveBeenCalledWith("sn3");
+    // Its issues by date are at the Library of Congress.
+    expect(screen.getByRole("link", { name: "Issues of Paper 3 at loc.gov" }).getAttribute("href")).toBe(
+      "https://www.loc.gov/item/sn3/",
+    );
   });
 
   it("describes the language mix only when there is more than one language", () => {

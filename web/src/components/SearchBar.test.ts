@@ -9,6 +9,8 @@ describe("activeOptions", () => {
     expect(activeOptions({ ...DEFAULTS, from: "1890-01-01", to: "1900-12-31", state: ["GA", "SC"] })).toBe(3);
     // Any number of languages is one option.
     expect(activeOptions({ ...DEFAULTS, lang: ["ger", "spa"] })).toBe(1);
+    // So are any number of newspapers (07 §7.13).
+    expect(activeOptions({ ...DEFAULTS, lccn: ["sn1", "sn2"] })).toBe(1);
   });
 });
 

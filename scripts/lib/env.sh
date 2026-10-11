@@ -20,14 +20,9 @@ valid_env_name() {
   [ "$1" != guardrails ] || { echo "error: \"guardrails\" is reserved" >&2; exit 2; }
 }
 valid_env_name "$ENV_NAME"
-# The stack commands need az 2.61+ (--action-on-unmanage); older versions
-# stop at the first deployment with "unrecognized arguments".
-# grep reads the help to the end: with -q it could quit early, and pipefail
-# would count az's SIGPIPE as a failure.
-need_stack_az() {
-  az stack sub create --help 2> /dev/null | grep -- --action-on-unmanage > /dev/null ||
-    die "az $(az version --query '"azure-cli"' -o tsv 2> /dev/null) is too old for deployment stacks; upgrade to 2.61 or later"
-}
+# need_stack_az, GUARDRAILS_STACK, stack_param and deploy_guardrails.
+# shellcheck source=scripts/lib/guardrails.sh
+. scripts/lib/guardrails.sh
 # A copy in a checkout can be stale: once the shared directory exists (a
 # teardown leaves it, holding the kept file), the checkout's copy is ignored.
 SETTINGS_HOME=${USNM_SETTINGS_HOME:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/usnewsmap}
@@ -93,63 +88,8 @@ adel() {
 # resource groups). Resources dropped from the template are deleted; deny
 # settings stop anyone deleting a managed resource outside the stack.
 STACK="usnm-$ENV_NAME"
-# The guard-rail policy definitions every environment in the subscription
-# assigns: one stack of their own, so no two stacks manage the same resource.
-GUARDRAILS_STACK=usnm-guardrails
 # The region, with the same default as infra/main.bicepparam.
 stack_location() { local l; l=$(aget AZURE_LOCATION) || return 1; echo "${l:-eastus2}"; }
-# One parameter of a stack, by name in any case (a stack can change it, as
-# with outputs below). $1 is the stack's
-# "[keys(parameters), values(parameters)[].value]" as tsv: two rows.
-stack_param() {
-  awk -F'\t' -v want="$2" 'NR == 1 { n = split($0, k, "\t") }
-    NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) if (tolower(k[i]) == tolower(want)) print v[i] }' <<< "$1"
-}
-deploy_guardrails() {
-  # A stack's location is fixed when it's created; environments in other
-  # regions reuse it.
-  local location params="" emails kept start=""
-  # Only "not found" means a first deployment; other errors stop here.
-  if ! location=$(az stack sub show -n "$GUARDRAILS_STACK" --query location -o tsv 2>&1); then
-    grep -qiE 'NotFound|could not be found' <<< "$location" || {
-      echo "error: can't check $GUARDRAILS_STACK: $location" >&2
-      return 1
-    }
-    location=$(stack_location) || return 1
-  else
-    params=$(az stack sub show -n "$GUARDRAILS_STACK" \
-      --query "[keys(parameters || \`{}\`), values(parameters || \`{}\`)[].value]" -o tsv) || {
-      echo "error: can't read the parameters of $GUARDRAILS_STACK" >&2
-      return 1
-    }
-  fi
-  # The budget on dev's groups (#275) mails this environment's alert
-  # recipients, or keeps the ones it has when this environment has none, so
-  # provisioning an environment without recipients doesn't delete it. A
-  # budget's start date can't change and can't be in a past month, so it's
-  # this month for a new budget and the stack's own value after that. The
-  # region names the Container Apps environment's own group: dev's region
-  # when dev provisions, the stack's value otherwise.
-  local budget_location
-  if [ "$ENV_NAME" = dev ]; then
-    budget_location=$(stack_location) || return 1
-  else
-    budget_location=$(stack_param "$params" devBudgetLocation)
-  fi
-  emails=$(aget USNM_ALERT_EMAILS) || return 1
-  kept=$(stack_param "$params" devBudgetEmails)
-  [ -z "$kept" ] || start=$(stack_param "$params" devBudgetStart)
-  [ -n "$emails" ] || emails=$kept
-  [ -n "$start" ] || start=$(date -u +%Y-%m-01)
-  az stack sub create --name "$GUARDRAILS_STACK" --location "$location" \
-    --template-file infra/guardrails.bicep \
-    --parameters devBudgetEmails="$emails" devBudgetStart="$start" \
-    devBudgetLocation="${budget_location:-eastus2}" \
-    --action-on-unmanage deleteResources \
-    --deny-settings-mode denyDelete \
-    --description "usnewsmap guard-rail policy definitions, shared by every environment in the subscription" \
-    --yes --only-show-errors -o none
-}
 deploy_stack() (
   # Export exactly the settings infra/main.bicepparam reads, when they have
   # a value; an unset one takes its default there. Each is read on its own
@@ -272,12 +212,22 @@ experiment_marker() {
 }
 # New roles and permissions take a minute or two to apply everywhere, so a
 # deployment that depends on one can fail once; it's idempotent, so retry.
+# The guard-rail stack for this environment: created in its region, with
+# its alert recipients for the budget on dev's groups, and dev's region when
+# dev provisions (scripts/lib/guardrails.sh).
+deploy_env_guardrails() {
+  local location emails dev_location=""
+  location=$(stack_location) || return 1
+  emails=$(aget USNM_ALERT_EMAILS) || return 1
+  [ "$ENV_NAME" != dev ] || dev_location=$location
+  deploy_guardrails "$location" "$emails" "$dev_location"
+}
 provision() {
   experiment_marker || die "not provisioning $ENV_NAME"
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
   ocr_vault_recover || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
-    deploy_guardrails && deploy_stack && save_outputs && return 0
+    deploy_env_guardrails && deploy_stack && save_outputs && return 0
     [ "$attempt" = 3 ] && die "provisioning failed three times"
     echo "retrying in 60s"
     sleep 60

@@ -6,7 +6,7 @@
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | [Development](development.md)        | Running and testing locally: the API and the site on the synthetic corpus, Quickwit, the ingest pipeline, the local Azure stand-ins |
 | [Configuration](configuration.md)    | The API's environment variables                                                                                                     |
-| [Operations](operations.md)          | Running the ingest pipeline in Azure: the backfill, releases, full rebuilds, logs and the search log                                |
+| [Operations](operations.md)          | Running the ingest pipeline in Azure: the backfill, releases, full rebuilds, pruning old index versions, logs and the search log    |
 | [Infrastructure](../infra/README.md) | What the Bicep deploys, standing an environment up, settings, DNS, the container registry                                           |
 | [Web app](../web/README.md)          | The front end: scripts, build settings, how it works                                                                                |
 | [Fixtures](../fixtures/README.md)    | The synthetic corpus the tests and local development use                                                                            |

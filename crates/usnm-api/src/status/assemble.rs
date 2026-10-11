@@ -1010,6 +1010,8 @@ mod tests {
             place_id: place_id.into(),
             state: String::new(),
             languages: languages.iter().map(|l| l.to_string()).collect(),
+            first_year: None,
+            last_year: None,
         }
     }
 

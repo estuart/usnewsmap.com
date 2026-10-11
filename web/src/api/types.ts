@@ -101,6 +101,28 @@ export interface PlacesResponse {
   features: PlaceFeature[];
 }
 
+/** One newspaper of the version (`/v1/titles`, 06 §6.3.11). */
+export interface TitleEntry {
+  lccn: string;
+  title: string;
+  place_id: string;
+  /** The place's name; null if the snapshot lacks the place. */
+  place: string | null;
+  state: string;
+  /** Years of publication in LoC's record (the paper's whole run); null when it gives none. */
+  first_year: number | null;
+  last_year: number | null;
+  /** Pages in the version; null on a version that doesn't count pages per title. */
+  pages: number | null;
+  /** Catalog language codes, such as "eng". */
+  languages: string[];
+}
+
+export interface TitlesResponse {
+  index_version: string;
+  titles: TitleEntry[];
+}
+
 /** Sparse (place index, bucket index, count) triplets. */
 export interface SparseCube {
   p: number[];

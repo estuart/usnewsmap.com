@@ -273,6 +273,8 @@ pub fn app(state: Arc<AppState>) -> Router {
     let v1 = Router::new()
         .route("/meta", get(routes::meta))
         .route("/places", get(routes::places))
+        .route("/titles", get(routes::titles))
+        .route("/titles/{lccn}", get(routes::title))
         .route("/aggregate", get(routes::aggregate))
         .route("/hits", get(routes::hits))
         .route("/days", get(routes::days))
