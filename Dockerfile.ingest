@@ -9,6 +9,9 @@
 # that environment's registry (ADR-0013), or upstream's copy there. The
 # default is upstream v0.9.1 (the version spike S-2 validated), the same as
 # the file's `upstream`, so PR builds and local builds need no registry.
+# The Quickwit version comparison (#251; docs/operations.md) builds a second
+# tag on the `qw-azure-fix` nightly (main of 23 September 2025, which reports 0.8.0):
+#   --build-arg QUICKWIT_IMAGE=quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc6d6ee7db4732b8a20be544ba3455bdc08ef0ccd7683f4aa854243ff6
 ARG QUICKWIT_IMAGE=quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
 
 FROM rust:1-bookworm AS chef
@@ -33,6 +36,8 @@ RUN cargo build --release --locked -p usnm-ingest
 
 FROM ${QUICKWIT_IMAGE}
 COPY --from=build /src/target/release/usnm-ingest /usr/local/bin/usnm-ingest
+# The experimental search cluster's nodes and bench job (#239).
+COPY --from=build /src/target/release/usnm-qwcluster /usr/local/bin/usnm-qwcluster
 # The commit the image was built from, for each version's build record (#161).
 # Set here, after the build, so a new commit doesn't rebuild the binary.
 ARG USNM_GIT_SHA=

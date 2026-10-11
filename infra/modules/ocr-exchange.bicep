@@ -39,6 +39,10 @@ var blobContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var workQueues = ['ocr-priority', 'ocr-bulk']
 var deadLetterQueue = 'ocr-deadletter'
 var outputContainer = 'ocr-out'
+// Node output and dead letters that fail ocr-sync's checks (12 §12.5 Step
+// 8), with a reason record each. No node role; ocr-sync replays them after
+// a fix (--from-quarantine).
+var quarantineContainer = 'ocr-quarantine'
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: name
@@ -104,11 +108,18 @@ resource output 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-
   properties: { publicAccess: 'None' }
 }
 
-// ocr-out is staging: a cloud job (ingest identity) checks each part and
+resource quarantine 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
+  name: quarantineContainer
+  properties: { publicAccess: 'None' }
+}
+
+// ocr-out is staging: ocr-sync (ingest identity) checks each part and
 // copies it into curated/ocr-local/ in the data lake, which keeps it with
-// versions. The copy-in deletes what it has taken; this rule removes what's
-// left after 30 days (parts it rejected, or that a stopped job never took),
-// so the account never grows into a second copy of the lake.
+// versions, or moves it to ocr-quarantine. It deletes what it has taken;
+// these rules remove what's left after 30 days (output a stopped job never
+// took, an ALTO whose part never came, rejects nobody replayed), so the
+// account never grows into a second copy of the lake.
 resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
   parent: account
   name: 'default'
@@ -121,6 +132,17 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           type: 'Lifecycle'
           definition: {
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['${outputContainer}/'] }
+            actions: {
+              baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
+            }
+          }
+        }
+        {
+          name: 'expire-ocr-quarantine'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['${quarantineContainer}/'] }
             actions: {
               baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
             }
@@ -198,10 +220,14 @@ resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (n
   }
 }
 
-// The ingest identity: the seeder adds pages to the queues, and someone
-// inspecting or replaying dead letters needs to read and delete them, so
-// Queue Data Contributor on the account. Blob Data Contributor on ocr-out,
-// not Reader: the copy-in job deletes each part once it is in curated.
+// The ingest identity: ocr-enqueue and the seeder add pages to the queues,
+// and ocr-sync drains the dead letters (reads and deletes them), so Queue
+// Data Contributor on the account. The seeder and the status file read each
+// queue's approximate message count (Get Queue Metadata), which needs
+// Microsoft.Storage/storageAccounts/queueServices/queues/read: one of this
+// role's actions. Blob Data Contributor on ocr-out, not
+// Reader: ocr-sync deletes each part once it is in curated or quarantine.
+// And on ocr-quarantine, which only ocr-sync writes.
 resource ingestQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: account
   name: guid(account.id, ingestPrincipalId, queueDataContributor)
@@ -222,7 +248,19 @@ resource ingestOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+resource ingestQuarantine 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: quarantine
+  name: guid(quarantine.id, ingestPrincipalId, blobContributor)
+  properties: {
+    principalId: ingestPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobContributor)
+  }
+}
+
 output id string = account.id
 output name string = account.name
 output queueEndpoint string = account.properties.primaryEndpoints.queue
 output blobEndpoint string = account.properties.primaryEndpoints.blob
+output outputContainer string = output.name
+output quarantineContainer string = quarantine.name

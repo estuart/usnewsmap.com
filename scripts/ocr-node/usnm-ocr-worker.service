@@ -1,0 +1,84 @@
+# The on-prem OCR worker (#296, ADR-0015). scripts/ocr-node/node-setup.sh
+# and scripts/ocr-node/install-worker.sh install it; it stays disabled
+# until `install-worker.sh --enable`. It starts only once the worker binary
+# is in /usr/local/bin. Its settings come from the environment
+# (/etc/usnm/ocr-worker.env, which install-worker.sh writes, and the engine
+# runtime's paths below), so the command line has none.
+[Unit]
+Description=usnewsmap OCR worker
+Wants=network-online.target
+After=network-online.target himdsd.service
+ConditionFileIsExecutable=/usr/local/bin/usnm-ocr-worker
+# The engine scratch tmpfs that node-setup.sh mounts.
+RequiresMountsFor=/run/usnm-ocr/scratch
+
+[Service]
+Type=simple
+User=usnm
+Group=usnm
+# himds: the Arc agent's token challenge. usnmocr: the engine runtime's
+# Podman API socket and scratch (ADR-0016, 13 §13.3).
+SupplementaryGroups=himds usnmocr
+Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
+Environment=IMDS_ENDPOINT=http://localhost:40342
+# The engine runtime that node-setup.sh sets up: the engine account
+# usnmeng's Podman API socket, through which the worker runs Tesseract
+# with `podman --remote` (it never runs podman itself), and the
+# size-capped tmpfs that pages' scratch directories go in. The podman
+# client needs a HOME it can write; usnm's own, /var/lib/usnm, is read-only
+# here.
+Environment=USNM_OCR_PODMAN_URL=unix:///run/usnm-ocr/podman.sock
+Environment=USNM_OCR_SCRATCH_DIR=/run/usnm-ocr/scratch
+Environment=HOME=/var/lib/usnm-ocr
+Environment=XDG_RUNTIME_DIR=/run/usnm-ocr-worker
+EnvironmentFile=/etc/usnm/ocr-worker.env
+# Local changes (RUST_LOG, say), read after it and never written by a script.
+EnvironmentFile=-/etc/usnm/ocr-worker.local.env
+ExecStart=/usr/local/bin/usnm-ocr-worker run
+# On stop, SIGTERM goes to the worker alone (mixed), so the engine keeps
+# running while the worker gives in-flight pages 60 s (its default
+# --shutdown-grace-secs), then flushes telemetry for at most 30 s. 120 s
+# covers both; then systemd kills what's left, and those pages reappear
+# when their visibility runs out. A longer grace needs a longer timeout.
+# Engine containers run under usnmeng, outside this unit's cgroup; the
+# worker removes a page's container when it gives the page up, and
+# removes exited ones it left behind when it starts.
+KillMode=mixed
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=30
+# Its JSON lines reach syslog on local0, which the Azure Monitor Agent
+# collects at Info and above (infra/modules/ocr-node-monitoring.bicep).
+SyslogIdentifier=usnm-ocr-worker
+SyslogFacility=local0
+StateDirectory=usnm-ocr
+CacheDirectory=usnm-ocr
+RuntimeDirectory=usnm-ocr-worker
+RuntimeDirectoryMode=0700
+# Hardening (13 §13.3). The worker needs no privilege and no namespaces of
+# its own: the engines' user namespaces belong to usnmeng's podman.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/usnm-ocr/scratch
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

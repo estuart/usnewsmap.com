@@ -18,7 +18,7 @@ use usnm_store::{ObjectStore, StoreError};
 
 use crate::engine::{set_alto_file_name, Engine, EngineError};
 use crate::loc::{FetchError, LocClient, Scan};
-use crate::message::{self, OcrMessage};
+use crate::message::{self, Cause, DeadLetter, OcrMessage};
 use crate::queue::{random_token, LeaseLost, Queue, Received, BULK, DEADLETTER, PRIORITY};
 use crate::telemetry::{page_attrs, Metrics};
 
@@ -26,12 +26,20 @@ use crate::telemetry::{page_attrs, Metrics};
 #[async_trait]
 pub trait ScanSource: Send + Sync + std::fmt::Debug {
     async fn scan(&self, key: &PageKey) -> Result<Scan, FetchError>;
+    /// Until when the source holds every request (loc.gov said to wait).
+    fn held_until(&self) -> Option<tokio::time::Instant> {
+        None
+    }
 }
 
 #[async_trait]
 impl ScanSource for LocClient {
     async fn scan(&self, key: &PageKey) -> Result<Scan, FetchError> {
         LocClient::scan(self, key).await
+    }
+
+    fn held_until(&self) -> Option<tokio::time::Instant> {
+        LocClient::held_until(self)
     }
 }
 
@@ -188,6 +196,28 @@ impl Worker {
             if *stop.borrow() {
                 break;
             }
+            // While loc.gov holds this node's requests for more than half a
+            // new page's budget, a page taken now would mostly wait, and
+            // could be abandoned and spend one of its receives; take none
+            // until at least half the budget is left after the hold, for
+            // the fetch and the OCR.
+            if let Some(until) = self.scans.held_until() {
+                let resume = until.checked_sub(self.cfg.budget() / 2);
+                if let Some(resume) = resume.filter(|r| *r > tokio::time::Instant::now()) {
+                    drop(permit);
+                    tracing::info_span!("ocr_hold").in_scope(|| {
+                        tracing::warn!(
+                            held_secs = until.duration_since(tokio::time::Instant::now()).as_secs(),
+                            "loc.gov holds requests past a page's budget; taking no pages until it eases"
+                        )
+                    });
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(resume) => {}
+                        _ = stop.changed() => break,
+                    }
+                    continue;
+                }
+            }
             let next = tokio::select! {
                 r = self.next_message() => r,
                 // A message received as this is dropped reappears when its visibility runs out.
@@ -257,26 +287,28 @@ impl Worker {
     /// Move `msg` to `ocr-deadletter`. The dead letter keeps the message
     /// only if it was valid (`valid`, re-encoded from its checked fields):
     /// a message that failed its checks might carry anything, search text
-    /// included, so only its id and what was wrong with it are kept.
+    /// included, so only its id and what was wrong with it (`kind`) are
+    /// kept.
     async fn dead_letter(
         &self,
         msg: &Received,
-        cause: &'static str,
+        cause: Cause,
+        kind: Option<&'static str>,
         error: &str,
         valid: Option<&OcrMessage>,
     ) {
-        let body = serde_json::json!({
-            "v": 1,
-            "from": msg.queue,
-            "message_id": msg.id,
-            "message": valid,
-            "error": error,
-            "dequeue_count": msg.dequeue_count,
-            "node": self.cfg.node_id,
-            "at": Utc::now().to_rfc3339(),
-        });
-        use base64::Engine as _;
-        let text = base64::engine::general_purpose::STANDARD.encode(body.to_string());
+        let body = DeadLetter::new(
+            &msg.queue,
+            &msg.id,
+            valid,
+            cause,
+            kind,
+            None,
+            error,
+            msg.dequeue_count,
+            &self.cfg.node_id,
+        );
+        let text = body.encode();
         if let Err(e) = self.queue.send(DEADLETTER, &text).await {
             // Leave the message: it comes back and is dead-lettered again.
             tracing::error!(error = format!("{e:#}"), "dead-letter send failed");
@@ -288,10 +320,10 @@ impl Worker {
                     1,
                     &[
                         KeyValue::new("queue", msg.queue.clone()),
-                        KeyValue::new("cause", cause),
+                        KeyValue::new("cause", cause.as_str()),
                     ],
                 );
-                tracing::warn!(queue = %msg.queue, message_id = %msg.id, cause, error, "dead-lettered")
+                tracing::warn!(queue = %msg.queue, message_id = %msg.id, cause = cause.as_str(), kind, error, "dead-lettered")
             }
             Err(e) => tracing::error!(error = format!("{e:#}"), "delete after dead-letter failed"),
         }
@@ -332,7 +364,8 @@ impl Worker {
         if msg.dequeue_count > self.cfg.max_dequeue {
             let why = format!("received {} times", msg.dequeue_count);
             let valid = decoded.as_ref().ok().map(|(m, _)| m);
-            self.dead_letter(&msg, "dequeue_count", &why, valid).await;
+            self.dead_letter(&msg, Cause::DequeueCount, None, &why, valid)
+                .await;
             outcome("dead_lettered");
             return;
         }
@@ -340,7 +373,8 @@ impl Worker {
             Ok(v) => v,
             Err(e) => {
                 let why = format!("invalid message: {}", e.kind());
-                self.dead_letter(&msg, "invalid", &why, None).await;
+                self.dead_letter(&msg, Cause::Invalid, Some(e.kind()), &why, None)
+                    .await;
                 outcome("dead_lettered");
                 return;
             }
@@ -379,7 +413,8 @@ impl Worker {
                 }
             }
             Err(Failure::Permanent(e)) => {
-                self.dead_letter(&msg, "permanent", &e, Some(&m)).await;
+                self.dead_letter(&msg, Cause::Permanent, None, &e, Some(&m))
+                    .await;
                 outcome("dead_lettered");
             }
             Err(Failure::Transient(kind, e)) => {
@@ -414,6 +449,15 @@ impl Worker {
     ) -> Result<Done, Failure> {
         let work = tempfile::tempdir()
             .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
+        // Another node may have the model: leave the message, and let the
+        // dequeue count dead-letter it if no node does. Asked before the
+        // scan is fetched, so it costs loc.gov nothing.
+        if !self.engine.can_read(&m.language) {
+            return Err(Failure::Transient(
+                "no_model",
+                format!("no model for `{}` on node {}", m.language, self.cfg.node_id),
+            ));
+        }
         let read = async {
             let t = Instant::now();
             let scan = self.scans.scan(key).await;
@@ -535,12 +579,22 @@ mod tests {
     use crate::queue::LocalQueue;
     use std::path::Path;
 
-    #[derive(Debug)]
-    struct FakeScans;
+    /// Counts scan requests; a hold, when set, is reported as loc.gov's.
+    #[derive(Debug, Default)]
+    struct FakeScans {
+        requests: std::sync::atomic::AtomicUsize,
+        held_until: std::sync::Mutex<Option<tokio::time::Instant>>,
+    }
 
     #[async_trait]
     impl ScanSource for FakeScans {
+        fn held_until(&self) -> Option<tokio::time::Instant> {
+            *self.held_until.lock().unwrap()
+        }
+
         async fn scan(&self, key: &PageKey) -> Result<Scan, FetchError> {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if key.seq == 99 {
                 return Err(FetchError::Permanent("no image".into()));
             }
@@ -565,6 +619,10 @@ mod tests {
         fn source(&self) -> &str {
             "usnm-tesseract"
         }
+        /// Every language but Hawaiian.
+        fn can_read(&self, language: &str) -> bool {
+            language != "haw"
+        }
         async fn ocr(
             &self,
             image: &Path,
@@ -572,7 +630,7 @@ mod tests {
             _: &Path,
         ) -> Result<EngineOutput, EngineError> {
             assert_eq!(std::fs::read(image).unwrap(), b"jpeg");
-            if language == "zzz" {
+            if language == "haw" {
                 return Err(EngineError::Unsupported(language.into()));
             }
             Ok(EngineOutput {
@@ -588,7 +646,7 @@ mod tests {
         OcrMessage {
             v: 1,
             page: page.into(),
-            batch: "nbu_gage_ver01".into(),
+            batch: "nbu_gage".into(),
             language: language.into(),
             reason: Reason::Bulk,
             score: Some(0.62),
@@ -598,12 +656,25 @@ mod tests {
     }
 
     fn worker(dir: &Path) -> (Arc<Worker>, Arc<LocalQueue>, Arc<dyn ObjectStore>) {
+        let (w, queue, out, _) = worker_with_scans(dir);
+        (w, queue, out)
+    }
+
+    fn worker_with_scans(
+        dir: &Path,
+    ) -> (
+        Arc<Worker>,
+        Arc<LocalQueue>,
+        Arc<dyn ObjectStore>,
+        Arc<FakeScans>,
+    ) {
         let queue = Arc::new(LocalQueue::new(dir.join("q")));
         let out: Arc<dyn ObjectStore> = Arc::new(usnm_store::LocalStore::new(dir.join("out")));
+        let scans = Arc::new(FakeScans::default());
         let w = Arc::new(Worker {
             queue: queue.clone(),
             out: out.clone(),
-            scans: Arc::new(FakeScans),
+            scans: scans.clone(),
             engine: Arc::new(FakeEngine),
             cfg: Config {
                 node_id: "node1".into(),
@@ -613,7 +684,7 @@ mod tests {
             },
             metrics: Metrics::global(),
         });
-        (w, queue, out)
+        (w, queue, out, scans)
     }
 
     #[tokio::test]
@@ -629,7 +700,7 @@ mod tests {
             .await
             .unwrap();
         queue
-            .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-8", "zzz"))
+            .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-8", "haw"))
             .await
             .unwrap();
         queue.send(BULK, "not a message").await.unwrap();
@@ -637,7 +708,7 @@ mod tests {
         queue
             .send(
                 BULK,
-                r#"{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-9","batch":"b","language":"deu","reason":"user","queued_at":"2026-10-10T12:00:00Z","q":"secret search"}"#,
+                r#"{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-9","batch":"nbu_gage","language":"deu","reason":"user","queued_at":"2026-10-10T12:00:00Z","q":"secret search"}"#,
             )
             .await
             .unwrap();
@@ -668,7 +739,7 @@ mod tests {
         assert_eq!(pages.len(), 1);
         let p = &pages[0];
         assert_eq!(p.key.to_string(), "sn83045462/1890-05-03/ed-1/seq-7");
-        assert_eq!(p.batch, "nbu_gage_ver01");
+        assert_eq!(p.batch, "nbu_gage");
         assert_eq!(p.loc_text, "bulk");
         assert_eq!(p.ocr_source, "usnm-tesseract");
         assert_eq!(p.ocr_engine, "tesseract-5.5.1/deu_latf+deu");
@@ -701,6 +772,14 @@ mod tests {
             .unwrap();
             assert!(!body.to_string().contains("secret"), "{body}");
             assert!(body["message_id"].is_string());
+            // Each is a valid v2 dead letter, with its cause's fields.
+            let parsed = message::decode_dead_letter(&d.text).unwrap();
+            assert_eq!(parsed.v, 2);
+            match parsed.cause.unwrap() {
+                Cause::Invalid => assert_eq!(parsed.kind.as_deref(), Some("bad_json")),
+                Cause::Permanent => assert!(parsed.kind.is_none() && parsed.message.is_some()),
+                c => panic!("unexpected cause {c:?}"),
+            }
             kept.push(body["message"]["page"].as_str().map(str::to_owned));
             dead.push(body["error"].as_str().unwrap().to_owned());
         }
@@ -760,6 +839,69 @@ mod tests {
         assert!(out.list("pages").await.unwrap().is_empty());
     }
 
+    #[tokio::test]
+    async fn a_page_with_no_model_fails_without_an_image_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out, scans) = worker_with_scans(dir.path());
+        queue
+            .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-8", "haw"))
+            .await
+            .unwrap();
+        let m = queue.receive(BULK, Duration::ZERO).await.unwrap().unwrap();
+        w.handle(m, Instant::now()).await;
+        assert_eq!(scans.requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(out.list("pages").await.unwrap().is_empty());
+        // Left for another node, not dead-lettered.
+        assert!(queue
+            .receive(DEADLETTER, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(queue.approximate_count(BULK).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_long_loc_hold_takes_no_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, _out, scans) = worker_with_scans(dir.path());
+        // A 1-hour Retry-After, past the page budget (1440 s).
+        *scans.held_until.lock().unwrap() =
+            Some(tokio::time::Instant::now() + Duration::from_secs(3600));
+        queue
+            .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-7", "deu"))
+            .await
+            .unwrap();
+        let (tx, rx) = watch::channel(false);
+        let run = tokio::spawn(w.clone().run(rx));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tx.send_replace(true);
+        run.await.unwrap().unwrap();
+        assert_eq!(scans.requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Never received: its first receive is still to come.
+        let m = queue
+            .receive(BULK, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.dequeue_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_short_loc_hold_still_takes_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out, scans) = worker_with_scans(dir.path());
+        // Shorter than a page's budget: the page waits it out in the pacer.
+        *scans.held_until.lock().unwrap() =
+            Some(tokio::time::Instant::now() + Duration::from_secs(60));
+        queue
+            .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-7", "deu"))
+            .await
+            .unwrap();
+        let (_tx, rx) = watch::channel(false);
+        w.clone().run(rx).await.unwrap();
+        assert_eq!(out.list("pages").await.unwrap().len(), 1);
+    }
+
     #[test]
     fn output_names() {
         let key: PageKey = "sn83045462/1890-05-03/ed-2/seq-7".parse().unwrap();
@@ -784,6 +926,9 @@ mod tests {
     impl Engine for SlowEngine {
         fn source(&self) -> &str {
             "usnm-slow"
+        }
+        fn can_read(&self, _: &str) -> bool {
+            true
         }
         async fn ocr(&self, _: &Path, _: &str, _: &Path) -> Result<EngineOutput, EngineError> {
             tokio::time::sleep(Duration::from_secs(3600)).await;

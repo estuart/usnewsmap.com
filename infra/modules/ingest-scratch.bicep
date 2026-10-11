@@ -14,19 +14,30 @@
 // can't mount NFS shares that require encryption in transit, so that is
 // turned off for NFS; nothing leaves the VNet, and HTTPS stays required for
 // the REST API.
+//
+// The same account can hold a second share, `qw-search` (`searchGiB`), for
+// the search cluster experiment's `nfs` mode (#251; docs/operations.md,
+// "Local-disk test"): an index copied onto it and served to a searcher as
+// `file://`. The account, its private endpoint and its DNS zone are shared;
+// either share can be on without the other.
 
 param location string
 param tags object
 param name string
-@description('Share size in GiB. 128 is the floor for the merge settings in pages-index.yaml: a merge of about 60 GB, plus the write-ahead log, the split cache and the split being built, about 70 GB, with room for pages that index larger. A smaller share needs a smaller split_num_docs_target.')
-@minValue(128)
+@description('Scratch share size in GiB; 0: no scratch share. 128 is the floor for the merge settings in pages-index.yaml (main.bicep keeps the setting at 0 or 128 and up): a merge of about 60 GB, plus the write-ahead log, the split cache and the split being built, about 70 GB, with room for pages that index larger. A smaller share needs a smaller split_num_docs_target.')
+@minValue(0)
 param sizeGiB int
+
+@description('Size in GiB of the search experiment\'s share, qw-search; 0: none. Provisioned v2 SSD shares start at 32 GiB, with 3,000 IOPS and 100 MiB/s plus 1 IOPS and 0.1 MiB/s per GiB.')
+@minValue(0)
+param searchGiB int = 0
 param vnetId string
 param vnetName string
 param peSubnetId string
 param containerEnvName string
 
 var shareName = 'qw-scratch'
+var searchShareName = 'qw-search'
 var zoneName = 'privatelink.file.${environment().suffixes.storage}'
 
 resource account 'Microsoft.Storage/storageAccounts@2025-01-01' = {
@@ -59,7 +70,7 @@ resource files 'Microsoft.Storage/storageAccounts/fileServices@2025-01-01' = {
   }
 }
 
-resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2025-01-01' = {
+resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2025-01-01' = if (sizeGiB > 0) {
   parent: files
   name: shareName
   properties: {
@@ -68,6 +79,18 @@ resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2025-01-01
     // pipeline's user (uid 10001).
     rootSquash: 'NoRootSquash'
     shareQuota: sizeGiB
+  }
+}
+
+resource searchShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2025-01-01' = if (searchGiB > 0) {
+  parent: files
+  name: searchShareName
+  properties: {
+    enabledProtocols: 'NFS'
+    // The searcher's init container runs as root to hand a directory to
+    // the node's user (uid 10001), as the ingest job's does.
+    rootSquash: 'NoRootSquash'
+    shareQuota: max(searchGiB, 32)
   }
 }
 
@@ -124,7 +147,7 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = 
 }
 
 // The share as the environment's jobs mount it.
-resource envStorage 'Microsoft.App/managedEnvironments/storages@2025-01-01' = {
+resource envStorage 'Microsoft.App/managedEnvironments/storages@2025-01-01' = if (sizeGiB > 0) {
   parent: containerEnv
   name: 'ingest-scratch'
   dependsOn: [share, zoneGroup, link]
@@ -137,5 +160,20 @@ resource envStorage 'Microsoft.App/managedEnvironments/storages@2025-01-01' = {
   }
 }
 
+// The search share as the searcher mounts it.
+resource searchEnvStorage 'Microsoft.App/managedEnvironments/storages@2025-01-01' = if (searchGiB > 0) {
+  parent: containerEnv
+  name: 'search-share'
+  dependsOn: [searchShare, zoneGroup, link]
+  properties: {
+    nfsAzureFile: {
+      server: '${account.name}.file.${environment().suffixes.storage}'
+      shareName: '/${account.name}/${searchShareName}'
+      accessMode: 'ReadWrite'
+    }
+  }
+}
+
 output accountName string = account.name
-output envStorageName string = envStorage.name
+output envStorageName string = sizeGiB > 0 ? envStorage.name : ''
+output searchEnvStorageName string = searchGiB > 0 ? searchEnvStorage.name : ''

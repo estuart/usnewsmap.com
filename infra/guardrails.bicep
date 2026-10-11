@@ -85,7 +85,7 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
   name: guardrailPolicyNames.auditPublicAccess
   properties: {
     displayName: 'US News Map: data services should have public network access disabled'
-    description: 'Public network access on storage and Cosmos accounts, except the accounts the assignment lists by resource id (the public tiles account, and the on-prem OCR exchange account, which allows only its firewall\'s IPs and subnet). Audit by default; each environment assignment sets deny together with its own ids. A Spot backfill window would need a policy exemption.'
+    description: 'Public network access on storage and Cosmos accounts and Key Vaults, except the resources the assignment lists by resource id (the public tiles account, and the on-prem OCR exchange account and the OCR nodes\' Key Vault, which allow only their firewalls\' IPs and subnet). Audit by default; each environment assignment sets deny together with its own ids. A Spot backfill window would need a policy exemption.'
     policyType: 'Custom'
     mode: 'Indexed'
     parameters: {
@@ -103,7 +103,7 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
         defaultValue: []
         metadata: {
           displayName: 'Public accounts'
-          description: 'Resource ids of accounts that serve public data and may allow public network access.'
+          description: 'Resource ids of accounts and vaults that may allow public network access (behind their own firewalls, or serving public data).'
         }
       }
     }
@@ -124,6 +124,12 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
                 allOf: [
                   { field: 'type', equals: 'Microsoft.DocumentDB/databaseAccounts' }
                   { field: 'Microsoft.DocumentDB/databaseAccounts/publicNetworkAccess', notEquals: 'Disabled' }
+                ]
+              }
+              {
+                allOf: [
+                  { field: 'type', equals: 'Microsoft.KeyVault/vaults' }
+                  { field: 'Microsoft.KeyVault/vaults/publicNetworkAccess', notEquals: 'Disabled' }
                 ]
               }
             ]
@@ -152,6 +158,7 @@ var loggedTypes = [
   'Microsoft.App/managedEnvironments'
   'Microsoft.DocumentDB/databaseAccounts'
   'Microsoft.Insights/dataCollectionRules'
+  'Microsoft.KeyVault/vaults'
   'Microsoft.Storage/storageAccounts/blobServices'
   'Microsoft.Storage/storageAccounts/queueServices'
   'Microsoft.Storage/storageAccounts/tableServices'

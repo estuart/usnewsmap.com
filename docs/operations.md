@@ -210,7 +210,7 @@ Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would re
 
 The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #218) only with `USNM_AMERICAN_STORIES` (the job's `--american-stories`), off by default. The first release with it builds a full base, so turn it on for a full rebuild, after step 4 of #218 has measured the index size and rebuild time, and with an explicit go-ahead:
 
-1. Run the writer to the end: `scripts/ja-ocr/start-quality.sh prod american-stories-write` on the one-replica job. It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages only at the next full rebuild.
+1. Run the writer to the end: `scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write` on the one-replica job. It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages only at the next full rebuild.
 2. Do the [full rebuild](#full-rebuild), with the setting added to its first provision:
 
    ```sh
@@ -241,12 +241,12 @@ On a version with one searched text field (`text_layout: 2`, [Full rebuild](#ful
 
 ```sh
 RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
-scripts/ja-ocr/start-quality.sh prod targets            # caj-usnm-jaone: writes ocr-ja/targets-v3.jsonl
+scripts/ja-ocr/start-quality.sh --env prod --command targets            # caj-usnm-jaone: writes ocr-ja/targets-v3.jsonl
 # its log ends with `targets written` and the pages by loc_text (mixed: about 2,000); then
 az containerapp job start -n caj-usnm-jaocr-prod -g "$RG"   # `run`: OCRs the targets not done yet
 ```
 
-Listing streams the archive of every batch with a Japanese title again, as the first listing did, to find the pages LoC ships without text; pages already read are skipped by the run. Another cut: `start-quality.sh prod targets --mixed-below 0.8`, then `start-quality.sh prod run --mixed-below 0.8` (its own list and claims, `targets-v3-mixed80`); 0.35 or less lists no mixed pages. At the job's pace in October 2026 (a 2-page issue in about 21 s and a 4-page one in about 38 s per replica, mostly loc.gov's pacing) the 2,000 pages take about 5 hours on the two replicas, about $4.50 of Consumption time (2 × 4 vCPU and 8 GiB at about $0.43 an hour each), plus the listing. The next release publishes their Japanese text (an overlay-only release when nothing else is new). A mixed page joins the Japanese index only with Japanese on it: expect about 200 (Rocky Shimpo's front pages).
+Listing streams the archive of every batch with a Japanese title again, as the first listing did, to find the pages LoC ships without text; pages already read are skipped by the run. Another cut: `start-quality.sh --env prod --command targets --mixed-below 0.8`, then `start-quality.sh --env prod --command run --mixed-below 0.8` (its own list and claims, `targets-v3-mixed80`); 0.35 or less lists no mixed pages. At the job's pace in October 2026 (a 2-page issue in about 21 s and a 4-page one in about 38 s per replica, mostly loc.gov's pacing) the 2,000 pages take about 5 hours on the two replicas, about $4.50 of Consumption time (2 × 4 vCPU and 8 GiB at about $0.43 an hour each), plus the listing. The next release publishes their Japanese text (an overlay-only release when nothing else is new). A mixed page joins the Japanese index only with Japanese on it: expect about 200 (Rocky Shimpo's front pages).
 
 **English text of our OCR** (#203, 04 §4.8). Off by default. With `USNM_JA_LATIN` (the job's `--ja-latin`), a release gives the pages LoC ships without text a main-index document with the Latin-script text our OCR read on them (their English ads, mastheads and sections), and gives a page LoC read badly our text in place of LoC's where ours reads more words. No full rebuild is forced:
 
@@ -291,7 +291,7 @@ Then it scores the page against its language:
 Start it as one execution of the job with `quality` and its options as the arguments; the script prints the execution's name:
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod --sample-pct 10 --min-pages 50
+scripts/ja-ocr/start-quality.sh --env prod --sample-pct 10 --min-pages 50
 ```
 
 `az containerapp job start --args quality` alone doesn't work: when any container flag is given, the CLI sends a container override named after the job, with no image, settings or resources. The script sends the job's own template with only the arguments changed.
@@ -324,6 +324,63 @@ Read the numbers with these limits in mind:
 - Detection only chooses among the title's catalog languages and English: a German page in a title catalogued as English only is `und`, not German. English is always a candidate, so a page counted as English in a title that doesn't list English is English text (ads, a column) by its function words.
 - Pages of titles that list Japanese are left out (our own OCR covers them) and counted in the `japanese_skipped` row.
 
+### Damage metric parity (#296)
+
+The v2 metric's per-page code is `ja-ocr/damage_v2.py`, which `quality.py` imports. `usnm_core::damage` (cargo feature `damage`) is its Rust port, which the OCR pipeline uses (12 §12.5 Steps 5 and 6). Two checks keep them the same: the same language, decision, second language and script, equal token, word, head, near-miss and function-word counts, and rates within 1e-9.
+
+- In CI, `cargo test -p usnm-core --features damage` scores the pages of `crates/usnm-core/tests/data/damage-parity.jsonl.zst` again: 66 pages of loc.gov's OCR text from 33 titles in 25 catalog languages, and 17 made-up pages for the traps between Python's string handling and Rust's. It fails when `damage_v2.py`'s sha256 isn't the one the file records. After a change to `damage_v2.py`, port the change and score the same pages again: `python3 ja-ocr/damage_parity.py --rescore <old file> --out <new file>` (wordfreq 3.1.1; no loc.gov requests). `--pages-from <file> --out <path> --synthetic` builds a new one from loc.gov, with jaocr.py's pacing.
+- In the cloud, on curated text: `jaocr.py damage-parity` samples 400 pages of the 10% audit's per-page CSV, spread across languages, decisions and scripts, and writes `audit/damage-parity/<stamp>.jsonl.zst` in the curated container. It logs each page's doc_id and title languages (`damage parity page`), never text. `usnm-ingest ocr-damage --parity <that path>` scores them in Rust ([below](#ocr-damage-tables-296)).
+
+```sh
+scripts/ja-ocr/start-quality.sh --env prod --command damage-parity --pages 400
+```
+
+### OCR damage tables (#296)
+
+`usnm-ingest ocr-damage` scores pages with the Rust port (12 §12.5 Step 6). It runs as one-off executions of the ingest job, which reads and writes the curated container. `scripts/start-job.sh` starts one with the job's image and settings and other arguments. An execution can't mount the job's scratch share, and this command needs none. It logs counts and doc_ids, never text. Run the three modes in this order: parity, the gate, then the full pass.
+
+1. **Parity on curated text** (Step 5's cloud check). Write the pages with `damage-parity` ([above](#damage-metric-parity-296)), take the path from its `damage parity written` line, then:
+
+   ```sh
+   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --parity audit/damage-parity/<stamp>.jsonl.zst
+   ```
+
+   It logs `ocr damage parity` with the pages that agree and up to 50 doc_ids that don't, and fails if any page differs.
+
+2. **The gate.** The 10% audit's pages, picked by the audit's own sampler from every curated row of `pages-v20261003-1` (duplicate copies included), scored in Rust and compared with the audit's per-page CSV, joined on doc_id and batch. The CSV rounds every score to 4 decimals, so Rust's are formatted the same way before the comparison. A page agrees when the language, the decision and the three scores all match; the gate passes when at least 99.99% of the CSV's 2,368,911 rows agree. It writes no tables, only its result, `audit/damage/v2/gate/<version>-<pct>pct-<stamp>.json`, and the `ocr damage gate` line (counts by kind of difference, up to 50 doc_ids). It fails when the gate does. The result goes in a draft report PR.
+
+   ```sh
+   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v20261003-1 \
+     --sample-pct 10 --compare-csv audit/ocr-quality-v2-pages-v20261003-1-10pct-pages.csv.gz
+   ```
+
+3. **The full pass**, on the live version (`index_version` in the reference container's `current.json`), once the gate has passed:
+
+   ```sh
+   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version <live version> --max-runtime-secs 165600
+   ```
+
+   Each batch version gets `audit/damage/v2/<batch>_ver<NN>.parquet`, one row per page: `doc_id`, `lccn`, `date`, `edition`, `seq`, the base `batch`, `batch_version`, `text_status`, `lang`, `decision` (`detected`, `mixed`, `und`, or `no_text` for pages without text), `mixed_with`, `script`, `damage_rate`, `function_share`, `garbage_share`, `words`, `head` and `near`. Beside it, `<batch>_ver<NN>.summary.json` holds per-title counts (pages, scored pages, und, mixed, damaged and badly damaged), the median damage rate and pages by language. The summary is written last and marks the batch version done, so a later run skips it and pays only for new batches. When every batch of the version has its tables, `audit/damage/v2/versions/<version>.json` lists them; the seeder and `ocr-sync` read that list. A second run on the same version writes nothing. `--batches a,b_ver02` scores only those batches and doesn't write the list. A page is scored against its title's languages in the version's `titles.json`, which the command requires (the working catalog only fills in titles it lacks). A later correction to a title's catalog languages doesn't rescore tables already written. Tables are create-only, so to rescore, delete both the `.parquet` and the `.summary.json` of each of that title's batch versions, then run the pass again.
+
+   The ingest job has a 48-hour replica timeout. `--max-runtime-secs` stops the run from starting new batches (it finishes those it has started), and the next execution continues. `ocr damage progress` lines come once a minute with the pages per second. Batches are scored `--parallel` at a time, by default one per CPU. On one laptop core the scoring runs at about 1,650 pages a second, so the corpus's 23.7 million pages are a few hours of CPU on the job's 4 vCPUs, plus reading the curated parts. The Python audit's 10% sample took 5,725 s. Time the first full run and record it here. On the Consumption profile the job costs about $0.43 an hour, and reading curated parts that have moved to Cool adds about $0.01 per GB read.
+
+**A dev-scale test** (dev holds nothing outside a focused experiment, so this needs the maintainer's approval first). Locally, from the repository root:
+
+```sh
+python3 scripts/fixture-batches.py /tmp/usnm-dmg
+cd /tmp/usnm-dmg
+ingest="cargo run --release --manifest-path $OLDPWD/Cargo.toml -p usnm-ingest --"
+$ingest --state-file state.json --curated curated --reference reference run --list batches.json --synthetic --index-dir reference/indexes
+v=$(jq -r .index_version reference/current.json)
+USNM_REFERENCE_URL=$PWD/reference USNM_CURATED_URL=$PWD/curated python3 $OLDPWD/ja-ocr/jaocr.py quality --sample-pct 100
+$ingest --state-file state.json --curated curated --reference reference ocr-damage --version "$v" \
+  --sample-pct 100 --compare-csv "audit/ocr-quality-v2-$v-100pct-pages.csv.gz"
+$ingest --state-file state.json --curated curated --reference reference ocr-damage --version "$v"
+$ingest --state-file state.json --curated curated --reference reference ocr-damage --version "$v"   # writes nothing
+```
+
+On 10 October 2026 that gate agreed on all 1,872 fixture pages, and the second full run skipped both batches. In dev, after `scripts/provision.sh dev`: curate and release a few small batches (`dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01`), run `scripts/ja-ocr/start-quality.sh --env dev --sample-pct 100`, then the three commands above with `--env dev`, the dev version and the dev audit's CSV, and `--command damage-parity --pages 50`. Check the tables, the gate result and the second run's `skipped`, then `scripts/teardown.sh dev`.
+
 ## Text the Japanese titles' pages hold that search can't reach
 
 `jaocr.py mixed` (`ja-ocr/mixed.py`) measures two gaps the Japanese OCR leaves. The OCR job read a page only when LoC's text for it was missing, empty, short or under 35% word-like; a Japanese query searches only our OCR, any other query only LoC's text. Its October 2026 results led to the `mixed` targets and the English text of our OCR in the main index ([above](#japanese-ocr-mixed-pages-and-english-text)); the command still measures by the 35% test.
@@ -332,7 +389,7 @@ Read the numbers with these limits in mind:
 - English on the pages we read: NDLOCR-Lite reads some English (mastheads, short lines), but only into the Japanese index. For every page of our OCR it counts the tokens that are among English's 5,000 most frequent words (3 letters or more).
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod mixed          # prints the execution's name
+scripts/ja-ocr/start-quality.sh --env prod --command mixed          # prints the execution's name
 scripts/ja-ocr/quality-rows.sh prod <execution>     # its "mixed pages" rows, once it has finished
 ```
 
@@ -343,7 +400,7 @@ It writes `audit/mixed-pages-<version>-<execution>.json` and a CSV per table in 
 `jaocr.py american-stories --year Y [--year …] [--sample-pct 10]` (`ja-ocr/american_stories.py`, #205) compares [American Stories](https://huggingface.co/datasets/dell-research-harvard/AmericanStories) (Dell et al. 2023, CC BY 4.0), a re-OCR of Chronicling America, with LoC's text on our pages. It streams each year's tarball from Hugging Face (0.4 to 7.6 GB; nothing is written to disk), joins scans to our pages by their file names, read in a first pass (a scan named `<date>_p<page>_<lccn>_<reel>_<date><ed>_<image>.json` is our `<lccn>_<date>_ed-<ed>_seq-<page>`; one with no page, `pNone`, about 3% of 1865, takes its image's place in the issue, a rule that agrees with 92.8% of 1865's named pages; a second copy of a page is skipped), keeps the audit's fixed sample (`quality.sampled`), and reads LoC's text for the sampled pages of those years from the batches whose dates overlap them. For pages of titles whose first language is English it reports the join, words per page, the audit's English damage rate and function-word share for each text, pages matching a fixed term list in either text, and LoC's damage rate by the share of regions American Stories marked Illegible.
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925
+scripts/ja-ocr/start-quality.sh --env prod --command american-stories --year 1865 --year 1925
 scripts/ja-ocr/quality-rows.sh prod <execution>    # its "american stories" rows
 ```
 
@@ -358,7 +415,7 @@ It writes `audit/american-stories-<version>-<execution>.json`. It runs on the on
 - `diff_edge_examples`: up to 10 pages a year with a phrase whose words are all in LoC's text but together only in American Stories', with loc.gov links.
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925 --diff
+scripts/ja-ocr/start-quality.sh --env prod --command american-stories --year 1865 --year 1925 --diff
 ```
 
 The diff runs after the comparison and takes about 40 s per 1,000 pages of 8,000 tokens (measured on synthetic pages; the run logs its own figure in `american stories diff year`).
@@ -368,8 +425,8 @@ The diff runs after the comparison and takes about 40 s per 1,000 pages of 8,000
 `jaocr.py american-stories-write [--year Y …]` (`ja-ocr/american_stories_write.py`, #218) writes American Stories' text (Dell et al. 2023, CC BY 4.0) for our pages to the curated container, for the release to index beside LoC's. It streams each year's tarball from Hugging Face once, places every scan on our page as `american-stories` does, and writes `american-stories/pages/<lccn>/<year>-<nnn>.parquet`: one row per page with `doc_id`, `lccn`, `date`, `text` (each article's headline, byline and text in American Stories' order, separated by blank lines), `articles` (JSON: each article's headline, byline, `start`/`end` in `text`, bounding boxes in scan pixels and the legibility of its regions), `legibility` (the page's text regions by legibility) and the scan's `width` and `height`. A page's second copy is skipped. Each year ends with a marker `american-stories/years/<year>.json` holding its counts; a rerun skips marked years, so an interrupted run resumes. A download that goes 5 minutes without data, or breaks off, fails and the year starts again from the top (up to 3 tries, a minute apart, each logged as `american stories year failed; retrying`); a retry writes the same parts under the same names. A year counts as read only when the gzip stream reached its end marker and, when Hugging Face sends one, the byte count matches `Content-Length`, so a download that stops at a file boundary inside the tarball is retried rather than marked. All 180 years are about 340 GB to stream.
 
 ```sh
-scripts/ja-ocr/start-quality.sh prod american-stories-write          # every year
-scripts/ja-ocr/start-quality.sh prod american-stories-write --year 1865
+scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write          # every year
+scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write --year 1865
 ```
 
 It runs on the one-replica job and logs `american stories year written` per year. `jaocr.py american-stories` also lists, per term and year, up to 8 pages that match only in American Stories' text with the words around the match (`only_american_stories`), for checking those matches by hand.
@@ -381,8 +438,10 @@ The API keeps every search from the site, with only its filters, page count and 
 ```sh
 scripts/settings.sh prod USNM_SEARCH_LOG_READERS "$(az ad signed-in-user show --query id -o tsv)"
 scripts/provision.sh prod
-scripts/searches.sh prod 30      # searches per day, top queries, queries that found nothing
+scripts/searches.sh prod 30      # searches per day, top queries, queries that found nothing, date spans
 ```
+
+The last two tables count searches by date span (the whole corpus range, over 10 years, 1–10 years, a year or less) and by the decade partitions they touch, bucketed as `usnm_core::decade` (pre-1820 is one). They hold counts and shares only, never queries. A search is whole range when it covers the corpus bounds the site serves (`/v1/meta`, read from the environment's `SITE_URL`); if those can't be read, the script says so and takes each version's widest search instead. They decide whether to build the next full base with `USNM_PARTITION_DECADE` (#123): only date-limited searches skip splits.
 
 The data account is reachable only through its private endpoint, so run `searches.sh` from a network that reaches it. The first day file appears an hour after the first full UTC day with the log deployed.
 
@@ -396,7 +455,7 @@ Production keeps no batch archives (ADR-0006): LoC is the source of record. The 
 scripts/archive-store.sh deploy --subscription <id>     # prints the account's resource id
 ```
 
-**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting (or tear the environment down) this way. `scripts/teardown.sh` refuses while the setting is on.
+**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, `id-usnm-qwbench` also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting (or tear the environment down) this way. `scripts/teardown.sh` refuses while the setting is on.
 
 ```sh
 scripts/archive-store.sh unlock
@@ -409,21 +468,21 @@ scripts/archive-store.sh deploy        # the lock back
 
 - **Every archive it downloads is kept** byte for byte as fetched, at `raw/{batch}/{archive file}`. It is written in 8 MiB blocks as it streams (never held whole) at the Cold tier. Once the archive's sha256 checks out, the upload is committed and `raw/{batch}/manifest.json` records the source URL, bytes, sha256, the time and LoC's response headers (`last-modified`, `etag`, `content-length`, `content-type`). Only then is the batch marked curated. A download that fails its checksum leaves nothing. The commit is create-only: an archive already at the path (another environment's, sharing the account) is never replaced, and the batch curates from its own download with a warning if the two differ.
 - **A batch already kept is curated from the copy,** not LoC, when its manifest's sha256 is the one LoC lists (or LoC lists none). It needs no download slot, and the copy is checked again as it's read. The `archive source` line says which (`source: raw` or `loc`), and `archive retained` logs each new copy.
-- **Batch lists are kept too:** each remote list an `enqueue` or `run` reads goes to `raw/listings/{time}-{sha}.json`. Titles-sync keeps the fields it uses from each title record in the environment's `reference/raw/titles.json`. Nothing else is downloaded from outside Azure.
+- **Batch lists are kept too:** each remote list an `enqueue` or `run` reads goes to `raw/listings/{time}-{sha}.json`. Titles-sync keeps the fields it uses from each title record in the environment's `reference/raw/titles.json`. Nothing else is downloaded from outside Azure: the search cluster's sample, sets and bench read only Azure stores.
 
 To keep the archives of batches curated before, queue them again with `--force` (only curated or failed batches at the listed version; one being curated is left alone), then run the backfill job. A re-curation writes a new attempt and replaces the batch's curation when it commits.
 
 Stopping a curate run mid-batch leaves its batches leased for up to 2 hours (the curate worker's lease, set in `crates/usnm-ingest/src/main.rs`; the 45-minute `BATCH_LIMIT` is a running batch's own limit): `--force` leaves a leased batch alone and a new run skips it until the lease runs out. A batch whose runs are stopped repeatedly can reach the attempt cap (5) and be marked failed at its next claim; `enqueue --force` resets its attempts. Found on the dev 1% run (October 2026): after a stopped run, 8 batches needed two more passes.
 
 ```sh
-scripts/start-job.sh dev INGEST_JOB enqueue --batches "$B" --force
-scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
+scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches "$B" --force
+scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
 ```
 
 **An environment's own `raw` container** (`USNM_RETAIN_RAW true`) does the same inside the environment's data account. It goes with the environment, and turning the setting off deletes it, so it suits a short trial. `USNM_ARCHIVE_ACCOUNT` takes precedence when both are set. To move archives kept there into the archival account, with both settings on, run the copy in the ingest job. It streams each archive, checks it against its manifest, and skips those already there. A batch for which the destination holds another archive is left as it is and fails the copy at the end:
 
 ```sh
-scripts/start-job.sh dev INGEST_JOB archive-copy \
+scripts/start-job.sh --env dev --job INGEST_JOB -- archive-copy \
   --from "$(az storage account show -n "$(scripts/settings.sh dev STORAGE_ACCOUNT)" --query primaryEndpoints.blob -o tsv)raw" \
   --batches "$B"
 ```
@@ -434,11 +493,18 @@ Then clear `USNM_RETAIN_RAW` and provision. That deletes the environment's own c
 
 ### Sample sets
 
-A set packages a sample of the corpus for reuse in `sets/{name}/`, built once and never replaced (build `-v2` instead). The builder comes with the search cluster experiment's tooling (#240); this account holds the container and the layout below is what it writes. A build first claims the name with `building.json`, so two builds never write the same objects. A build that fails keeps its name, so the retry is the next version:
+A set packages a sample for reuse in `sets/{name}/`, built once by the search cluster's bench job and never replaced (build `-v2` instead). A build first claims the name with `building.json`, so two builds never write the same objects. A build that fails keeps its name, so the retry is the next version:
 
 - `raw.tar`: the set's LoC batch archives as kept in `raw/`, with their manifests. It's a plain tar, since the archives are bzip2 already. Curate it offline, or extract it into another raw store.
 - `docs.ndjson.zst`: the sample's documents exactly as the release builds them (`text`, `text_cg`, every field; `text_as` and `text_as_cg` only when the manifest says `american_stories`). It's one zstd stream, so it can be loaded into any Quickwit 0.9 index created from `infra/quickwit/pages-index.yaml`.
 - `manifest.json`, written last: name and version, how the batches were chosen, the batch list with each archive's bytes and sha256, page and document counts, each file's bytes and sha256, the corpus bounds, the common-word pairs' and American Stories' versions, the index config's sha256, the builder's commit and `created_at`.
+
+```sh
+J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
+J bundle --name loc-1pct-v1 --sample dev1pct \
+  --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
+J load --set loc-1pct-v1 --index s1ixset          # the cluster loads straight from the set
+```
 
 **From a container or a laptop with access** (Storage Blob Data Reader on `sets`, and a network path to the account: an environment's VNet, or a private endpoint of your own; public access is off):
 
@@ -449,6 +515,193 @@ for f in chunk-*; do curl -sf -XPOST "$QW/api/v1/$INDEX/ingest" --data-binary @"
 ```
 
 Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.tar` gives `{batch}/{archive}` and `{batch}/manifest.json`, the layout of `raw/`.
+
+## Search cluster experiment
+
+An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1% sample: indexing with 1 and 2 indexers, then searching with 1, 2 and 3 searchers. It runs in its own environment (`dev`), never in prod (the template ignores the setting there), and everything it adds sits behind `USNM_SEARCH_CLUSTER`. With the setting off, the stack is exactly what it was (the module is `if (searchCluster && useAcr && env != 'prod')`).
+
+**What it deploys** (`infra/modules/searchcluster.bicep`):
+
+- **Nodes** `ca-usnm-qw-{i}`, `USNM_SEARCH_CLUSTER_NODES` of them (0 to 4), each exactly one replica of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU (default 2, the API sidecar's size) with 2 GiB per vCPU, on the Consumption profile. Node 0 is the only metastore (the single writer of the file-backed metastore in `qw-cluster`), the control plane, the janitor, an indexer, a searcher, and the root: searches enter there through its internal ingress, `http://ca-usnm-qw-0` inside the environment. Nodes 1 to `USNM_SEARCH_CLUSTER_INDEXERS - 1` also index; the rest only search. Their node config is `infra/quickwit/cluster-node.yaml`; its searcher settings are the sidecar's (`searcher.yaml`), which a test checks.
+- **Addresses.** Quickwit gossips over UDP and calls leaves over gRPC, both on replica IPs, which change whenever a replica restarts (#239). Each node starts as `usnm-qwcluster node`. That writes its replica IP to `qw-bench/seeds/qw-{i}.json`, reads the other nodes' entries as `QW_PEER_SEEDS`, sets `QW_ADVERTISE_ADDRESS`, and then becomes Quickwit. Every node writes before it reads, so of two nodes starting together at least one sees the other. A node that restarts at a new IP joins through the others, and they learn its new address by gossip.
+- **Bench job** `caj-usnm-qwbench-{env}` (manual, 4 vCPU / 8 GiB, 6 h timeout), which runs `usnm-qwcluster` with each step's arguments (`scripts/start-job.sh`).
+- **Storage, Entra only.** Containers `qw-cluster` (splits and metastore; Blob Data Contributor for each node's system-assigned identity, since Quickwit can use no other) and `qw-bench` (seeds, the sample, reports; Contributor for `id-usnm-qwnode-{env}` and `id-usnm-qwbench-{env}`). The bench identity also reads `curated` and `reference`. Nothing can write `qw-index`, `reference` or `curated`. Turning the setting off deletes both containers (soft delete keeps them 14 days).
+
+**The steps.** Each `usnm-qwcluster` step logs one `qwcluster report` line and stores the full report in `qw-bench/runs/`.
+
+| Step      | Command                                                       | What it measures                                                                                                                                                                                                                                                                                                               |
+| --------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sample`  | `sample --name N --pct P [--american-stories]`                | Takes `P`% of the published version's pages (SHA-256 of `doc_id`, mod 10,000, below `P` × 100, as the OCR audit samples) as the documents a full release builds, with duplicate copies settled as the release does. Reads every curated part once.                                                                             |
+| `load`    | `load --sample N --index I [--split-docs 3000] [--senders 4]` | Creates `I` from `pages-index.yaml` with `split_num_docs_target` set and one ingest shard per indexer, sends the sample, and times sending, all documents committed, merges settled, and sealed. Also records documents by node, splits and footer sizes, and retries on 429 and 503.                                          |
+| `bench`   | `bench --label L --index I --sample N --expect-searchers K`   | The 13 benchmark searches of `bench-cold-searches.py` and `load-cold-searches.py`, run as `/v1/aggregate` runs them (`plan::aggregate`) against node 0: `first`, `warm`, then concurrency 1, 2, 4 and 10, each with its windows a day further back. Reports median, p90, throughput, and each node's leaf searches and splits. |
+| `members` | `members`                                                     | The cluster as node 0 sees it: members, addresses, generations, services.                                                                                                                                                                                                                                                      |
+| `dump`    | `dump [--hold-secs 600]`                                      | Prints every stored report, for a log stream when Log Analytics is over its cap.                                                                                                                                                                                                                                               |
+
+**Split target.** At the production 30,000 pages, a 1% sample makes about 8 splits, too few for a root to spread over three nodes the way production spreads about 800. The loader's default of 3,000 makes about 80 splits of a tenth the size. Per-split fixed costs then weigh more than in production, so a second index at 30,000 (`--split-docs 30000`) brackets the result.
+
+**Run it** (in `dev`; prod's data account is private, so dev curates its own 1% from LoC):
+
+```sh
+scripts/archive-store.sh deploy                       # once per subscription; prints the account's id
+ARCHIVE_ID=<the id it printed>
+scripts/settings.sh dev USNM_INGEST_JOBS true
+scripts/settings.sh dev USNM_INGEST_SCRATCH_GIB 0     # 1% fits the replica's disk
+scripts/settings.sh dev USNM_LOG_DAILY_CAP_GB 1       # blob write logs; clear afterwards
+scripts/settings.sh dev USNM_ARCHIVE_ACCOUNT "$ARCHIVE_ID"   # keep every LoC download (Archival storage, above)
+scripts/provision.sh dev
+RG=$(scripts/settings.sh dev AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh dev ACR_NAME)
+TAG=qwc-$(git rev-parse --short HEAD)
+az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
+az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
+scripts/settings.sh dev USNM_IMAGE_TAG $TAG
+scripts/settings.sh dev USNM_USE_ACR true
+scripts/provision.sh dev
+
+# The 1%: every 100th batch of LoC's listing by name, from the 40th (offset 39):
+# 30 batches, 238,057 pages of 23,838,683 (0.999%), 26 awardees, 23.8 GB of archives.
+B=arhi_beatles_ver01,az_fireant_ver01,ct_fairfield_ver01,curiv_plasse_ver01,dlc_alpha_ver03,dlc_debaptiste_ver01,dlc_goldenrod_ver01,dlc_leibovitz_ver01,dlc_saluki_ver01,gu_drteeth_ver01,iahi_hypno_ver01,in_irvington_ver01,khi_garwood_ver02,lu_juggernaut_ver01,me_calais_ver03,mnhi_dassel_ver01,mohi_berenice_ver01,mthi_goldeneye_ver01,ncu_cotton_ver04,nhd_lafayette_ver01,nn_keddy_ver01,ohi_himilco_ver01,oru_longspur_ver01,rp_hobgoblin_ver02,tu_eddie_ver02,uuml_anderson_ver01,vi_fezza_ver01,vnstcsc_duggan_ver01,whi_brie_ver01,wvu_jolie_ver02
+scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
+scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
+scripts/start-job.sh --env dev --job INGEST_JOB -- run --batches $B --full --curate-max-runtime-secs 21600 \
+  --titles-max-runtime-secs 28800 --quickwit-bin /usr/local/bin/quickwit \
+  --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index
+scripts/logs.sh dev release-progress 6h    # the single-writer baseline on the same pages
+
+# One node, one indexer.
+scripts/settings.sh dev USNM_SEARCH_CLUSTER true
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 1
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_INDEXERS 1
+scripts/provision.sh dev
+J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
+J members
+J sample --name dev1pct --pct 100          # dev's whole version is the 1%
+J bundle --name loc-1pct-v1 --sample dev1pct \
+  --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
+J load --sample dev1pct --index s1ix
+J bench --label n1 --index s1ix --sample dev1pct --expect-searchers 1
+# Two nodes, both indexing.
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 2
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_INDEXERS 2
+scripts/provision.sh dev
+J load --sample dev1pct --index s2ix
+J bench --label n2 --index s1ix --sample dev1pct --expect-searchers 2
+# Three nodes; node 2 only searches. Then the restart test.
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 3
+scripts/provision.sh dev
+J bench --label n3 --index s1ix --sample dev1pct --expect-searchers 3
+J members
+az containerapp revision restart -n ca-usnm-qw-2 -g "$RG" \
+  --revision "$(az containerapp revision list -n ca-usnm-qw-2 -g "$RG" --query "[?properties.active].name | [0]" -o tsv)"
+J bench --label n3-restart --index s1ix --sample dev1pct --expect-searchers 3 --levels 1,4 --levels-only
+J members                                  # qw-2 has a new address and generation
+
+# The report: Log Analytics, Azure Monitor per node app, list prices.
+scripts/qwcluster-report.py dev --since 2d --out qwcluster-report.md
+```
+
+Start each step once the previous execution has ended (`az containerapp job execution list -n "$(scripts/settings.sh dev SEARCH_CLUSTER_JOB)" -g "$RG" -o table`). For a cold `first` pass, restart the node revisions before a bench. The first provision with the cluster may restart node 0 a few times while its identity's role on `qw-cluster` propagates. If Log Analytics is over its cap, stream the stored reports with `J dump --hold-secs 600` and `az containerapp job logs show -n <job> -g "$RG" --container qwbench --follow > lines.txt`, then run `scripts/qwcluster-report.py dev --from-file lines.txt`. Collect the report before scaling down: a deleted app's metrics can't be queried.
+
+**Report lines.** Container Apps keeps about 16 KiB of a console line. A bench report therefore goes out as several `qwcluster report` lines (`bench`, one `bench_pass` per pass, `bench_probe`, `bench_profile`), which `scripts/qwcluster-report.py` puts back together by label. Images before this change logged a whole run on one line, and a run with `--probe` passed the limit (October 2026); the report salvages such a line's passes, and takes its Quickwit version from the run's `bench root` line, but its probe and profile are only in `qw-bench` (`runs/{label}/bench.json`). `J dump` with a current image logs those stored reports again, in parts.
+
+**Idle and teardown.** `USNM_SEARCH_CLUSTER_NODES 0` and a provision remove the node apps but keep the containers and the bench job, so nothing is billed but storage. `USNM_SEARCH_CLUSTER ""` and a provision remove everything the setting added, both containers included. Clear `USNM_LOG_DAILY_CAP_GB` afterwards.
+
+**Threads.** Every node runs one main-runtime thread and one search-pool thread per vCPU (`QW_TOKIO_RUNTIME_NUM_THREADS`, `RAYON_NUM_THREADS`), as the API's sidecar does with 4 and 4 at 3.75 vCPU (#251): 2 and 2 at the default 2 vCPU. Before October 2026 the nodes ran Quickwit's own default, a third of the CPUs rounded up for the main runtime (one thread at 2 vCPU), so the earlier benches had a single thread for downloads and split opening. `USNM_SEARCH_CLUSTER_RUNTIME_THREADS` and `USNM_SEARCH_CLUSTER_SEARCH_THREADS` override the counts (0: one per vCPU).
+
+### Quickwit version comparison
+
+Whether a pre-0.9 Quickwit searches our splits with less work than 0.9.1 (#251; upstream quickwit-oss/quickwit#6883 reports 0.9.1 1.25 to 2x slower than a 0.8 nightly on identical splits). The released 0.8.2 can't take part: it reads tantivy index formats 4 to 6 and 0.9.1 writes 7, and it authenticates to Azure only with an account key, which our accounts refuse (ADR-0009). The baseline is the `qw-azure-fix` nightly (`quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc…`, main of 23 September 2025 plus the Azure multipart fix, which reports 0.8.0): it writes and reads format 7, uses managed identity, reads the 0.9 metastore, and takes every searcher key of `searcher.yaml` but `predicate_cache_capacity` and `leaf_request_timeout_secs`.
+
+**What it deploys.** `USNM_SEARCH_COMPARE_TAGS`, ingest image tags separated by commas, gives one standalone searcher per tag, `ca-usnm-qws-{i}` (root `http://ca-usnm-qws-{i}` inside the environment), of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU each. Each runs as the API sidecar does: searcher and metastore, polling the file-backed metastore in `qw-cluster` every 30 s, with Blob Data Reader on `qw-cluster` only, so it searches the cluster's indexes and can't change them. Each has a cluster id of its own and no seeds, so the two never join and a search never mixes versions. The node wrapper reads `quickwit --version` and, below 0.9, drops the two searcher keys and pins `warmup_single_split_initial_allocation` to 0.9.1's 300 MB (the nightly's default is 1 GB). The bench records the root's Quickwit version, each node's main-runtime busy time and Blob bytes downloaded per pass, and samples the search pool's running and queued split searches every 2 s.
+
+**Images.** The second tag is the ingest image on the nightly's Quickwit (`Dockerfile.ingest`'s `QUICKWIT_IMAGE`; CI always builds the default, v0.9.1):
+
+```sh
+cd ~/code/usnewsmap.com-qwcluster
+RG=$(scripts/settings.sh dev AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh dev ACR_NAME)
+TAG=qwc-$(git rev-parse --short HEAD); SHA=$(git rev-parse HEAD)
+NIGHTLY=quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc6d6ee7db4732b8a20be544ba3455bdc08ef0ccd7683f4aa854243ff6
+az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA .
+az acr build -r "$ACR" -t usnewsmap-ingest:$TAG-qw2509 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA --build-arg QUICKWIT_IMAGE=$NIGHTLY .
+az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
+```
+
+**Smoke test** on an index the cluster already holds (`s1ixb`, the 1% without American Stories, 58 splits): cluster nodes off, so nothing writes while they search; both searchers at the sidecar's 4 vCPU.
+
+```sh
+scripts/settings.sh dev USNM_IMAGE_TAG $TAG
+scripts/settings.sh dev USNM_SEARCH_CLUSTER true
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODE_VCPU 4
+scripts/settings.sh dev USNM_SEARCH_COMPARE_TAGS "$TAG,$TAG-qw2509"
+scripts/provision.sh dev
+J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
+JOB=$(scripts/settings.sh dev SEARCH_CLUSTER_JOB)
+wait_for() {  # until execution $1 has ended; prints how
+  local s; while :; do
+    s=$(az containerapp job execution show -n "$JOB" -g "$RG" --job-execution-name "$1" --query properties.status -o tsv)
+    case "$s" in Running|Processing|Unknown|"") sleep 20 ;; *) echo "$1 $s"; return ;; esac
+  done
+}
+restart() { for a in ca-usnm-qws-0 ca-usnm-qws-1; do az containerapp revision restart -n $a -g "$RG" --revision "$(az containerapp revision list -n $a -g "$RG" --query "[?properties.active].name | [0]" -o tsv)"; done; sleep 90; }
+wait_for "$(J members --cluster http://ca-usnm-qws-0)"; wait_for "$(J members --cluster http://ca-usnm-qws-1)"
+bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index s1ixb --sample dev1pct --levels 1,4,10)"; }
+restart; bench cmp-v091-r1 qws-0; bench cmp-n2509-r1 qws-1
+restart; bench cmp-n2509-r2 qws-1; bench cmp-v091-r2 qws-0
+restart; bench cmp-v091-r3 qws-0; bench cmp-n2509-r3 qws-1
+scripts/qwcluster-report.py dev --since 6h --out qwcompare.md
+```
+
+The two `members` lines show each searcher alone in its cluster, with `main_threads` 4 in its counters (the nightly reports the same metric names as 0.9.1). The report's **Quickwit version comparison** section has, per pass, the main runtime's busy seconds per search and per GB downloaded, its busy share, and the search pool's peaks, then each version's averages with ratios to 0.9.1, then whether both versions found the same pages for every search. If they didn't, the timings don't compare. On dev's 1% the searches wait on Blob, not CPU (0.1 to 0.4 vCPU in October 2026), so the latency ratios don't carry to production; busy seconds per GB do, since production's cold searches wait on the main runtime (about 95% busy on 4 threads with an idle search pool, #251). A nightly ratio well under 1 (0.8 or less) on busy seconds per GB is worth the full run; near 1, the regression of #6883 isn't what holds production back.
+
+**Full run**, if the smoke test points that way: indexes shaped like production's, built by 0.9.1 (node 0) from the 1% with `text_as` and `text_as_cg` filled from `text` and `text_cg` (`load --as-from-text`; LoC's OCR twice, the shape of production's work but not its matches), at the loader's 3,000 pages per split (production's fan-out per search) and at production's 30,000 (production's split size):
+
+```sh
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 1
+scripts/provision.sh dev
+wait_for "$(J load --sample dev1pct --index asdup3k --as-from-text)"
+wait_for "$(J load --sample dev1pct --index asdup30k --split-docs 30000 --as-from-text)"
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
+scripts/provision.sh dev
+bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index "$3" --sample dev1pct --american-stories --levels 1,4,10)"; }
+# then the same three rounds as above for asdup3k and asdup30k
+```
+
+**Afterwards** `USNM_SEARCH_COMPARE_TAGS ""` and a provision remove the searchers (collect the report first). Two 4 vCPU searchers cost about $0.86 an hour while they exist.
+
+### Local-disk test
+
+Whether reading splits from somewhere other than Blob removes the main runtime's CPU cost (#251): the same index and bench on Quickwit 0.9.1 with the sidecar's 4 and 4 threads, one searcher, `ca-usnm-qwl-0`, in one mode at a time (`USNM_SEARCH_LOCAL_MODE`):
+
+- `blob`: splits read from Blob, as the sidecar reads them.
+- `nfs`: the index (`USNM_SEARCH_LOCAL_INDEX`) copied once onto an NFS Azure Files share and served from there as `file://`. The share, `qw-search` (`USNM_SEARCH_NFS_GIB`, default 64), is a second share in the ingest scratch share's provisioned v2 SSD account, reached through the same private endpoint; it exists while the mode is `nfs` (or the scratch share is on). The copy is made at the first start (`crates/usnm-ingest/src/cluster/local.rs`) and kept: a restart, or another index, copies only what isn't there.
+- `cache`: Quickwit's split cache (`searcher.split_cache`, `USNM_SEARCH_LOCAL_CACHE_GIB`, default 40) on the replica's disk. A search reads from Blob and marks its splits; the cache downloads them whole in the background (4 at a time) and later searches read the local files.
+- `copy`: the index copied to the replica's disk before Quickwit starts and served as `file://`, so no Blob client runs at all.
+
+**Where it runs.** `blob` and `nfs` run on Consumption at the sidecar's 3.75 vCPU / 7.5 GiB (with `nfs`'s 0.25 vCPU init container that hands the share's directory to the node's user, 4 / 8 in all), the shape production searches with. A Consumption replica can mount an NFS share: the environment has its own VNet, and the ingest job mounts its scratch share on Consumption the same way ([storage mounts](https://learn.microsoft.com/azure/container-apps/storage-mounts#azure-files-volume)). `cache` and `copy` need more disk than a Consumption replica's 8 GiB ([ephemeral storage](https://learn.microsoft.com/azure/container-apps/storage-mounts#ephemeral-storage)), and a VM is out (`usnm-deny-iaas-compute` denies them in `rg-usnm-dev`), so they run on the E4 dedicated profile (`USNM_DEDICATED_PROFILE`), where Microsoft reported about 80 GiB of ephemeral storage per replica in September 2026 (microsoft/azure-container-apps#1779; the node logs `data directory disk` with `df` at start): 3.25 vCPU / 24 GiB, an E4 replica's most, its disk emptied by a restart. The E4 node costs about $0.39 an hour plus the $0.10 Dedicated plan fee while the profile exists; the share about $0.10 per GiB a month while it exists.
+
+**One E4 mode at a time, with a provision in between.** The E4 profile has one node. A new revision there can't start while the old one holds it, and the old one keeps the traffic: on the evening of 9 October 2026 (ET) the `cache` and `copy` runs were all served by the `blob` revision (`AssigningReplicaFailed: Insufficient capacity on workload profile 'ingest-e4'`, then `Deployment Progress Deadline Exceeded`), and repeated the `blob` runs' windows, which Quickwit's partial request cache answered. Their results don't stand. To switch between `cache` and `copy`, set the mode to `""`, provision, then set the new one and provision. The bench's `--variant blob|nfs|cache|copy` now reads the root's node config (`/api/v1/config`) and stops if the searcher isn't in that mode. Give each run its own `--offset` too, so no two runs share windows.
+
+**What the bench adds.** `--probe` sends each search's summary request once more over Quickwit's gRPC API, the only place 0.9.1 reports its per-split resource stats (`SearchResponse.resource_stats`, quickwit #6416: not in the REST response, not in its metrics, in its logs only for memory-hungry queries): warm-up (the main runtime's downloading and decoding), waiting for the search pool, CPU search, waiting for a search permit, and bytes downloaded (`crates/usnm-ingest/src/cluster/grpc.rs`). `--profile-secs` runs searches with fresh windows under Quickwit's own CPU profiler (`/api/developer/pprof`, in its release builds) and stores the flame graph in `qw-bench` at `runs/{label}/flamegraph.svg`; the report lists samples by thread and the main runtime's busiest functions. `--wait-split-cache-secs` waits for the split cache to hold every split before the passes, and `--variant` names the mode in the report.
+
+With `RG`, `J`, `JOB` and `wait_for` as in the version comparison above, and the image tag that has these flags in `USNM_IMAGE_TAG`:
+
+```sh
+lbench() { wait_for "$(J bench --label "$1" --cluster http://ca-usnm-qwl-0 --index "$IX" --sample dev1pct --variant "$2" --levels 1,4,10 --probe --profile-secs 120 "${@:3}")"; }
+# Until the searcher's newest revision is the ready one (a first nfs copy takes minutes).
+ready() { until [ "$(az containerapp show -n ca-usnm-qwl-0 -g "$RG" --query "properties.latestReadyRevisionName == properties.latestRevisionName" -o tsv)" = true ]; do sleep 30; done; }
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
+scripts/settings.sh dev USNM_SEARCH_COMPARE_TAGS ""
+IX=s1ixb; scripts/settings.sh dev USNM_SEARCH_LOCAL_INDEX $IX
+scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE blob; scripts/provision.sh dev; ready
+lbench c-blob-r1 blob --offset 200; lbench c-blob-r2 blob --levels-only --offset 210
+scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE nfs; scripts/provision.sh dev; ready
+lbench c-nfs-r1 nfs --offset 220; lbench c-nfs-r2 nfs --levels-only --offset 230
+az containerapp logs show -n ca-usnm-qwl-0 -g "$RG" --container qwnode --tail 300 | grep -E 'data directory disk|local copy disk|index copied'
+scripts/qwcluster-report.py dev --since 12h --out qwlocal.md
+scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE ""; scripts/provision.sh dev   # removes the searcher and the share
+```
+
+The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (and `cache`, `copy`) with ratios to blob, and its bench rows name each run's mode. Compare the `r2` runs: if `nfs` cuts the main runtime's busy seconds per search and the probe's warm-up seconds as `copy` was meant to show, the Blob path (HTTP, TLS, the Azure client) is the main runtime's cost and an NFS share is a way around it in production; if it barely moves them, the cost is in decoding what a split needs. The flame graphs show which functions those seconds went to.
 
 ## On-prem OCR nodes
 
@@ -464,14 +717,34 @@ scripts/ocr-node/group.sh --env prod                      # writes USNM_OCR_NODE
 scripts/provision.sh prod                                 # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 
+**The nodes' Key Vault.** With `USNM_OCR_NODES` on, the provision also creates `usnmocrkv<env><suffix>` (saved as `OCR_KEYVAULT`) for the secrets you hold for setting up nodes: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation key and organization id a RHEL node registers with, and `rhel-offline-token`, a Red Hat API offline token for the Proxmox hosts to fetch RHEL images through Red Hat's image API (not scripted yet, #339: the image is downloaded by hand for now). Its firewall allows only `USNM_OCR_NODE_IPS`, so run `az` against it from home. Access is Azure RBAC only, and only the object ids in `USNM_OCR_KEYVAULT_ADMINS` get Key Vault Secrets Officer (nodes get nothing). Prod's vault has purge protection: a deleted secret or vault is kept for 90 days and can't be purged. Never paste the secrets into a chat, an issue or a commit, and keep them out of your shell history. The leading space on the `secret set` lines below keeps zsh and bash from saving them when `HIST_IGNORE_SPACE` or `HISTCONTROL=ignorespace` is set; or use `--file` with a file you delete straight after. Grant yourself access, provision, then set the secrets in your own terminal:
+
+```sh
+scripts/settings.sh prod USNM_OCR_KEYVAULT_ADMINS "$(az ad signed-in-user show --query id -o tsv)"
+scripts/provision.sh prod                                 # writes OCR_KEYVAULT
+vault=$(scripts/settings.sh prod OCR_KEYVAULT)                  # usnmocrkvprodffapzy
+ az keyvault secret set --vault-name "$vault" --name rhel-activation-key --value '<activation key>' -o none
+ az keyvault secret set --vault-name "$vault" --name rhel-org-id --value '<organization id>' -o none
+ az keyvault secret set --vault-name "$vault" --name rhel-offline-token --value '<offline token>' -o none
+az keyvault secret list --vault-name "$vault" --query '[].name' -o tsv   # names only, never values
+```
+
+A new role assignment can take a few minutes to apply; a `Forbidden` right after the provision clears on its own. The vault's audit log (`AuditEvent`, every read, write and refused request) goes to `log-usnm-<env>`. Turning `USNM_OCR_NODES` off deletes the vault with the rest; prod's then stays soft-deleted for 90 days, holding its name, (7 days outside prod). `provision.sh` recovers it, with its secrets, before deploying when the nodes are turned back on within that time; it only recovers a vault deleted from this environment's resource group. Elsewhere a deleted vault is kept 7 days and `teardown.sh` purges it.
+
 **The nodes' group.** The nodes get their roles through an Entra security group, `usnm-ocr-nodes-<env>`: the provision grants the group Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter`, a custom writer role on `ocr-out` (list, read and create blobs, no delete) and Monitoring Metrics Publisher on the nodes' own Application Insights component, `usnm-ocr-appi-<env>` (the worker's telemetry), and nothing else; nothing on the environment's `appi-usnm-<env>`. Each node's Arc identity is a member. `group.sh` creates the group once per environment, saves its object id in `USNM_OCR_NODE_GROUP` and makes you an owner so you can add and remove members. Run again, it uses the saved id and lists the group's owners. It never adopts a group by name: if one named `usnm-ocr-nodes-<env>` exists and no id is saved, it stops, so you can check that group's members and owners (`az ad group member list --group <id>`, `az ad group owner list --group <id>`) before saving its id by hand. The provision grants every member the node roles, and owners can add members. Creating it needs the right to create security groups (the default user setting, or Groups Administrator). The deployment stack can't create it (ADR-0015), and teardown leaves it: delete it by its object id, the value of `USNM_OCR_NODE_GROUP` (`az ad group delete --group <id>`; teardown keeps the settings file, renamed), not by its name.
 
-**Create the VM.** On a Proxmox host, `scripts/ocr-node/proxmox-create-vm.sh` (copy it to the host, run it as root) creates an AlmaLinux 9 VM from AlmaLinux's GenericCloud image, checking its published sha256. The VM boots UEFI with Secure Boot (Microsoft's keys pre-enrolled; AlmaLinux's shim is signed) and has a vTPM, CPU type `host` (so the OCR engines can use AVX2), the QEMU guest agent, DHCP and start at boot. cloud-init creates an admin user `claude` with key-only SSH and passwordless sudo. On the first try cloud-init left the hostname as `localhost`; the script now sets `fqdn` and runs `hostnamectl set-hostname`. It prints the VM's address once the guest agent reports one.
+**Create the VM.** On a Proxmox host, `scripts/ocr-node/proxmox-create-vm.sh` (copy it to the host, run it as root) creates an AlmaLinux 9 VM from AlmaLinux's GenericCloud image, checking its published sha256, or, with `--image-file` and `--image-sha256`, a VM from a qcow2 image already on the host, such as Red Hat's RHEL 10 KVM Guest Image (download it from Red Hat and take its SHA-256 from the download page). `--mac` gives the VM a fixed MAC address, so a DHCP reservation (a fixed IP on the router) still applies after a rebuild. The VM boots UEFI with Secure Boot (Microsoft's keys pre-enrolled; AlmaLinux's shim is signed) and has a vTPM, CPU type `host` (so the OCR engines can use AVX2), the QEMU guest agent, DHCP and start at boot. cloud-init creates an admin user `claude` with key-only SSH and passwordless sudo. On the first try cloud-init left the hostname as `localhost`; the script now sets `fqdn` and runs `hostnamectl set-hostname`. It prints the VM's address once the guest agent reports one.
 
 ```sh
 bash proxmox-create-vm.sh --vmid 120 --name usnm-ocr-node1 --ssh-key "$(cat ~/.ssh/id_ed25519.pub)"
-# optional: --cores 4 --memory-mib 8192 --disk-gib 64 --storage local-lvm --bridge vmbr0 --snippets-storage local
+# optional: --cores 4 --memory-mib 8192 --disk-gib 64 --storage local-lvm --bridge vmbr0 --snippets-storage local --mac 52:54:00:12:34:56
+# RHEL 10.2, from the KVM Guest Image on the host:
+bash proxmox-create-vm.sh --vmid 120 --name usnm-ocr-node1 --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" \
+  --image-file /var/lib/vz/template/cache/rhel-10.2-x86_64-kvm.qcow2 \
+  --image-sha256 caaacd0b11bbc4206f8c7fec8594b82b4366b3f88ff974dbbf373832ae676f4f
 ```
+
+A RHEL image has no package repositories until it's registered with Red Hat, which `onboard.sh` does, so with `--image-file` cloud-init installs nothing: it creates the user, sets the hostname and starts the guest agent if the image has it (Red Hat's KVM Guest Image ships it). If the image has no guest agent, the script can't print the address; it prints the VM's MAC instead, to find in the router's DHCP leases, and `node-setup.sh` installs the agent after registration.
 
 **The Proxmox host's network card.** The NUC's Intel e1000e NIC logs `Detected Hardware Unit Hang` and drops off the network under load. Turning off its segmentation and receive offloads fixes it; make it permanent with a `post-up` line on the interface in `/etc/network/interfaces` (the NIC is `nic0` on this host):
 
@@ -487,13 +760,14 @@ scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name us
 scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1
 ```
 
-`onboard.sh` registers the `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` providers. Unless the node is already connected, it then creates a throwaway app registration and service principal, `usnm-arc-onboard-<name>-<UTC time>`, with a client secret valid for 2 hours and only Azure Connected Machine Onboarding on the environment's resource group, and waits for the role assignment to show up. Then it runs `scripts/ocr-node/node-setup.sh` on the node with sudo. That script installs python3, podman, chrony, cron (for the agent's automatic upgrades), rsyslog and which, and initscripts where the distribution has it (the monitoring agent's prerequisites), plus htop, iftop and screen from EPEL for watching the node (no OCR engine: EL9 has only Tesseract 4.1.1 and EPEL 9 none, so the engines come later as pinned container images or a source build); creates the `usnm` user; installs the Connected Machine agent; sets its extension allow list to the Azure Monitor Linux Agent alone (with extensions off while a different list is replaced), reads it back, stops if any other extension is installed in `/var/lib/waagent` (the allow list doesn't remove one installed before it, and turning the extension manager on would run it again), and only then turns the extension manager on (an empty list allows every extension), and turns off guest configuration and incoming connections; keeps the journal on disk (`/etc/systemd/journald.conf.d/50-usnm.conf`: `Storage=persistent`, `SystemMaxUse=1G`; the cloud image keeps it in memory only, so a reboot lost the logs); sets sshd to offer post-quantum key exchange first where its OpenSSH supports it (a drop-in, `/etc/ssh/sshd_config.d/40-pq-kex.conf`; AlmaLinux 9.8's default crypto policy leaves it out); connects with that service principal (the tenant, app id and secret go over ssh's stdin, never on a command line; the secret waits in a root-only file under `/run` while `azcmagent connect --config` reads it, and a refused connect is retried for a few minutes while the new principal propagates); writes the worker's settings to `/etc/usnm/ocr-worker.env` (the exchange account's queue and `ocr-out` URLs, the node id, `--concurrency` of one page per CPU and the connection string of the nodes' Application Insights component, which `onboard.sh` passes from `OCR_NODE_APPINSIGHTS`; root's, mode 0644, nothing secret: with local auth off, ingestion needs an Entra token too); and installs `usnm-ocr-worker.service`, which starts only once `/usr/local/bin/usnm-ocr-worker` exists. It ends by checking that `usnm` can get a token (for Resource Manager, not storage: see below), and prints `azcmagent show` and `azcmagent config list`. Run again, it skips what's done and applies the lockdown, the settings and the unit as they are now (restarting a running worker if they changed). `onboard.sh` then waits for the machine's system-assigned identity and adds it to the nodes' group unless it's already a member, which gives the node its roles; no provision is needed. The machine identity's private key can live in the node's TPM (`--identity-key-store tpm`, the agent's TPM-backed identity, in preview; `proxmox-create-vm.sh` gives VMs a vTPM 2.0), so it can't be copied off the disk. Azure accepts that only once the subscription's `Microsoft.HybridCompute/HybridComputePreview` feature is Registered, which needs Microsoft's approval: `az feature register --namespace Microsoft.HybridCompute --name HybridComputePreview` leaves it Pending until then (requested 2026-10-10). `onboard.sh` checks the feature and asks `node-setup.sh` for the TPM only when it's Registered; otherwise the key stays in the agent's default store on disk. The key store is fixed at connect: moving an existing node to the TPM means `offboard.sh` and `onboard.sh` again, which makes a new machine and identity. A vTPM's state is a file on the Proxmox host, so this protects against the VM's disk or a backup of it, not against the host. It also turns on Microsoft's automatic agent upgrade for the machine (in preview: the agent upgrades itself to within one version of the latest, in batches at off-peak hours, scheduled with cron), which `node-setup.sh` already asks for at connect with `--enable-automatic-upgrade`; the property is checked so a machine connected earlier gets it too. Last, it stops if the machine has any extension in Azure other than the Azure Monitor Linux Agent (delete it, then run again), associates the machine with the nodes' data collection rule (`OCR_NODE_DCR_ID`), waits until the machine reports the allow list to Azure (a few minutes after a change), and installs the Azure Monitor Linux Agent extension with automatic upgrades on, waiting until it's installed (an agent already installed with automatic upgrades off gets them turned on). As soon as `node-setup.sh` has finished, since the connect was its only use, or when `onboard.sh` stops before that, on failure or Ctrl-C too, it deletes the role assignment, the service principal and the app registration, purges them from Entra's deleted items and prints what it deleted; a warning names anything it couldn't delete, to remove by hand.
+`onboard.sh` registers the `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` providers. Unless the node is already connected, it then creates a throwaway app registration and service principal, `usnm-arc-onboard-<name>-<UTC time>`, with a client secret valid for 2 hours and only Azure Connected Machine Onboarding on the environment's resource group, and waits for the role assignment to show up. Then it runs `scripts/ocr-node/node-setup.sh` on the node with sudo. On a RHEL node that isn't registered with Red Hat, `onboard.sh` first reads `rhel-org-id` and `rhel-activation-key` from the nodes' Key Vault (`OCR_KEYVAULT`) with your sign-in, so you need Key Vault Secrets Officer (`USNM_OCR_KEYVAULT_ADMINS`) and to run it from home (the vault's firewall allows `USNM_OCR_NODE_IPS` only), and sends them with the onboarding credential on `node-setup.sh`'s stdin; they're never written to disk on your machine, the node or the Proxmox host. `node-setup.sh` registers first (`subscription-manager register --org ... --activationkey ...`, which takes them as arguments, so they're in the process list for the few seconds it runs, before the `usnm` user exists; a registered node is skipped and needs no secrets) and enables BaseOS, AppStream and CodeReady Builder, since nothing can be installed before that. That script installs python3, podman, chrony, cron (for the agent's automatic upgrades), rsyslog and which, and initscripts where the distribution has it (the monitoring agent's prerequisites), the QEMU guest agent on a VM if the image lacks it, plus htop, iftop and screen from EPEL for watching the node (no OCR engine: EL9 has only Tesseract 4.1.1 and EPEL 9 none, so the engines come as pinned container images; `install-worker.sh` loads the worker's); creates the `usnm` user; sets up the engine runtime of [ADR-0016](design/adr/0016-pluggable-ocr-engines.md) ([13 §13.3](design/13-ocr-engines.md#133-component-view)): a second system user, `usnmeng`, with its own subordinate ids, lingering and the cpu, memory and pids cgroup controllers delegated to its user manager, not in `himds`; its Podman API socket at `/run/usnm-ocr/podman.sock` (mode 0660, group `usnmocr`, which `usnm` shares), through which the worker runs engine containers with `podman --remote`; and the engines' scratch, a tmpfs at `/run/usnm-ocr/scratch` capped at `--scratch-size` (default 2G) and owned by `usnm`, so an engine's files count against its own memory limit; installs the Connected Machine agent; sets its extension allow list to the Azure Monitor Linux Agent alone (with extensions off while a different list is replaced), reads it back, stops if any other extension is installed in `/var/lib/waagent` (the allow list doesn't remove one installed before it, and turning the extension manager on would run it again), and only then turns the extension manager on (an empty list allows every extension), and turns off guest configuration and incoming connections; keeps the journal on disk (`/etc/systemd/journald.conf.d/50-usnm.conf`: `Storage=persistent`, `SystemMaxUse=1G`; the cloud image keeps it in memory only, so a reboot lost the logs); sets sshd to offer post-quantum key exchange first where its OpenSSH supports it (a drop-in, `/etc/ssh/sshd_config.d/40-pq-kex.conf`; AlmaLinux 9.8's default crypto policy leaves it out); connects with that service principal (the tenant, app id and secret go over ssh's stdin, never on a command line; the secret waits in a root-only file under `/run` while `azcmagent connect --config` reads it, and a refused connect is retried for a few minutes while the new principal propagates); writes the worker's settings to `/etc/usnm/ocr-worker.env` unless `install-worker.sh` has written it (the exchange account's queue and `ocr-out` URLs, the node id, one page in flight per CPU and the connection string of the nodes' Application Insights component, which `onboard.sh` passes from `OCR_NODE_APPINSIGHTS`; root:usnm, mode 0640, nothing secret: with local auth off, ingestion needs an Entra token too); and installs `usnm-ocr-worker.service` (copied from `scripts/ocr-node/`) disabled, which starts only once `/usr/local/bin/usnm-ocr-worker` exists. It ends by checking that `usnm` can get a token (for Resource Manager, not storage: see below), and prints `azcmagent show` and `azcmagent config list`. Run again, it skips what's done and applies the lockdown, the settings and the unit as they are now (restarting a running worker if they changed). `onboard.sh` then waits for the machine's system-assigned identity and adds it to the nodes' group unless it's already a member, which gives the node its roles; no provision is needed. The machine identity's private key can live in the node's TPM (`--identity-key-store tpm`, the agent's TPM-backed identity, in preview; `proxmox-create-vm.sh` gives VMs a vTPM 2.0), so it can't be copied off the disk. Azure accepts that only once the subscription's `Microsoft.HybridCompute/HybridComputePreview` feature is Registered, which needs Microsoft's approval: `az feature register --namespace Microsoft.HybridCompute --name HybridComputePreview` leaves it Pending until then (requested 2026-10-10). `onboard.sh` checks the feature and asks `node-setup.sh` for the TPM only when it's Registered; otherwise the key stays in the agent's default store on disk. The key store is fixed at connect: moving an existing node to the TPM means `offboard.sh` and `onboard.sh` again, which makes a new machine and identity. A vTPM's state is a file on the Proxmox host, so this protects against the VM's disk or a backup of it, not against the host. It also turns on Microsoft's automatic agent upgrade for the machine (in preview: the agent upgrades itself to within one version of the latest, in batches at off-peak hours, scheduled with cron), which `node-setup.sh` already asks for at connect with `--enable-automatic-upgrade`; the property is checked so a machine connected earlier gets it too. Last, it stops if the machine has any extension in Azure other than the Azure Monitor Linux Agent (delete it, then run again), associates the machine with the nodes' data collection rule (`OCR_NODE_DCR_ID`), waits until the machine reports the allow list to Azure (a few minutes after a change), and installs the Azure Monitor Linux Agent extension with automatic upgrades on, waiting until it's installed (an agent already installed with automatic upgrades off gets them turned on). As soon as `node-setup.sh` has finished, since the connect was its only use, or when `onboard.sh` stops before that, on failure or Ctrl-C too, it deletes the role assignment, the service principal and the app registration, purges them from Entra's deleted items and prints what it deleted; a warning names anything it couldn't delete, to remove by hand.
 
 **A node connected before monitoring** (connected with extensions off): provision once, so the nodes' workspace, component and rule exist and the group has Monitoring Metrics Publisher, then run `onboard.sh` again. It needs no onboarding credential for a connected node, re-runs `node-setup.sh` (which applies the allow list) and installs the agent.
 
-**Monitoring.** The nodes have a workspace of their own, `usnm-ocr-log-<env>`, with its own daily cap of 0.1 GB, and an Application Insights component on it, `usnm-ocr-appi-<env>` (`infra/modules/ocr-node-monitoring.bicep`). The nodes' group can write telemetry to that component only, so a node, or anyone with a node's token, can neither write rows the API alerts read nor fill the environment's 1 GB cap; at worst it fills the nodes' cap, which stops the nodes' monitoring until the reset (ADR-0015). The rule, `usnm-ocr-dcr-<env>`, collects into the nodes' workspace: syslog at Warning and above from the system's facilities (kernel OOM kills, systemd, sshd, chronyd, podman containers' stderr); the worker's own lines at Info and above, from `local0` (its unit's `SyslogFacility`), since journald records every line the worker writes at info, warnings and errors included; and every 60 s, CPU per core, memory used, free space and read and write bytes per file system, and network bytes per interface. The agent also sends a heartbeat a minute (free). The worker's traces and metrics go to the nodes' component as role `usnm-ocr-worker`, instance the node name (see the worker's README). The exchange account's queue logs (`StorageQueueLogs`, a row for every queue request) and the rule's errors (`DCRLogErrors`) go to the nodes' workspace too. The estimate is 8 to 25 MB a day per node before the worker's telemetry, which isn't measured yet; measure it after a day and raise the cap if needed (`dailyCapGb` of the `ocr-node-monitoring` module in `infra/main.bicep`, and `cap_gb` in `ops/queries/ocr-node-health.kql`, then provision). With alert emails set:
+**Monitoring.** The nodes have a workspace of their own, `usnm-ocr-log-<env>`, with its own daily cap of 0.1 GB, and an Application Insights component on it, `usnm-ocr-appi-<env>` (`infra/modules/ocr-node-monitoring.bicep`). The nodes' group can write telemetry to that component only, so a node, or anyone with a node's token, can neither write rows the API alerts read nor fill the environment's 1 GB cap; at worst it fills the nodes' cap, which stops the nodes' monitoring until the reset (ADR-0015). The rule, `usnm-ocr-dcr-<env>`, collects into the nodes' workspace: syslog at Warning and above from the system's facilities (kernel OOM kills, systemd, sshd, chronyd, podman containers' stderr); the worker's own lines at Info and above, from `local0` (its unit's `SyslogFacility`), since journald records every line the worker writes at info, warnings and errors included; and every 60 s, CPU per core, memory used, free space and read and write bytes per file system, and network bytes per interface. The agent also sends a heartbeat a minute (free). The worker's traces and metrics go to the nodes' component as role `usnm-ocr-worker`, instance the node name (see the worker's README). The exchange account's queue logs (`StorageQueueLogs`, a row for every queue request) and the rule's errors (`DCRLogErrors`) go to the nodes' workspace too. The estimate is 8 to 25 MB a day per node before the worker's telemetry, which isn't measured yet; measure it after a day and raise the cap if needed (`ocrNodeDailyCapGb` in `infra/main.bicep`, and `cap_gb` in `ops/queries/ocr-node-health.kql`, then provision). With alert emails set:
 
 - _OCR node log volume high_ (severity 2) fires when a node sends more than a tenth of the cap (10 MB) in an hour, through the agent (Syslog and Perf) and its Application Insights telemetry together, so a crash loop or debug logging is caught before one node fills the cap.
+- _OCR node: loc.gov asked to wait over an hour_ (severity 2, hourly) fires when a node's worker counts a `Retry-After` over its one-hour cap (`ocr.loc_slowdowns` with `capped`). The worker holds that server for the hour and takes no pages meanwhile; if loc.gov keeps asking, stop the workers and raise their gaps.
 - _OCR nodes' daily cap reached_ (severity 2) fires on the nodes' workspace's `OverQuota` event, as the environment's cap alert does (#279). Until the reset, the node alerts and queries see nothing. In the nodes' workspace, `Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h)` shows what filled it.
 
 `scripts/logs.sh` runs the `ocr-node-*` queries against the nodes' workspace (`OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID`):
@@ -503,17 +777,23 @@ scripts/logs.sh prod ocr-node-health      # per node: heartbeat, counters, CPU, 
 scripts/logs.sh prod ocr-node-errors 2d   # worker warnings and errors, panics, failed units, OOM kills, other errors
 ```
 
+The same as charts: the "usnm OCR nodes (<env>)" workbook under Application Insights `usnm-ocr-appi-<env>` → Workbooks, with a time range and a node picker: CPU, memory, free disk space by mount, disk and network bytes per second, heartbeat gaps over 5 minutes (a table and a chart), the worker's warnings and errors (from Syslog and, once it sends telemetry, `AppTraces` and `AppExceptions`), pages done, failed and abandoned per hour (from its metrics; empty until it sends them), and the workspace's billed MB a day against its cap.
+
 `no heartbeat` means the node is down or off the network, or has lost its agent or its association with the rule (run `onboard.sh` again): the agent sends heartbeats only to the workspaces of the rules it's associated with. `no counters` with heartbeats means the agent is associated but its counters aren't arriving: check the rule's counters and the agent's logs under `/var/opt/microsoft/azuremonitoragent/log`. A node with no heartbeat in the whole span isn't listed at all, so widen the span (`scripts/logs.sh prod ocr-node-health 7d`) or check the Arc machine's status.
 
-**Start the worker.** Build `usnm-ocr-worker` for EL9 ([its README](../crates/usnm-ocr-worker/README.md#building-for-almalinux-9)), copy it to the node and, as root:
+**Install the worker.** CI builds `usnm-ocr-worker` on AlmaLinux 9 whenever the worker, a crate it uses or its Tesseract image changes on `main`, checks that it needs no glibc newer than EL9's 2.34, runs it on AlmaLinux 10, reads a rendered line with it through the Tesseract image, and publishes a GitHub release, `ocr-worker-<yyyymmdd>-<sha7>`: the binary, the Tesseract image as an OCI archive (`ocr/engines/tesseract/`: the engine survey's Debian base and Tesseract 5.5.0 package, with tessdata_best's `eng`, `deu`, `deu_latf`, `srp`, `srp_latn`, `ces`, `pol` and `rus`), the image's id and `SHA256SUMS`, each with a build provenance attestation. Install it from your machine:
 
 ```sh
-install -m 0755 usnm-ocr-worker /usr/local/bin/
-systemctl enable --now usnm-ocr-worker
-journalctl -u usnm-ocr-worker -f
+scripts/ocr-node/install-worker.sh --env prod --name <arc machine> --host claude@<node> \
+  [--ssh-key ~/.ssh/<key>] [--release ocr-worker-<yyyymmdd>-<sha7>] [--concurrency N] [--dry-run]
+scripts/ocr-node/install-worker.sh --env prod --name <arc machine> --host claude@<node> --rollback [--release <tag>]
 ```
 
-The unit runs `usnm-ocr-worker run --queue-url https://<exchange>.queue.core.windows.net --out-url https://<exchange>.blob.core.windows.net/ocr-out --node-id <name> --shutdown-grace-secs 60` plus `USNM_OCR_ARGS` (default `--concurrency <CPUs>`), as `usnm`, with the agent's identity. On stop, the worker gets 120 s: in-flight pages get 60 s, telemetry up to 30 s more. `node-setup.sh` rewrites `/etc/usnm/ocr-worker.env` on every run, so put local changes in `/etc/usnm/ocr-worker.local.env`, read after it, for example `USNM_OCR_ARGS="--concurrency 3 --api-gap-ms 7000 --tile-gap-ms 2000"` with two nodes sharing loc.gov's rate, or `RUST_LOG=info,usnm_ocr_worker=debug` (the worker's own debug lines; a bare `RUST_LOG=debug` turns on every library's too, and every line goes to the nodes' workspace twice, through syslog and Application Insights, against its cap, so only for a while); then `systemctl restart usnm-ocr-worker`.
+It takes the newest release unless `--release` names one, downloads the binary, the image id and `SHA256SUMS` with `gh`, runs `gh attestation verify` on each (built by this repository's `ci.yml` on `main`) and checks their sha256. The image archive (a few hundred MB) never crosses your machine: the node downloads it from the release and checks it against the verified `SHA256SUMS`, then loads it into the engine account's (`usnmeng`'s) podman storage through the Podman API socket. The binary goes to `/usr/local/lib/usnm-ocr-worker/<release>/`, and `/usr/local/bin/usnm-ocr-worker` points at it; `--rollback` points it back at the release installed before (or at `--release`) with that release's image. It writes `/etc/usnm/ocr-worker.env` (root:usnm, 0640) from the deployment outputs: `OCR_QUEUE_ENDPOINT`, `OCR_BLOB_ENDPOINT` with `ocr-out`, the Arc machine name as the node id, `--concurrency` (default one page per CPU), the image id, `OCR_NODE_APPINSIGHTS` (left out when empty) and LoC gaps of 3,500 × N and 1,000 × N ms, where N is the number of members of the nodes' group (`--nodes` must equal it). `node-setup.sh` leaves that file alone once `install-worker.sh` has written it. Local changes go in `/etc/usnm/ocr-worker.local.env`, read after it, for example `RUST_LOG=info,usnm_ocr_worker=debug` (the worker's own debug lines; a bare `RUST_LOG=debug` turns on every library's too, and every line goes to the nodes' workspace twice, through syslog and Application Insights, against its cap, so only for a while); then `systemctl restart usnm-ocr-worker`. It also installs the unit, `scripts/ocr-node/usnm-ocr-worker.service`, checks it with `systemd-analyze verify` and restarts the worker if it was running. `--dry-run` verifies the release, reads the node's state and prints the settings file without changing the node.
+
+The unit stays disabled until `--enable`, which first reads a rendered line through the image as `usnm` and the engine runtime (`usnm-ocr-worker check-engine`), then enables the unit and disables it again if it doesn't stay up. The unit runs `usnm-ocr-worker run` as `usnm` with the agent's identity, its settings from the environment file, with `NoNewPrivileges=yes`, `RestrictNamespaces=yes`, no capabilities and `SystemCallFilter=@system-service`. It never runs podman itself: each page's Tesseract container runs under `usnmeng` through the socket (`USNM_OCR_PODMAN_URL`), with no network, a read-only root, all capabilities dropped, the image's user 10001 (a subordinate id of `usnmeng`), 1,536 MiB of memory and no swap, 1 CPU and 64 processes (`USNM_OCR_ENGINE_MEMORY_MIB`, `USNM_OCR_ENGINE_CPUS`, `USNM_OCR_ENGINE_PIDS` in `ocr-worker.local.env` change them). The page's scratch directory is on the scratch tmpfs, labelled for the container's own SELinux MCS level, with an ACL for the container user. A container killed for memory is reported as such. On stop, the worker gets 120 s: in-flight pages get 60 s, telemetry up to 30 s more. `ocr-out` deletes blobs after 30 days, so the worker shouldn't run on real queues before `ocr-sync` ([below](#ocr-pickup-ocr-sync-296)) is deployed.
+
+**The engine runtime spike** (#307 item 0): `scripts/ocr-node/engine-spike.sh --host claude@<node> [--ssh-key FILE]` copies itself and the worker's unit to a node that `onboard.sh` has set up and checks, with sudo, every point ADR-0016 rests on: SELinux enforcing; `usnmeng`, its lingering, subordinate ids and cgroup delegation; the socket and the scratch tmpfs; and, as `usnm` in a transient unit with the worker's hardening, `podman --remote run --interactive` passing JSON lines both ways with the log driver off, the slot's MCS label and ACL scheme, the effective `memory.max` (no swap), `pids.max` and `cpu.max`, `OOMKilled` read before `podman rm`, and tmpfs writes counted against the container's memory. It prints PASS or FAIL for each, exits 1 on any failure, and removes what it made. Post the output on #296.
 
 **When the home IP changes,** the nodes lose the exchange account until the firewall has the new address. Hidden messages come back on their own once their time runs out.
 
@@ -531,4 +811,77 @@ scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host claude@node
 scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host claude@node1.example.org
 ```
 
-It removes the machine's identity from the nodes' group and deletes its data collection rule associations. With `--host`, it deletes the Azure Monitor Agent extension and waits while the node uninstalls it, then on the node stops and disables `usnm-ocr-worker.service`, removes any extension left (`azcmagent extension remove --all`) and runs `azcmagent disconnect --force-local-only`, which clears the agent's local state without an Azure sign-in, so no onboarding credential is needed. Last, it deletes the Arc machine with your `az` sign-in, which deletes its identity so it can get no new token. Without `--host` (a node that's gone or unreachable) it leaves the extension to go with the machine and prints the node commands to run later. It needs ownership of the nodes' group and the right to delete resources in the environment's resource group. To cut a node off at once, rather than when its tokens expire, also take its address out of `USNM_OCR_NODE_IPS` and provision; with both nodes behind the same home IP, that cuts off every node. Offboard every node before turning `USNM_OCR_NODES` off. The provision then deletes the exchange account with its queues and `ocr-out`, and the nodes' monitoring: their workspace with its data, their Application Insights component with the group's Monitoring Metrics Publisher grant, the data collection rule and the two node alerts. Azure won't delete a data collection rule that still has associations: with a node still associated, the provision fails until its association is gone. `offboard.sh` deletes the machine's associations. The provision stops before it starts if the rule in `OCR_NODE_DCR_ID` still has any. The Arc machines stay in the resource group, and their identities in the nodes' group, until offboarded.
+It removes the machine's identity from the nodes' group and deletes its data collection rule associations. With `--host`, it deletes the Azure Monitor Agent extension and waits while the node uninstalls it, then on the node stops and disables `usnm-ocr-worker.service`, removes any extension left (`azcmagent extension remove --all`) and runs `azcmagent disconnect --force-local-only`, which clears the agent's local state without an Azure sign-in, so no onboarding credential is needed. A RHEL node is also unregistered from Red Hat (`subscription-manager unregister`). Last, it deletes the Arc machine with your `az` sign-in, which deletes its identity so it can get no new token. Without `--host` (a node that's gone or unreachable) it leaves the extension to go with the machine and prints the node commands to run later. It needs ownership of the nodes' group and the right to delete resources in the environment's resource group. To cut a node off at once, rather than when its tokens expire, also take its address out of `USNM_OCR_NODE_IPS` and provision; with both nodes behind the same home IP, that cuts off every node. Offboard every node before turning `USNM_OCR_NODES` off. The provision then deletes the exchange account with its queues and `ocr-out`, and the nodes' monitoring: their workspace with its data, their Application Insights component with the group's Monitoring Metrics Publisher grant, the data collection rule and the three node alerts. Azure won't delete a data collection rule that still has associations: with a node still associated, the provision fails until its association is gone. `offboard.sh` deletes the machine's associations. The provision stops before it starts if the rule in `OCR_NODE_DCR_ID` still has any. The Arc machines stay in the resource group, and their identities in the nodes' group, until offboarded.
+
+## OCR pickup: ocr-sync (#296)
+
+`usnm-ingest ocr-sync` takes the nodes' output into the lake ([12 §12.5 Step 8](design/12-onprem-ocr-pipeline.md)). It runs hourly at minute 17 (`USNM_OCR_SYNC_CRON`; `manual` turns the schedule off) as `usnm-ocrsync-caj-<env>` (saved as `OCR_SYNC_JOB`), on the ingest image as `id-usnm-ingest`, 0.5 vCPU and 1 GiB. The provision creates the job only when `USNM_OCR_NODES` and the ingest jobs are on, together with the exchange account's `ocr-quarantine` container, the identity's grant on it and two alerts. Runs take the Cosmos lock `ops/ocr-sync`, so two never overlap. Logs carry page ids, paths and reason codes, never text.
+
+Each run:
+
+1. Deletes sources that an earlier run imported or quarantined but stopped before deleting. Its import record (`curated/ocr-local/import/<run>.json`) lists them with their ETags.
+2. Drains `ocr-deadletter`. Valid dead letters are written to `curated/ocr-local/deadletter/<day>/<run>.jsonl`, re-encoded from their checked fields, with a `dead_lettered` outcome for each page. The rest go to quarantine. A run that stops between writing and deleting them drains them again after 10 minutes, so a dead letter can appear twice.
+3. Checks each part in `ocr-out`, oldest first, at most `--max-parts` (2,000) per run in imports of `--chunk` (200). A part passes when its name and size are right, the strict reader takes it, the page is outstanding in the ledger with the same batch and reason, its text matches its hash and length, the engine, batch, title and image check out, and its ALTO passes the bounded reader. Its ALTO goes to `curated/ocr-local/alto/`, its row to one merged part per title, `curated/ocr-local/pages/<lccn>/<run>.parquet`, with both texts' scores, and an `imported` outcome goes to the ledger. A part that fails moves to `ocr-quarantine` with its ALTO. Then the sources are deleted with If-Match.
+4. With a seed plan, tops `ocr-bulk` up (below).
+5. Writes `status/ocr-local.json` to the reference container: the last run's and the running totals of imports, rejects by reason and dead letters by cause, the queue depths, pages outstanding, the parts left with the oldest one's age, and the run's seeding.
+
+**Queue pages for the pilot.** Nobody but `id-usnm-ingest` can add messages, so `ocr-enqueue` runs as an execution of the pickup job, which has the exchange account's endpoints. It finds each page in the published version (Step 6's damage tables, or the curated text where they lack the batch). It then writes a ledger row, `curated/ocr-local/queued/<day>/<run>.parquet`, and puts the message: the base batch, the page's detected language in ISO 639-3 (its title's first language for `und`), and LoC's damage rate as the score. It skips pages already outstanding and Japanese titles. `--dry-run` only counts. The ledger rows are written before the messages. If a send fails, the pages after it get a `not_sent` outcome, so running the same command again queues them; the page whose send failed may have gone out, and `--include-outstanding` queues it again. Outside a dry run, `ocr-enqueue` and `ocr-requeue` hold the `ops/ocr-sync` lock, so they fail while a pickup run is going; start them again once it ends.
+
+```sh
+scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-enqueue --pages sn83045462_1890-05-03_ed-1_seq-7,... \
+  --reason bulk --plan pilot-german [--batch nbu_gage] [--dry-run]
+```
+
+**Queue dead-lettered pages again,** by cause (`dequeue_count`, `invalid`, `permanent`, `unroutable`) and, for `invalid`, kind. Pages queued since their dead letter, imported since, or whose latest dead letter has another cause, are skipped.
+
+```sh
+scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-requeue --cause dequeue_count [--since 2026-10-20] [--dry-run]
+```
+
+**Seeding** ([12 §12.5 Step 10](design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. With a plan, each run ranks (batch, title) units by their summed damage over 0.1 from Step 6's tables for the published version, and queues the pages at or above the minimum damage (`USNM_OCR_SEED_MIN_DAMAGE`, default 0.25), unit by unit in issue order. Run `ocr-damage` on the version first: the seeder refuses to run without its tables. It keeps at most `USNM_OCR_BULK_WINDOW` bulk pages outstanding: pages in the ledger with no result yet, or the queue's message count if that is larger. It tops up only when `ocr-bulk` holds fewer than `USNM_OCR_BULK_REFILL_BELOW` messages (default half the window). A window of 0 (the default) is two days of pages at the rate `ocr-sync` imported them over the last week, at least 500. Bulk pages that `ocr-enqueue` and `ocr-requeue` queue count toward the window, but the window doesn't limit them. Other settings: `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default the Tesseract pilot's `ces,deu,eng,pol,rus,srp`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (the plan's budget), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; also skips pages whose American Stories text scores under the minimum). Set them with `scripts/settings.sh` and provision.
+
+It skips Japanese titles and pages already in the ledger, and copies of a page that another batch's copy wins (the release's duplicate rule). A page of the plan outstanding for 14 days, or dead-lettered with cause `dequeue_count`, is queued again at most 3 times. One dead-lettered as `unroutable` is queued again after 6 hours, doubling per cycle up to 48. A page whose message a failed run never sent (`not_sent`) goes out in the next run. Each batch's ranked units are stored under `curated/ocr-local/seed/rank/`, and the units a plan has finished under `curated/ocr-local/seed/plans/<plan>/done/`. A run that reaches its time limit before every batch is ranked queues no new pages; the next run continues from there.
+
+`ocr-seed` is the same step on its own. Use `--dry-run` to print what it would queue as JSON, page ids per unit included, without writing anything. Its flags override the settings. For the pilot (Step 11), preview it, then set the plan:
+
+```sh
+scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-seed --dry-run --seed-plan pilot-deu --seed-pilot \
+  --seed-languages deu --seed-years 1850-1919 --seed-max-pages 3000 --bulk-window 1000
+scripts/settings.sh prod USNM_OCR_SEED_PLAN pilot-deu
+scripts/settings.sh prod USNM_OCR_SEED_PILOT true
+scripts/settings.sh prod USNM_OCR_SEED_LANGUAGES deu
+scripts/settings.sh prod USNM_OCR_SEED_YEARS 1850-1919
+scripts/settings.sh prod USNM_OCR_SEED_MAX_PAGES 3000
+scripts/settings.sh prod USNM_OCR_BULK_WINDOW 1000
+scripts/provision.sh prod
+```
+
+**Quarantine.** Rejects are kept for 30 days as `rejects/<run>/<source path>` (a dead letter as `rejects/<run>/deadletter/<message id>.txt`), each with a `.reason.json` record: the reason code, the source, its ETag, size and creation time, never its content. A source over its size limit isn't read, so it has a record only. Read them with your own sign-in from home (the firewall allows the node IPs and the subnet). After a fix, put one reason's rejects back where they came from; the same run checks them again:
+
+```sh
+scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --from-quarantine --reason not_requested
+```
+
+Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismatch`, `alto_missing`, `alto_too_large` (checks 1 and 2); `not_requested`, `batch_mismatch`, `reason_mismatch` (3); `text_null`, `text_too_large`, `text_control`, `text_mismatch` (4); `engine`, `engine_tag` (an `ocr_engine` with `image=local`, or not printable), `reason`, `batch_unpublished`, `title_unknown`, `title_japanese`, `image_url` (5); `alto_*` from the ALTO reader (6); `deadletter_*` for dead letters.
+
+**The gain estimate.** `ocr-sync --report` applies rule v1 (Step 9) to the scores stored in every merged part, without picking anything up. It writes `curated/ocr-local/report/<run>.json` with pages considered and replaced, the reasons LoC's text stays, and counts by language and by engine.
+
+```sh
+scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
+```
+
+**Alerts** (with alert emails), severity 3: `usnm-ocrsync-failed-alert-<env>` when an execution fails, and `usnm-ocrsync-backlog-alert-<env>` when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
+
+## Our OCR in releases (#296)
+
+With `USNM_OCR_LOCAL` (the ingest job's `--ocr-local`), a release weighs the text `ocr-sync` took into `curated/ocr-local/` against LoC's on the pages of the batches it indexes, and uses ours where rule v1 prefers it ([12 §12.5 Step 9](design/12-onprem-ocr-pipeline.md)). It is off by default, and with it off a release reads nothing from `ocr-local` and its documents and snapshot files don't change. `id-usnm-ingest` already has Blob Data Contributor on `curated`, so the setting needs no new grant.
+
+```sh
+scripts/settings.sh prod USNM_OCR_LOCAL true
+scripts/provision.sh prod
+```
+
+- The weekly delta applies it to the batches it indexes. Published batches take it only at a [full rebuild](#full-rebuild) with the setting on. Each release that builds a main index logs `our OCR in ocr-local` (parts, titles, revocations) and, when the version has published batches, `pages of ocr-local that would replace LoC's text in published batches`, an estimate from the scores `ocr-sync` stored. A release of only the Japanese overlay reads nothing from `ocr-local` and logs neither line. `ocr-sync --report` ([above](#ocr-pickup-ocr-sync-296)) gives the same kind of estimate without a release.
+- Records: `reference/<version>/ocr_local.json` (the rule and metric versions, a parts summary, pages considered, replaced and kept by reason, language and engine, and the revocations applied), `ocr_local_pages.bin` (the pages that hold our text), the manifest's `built_from.ocr_local` and the build record's `features.ocr_local`. The API marks hits on those pages "Our OCR", with a viewer link that has no highlight. On a page the Japanese overlay also has, the Japanese overlay wins.
+- To take a node's or engine's output out, write a create-only `curated/ocr-local/revoked/<stamp>.json` with `reason`, `reference` and at least one of `node`, `engine`, `run`, `from` and `to`; every field given must match. Matching rows are left out from the next release that indexes their batches, so text already published stays until a full rebuild. A file the release can't read stops the release.
+- Clearing the setting stops new replacements. A delta carries the published version's `ocr_local_pages.bin` forward either way; the next full rebuild without the setting goes back to LoC's text everywhere.

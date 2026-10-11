@@ -87,6 +87,7 @@ fn over_decades(pages: &[&Page]) -> Vec<Page> {
         .collect()
 }
 
+#[derive(Clone)]
 struct Page {
     lccn: String,
     date: NaiveDate,
@@ -249,6 +250,7 @@ impl Env {
             titles_left: None,
             american_stories: false,
             ja_latin: false,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         }
@@ -287,6 +289,7 @@ impl Env {
             titles_left: None,
             american_stories,
             ja_latin,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         };
@@ -762,6 +765,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -816,6 +820,7 @@ async fn releases_into_a_quickwit_writer_node() {
             titles_left: None,
             american_stories: false,
             ja_latin: false,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         };
@@ -1274,6 +1279,7 @@ async fn a_backend_switch_forces_a_full_release() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -1314,6 +1320,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -1398,6 +1405,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         titles_left,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -1822,6 +1830,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -1880,6 +1889,7 @@ async fn a_failed_release_records_when_it_failed() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        ocr_local: false,
         partition_decade: false,
         single_text_field: false,
     };
@@ -2150,6 +2160,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             titles_left: None,
             american_stories: false,
             ja_latin: false,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         };
@@ -3195,6 +3206,7 @@ async fn our_latin_text_follows_the_decade_layout() {
         partition_decade: true,
         single_text_field: false,
         ja_latin: true,
+        ocr_local: false,
         ..e.releaser(day, full)
     };
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
@@ -3867,6 +3879,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
             titles_left: None,
             american_stories: true,
             ja_latin: false,
+            ocr_local: false,
             partition_decade: false,
             single_text_field: false,
         };
@@ -4332,6 +4345,297 @@ async fn releases_a_base_laid_out_by_decade_into_a_quickwit_writer_node() {
     node.stop().await.unwrap();
 }
 
+/// The search cluster's sample (#239, `usnm_ingest::cluster::sample`) at
+/// 100% is exactly the documents a full release with American Stories'
+/// text builds; a smaller share is a subset of them, the same every run.
+#[tokio::test]
+async fn a_full_sample_is_the_release_s_documents() {
+    use usnm_ingest::cluster::sample;
+    let e = env().await;
+    let (early, late, _, _) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    curate(&e, early).await;
+    curate(&e, late).await;
+    let p = e.release_with(1, true, true).await.unwrap().unwrap();
+    let released: BTreeMap<String, Value> = p
+        .indexes
+        .iter()
+        .flat_map(|id| {
+            read_jsonl(&e.root.join(format!("reference/indexes/{id}.jsonl")))
+                .into_iter()
+                .map(|d| (d["doc_id"].as_str().unwrap().to_owned(), d))
+        })
+        .collect();
+    let out = LocalStore::new(e.root.join("bench"));
+    let take = |cut: u32, name: &'static str| {
+        let (curated, reference, out) = (e.curated.clone(), e.reference.clone(), &out);
+        async move {
+            let spec = sample::Spec {
+                cut,
+                american_stories: true,
+                concurrency: 2,
+                part_bytes: 4096,
+                max_batches: None,
+            };
+            let published = sample::published(reference.as_ref()).await.unwrap();
+            let m = sample::build(curated, published, out, &format!("sample/{name}"), &spec)
+                .await
+                .unwrap();
+            let mut docs = BTreeMap::new();
+            for part in &m.parts {
+                let ndjson = sample::part(out, &part.path).await.unwrap();
+                for line in ndjson.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+                    let d: Value = serde_json::from_slice(line).unwrap();
+                    docs.insert(d["doc_id"].as_str().unwrap().to_owned(), d);
+                }
+            }
+            (m, docs)
+        }
+    };
+    let (m, all) = take(10_000, "all").await;
+    assert_eq!(all, released, "every page, every field");
+    assert_eq!(m.docs, released.len() as u64);
+    // Each batch is many times part_bytes: its lines are split across
+    // parts, every part whole lines and at most part_bytes, but for a
+    // document longer than that on its own.
+    assert!(
+        m.parts.len() > 3 * m.batches as usize,
+        "{} parts",
+        m.parts.len()
+    );
+    let longest = all
+        .values()
+        .map(|d| serde_json::to_vec(d).unwrap().len() as u64 + 1)
+        .max()
+        .unwrap();
+    for p in &m.parts {
+        assert!(p.bytes <= 4096 || p.docs == 1, "{p:?}");
+        assert!(p.bytes <= 4096.max(longest), "{p:?}");
+    }
+    assert_eq!(m.parts.iter().map(|p| p.docs).sum::<u64>(), m.docs);
+    assert!(m.docs_with_as > 0 && m.docs_only_as > 0, "{m:?}");
+    assert_eq!(m.version, p.index_version);
+    let (half, docs) = take(5_000, "half").await;
+    assert!(docs.len() < all.len() && !docs.is_empty());
+    assert!(docs.iter().all(|(id, d)| all[id] == *d));
+    assert!(docs.keys().all(|id| sample::sampled(id, 5_000)));
+    // The same pages again.
+    let (_, again) = take(5_000, "half-again").await;
+    assert_eq!(
+        again.keys().collect::<Vec<_>>(),
+        docs.keys().collect::<Vec<_>>()
+    );
+    let read_back = sample::manifest(&out, "sample/half").await.unwrap();
+    assert_eq!(read_back.docs, half.docs);
+    // A finished sample is never replaced.
+    let spec = sample::Spec {
+        cut: 100,
+        american_stories: true,
+        concurrency: 1,
+        part_bytes: 4096,
+        max_batches: None,
+    };
+    let published = sample::published(e.reference.as_ref()).await.unwrap();
+    let err = sample::build(e.curated.clone(), published, &out, "sample/half", &spec)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already exists"), "{err}");
+    assert_eq!(
+        sample::manifest(&out, "sample/half").await.unwrap(),
+        read_back
+    );
+}
+
+/// A two-node search cluster on localhost (#239): each node starts through
+/// `usnm-qwcluster node` and finds the other in the seed registry, the
+/// sample loads into an index with a shard on each indexer, the bench
+/// searches it through node 0 as the API would, and a node that restarts
+/// joins again. Runs when `QUICKWIT_BIN` is set.
+#[tokio::test]
+async fn a_two_node_cluster_indexes_and_searches_a_sample() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use std::time::Duration;
+    use usnm_ingest::cluster::{bench, load, members, sample};
+    let e = env().await;
+    let (early, late, _, _) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    curate(&e, early).await;
+    curate(&e, late).await;
+    e.release_with(1, true, true).await.unwrap().unwrap();
+    let store = LocalStore::new(e.root.join("bench"));
+    let spec = sample::Spec {
+        cut: 10_000,
+        american_stories: true,
+        concurrency: 2,
+        part_bytes: sample::PART_BYTES,
+        max_batches: None,
+    };
+    let m = sample::build(
+        e.curated.clone(),
+        sample::published(e.reference.as_ref()).await.unwrap(),
+        &store,
+        "sample/all",
+        &spec,
+    )
+    .await
+    .unwrap();
+
+    let qw = e.root.join("qw");
+    let registry = qw.join("registry");
+    let meta = format!("file://{}", qw.join("meta").display());
+    let indexes = format!("file://{}", qw.join("indexes").display());
+    let start = |id: &str, services: &str, port: u16| {
+        let log = std::fs::File::create(qw.join(format!("{id}.log"))).unwrap();
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_usnm-qwcluster"))
+            .args(["node", "--node-id", id, "--services", services])
+            .arg("--registry")
+            .arg(&registry)
+            .args(["--metastore", &meta, "--index-root", &indexes])
+            .args(["--rest-port", &port.to_string(), "--advertise", "127.0.0.1"])
+            .arg("--data-dir")
+            .arg(qw.join(id))
+            .arg("--quickwit-bin")
+            .arg(&bin)
+            .env("RUST_LOG", "warn")
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    };
+    std::fs::create_dir_all(&qw).unwrap();
+    let _n0 = start(
+        "qw-0",
+        "metastore,control_plane,janitor,indexer,searcher",
+        7580,
+    );
+    let mut n1 = start("qw-1", "indexer,searcher", 7590);
+    let root = "http://127.0.0.1:7580";
+    let http = reqwest::Client::new();
+    let logs = || {
+        ["qw-0", "qw-1"]
+            .map(|n| std::fs::read_to_string(qw.join(format!("{n}.log"))).unwrap_or_default())
+            .join("\n----\n")
+    };
+    let (found, ready) = members::wait_ready(&http, root, 2, Duration::from_secs(120))
+        .await
+        .unwrap_or_else(|err| panic!("{err:#}\n{}", logs()));
+    assert!(ready, "{found:?}\n{}", logs());
+    assert_eq!(found.len(), 2);
+    assert!(found[0].runs("metastore") && found[1].runs("indexer"));
+    assert_eq!(found[1].rest_url.as_deref(), Some("http://127.0.0.1:7590"));
+
+    let mut spec = load::Spec::new(root, "sample-2ix", &indexes);
+    spec.split_docs = 20;
+    spec.chunk_bytes = 16 * 1024;
+    spec.poll = Duration::from_millis(500);
+    spec.finalize_grace = Duration::from_secs(5);
+    spec.merge_timeout = Duration::from_secs(300);
+    let report = load::run(&store, "sample/all", &spec)
+        .await
+        .unwrap_or_else(|err| panic!("{err:#}\n{}", logs()));
+    assert_eq!(report.docs, m.docs);
+    assert_eq!(report.splits.docs, m.docs);
+    assert_eq!(report.indexers, ["qw-0", "qw-1"]);
+    assert_eq!(report.min_shards, 2);
+    // Which indexer gets the documents is the router's choice: a load this
+    // small can land on one shard before the router learns of the other.
+    assert!(report.splits.splits >= 1, "{:?}", report.splits);
+    assert!(report.commit_secs <= report.settle_secs && report.settle_secs <= report.seal_secs);
+    let indexed: f64 = report.nodes.values().map(|n| n.docs_indexed).sum();
+    assert_eq!(indexed as u64, m.docs, "{:?}", report.nodes);
+    eprintln!(
+        "splits by node {:?}, docs by node {:?}",
+        report.splits.by_node,
+        report
+            .nodes
+            .iter()
+            .map(|(n, c)| (n, c.docs_indexed))
+            .collect::<Vec<_>>()
+    );
+
+    let bounds = (
+        NaiveDate::parse_from_str(&m.bounds.0, "%Y-%m-%d").unwrap(),
+        NaiveDate::parse_from_str(&m.bounds.1, "%Y-%m-%d").unwrap(),
+    );
+    let bspec = bench::Spec {
+        root: root.into(),
+        indexes: vec!["sample-2ix".into()],
+        american_stories: true,
+        bounds,
+        analyzer: usnm_core::common_grams::analyzer(m.common_grams).unwrap(),
+        levels: vec![1, 4],
+        offset: 0,
+        pause: Duration::ZERO,
+        levels_only: false,
+        expect_searchers: 2,
+        timeout: Duration::from_secs(60),
+        wait_split_cache: None,
+        // Quickwit's per-split resource stats over gRPC (#251).
+        probe: true,
+        profile: None,
+        variant: None,
+    };
+    let b = bench::run("local", &bspec).await.unwrap();
+    let probe = b.probe.as_ref().unwrap();
+    assert!(
+        probe.searches.iter().all(|p| p.error.is_none()),
+        "{probe:?}"
+    );
+    assert!(probe.sum.localexec_num_splits > 0, "{probe:?}");
+    assert!(probe.sum.splits.warmup_microsecs > 0, "{probe:?}");
+    assert!(probe.sum.num_hits > 0, "{probe:?}");
+    assert_eq!(b.searchers, 2);
+    assert_eq!(
+        b.passes.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        ["first", "warm", "c1", "c4"]
+    );
+    for p in &b.passes {
+        assert_eq!(p.failed, 0, "{:?}", p.searches);
+        assert_eq!(p.searches.len(), bench::SEARCHES.len());
+        assert!(p.nodes.values().any(|n| n.leaf_splits > 0.0), "{p:?}");
+    }
+    // The fixtures (1895 to 1897) have "cross of gold" pages.
+    let gold = &b.passes[0].searches[3];
+    assert!(gold.pages.unwrap() > 0, "{gold:?}");
+    assert!(gold.calls.iter().any(|c| c.kind == "summary"));
+
+    // Node 1 restarts (a new generation, as at a new IP): it registers
+    // again, joins through node 0, and serves leaf searches.
+    let before = found[1].generation;
+    n1.kill().await.unwrap();
+    let _n1 = start("qw-1", "indexer,searcher", 7590);
+    let mut rejoined = false;
+    for _ in 0..120 {
+        if let Ok(m) = members::members(&http, root).await {
+            if m.iter()
+                .any(|m| m.node_id == "qw-1" && m.ready && m.generation != before)
+            {
+                rejoined = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(rejoined, "{}", logs());
+    let again = bench::run(
+        "local-restart",
+        &bench::Spec {
+            levels: vec![2],
+            levels_only: true,
+            probe: false,
+            ..bspec
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.passes[0].failed, 0);
+}
+
 /// With a raw store (`USNM_RETAIN_RAW`), curation keeps each archive byte for
 /// byte with a manifest, and a batch queued again (`enqueue --force`) is
 /// curated from that copy, the source gone, to the same pages.
@@ -4384,4 +4688,491 @@ async fn retained_archives_are_kept_and_read_back() {
         (a.pages, a.ok_pages, a.source_sha256),
         (b.pages, b.ok_pages, b.source_sha256)
     );
+}
+
+/// A store that refuses `get` on sample parts and set documents, so tests
+/// show their readers stream them (`get` has a size limit; parts don't).
+#[derive(Debug)]
+struct StreamOnly(LocalStore);
+
+#[async_trait::async_trait]
+impl ObjectStore for StreamOnly {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        if path.contains("/docs-") || path.ends_with("docs.ndjson.zst") {
+            return Err(usnm_store::StoreError::TooLarge(path.into()));
+        }
+        self.0.get(path).await
+    }
+    async fn get_stream(
+        &self,
+        path: &str,
+    ) -> Result<Option<usnm_store::ByteStream>, usnm_store::StoreError> {
+        self.0.get_stream(path).await
+    }
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        self.0.put_new(path, body, content_type).await
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.0.put(path, body, content_type).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.0.list(prefix).await
+    }
+}
+
+/// A packaged set (`usnm-qwcluster bundle`): the retained archives in one
+/// tar, the sample's documents in one zstd stream that reads back whole and
+/// checks out, and a manifest; a set is never replaced.
+#[tokio::test]
+async fn a_sample_set_packages_archives_and_documents() {
+    use usnm_ingest::cluster::{sample, set};
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let archive = e.root.join("batch_fx_set_ver01.tar.bz2");
+    let other = e.root.join("batch_fx_two_ver01.tar.bz2");
+    write_archive(&archive, &early, false, false);
+    write_archive(&other, &late, false, false);
+    let original = std::fs::read(&archive).unwrap();
+    let raw: Arc<dyn ObjectStore> = Arc::new(LocalStore::new(e.root.join("raw")));
+    let list = [
+        listed("batch_fx_set_ver01", &archive, Some(sha256_file(&archive))),
+        listed("batch_fx_two_ver01", &other, Some(sha256_file(&other))),
+    ];
+    source::enqueue(&e.state, &list).await.unwrap();
+    let w = usnm_ingest::worker::Worker {
+        raw: Some(raw.clone()),
+        ..e.worker("w")
+    };
+    assert_eq!(w.run(None).await.unwrap(), 2);
+    e.release(1, true).await.unwrap();
+    let bench = StreamOnly(LocalStore::new(e.root.join("bench")));
+    let spec = sample::Spec {
+        cut: 10_000,
+        american_stories: false,
+        concurrency: 1,
+        part_bytes: 8192,
+        max_batches: None,
+    };
+    let published = sample::published(e.reference.as_ref()).await.unwrap();
+    let sm = sample::build(e.curated.clone(), published, &bench, "sample/all", &spec)
+        .await
+        .unwrap();
+    assert!(sm.parts.len() > 1, "several zstd frames, one stream");
+    let sets: Arc<dyn ObjectStore> = Arc::new(StreamOnly(LocalStore::new(e.root.join("sets"))));
+    let sources = || set::Sources {
+        raw: raw.clone(),
+        sample: &bench,
+        sample_prefix: "sample/all",
+        batches: vec!["batch_fx_set_ver01".into(), "batch_fx_two_ver01".into()],
+    };
+    let m = set::bundle(sets.clone(), "fx-all-v1", "every batch", sources())
+        .await
+        .unwrap();
+    assert_eq!(
+        (m.version, m.docs, m.pages),
+        (Some(1), sm.docs, sm.pages_read)
+    );
+    assert_eq!(m.batches.len(), 2);
+    assert_eq!(m.batches[0].bytes, original.len() as u64);
+    assert!(!m.american_stories);
+    assert_eq!(m.files.len(), 2);
+
+    // raw.tar holds the archive byte for byte, and its manifest.
+    let tar_bytes = std::fs::read(e.root.join("sets/fx-all-v1/raw.tar")).unwrap();
+    assert_eq!(tar_bytes.len() as u64, m.files[0].bytes);
+    let mut entries = BTreeMap::new();
+    let mut t = tar::Archive::new(&tar_bytes[..]);
+    for entry in t.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let path = entry.path().unwrap().display().to_string();
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut body).unwrap();
+        entries.insert(path, body);
+    }
+    assert_eq!(
+        entries["batch_fx_set_ver01/batch_fx_set_ver01.tar.bz2"],
+        original
+    );
+    assert!(entries.contains_key("batch_fx_set_ver01/manifest.json"));
+
+    // The documents read back as one stream, in order, checked.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let feed = set::feed_docs(sets.as_ref(), &m, 4096, tx);
+    let collect = async {
+        let mut docs = 0u64;
+        while let Some(c) = rx.recv().await {
+            assert!(c.len() <= 4096);
+            docs += c.iter().filter(|&&b| b == b'\n').count() as u64;
+        }
+        docs
+    };
+    let (fed, docs) = tokio::join!(feed, collect);
+    fed.unwrap();
+    assert_eq!(docs, m.docs);
+
+    // Never replaced.
+    let err = set::bundle(sets.clone(), "fx-all-v1", "again", sources())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("never replaced"), "{err}");
+}
+
+/// Our OCR's reading of a page in `ocr-local` (12 §12.5 Step 9), as
+/// `ocr-sync` imports it: both texts' scores stored with the row.
+fn local_row(
+    p: &Page,
+    batch: &str,
+    ours: &str,
+    loc: &str,
+    node: &str,
+    ocred_at: i64,
+) -> usnm_ingest::ocr_local::pages::Imported {
+    use usnm_ingest::ocr_local::pages::{Imported, Scores};
+    let langs = ["eng"];
+    Imported {
+        row: usnm_overlay::OverlayRow {
+            key: usnm_core::ids::PageKey::new(&p.lccn, p.date, 1, p.seq).unwrap(),
+            batch: batch.into(),
+            ocr_source: "usnm-tesseract".into(),
+            ocr_engine: "tesseract/5.5.1 profile=eng".into(),
+            loc_text: "bulk".into(),
+            text: ours.into(),
+            image_url: "https://tile.loc.gov/image-services/iiif/x".into(),
+            ocred_at: Utc.timestamp_opt(ocred_at, 0).unwrap(),
+        },
+        batch_version: 1,
+        source_part: "pages/x.parquet".into(),
+        node: node.into(),
+        reason: "bulk".into(),
+        ours: Scores::of(ours, &langs),
+        loc: Scores::of(loc, &langs),
+    }
+}
+
+/// A page of English prose, `n` telling pages apart.
+fn prose(n: usize) -> String {
+    format!(
+        "The city council met on Tuesday and voted for the new school on the hill. The \
+         mayor said the railroad would bring more trade to the town and its farms. Cotton \
+         prices rose in the market and the farmers were glad of it. The weather was fair \
+         and the roads were dry for the first time this year. A new church will be built \
+         on Main street next spring by the people of the {n} ward."
+    )
+}
+
+/// The Latin text of our Japanese OCR on a page in `ocr-local` too.
+const JA_LATIN: &str = "The relocation center held a meeting on Tuesday and the people of \
+    the camp voted for a new school, a store and a church to be built in the spring by the \
+    men and women who live there with their children and their old parents from the coast.";
+
+/// OCR damage of the kind LoC's text has: every other word misread.
+fn garble(text: &str) -> String {
+    text.split_whitespace()
+        .enumerate()
+        .map(|(i, w)| {
+            if i % 2 == 0 {
+                w.chars()
+                    .map(|c| match c {
+                        'e' => 'c',
+                        'h' => 'b',
+                        'n' => 'u',
+                        'i' => 'l',
+                        'o' => 'a',
+                        c => c,
+                    })
+                    .collect()
+            } else {
+                w.to_owned()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+/// With `--ocr-local` (12 §12.5 Step 9) a release gives a page our OCR's
+/// text in place of LoC's where rule v1 prefers it, on the copy the version
+/// keeps, only for the batches it indexes: a garbled page and one LoC has
+/// no text for take ours; a clean one, a short reading, a page the Japanese
+/// overlay has and a revoked node's reading keep LoC's. The version records
+/// the rule, the parts and the verdicts in `ocr_local.json`, and the pages
+/// in `ocr_local_pages.bin`, which a delta carries forward, less a copy
+/// another batch's now wins over, and the API marks those hits as ours.
+#[tokio::test]
+async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
+    use usnm_ingest::ocr_local::{pages, pages_path};
+    use usnm_state::ocr_local::{OcrLocalPages, OCR_LOCAL_FILE, OCR_LOCAL_PAGES_FILE};
+    let e = env().await;
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (mut early, mut late): (Vec<Page>, Vec<Page>) =
+        fixture_pages().into_iter().partition(|p| p.date < split);
+    let ours_of = |v: &[Page], skip: usize| -> Vec<usize> {
+        v.iter()
+            .enumerate()
+            .filter(|(_, p)| p.lccn == "sn99000001" && !p.text.is_empty())
+            .map(|(i, _)| i)
+            .skip(skip)
+            .collect()
+    };
+    let sel = ours_of(&early, 0);
+    // Pages of prose (the fixture's word lists name too few function words
+    // for the metric to decide their language).
+    let clean: Vec<String> = (0..7).map(prose).collect();
+    let (a, b, c, d, j, f) = (sel[0], sel[1], sel[2], sel[3], sel[4], sel[5]);
+    // LoC's text as the archives will have it.
+    early[a].text = garble(&clean[0]);
+    early[b].text = clean[1].clone();
+    early[c].text = format!("{}\n{}", clean[2], garble(&clean[6]));
+    early[d].text = String::new();
+    early[j].text = garble(&clean[4]);
+    early[f].text = garble(&clean[5]);
+    let g = ours_of(&late, 0)[0];
+    let late_clean = prose(7);
+    late[g].text = garble(&late_clean);
+    let id = |p: &Page| format!("{}_{}_ed-1_seq-{}", p.lccn, p.date, p.seq);
+    let early_path = e.root.join("batch_fx_early_ver01.tar.gz");
+    write_archive(&early_path, &early.iter().collect::<Vec<_>>(), true, true);
+    let late_path = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&late_path, &late.iter().collect::<Vec<_>>(), false, true);
+    curate(&e, vec![listed("batch_fx_early_ver01", &early_path, None)]).await;
+
+    // Two imports. Page a has worse readings the lower stored rate passes
+    // over; f's only reading is from a node later revoked.
+    let fx = "batch_fx_early";
+    let lccn = "sn99000001";
+    let run1 = [
+        local_row(&early[a], fx, &clean[0], &early[a].text, "node1", 10),
+        // The same page twice in one part (a message delivered twice):
+        // the chosen row's own text, not the part's last for the page.
+        local_row(
+            &early[a],
+            fx,
+            &garble(&clean[0]),
+            &early[a].text,
+            "node1",
+            10,
+        ),
+        local_row(
+            &early[b],
+            fx,
+            &garble(&clean[1]),
+            &early[b].text,
+            "node1",
+            10,
+        ),
+        local_row(&early[c], fx, &clean[2], &early[c].text, "node1", 10),
+        local_row(&early[d], fx, &clean[3], "", "node1", 10),
+        local_row(&early[j], fx, &clean[4], &early[j].text, "node1", 10),
+    ];
+    let run2 = [
+        local_row(
+            &early[a],
+            fx,
+            &garble(&clean[0]),
+            &early[a].text,
+            "node1",
+            20,
+        ),
+        local_row(&early[f], fx, &clean[5], &early[f].text, "node-bad", 20),
+        local_row(
+            &late[g],
+            "batch_fx_late",
+            &late_clean,
+            &late[g].text,
+            "node1",
+            20,
+        ),
+    ];
+    let mut part_bytes = 0;
+    for (run, rows) in [
+        ("20261011T000000Z-aaaa", &run1[..]),
+        ("20261012T000000Z-bbbb", &run2[..]),
+    ] {
+        let body = pages::encode(rows).unwrap();
+        part_bytes += body.len();
+        e.curated
+            .put(&pages_path(lccn, run), body, "application/octet-stream")
+            .await
+            .unwrap();
+    }
+    e.curated
+        .put(
+            "ocr-local/revoked/20261013T000000Z.json",
+            serde_json::to_vec(&serde_json::json!({
+                "node": "node-bad", "reason": "a bad model", "reference": "#296",
+            }))
+            .unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    // The Japanese overlay has page j, with more words than LoC's: it wins.
+    let ja_text = format!("{JA_LATIN}\n{JA_LATIN}");
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[JaRow {
+            lccn,
+            date: early[j].date,
+            seq: early[j].seq,
+            batch: fx,
+            loc_text: "garbled",
+            text: &ja_text,
+            ocred_at: 1,
+        }],
+    )
+    .await;
+
+    let release = |day, full| {
+        let r = Release {
+            ja_latin: true,
+            ocr_local: true,
+            ..e.releaser(day, full)
+        };
+        let root = e.root.clone();
+        async move {
+            let mut sink = JsonlSink::new(root.join("reference/indexes"));
+            r.run(&mut sink).await.unwrap().unwrap()
+        }
+    };
+    let v1 = release(5, true).await;
+    let docs = e.index(&v1.indexes[0]);
+    let text = |p: &Page| docs[&id(p)]["text"].as_str().unwrap().to_owned();
+    assert_eq!(
+        text(&early[a]),
+        clean[0],
+        "garbled: ours, the lower stored rate"
+    );
+    assert_eq!(text(&early[b]), clean[1], "clean: LoC's");
+    assert_eq!(text(&early[c]), early[c].text, "a short reading: LoC's");
+    assert_eq!(text(&early[d]), clean[3], "no LoC text: ours");
+    assert_eq!(
+        text(&early[j]),
+        usnm_ingest::ocr_ja::latin_text(&ja_text),
+        "the Japanese overlay's"
+    );
+    assert_eq!(text(&early[f]), early[f].text, "revoked: LoC's");
+
+    let v = &v1.index_version;
+    let record = e.reference_json(&format!("{v}/{OCR_LOCAL_FILE}")).await;
+    assert_eq!(record["rule"]["version"], 1);
+    assert_eq!(record["rule"]["margin"], 0.05);
+    assert_eq!(record["metric"]["version"], usnm_core::damage::VERSION);
+    assert_eq!(record["parts"]["count"], 2);
+    assert_eq!(record["parts"]["bytes"], part_bytes);
+    let p = &record["pages"];
+    assert_eq!(p["considered"], 6, "{record}");
+    assert_eq!(p["replaced"], 2, "{record}");
+    assert_eq!(
+        p["kept"],
+        serde_json::json!({"margin": 1, "head": 1, "japanese_ocr": 1, "revoked": 1}),
+        "{record}"
+    );
+    assert_eq!(p["by_engine"]["tesseract/5.5.1 eng"]["replaced"], 2);
+    assert_eq!(p["by_language"]["eng"]["considered"], 4);
+    assert_eq!(record["version"]["pages"], 2);
+    assert_eq!(record["revocations"][0]["reason"], "a bad model");
+    assert!(record["estimate_published"].is_null(), "a full base");
+    let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
+    assert_eq!(manifest["built_from"]["ocr_local"], record["parts"]);
+    assert_eq!(manifest["build"]["features"]["ocr_local"], 1);
+    let bin = |v: &str| {
+        let e = &e;
+        let v = v.to_owned();
+        async move {
+            let bytes = e
+                .reference
+                .get(&format!("{v}/{OCR_LOCAL_PAGES_FILE}"))
+                .await
+                .unwrap()
+                .unwrap();
+            let batches = e.reference_json(&format!("{v}/batches.json")).await;
+            let names: Vec<String> = batches
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["batch"].as_str().unwrap().to_owned())
+                .collect();
+            (OcrLocalPages::decode(&bytes, names.len()).unwrap(), names)
+        }
+    };
+    let (pages1, names1) = bin(v).await;
+    assert_eq!(pages1.len(), 2);
+    for p in [&early[a], &early[d]] {
+        let entry = pages1.get(&id(p)).expect("ours");
+        assert_eq!(names1[usize::from(entry.batch)], fx);
+        assert_eq!(pages1.engine(entry).unwrap().source, "usnm-tesseract");
+    }
+    assert!(pages1.get(&id(&early[b])).is_none());
+
+    // A delta: the late batch, and a batch sorting first whose copy of
+    // page a has clean LoC text, so the plan keeps that copy and hides ours.
+    let again = Page {
+        text: clean[0].clone(),
+        ..early[a].clone()
+    };
+    let again_path = e.root.join("batch_fx_again_ver01.tar.gz");
+    write_archive(&again_path, &[&again], false, true);
+    curate(
+        &e,
+        vec![
+            listed("batch_fx_late_ver01", &late_path, None),
+            listed("batch_fx_again_ver01", &again_path, None),
+        ],
+    )
+    .await;
+    let v2 = release(6, false).await;
+    assert!(!v2.full);
+    let delta = e.index(&v2.indexes[1]);
+    assert_eq!(delta[&id(&late[g])]["text"], late_clean.as_str());
+    assert_eq!(delta[&id(&again)]["text"], clean[0].as_str());
+    let v = &v2.index_version;
+    let hidden = e.reference_json(&format!("{v}/duplicates.json")).await;
+    assert!(hidden
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!({"doc_id": id(&early[a]), "batch": fx})));
+    let (pages2, names2) = bin(v).await;
+    assert_eq!(pages2.len(), 2, "d carried, a dropped, g added");
+    assert!(pages2.get(&id(&early[a])).is_none());
+    assert_eq!(
+        names2[usize::from(pages2.get(&id(&early[d])).unwrap().batch)],
+        fx
+    );
+    assert_eq!(
+        names2[usize::from(pages2.get(&id(&late[g])).unwrap().batch)],
+        "batch_fx_late"
+    );
+    let record = e.reference_json(&format!("{v}/{OCR_LOCAL_FILE}")).await;
+    assert_eq!(
+        record["version"],
+        serde_json::json!({"pages": 2, "carried": 2, "dropped": 1, "added": 1}),
+        "{record}"
+    );
+    // Of the published batch: a, d and j by the stored scores (f revoked,
+    // b and c kept).
+    assert_eq!(record["estimate_published"], 3, "{record}");
+    assert_eq!(
+        record["pages"]["kept"]["margin"], 1,
+        "again's copy: {record}"
+    );
+
+    // The API marks the hits on our text, not the hidden copy's.
+    let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(refdata.ocr_local.len(), 2);
+    assert!(refdata.ocr_local.get(&id(&late[g])).is_some());
 }

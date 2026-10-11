@@ -1,0 +1,396 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "## usnm OCR nodes\nThe on-prem OCR nodes (#296, 12 Step 3), from their own workspace `usnm-ocr-log-<env>`: the Azure Monitor Agent's `Heartbeat`, `Perf` (every 60 s) and `Syslog`, the worker's Application Insights telemetry (component `usnm-ocr-appi-<env>`, tables `AppTraces`, `AppExceptions` and `AppMetrics`, once the worker sends it) and the workspace's `Usage`. Nodes are listed from their heartbeats in the last 30 days. Times are UTC. The same views as text: `scripts/logs.sh <env> ocr-node-health` and `ocr-node-errors`."
+      },
+      "name": "title"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "e606c8e2-9f0e-5d6f-b7cb-d73c3d378eec",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 86400000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 172800000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ],
+              "allowCustom": true
+            }
+          },
+          {
+            "id": "86fdde36-4300-5a76-b67c-9ec7c81f1945",
+            "version": "KqlParameterItem/1.0",
+            "name": "Nodes",
+            "label": "Nodes",
+            "type": 2,
+            "isRequired": true,
+            "multiSelect": true,
+            "quote": "\"",
+            "delimiter": ",",
+            "query": "// Every node with a heartbeat in the last 30 days (the retention), all\n// selected.\nlet machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nunion isfuzzy=true\n    (Heartbeat | where _ResourceId has machines | project Node = node_of(_ResourceId)),\n    (datatable(Node: string)[])\n| distinct value = Node\n| extend label = value, selected = true\n| order by value asc",
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "timeContext": {
+              "durationMs": 2592000000
+            },
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__WORKSPACE_ID__"
+            ]
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// One row per node: its last heartbeat and counters, and CPU, memory and\n// free space on / over the 5 minutes before its last counters. Silent:\n// no heartbeat for more than 5 minutes. Over the last 30 days, as the\n// picker, not the chart range, so a node silent for longer than the range\n// still shows.\nlet machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nlet beats = union isfuzzy=true\n    (Heartbeat | where _ResourceId has machines | project TimeGenerated, Node = node_of(_ResourceId), Version),\n    (datatable(TimeGenerated: datetime, Node: string, Version: string)[])\n    | where Node in ({Nodes})\n    | summarize arg_max(TimeGenerated, Version) by Node\n    | project Node, LastHeartbeat = TimeGenerated, Agent = Version;\nlet perf = union isfuzzy=true\n    (Perf\n    | where _ResourceId has machines\n    | project TimeGenerated, Node = node_of(_ResourceId), ObjectName, CounterName, InstanceName, CounterValue),\n    (datatable(TimeGenerated: datetime, Node: string, ObjectName: string, CounterName: string, InstanceName: string,\n        CounterValue: real)[])\n    | where Node in ({Nodes});\nlet last_perf = perf | summarize LastCounters = max(TimeGenerated) by Node;\nlet recent = perf\n    | join kind=inner last_perf on Node\n    | where TimeGenerated > LastCounters - 5m\n    | summarize\n        CpuPct = round(avgif(CounterValue, ObjectName == \"Processor\" and CounterName == \"% Processor Time\" and InstanceName == \"total\"), 1),\n        MemPct = round(avgif(CounterValue, ObjectName == \"Memory\" and CounterName == \"% Used Memory\"), 1),\n        RootFreePct = round(minif(CounterValue, ObjectName == \"Logical Disk\" and CounterName == \"% Free Space\" and InstanceName == \"/\"), 1)\n        by Node, LastCounters;\nbeats\n| join kind=leftouter recent on Node\n| extend MinutesSince = round((now() - LastHeartbeat) / 1m, 1)\n| extend Status = iff(MinutesSince > 5, \"silent\", \"ok\")\n| project Node, Status, LastHeartbeat, MinutesSince, LastCounters, CpuPct, MemPct, RootFreePct, Agent\n| order by Node asc",
+        "size": 0,
+        "title": "Nodes now",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "noDataMessage": "No heartbeat from the selected nodes in the last 30 days.",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Status",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "icons",
+                "thresholdsGrid": [
+                  {
+                    "operator": "==",
+                    "thresholdValue": "ok",
+                    "representation": "success",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "Default",
+                    "representation": "4",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "name": "nodes"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nlet perf = union isfuzzy=true\n    (Perf\n    | where _ResourceId has machines\n    | project TimeGenerated, Node = node_of(_ResourceId), ObjectName, CounterName, InstanceName, CounterValue),\n    (datatable(TimeGenerated: datetime, Node: string, ObjectName: string, CounterName: string, InstanceName: string,\n        CounterValue: real)[])\n    | where Node in ({Nodes});\n// The total instance is the average over the CPUs.\nperf\n| where ObjectName == \"Processor\" and CounterName == \"% Processor Time\" and InstanceName == \"total\"\n| summarize CpuPct = round(avg(CounterValue), 1) by bin(TimeGenerated, {TimeRange:grain}), Node\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "CPU, %",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "chartSettings": {
+          "ySettings": {
+            "min": 0,
+            "max": 100
+          }
+        }
+      },
+      "name": "cpu",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nlet perf = union isfuzzy=true\n    (Perf\n    | where _ResourceId has machines\n    | project TimeGenerated, Node = node_of(_ResourceId), ObjectName, CounterName, InstanceName, CounterValue),\n    (datatable(TimeGenerated: datetime, Node: string, ObjectName: string, CounterName: string, InstanceName: string,\n        CounterValue: real)[])\n    | where Node in ({Nodes});\nperf\n| where ObjectName == \"Memory\" and CounterName == \"% Used Memory\"\n| summarize MemPct = round(avg(CounterValue), 1) by bin(TimeGenerated, {TimeRange:grain}), Node\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Memory used, %",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "chartSettings": {
+          "ySettings": {
+            "min": 0,
+            "max": 100
+          }
+        }
+      },
+      "name": "memory",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nlet perf = union isfuzzy=true\n    (Perf\n    | where _ResourceId has machines\n    | project TimeGenerated, Node = node_of(_ResourceId), ObjectName, CounterName, InstanceName, CounterValue),\n    (datatable(TimeGenerated: datetime, Node: string, ObjectName: string, CounterName: string, InstanceName: string,\n        CounterValue: real)[])\n    | where Node in ({Nodes});\n// Mounted file systems, not the total or the kernel's and boot mounts\n// (/run, /dev, /sys, /boot).\nperf\n| where ObjectName == \"Logical Disk\" and CounterName == \"% Free Space\"\n| where InstanceName != \"total\" and not(InstanceName has_any (\"/run\", \"/dev\", \"/sys\", \"/boot\"))\n| summarize FreePct = round(min(CounterValue), 1) by bin(TimeGenerated, {TimeRange:grain}), Series = strcat(Node, \" \", InstanceName)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Free disk space by mount, % (lowest in each interval)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "chartSettings": {
+          "ySettings": {
+            "min": 0,
+            "max": 100
+          }
+        }
+      },
+      "name": "disk-free",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nlet perf = union isfuzzy=true\n    (Perf\n    | where _ResourceId has machines\n    | project TimeGenerated, Node = node_of(_ResourceId), ObjectName, CounterName, InstanceName, CounterValue),\n    (datatable(TimeGenerated: datetime, Node: string, ObjectName: string, CounterName: string, InstanceName: string,\n        CounterValue: real)[])\n    | where Node in ({Nodes});\nperf\n| where ObjectName == \"Logical Disk\" and CounterName in (\"Disk Read Bytes/sec\", \"Disk Write Bytes/sec\") and InstanceName == \"total\"\n| summarize BytesPerSec = avg(CounterValue)\n    by bin(TimeGenerated, {TimeRange:grain}), Series = strcat(Node, iff(CounterName startswith \"Disk Read\", \" read\", \" write\"))\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Disk read and write, bytes/s",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "chartSettings": {
+          "ySettings": {
+            "numberFormatSettings": {
+              "unit": 2,
+              "options": {
+                "style": "decimal",
+                "useGrouping": true
+              }
+            }
+          }
+        }
+      },
+      "name": "disk-io",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nlet perf = union isfuzzy=true\n    (Perf\n    | where _ResourceId has machines\n    | project TimeGenerated, Node = node_of(_ResourceId), ObjectName, CounterName, InstanceName, CounterValue),\n    (datatable(TimeGenerated: datetime, Node: string, ObjectName: string, CounterName: string, InstanceName: string,\n        CounterValue: real)[])\n    | where Node in ({Nodes});\n// The counters are bytes since boot: the rate is the difference between\n// samples over the time between them. A drop (a reboot) gives no rate.\nperf\n| where ObjectName == \"Network\" and CounterName in (\"Total Bytes Received\", \"Total Bytes Transmitted\") and InstanceName == \"total\"\n| extend Series = strcat(Node, iff(CounterName endswith \"Received\", \" received\", \" sent\"))\n| order by Series asc, TimeGenerated asc\n| extend Rate = iff(prev(Series) == Series and CounterValue >= prev(CounterValue),\n    (CounterValue - prev(CounterValue)) / ((TimeGenerated - prev(TimeGenerated)) / 1s), real(null))\n| where isnotnull(Rate)\n| summarize BytesPerSec = avg(Rate) by bin(TimeGenerated, {TimeRange:grain}), Series\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Network received and sent, bytes/s",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "chartSettings": {
+          "ySettings": {
+            "numberFormatSettings": {
+              "unit": 2,
+              "options": {
+                "style": "decimal",
+                "useGrouping": true
+              }
+            }
+          }
+        }
+      },
+      "name": "network",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Minutes in heartbeat gaps over 5 minutes, per node and time bin.\nlet range_start = todatetime('{TimeRange:start}');\nlet range_end = min_of(todatetime('{TimeRange:end}'), now());\nlet machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nlet selected = print Node = dynamic([{Nodes}]) | mv-expand Node to typeof(string);\nlet beats = union isfuzzy=true\n    (Heartbeat | where _ResourceId has machines | project TimeGenerated, Node = node_of(_ResourceId)),\n    (datatable(TimeGenerated: datetime, Node: string)[])\n    | where Node in ({Nodes});\n// The range's start and end as sentinel beats, so the gaps before a node's\n// first beat and after its last one count too.\nselected\n| mv-expand TimeGenerated = pack_array(range_start, range_end) to typeof(datetime)\n| extend Sentinel = true\n| union (beats | extend Sentinel = false)\n| order by Node asc, TimeGenerated asc\n| extend Prev = prev(TimeGenerated), PrevNode = prev(Node), PrevSentinel = prev(Sentinel)\n| where Node == PrevNode and TimeGenerated - Prev > 5m\n| project Node, GapStart = Prev, GapEnd = iff(Sentinel, datetime(null), TimeGenerated),\n    Minutes = round((TimeGenerated - Prev) / 1m, 1),\n    Note = case(Sentinel and PrevSentinel, \"no heartbeat in the range\",\n        Sentinel, \"still open at the end of the range\",\n        PrevSentinel, \"before the first heartbeat in the range\", \"\")\n| extend GapEnd = coalesce(GapEnd, range_end)\n// Each Minute ends a minute of the gap: bin it by the minute's start, so a\n// gap ending on a bin boundary adds nothing to the next bin.\n| mv-expand Minute = range(bin(GapStart, 1m) + 1m, GapEnd, 1m) to typeof(datetime)\n| summarize GapMinutes = count() by Node, TimeGenerated = bin(Minute - 1m, {TimeRange:grain})\n| union (selected | extend TimeGenerated = bin(range_start, {TimeRange:grain}), GapMinutes = 0)\n| make-series GapMinutes = sum(GapMinutes) default = 0 on TimeGenerated from bin(range_start, {TimeRange:grain}) to range_end step {TimeRange:grain} by Node",
+        "size": 0,
+        "title": "Minutes in heartbeat gaps over 5 minutes",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "heartbeat-timeline",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Gaps over 5 minutes between a node's heartbeats (one a minute), and a\n// gap still open at the end of the range. A node with no heartbeat in the\n// whole range shows one gap the length of the range.\nlet range_start = todatetime('{TimeRange:start}');\nlet range_end = min_of(todatetime('{TimeRange:end}'), now());\nlet machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nlet selected = print Node = dynamic([{Nodes}]) | mv-expand Node to typeof(string);\nlet beats = union isfuzzy=true\n    (Heartbeat | where _ResourceId has machines | project TimeGenerated, Node = node_of(_ResourceId)),\n    (datatable(TimeGenerated: datetime, Node: string)[])\n    | where Node in ({Nodes});\n// The range's start and end as sentinel beats, so the gaps before a node's\n// first beat and after its last one count too.\nselected\n| mv-expand TimeGenerated = pack_array(range_start, range_end) to typeof(datetime)\n| extend Sentinel = true\n| union (beats | extend Sentinel = false)\n| order by Node asc, TimeGenerated asc\n| extend Prev = prev(TimeGenerated), PrevNode = prev(Node), PrevSentinel = prev(Sentinel)\n| where Node == PrevNode and TimeGenerated - Prev > 5m\n| project Node, GapStart = Prev, GapEnd = iff(Sentinel, datetime(null), TimeGenerated),\n    Minutes = round((TimeGenerated - Prev) / 1m, 1),\n    Note = case(Sentinel and PrevSentinel, \"no heartbeat in the range\",\n        Sentinel, \"still open at the end of the range\",\n        PrevSentinel, \"before the first heartbeat in the range\", \"\")\n| order by GapStart desc",
+        "size": 0,
+        "title": "Heartbeat gaps over 5 minutes",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No heartbeat gap over 5 minutes in the time range.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "heartbeat-gaps"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// The worker's page counters per hour (AppMetrics, cloud role\n// usnm-ocr-worker, role instance the node's name). Each row holds the\n// count since the exporter's last one, in Sum. Empty until the worker\n// sends telemetry.\nunion isfuzzy=true\n    (AppMetrics\n    | where AppRoleName == \"usnm-ocr-worker\" and Name in (\"ocr.pages_done\", \"ocr.pages_failed\", \"ocr.pages_abandoned\")\n    | project TimeGenerated, AppRoleInstance, Name, Sum),\n    (datatable(TimeGenerated: datetime, AppRoleInstance: string, Name: string, Sum: real)[])\n| extend Node = tolower(AppRoleInstance)\n| where Node in ({Nodes})\n| summarize Pages = sum(Sum) by bin(TimeGenerated, 1h), Series = strcat(Node, \" \", trim_start(@\"ocr\\.pages_\", Name))\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Pages per hour: done, failed and abandoned (worker metrics)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No worker metrics in the time range: the worker hasn't sent telemetry yet, or it is stopped."
+      },
+      "name": "throughput"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\n// Syslog: the worker's JSON lines (local0, identifier usnm-ocr-worker) at\n// WARN and ERROR, and any line that isn't JSON (a panic, a bad flag) as TEXT.\nlet syslog = union isfuzzy=true\n    (Syslog\n    | where _ResourceId has machines\n    | where Facility == \"local0\" or ProcessName == \"usnm-ocr-worker\"\n    | project TimeGenerated, Node = node_of(_ResourceId), SyslogMessage),\n    (datatable(TimeGenerated: datetime, Node: string, SyslogMessage: string)[])\n    | where Node in ({Nodes})\n    | extend j = parse_json(SyslogMessage)\n    | extend Level = iff(isnotempty(tostring(j.level)), tostring(j.level), \"TEXT\")\n    | where Level in (\"WARN\", \"ERROR\", \"TEXT\")\n    | extend Message = iff(Level == \"TEXT\", replace_regex(substring(SyslogMessage, 0, 120), @\"\\d+\", \"N\"),\n        strcat(tostring(j.fields.message), iff(isnotempty(tostring(j.fields.kind)), strcat(\" (\", tostring(j.fields.kind), \")\"), \"\")))\n    | extend Example = substring(iff(Level == \"TEXT\", SyslogMessage,\n        strcat(tostring(j.fields.page), \" \", coalesce(tostring(j.fields.error), tostring(j.fields.cause)))), 0, 300)\n    | project TimeGenerated, Node, Source = \"syslog\", Level, Message, Example;\n// Application Insights, once the worker sends telemetry: its warnings and\n// errors as traces (SeverityLevel 2 and up) and its exceptions. The same\n// lines also reach Syslog, so a line can show under both sources.\nlet traces = union isfuzzy=true\n    (AppTraces | where AppRoleName == \"usnm-ocr-worker\" and SeverityLevel >= 2\n    | project TimeGenerated, AppRoleInstance, SeverityLevel, Text = Message),\n    (datatable(TimeGenerated: datetime, AppRoleInstance: string, SeverityLevel: int, Text: string)[])\n    | project TimeGenerated, Node = tolower(AppRoleInstance), Source = \"traces\",\n        Level = iff(SeverityLevel >= 3, \"ERROR\", \"WARN\"),\n        Message = replace_regex(substring(Text, 0, 120), @\"\\d+\", \"N\"), Example = substring(Text, 0, 300);\nlet exceptions = union isfuzzy=true\n    (AppExceptions | where AppRoleName == \"usnm-ocr-worker\"\n    | project TimeGenerated, AppRoleInstance, ExceptionType, OuterMessage),\n    (datatable(TimeGenerated: datetime, AppRoleInstance: string, ExceptionType: string, OuterMessage: string)[])\n    | project TimeGenerated, Node = tolower(AppRoleInstance), Source = \"exceptions\", Level = \"ERROR\",\n        Message = strcat(ExceptionType, \": \", replace_regex(substring(OuterMessage, 0, 120), @\"\\d+\", \"N\")),\n        Example = substring(OuterMessage, 0, 300);\nlet lines = union syslog, traces, exceptions\n    | where Node in ({Nodes});\nlines\n| summarize Lines = count() by bin(TimeGenerated, {TimeRange:grain}), Series = strcat(Node, \" \", Level)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Worker warnings and errors",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No worker warnings or errors in the time range."
+      },
+      "name": "worker-chart",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\n// Syslog: the worker's JSON lines (local0, identifier usnm-ocr-worker) at\n// WARN and ERROR, and any line that isn't JSON (a panic, a bad flag) as TEXT.\nlet syslog = union isfuzzy=true\n    (Syslog\n    | where _ResourceId has machines\n    | where Facility == \"local0\" or ProcessName == \"usnm-ocr-worker\"\n    | project TimeGenerated, Node = node_of(_ResourceId), SyslogMessage),\n    (datatable(TimeGenerated: datetime, Node: string, SyslogMessage: string)[])\n    | where Node in ({Nodes})\n    | extend j = parse_json(SyslogMessage)\n    | extend Level = iff(isnotempty(tostring(j.level)), tostring(j.level), \"TEXT\")\n    | where Level in (\"WARN\", \"ERROR\", \"TEXT\")\n    | extend Message = iff(Level == \"TEXT\", replace_regex(substring(SyslogMessage, 0, 120), @\"\\d+\", \"N\"),\n        strcat(tostring(j.fields.message), iff(isnotempty(tostring(j.fields.kind)), strcat(\" (\", tostring(j.fields.kind), \")\"), \"\")))\n    | extend Example = substring(iff(Level == \"TEXT\", SyslogMessage,\n        strcat(tostring(j.fields.page), \" \", coalesce(tostring(j.fields.error), tostring(j.fields.cause)))), 0, 300)\n    | project TimeGenerated, Node, Source = \"syslog\", Level, Message, Example;\n// Application Insights, once the worker sends telemetry: its warnings and\n// errors as traces (SeverityLevel 2 and up) and its exceptions. The same\n// lines also reach Syslog, so a line can show under both sources.\nlet traces = union isfuzzy=true\n    (AppTraces | where AppRoleName == \"usnm-ocr-worker\" and SeverityLevel >= 2\n    | project TimeGenerated, AppRoleInstance, SeverityLevel, Text = Message),\n    (datatable(TimeGenerated: datetime, AppRoleInstance: string, SeverityLevel: int, Text: string)[])\n    | project TimeGenerated, Node = tolower(AppRoleInstance), Source = \"traces\",\n        Level = iff(SeverityLevel >= 3, \"ERROR\", \"WARN\"),\n        Message = replace_regex(substring(Text, 0, 120), @\"\\d+\", \"N\"), Example = substring(Text, 0, 300);\nlet exceptions = union isfuzzy=true\n    (AppExceptions | where AppRoleName == \"usnm-ocr-worker\"\n    | project TimeGenerated, AppRoleInstance, ExceptionType, OuterMessage),\n    (datatable(TimeGenerated: datetime, AppRoleInstance: string, ExceptionType: string, OuterMessage: string)[])\n    | project TimeGenerated, Node = tolower(AppRoleInstance), Source = \"exceptions\", Level = \"ERROR\",\n        Message = strcat(ExceptionType, \": \", replace_regex(substring(OuterMessage, 0, 120), @\"\\d+\", \"N\")),\n        Example = substring(OuterMessage, 0, 300);\nlet lines = union syslog, traces, exceptions\n    | where Node in ({Nodes});\nlines\n| summarize Count = count(), First = min(TimeGenerated), Last = max(TimeGenerated), Example = take_any(Example)\n    by Node, Source, Level, Message\n| project Last, First, Node, Source, Level, Count, Message, Example\n| order by Last desc",
+        "size": 0,
+        "title": "Worker warnings and errors by message",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No worker warnings or errors in the time range.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "worker-table",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Billed MB a day the nodes' workspace took in (Usage), against its daily\n// cap. Everything in the workspace counts: the agent's Syslog and Perf, the\n// worker's Application Insights telemetry and the exchange account's queue\n// logs. Days are UTC; the cap resets at a time of day of its own, so a day\n// here can straddle two cap periods. Usage lags ingestion by up to a few\n// hours.\n// The cap is ocrNodeDailyCapGb in infra/main.bicep, which\n// provisioning fills in here (cap_gb in ops/queries/ocr-node-health.kql\n// has the same figure).\nlet cap_mb = todouble(\"__CAP_GB__\") * 1000;\nunion isfuzzy=true\n    (Usage | where IsBillable | project TimeGenerated, Quantity),\n    (datatable(TimeGenerated: datetime, Quantity: real)[])\n| summarize MB = round(sum(Quantity), 2) by Day = startofday(TimeGenerated)\n| extend CapMB = cap_mb\n| order by Day asc",
+        "size": 0,
+        "title": "Billed MB a day against the daily cap",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No Usage rows in the time range yet (Usage lags ingestion by up to a few hours)."
+      },
+      "name": "volume",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Per day, newest first: billed MB, the share of the daily cap and MB by\n// table (Usage). The cap as in the chart.\nlet cap_mb = todouble(\"__CAP_GB__\") * 1000;\nunion isfuzzy=true\n    (Usage | where IsBillable | project TimeGenerated, DataType, Quantity),\n    (datatable(TimeGenerated: datetime, DataType: string, Quantity: real)[])\n| summarize MB = sum(Quantity) by Day = startofday(TimeGenerated), DataType\n| summarize ByTable = make_bag(bag_pack(DataType, round(MB, 2))), MB = round(sum(MB), 2) by Day\n| extend CapMB = cap_mb, CapPct = round(100 * MB / cap_mb, 1)\n| project Day, MB, CapMB, CapPct, ByTable\n| order by Day desc",
+        "size": 0,
+        "title": "Billed MB a day by table",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No Usage rows in the time range yet (Usage lags ingestion by up to a few hours)."
+      },
+      "name": "volume-table",
+      "customWidth": "50"
+    }
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

@@ -57,6 +57,8 @@ What reaches it, and what that allows:
 
 Hardening, if wanted: run the ingest jobs in a second Container Apps environment with its own subnet, and allow NFS (port 2049) to the endpoint from that subnet only.
 
+The search experiment's share (`qw-search`, #251) is the same exception for a test, in `dev` only: a second NFS share in the same account, behind the same endpoint, holding a copy of a test index (public LoC text) for one searcher to read as local files. It exists only while `USNM_SEARCH_LOCAL_MODE` is `nfs`. The same limits apply: anything in the environment's subnet could read or change the copy, so a searcher reading it could be fed a changed index. If production ever served an index from such a share, that would need its own decision here.
+
 ## Consequences
 
 - Nothing in the stack can be reached with a leaked key, because no service here accepts one.

@@ -7,15 +7,21 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-usnm-core.workspace = true
+# The damage metric (12 §12.5 Step 6): only this binary embeds its word lists.
+usnm-core = { workspace = true, features = ["damage"] }
+usnm-alto.workspace = true
+usnm-ocr-contract.workspace = true
 usnm-overlay.workspace = true
 usnm-store.workspace = true
 usnm-state.workspace = true
 usnm-telemetry.workspace = true
+# The search cluster's bench runs searches as the API does (src/cluster/bench.rs).
+usnm-search.workspace = true
 anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
+blake2.workspace = true
 bytes.workspace = true
 bzip2.workspace = true
 chrono.workspace = true
@@ -24,7 +30,7 @@ flate2.workspace = true
 futures.workspace = true
 opentelemetry.workspace = true
 parquet.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
+reqwest = { workspace = true, features = ["stream", "http2"] }
 rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -38,7 +44,6 @@ zstd.workspace = true
 
 [dev-dependencies]
 usnm-api = { path = "../usnm-api" }
-usnm-search.workspace = true
 usnm-telemetry = { workspace = true, features = ["testing"] }
 axum.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net", "test-util"] }

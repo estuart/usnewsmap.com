@@ -18,11 +18,12 @@ The maintainer set a target of **under $80/month**. The first design (Front Door
    - Hot LRS for the index and reference data;
    - **Cool** LRS for curated Parquet, which is read only during rebuilds;
    - raw LoC archives are **not retained**, because LoC is the source of record and checksums are kept in the Cosmos batch state.
-     _Note (October 2026):_ an archival storage account (`infra/archive/`, its own stack outside every environment's) can keep everything downloaded from outside Azure, LoC's batch archives and lists at the Cold tier, for environments that set `USNM_ARCHIVE_ACCOUNT` (off by default). Curation then reads a kept archive instead of LoC, so re-curation, benchmarks and other environments never download it twice. The decision for production is unchanged ([operations](../../operations.md#archival-storage)).
+     _Note (October 2026):_ an archival storage account (`infra/archive/`, its own stack outside every environment's) can keep everything downloaded from outside Azure, LoC's batch archives and lists at the Cold tier, for environments that set `USNM_ARCHIVE_ACCOUNT` (off by default). Curation then reads a kept archive instead of LoC, so re-curation, benchmarks (#239) and other environments never download it twice. The decision for production is unchanged ([operations](../../operations.md#archival-storage)).
 5. **Free tiers:**
    - GitHub Container Registry instead of ACR;
    - Log Analytics: dev is kept within the free 5 GB/month by a 150 MB daily cap. Prod's normal days (about 53 MB) also fit the free allowance, but since October 2026 its cap is 1 GB a day, so a bulk job can't stop all logging; that cap is a burst-cost ceiling (about 30 GB in a month at the cap), not a guarantee of the free tier. The blob write logs, which the bulk jobs multiply, are on the Auxiliary plan ($0.15/GB), which the cap doesn't apply to (08 §8.1.1);
    - no Key Vault until a secret exists;
+     _Note (October 2026):_ the first one exists: the Red Hat activation key the OCR nodes register with (#296). It lives in the OCR nodes' Key Vault, `usnmocrkv{env}{suffix}` (08 §8.3.1), which only the operator reads; #295 plans a vault for the environment's private settings;
    - the Container Apps free monthly grant covers the jobs.
 6. **Offline compute on Spot:**
    - the initial backfill and full re-indexes run as **ACI Spot container groups** (preview, East US 2), launched in parallel and claiming batches from Cosmos with leases;

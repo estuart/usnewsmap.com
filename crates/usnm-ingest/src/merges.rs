@@ -503,7 +503,7 @@ impl Node<'_> {
     }
 
     /// Stop ingesting into `index_id`, which runs its final merges.
-    async fn close(&self, index_id: &str) -> anyhow::Result<()> {
+    pub async fn close(&self, index_id: &str) -> anyhow::Result<()> {
         self.toggle(index_id, false).await
     }
 

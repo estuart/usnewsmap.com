@@ -3,26 +3,38 @@
 # environment's ja-ocr job (or its one-replica audit job, below), with the job's own image, settings and replicas
 # but the audit's command line, and print the execution's name.
 #
-#   scripts/ja-ocr/start-quality.sh prod --sample-pct 10
-#   scripts/ja-ocr/start-quality.sh prod --sample-pct 2 --min-pages 50
-#   scripts/ja-ocr/start-quality.sh prod mixed     # jaocr.py mixed instead (mixed.py)
-#   scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925 [--diff]   (american_stories.py)
-#   scripts/ja-ocr/start-quality.sh prod american-stories-write [--year 1865 ...]  (american_stories_write.py)
-#   scripts/ja-ocr/start-quality.sh prod targets [--mixed-below 0.65]   (jaocr.py targets: the OCR's page list)
-#   scripts/ja-ocr/start-quality.sh prod run [--mixed-below 0.65]       (the OCR itself, as a plain start does)
+#   scripts/ja-ocr/start-quality.sh --env prod --sample-pct 10
+#   scripts/ja-ocr/start-quality.sh --env prod --sample-pct 2 --min-pages 50
+#   scripts/ja-ocr/start-quality.sh --env prod --command mixed     # jaocr.py mixed instead (mixed.py)
+#   scripts/ja-ocr/start-quality.sh --env prod --command american-stories --year 1865 --year 1925 [--diff]
+#   scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write [--year 1865 ...]
+#   scripts/ja-ocr/start-quality.sh --env prod --command targets [--mixed-below 0.65]   (the OCR's page list)
+#   scripts/ja-ocr/start-quality.sh --env prod --command run [--mixed-below 0.65]       (the OCR itself)
+#   scripts/ja-ocr/start-quality.sh --env prod --command damage-parity [--pages 400] [--audit-version V]
 #
-# The quality audit runs on the ja-ocr job, whose replicas share its work
-# (quality.py); mixed, targets and the american-stories commands, which one replica does, run on the
-# one-replica audit job (caj-usnm-jaone-<env>), so a second replica can't
-# fail the execution. `az containerapp job start
-# --args` sends a container without the image or settings, so this copies the
-# job's template and swaps only the arguments. Needs az signed in to the
-# environment's subscription and jq. Results: scripts/ja-ocr/quality-rows.sh.
+# --command defaults to quality; the options after it are the command's. The
+# quality audit runs on the ja-ocr job, whose replicas share its work
+# (quality.py); mixed, targets, damage-parity and the american-stories
+# commands, which one replica does, run on the one-replica audit job
+# (caj-usnm-jaone-<env>), so a second replica can't fail the execution.
+# `az containerapp job start --args` sends a container without the image or
+# settings, so this copies the job's template and swaps only the arguments.
+# Needs az signed in to the environment's subscription and jq. Results:
+# scripts/ja-ocr/quality-rows.sh.
 set -euo pipefail
-[ $# -ge 1 ] || { sed -n '2,21s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-ENV_NAME=$1
-shift
+usage() { sed -n '2,23s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
+ENV_NAME=""
+command=quality
+while [ $# -gt 0 ]; do
+  case $1 in
+    --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
+    --command) [ $# -ge 2 ] || usage; command=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) break ;;
+  esac
+done
+[ -n "$ENV_NAME" ] || usage
 cd "$(dirname "$0")/../.."
 . scripts/lib/env.sh
 command -v jq > /dev/null || die "jq is needed to build the request"
@@ -30,38 +42,35 @@ command -v jq > /dev/null || die "jq is needed to build the request"
 sub=$(aget AZURE_SUBSCRIPTION_ID)
 rg=$(aget AZURE_RESOURCE_GROUP)
 job="caj-usnm-jaocr-$ENV_NAME"
-command=quality
-if [ "${1:-}" = mixed ]; then
-  command=mixed
-  job="caj-usnm-jaone-$ENV_NAME"
-  shift
-  [ $# -eq 0 ] || die "mixed takes no options"
-elif [ "${1:-}" = targets ] || [ "${1:-}" = run ]; then
-  # targets lists the pages once, on one replica, before the OCR job's
-  # replicas start (they would otherwise both list them, streaming every
-  # Japanese title's archive). run is the OCR job's own command, for a
-  # --mixed-below other than the default.
-  command=$1
-  [ "$command" = targets ] && job="caj-usnm-jaone-$ENV_NAME"
-  shift
-  for a in "$@"; do
-    [[ $a =~ ^(--mixed-below|0(\.[0-9]{1,2})?|1(\.0+)?)$ ]] || die "unexpected argument \"$a\" for $command"
-  done
-elif [ "${1:-}" = american-stories ] || [ "${1:-}" = american-stories-write ]; then
-  command=$1
-  job="caj-usnm-jaone-$ENV_NAME"
-  shift
-  # The writer reads every page of each year it's given: only --year narrows it.
-  allowed='^(--year|--sample-pct|--diff|[0-9]+(\.[0-9]+)?)$'
-  [ "$command" = american-stories-write ] && allowed='^(--year|[0-9]{4})$'
-  for a in "$@"; do
-    [[ $a =~ $allowed ]] || die "unexpected argument \"$a\" for $command"
-  done
-else
-  for a in "$@"; do
-    [[ $a =~ ^(--sample-pct|--min-pages|--metric|[0-9]+(\.[0-9]+)?|v[12])$ ]] || die "unexpected argument \"$a\""
-  done
-fi
+one="caj-usnm-jaone-$ENV_NAME"
+case $command in
+  quality)
+    allowed='^(--sample-pct|--min-pages|--metric|[0-9]+(\.[0-9]+)?|v[12])$' ;;
+  mixed)
+    job=$one
+    [ $# -eq 0 ] || die "mixed takes no options" ;;
+  targets|run)
+    # targets lists the pages once, on one replica, before the OCR job's
+    # replicas start (they would otherwise both list them, streaming every
+    # Japanese title's archive). run is the OCR job's own command, for a
+    # --mixed-below other than the default.
+    [ "$command" = targets ] && job=$one
+    allowed='^(--mixed-below|0(\.[0-9]{1,2})?|1(\.0+)?)$' ;;
+  american-stories)
+    job=$one
+    allowed='^(--year|--sample-pct|--diff|[0-9]+(\.[0-9]+)?)$' ;;
+  american-stories-write)
+    # The writer reads every page of each year it's given: only --year narrows it.
+    job=$one
+    allowed='^(--year|[0-9]{4})$' ;;
+  damage-parity)
+    job=$one
+    allowed='^(--pages|[0-9]+|--audit-version|pages-v[0-9]{8}-[0-9]+)$' ;;
+  *) die "unknown command \"$command\"" ;;
+esac
+for a in "$@"; do
+  [[ $a =~ ${allowed:-^$} ]] || die "unexpected argument \"$a\" for $command"
+done
 
 template=$(az containerapp job show -n "$job" -g "$rg" --subscription "$sub" --query properties.template -o json) ||
   die "can't read $job (is az signed in to the environment's tenant?)"

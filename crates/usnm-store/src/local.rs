@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use bytes::Bytes;
 
-use crate::{validate_path, ByteStream, ObjectStore, StoreError, MAX_OBJECT_BYTES};
+use crate::{validate_path, ByteStream, ObjectInfo, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 
 #[derive(Debug, Clone)]
 pub struct LocalStore {
@@ -26,6 +26,26 @@ impl LocalStore {
 
 fn io(path: &Path, e: std::io::Error) -> StoreError {
     StoreError::Io(format!("{}: {e}", path.display()))
+}
+
+/// A local object's ETag: the file's identity (device and inode on Unix),
+/// size and modification time. Every write makes a new file (a temp file
+/// renamed or linked into place), so the identity changes with each one
+/// even when the clock's resolution doesn't.
+fn local_etag(m: &std::fs::Metadata) -> String {
+    let nanos = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    #[cfg(unix)]
+    let id = {
+        use std::os::unix::fs::MetadataExt;
+        format!("{:x}.{:x}", m.dev(), m.ino())
+    };
+    #[cfg(not(unix))]
+    let id = String::from("0");
+    format!("{id}-{:x}-{nanos:x}", m.len())
 }
 
 /// Bytes per chunk of a streamed read (`get_stream`).
@@ -197,6 +217,98 @@ impl ObjectStore for LocalStore {
         }
     }
 
+    async fn list_info(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
+        let mut out = Vec::new();
+        for path in self.list(prefix).await? {
+            let full = self.root.join(&path);
+            match tokio::fs::metadata(&full).await {
+                Ok(m) => out.push(ObjectInfo {
+                    etag: local_etag(&m),
+                    size: m.len(),
+                    created: m.modified().ok(),
+                    path,
+                }),
+                // Deleted since the listing.
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
+                Err(e) => return Err(io(&full, e)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Reads from one open handle, so the ETag and size checked are the
+    /// file's whose bytes are read, and reads at most `max_bytes` + 1.
+    async fn get_if_match(
+        &self,
+        path: &str,
+        etag: &str,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        use std::io::Read;
+        validate_path(path)?;
+        let full = self.root.join(path);
+        let etag = etag.to_owned();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let file = match std::fs::File::open(&full) {
+                Ok(f) => f,
+                Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(io(&full, e)),
+            };
+            let m = file.metadata().map_err(|e| io(&full, e))?;
+            if local_etag(&m) != etag {
+                return Ok(None);
+            }
+            let max = max_bytes.min(MAX_OBJECT_BYTES);
+            if m.len() > max {
+                return Err(StoreError::TooLarge(path));
+            }
+            let mut body = Vec::new();
+            file.take(max + 1)
+                .read_to_end(&mut body)
+                .map_err(|e| io(&full, e))?;
+            if body.len() as u64 > max {
+                return Err(StoreError::TooLarge(path));
+            }
+            Ok(Some(body))
+        })
+        .await
+        .map_err(|e| StoreError::Io(e.to_string()))?
+    }
+
+    /// Moves the file aside first (atomic), then compares the ETag of the
+    /// file it moved, so a write that lands between the check and the
+    /// delete is never the one deleted: a file that doesn't match is linked
+    /// back unless a newer one has taken its place.
+    async fn delete_if_match(&self, path: &str, etag: &str) -> Result<bool, StoreError> {
+        validate_path(path)?;
+        let full = self.root.join(path);
+        let etag = etag.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let aside = temp_path(&full);
+            match std::fs::rename(&full, &aside) {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+                Err(e) => return Err(io(&full, e)),
+            }
+            let matched = std::fs::metadata(&aside)
+                .map(|m| local_etag(&m) == etag)
+                .map_err(|e| io(&aside, e))?;
+            if !matched {
+                match std::fs::hard_link(&aside, &full) {
+                    Ok(()) => {}
+                    // Written again meanwhile: the newer file stays.
+                    Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(io(&full, e)),
+                }
+            }
+            std::fs::remove_file(&aside).map_err(|e| io(&aside, e))?;
+            Ok(matched)
+        })
+        .await
+        .map_err(|e| StoreError::Io(e.to_string()))?
+    }
+
     async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
         validate_path(prefix)?;
         let root = self.root.clone();
@@ -237,6 +349,53 @@ impl ObjectStore for LocalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn conditional_reads_and_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::new(dir.path());
+        assert!(store
+            .put_new("out/a.bin", b"one".to_vec(), "x")
+            .await
+            .unwrap());
+        assert!(store.put_new("out/b.bin", vec![0; 10], "x").await.unwrap());
+        let listed = store.list_info("out").await.unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|o| (o.path.as_str(), o.size))
+                .collect::<Vec<_>>(),
+            [("out/a.bin", 3), ("out/b.bin", 10)]
+        );
+        assert!(listed.iter().all(|o| o.created.is_some()));
+        let a = &listed[0];
+        assert_eq!(
+            store.get_if_match(&a.path, &a.etag, 3).await.unwrap(),
+            Some(b"one".to_vec())
+        );
+        assert!(matches!(
+            store.get_if_match(&a.path, &a.etag, 2).await,
+            Err(StoreError::TooLarge(_))
+        ));
+        assert_eq!(store.get_if_match(&a.path, "other", 3).await.unwrap(), None);
+        assert!(!store.delete_if_match(&a.path, "other").await.unwrap());
+        // Written again since the listing, at the same size: neither read
+        // nor deleted.
+        store.put(&a.path, b"two".to_vec(), "x").await.unwrap();
+        assert_eq!(store.get_if_match(&a.path, &a.etag, 9).await.unwrap(), None);
+        assert!(!store.delete_if_match(&a.path, &a.etag).await.unwrap());
+        assert_eq!(store.get(&a.path).await.unwrap().unwrap(), b"two", "kept");
+        let now = store.list_info("out").await.unwrap();
+        assert!(store
+            .delete_if_match(&now[0].path, &now[0].etag)
+            .await
+            .unwrap());
+        assert!(!store
+            .delete_if_match(&now[0].path, &now[0].etag)
+            .await
+            .unwrap());
+        assert_eq!(store.list("out").await.unwrap(), ["out/b.bin"]);
+    }
 
     #[tokio::test]
     async fn create_only_round_trip() {

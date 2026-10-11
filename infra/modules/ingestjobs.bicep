@@ -21,6 +21,15 @@
 //   for with NDLOCR-Lite (04 §4.8, #128). Replicas claim issues through
 //   create-only blobs, and pace loc.gov together. Started again until every
 //   target issue has a part.
+// - `usnm-ocrsync-caj-{env}` (when `ocrSync`, with the on-prem OCR nodes):
+//   `usnm-ingest ocr-sync` on `ocrSyncCron` (hourly), one replica, as
+//   id-usnm-ingest: picks the nodes' output up from the exchange account,
+//   checks it and imports it into curated/ocr-local/ (12 §12.5 Step 8).
+//   Named by ADR-0017. With a seed plan (`ocrSeed`), each run then tops
+//   `ocr-bulk` up with the pages LoC read worst (12 §12.5 Step 10).
+//   `ocr-enqueue`, `ocr-requeue` and `ocr-seed` run as one-off executions of
+//   it (scripts/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
+//   account's endpoints.
 // - `caj-usnm-jaone-{env}` (with the jaocr job): manual, one replica, the
 //   same image and settings, for jaocr.py's one-off measurements (`mixed`,
 //   `american-stories`) that one replica does anyway; a second replica only
@@ -53,6 +62,8 @@ param full bool = false
 param americanStories bool = false
 @description('Give the pages LoC ships without text a main-index document with the Latin-script text our Japanese OCR read on them (04 §4.8, #203).')
 param jaLatin bool = false
+@description('Weigh our own OCR from curated/ocr-local against LoC\'s text on the pages of the batches a release indexes (12 §12.5 Step 9, #296).')
+param ocrLocal bool = false
 @description('Lay a full rebuild\'s base out by decade (#123, 05 §5.5.5), so date-limited searches skip the other decades\' splits. Only a full base takes it; deltas follow the published version.')
 param partitionDecade bool = false
 @description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.7). Only a full base takes it; deltas follow the published version.')
@@ -82,6 +93,16 @@ param jaOcrImage string = ''
 param jaOcrReplicas int = 2
 @description('Where curation retains the batch archives it downloads (the `raw` container URL, `retainRaw`); empty keeps none.')
 param rawUrl string = ''
+@description('Deploy the OCR pickup job, usnm-ocrsync-caj-<env> (12 §12.5 Step 8). Needs the exchange account (ocrNodes).')
+param ocrSync bool = false
+@description('The OCR exchange account\'s queue endpoint (OCR_QUEUE_ENDPOINT).')
+param ocrQueueEndpoint string = ''
+@description('The OCR exchange account\'s blob endpoint (OCR_BLOB_ENDPOINT), with its trailing slash.')
+param ocrBlobEndpoint string = ''
+@description('Schedule for the OCR pickup job (UTC cron). Empty: manual only.')
+param ocrSyncCron string = '17 * * * *'
+@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name: USNM_OCR_SEED_PLAN (empty: no seeding), USNM_OCR_SEED_BATCHES, USNM_OCR_SEED_LANGUAGES, USNM_OCR_SEED_YEARS, USNM_OCR_SEED_MIN_DAMAGE, USNM_OCR_SEED_MAX_PAGES, USNM_OCR_SEED_PILOT, USNM_OCR_SEED_SKIP_AMERICAN_STORIES, USNM_OCR_BULK_WINDOW, USNM_OCR_BULK_REFILL_BELOW. Empty values are left out, so the job\'s defaults apply.')
+param ocrSeed object = {}
 
 // Both jobs: the platform kills a replica after replicaTimeout, which the
 // ingest-job-failed alert reports as a failure. Curation stops claiming at a
@@ -220,6 +241,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             full ? ['--full'] : [],
             americanStories ? ['--american-stories'] : [],
             jaLatin ? ['--ja-latin'] : [],
+            ocrLocal ? ['--ocr-local'] : [],
             partitionDecade ? ['--partition-decade'] : [],
             singleTextField ? ['--single-text-field'] : []
           )
@@ -355,6 +377,54 @@ resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
   }
 }
 
+// ocr-sync stops starting imports at 3000 s, leaving 10 minutes of its
+// 3600 s replica timeout for the import in hand, the status file and the
+// telemetry flush. An hourly run normally takes a few minutes.
+var ocrSyncReplicaTimeoutSecs = 3600
+var ocrSyncMaxRuntimeSecs = 3000
+var ocrSeedEnv = filter(map(items(ocrSeed), s => { name: s.key, value: string(s.value) }), e => !empty(e.value))
+
+resource ocrSyncJob 'Microsoft.App/jobs@2025-01-01' = if (ocrSync) {
+  name: 'usnm-ocrsync-caj-${jobNameSuffix}'
+  location: location
+  tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${ingestIdentityId}': {} }
+  }
+  properties: {
+    environmentId: environmentId
+    workloadProfileName: 'Consumption'
+    configuration: {
+      registries: [{ server: registryServer, identity: ingestIdentityId }]
+      triggerType: empty(ocrSyncCron) ? 'Manual' : 'Schedule'
+      manualTriggerConfig: empty(ocrSyncCron) ? { parallelism: 1, replicaCompletionCount: 1 } : null
+      scheduleTriggerConfig: empty(ocrSyncCron)
+        ? null
+        : { cronExpression: ocrSyncCron, parallelism: 1, replicaCompletionCount: 1 }
+      replicaTimeout: ocrSyncReplicaTimeoutSecs
+      // The next hourly run picks up where a failed one stopped; the Cosmos
+      // lock keeps two from overlapping.
+      replicaRetryLimit: 0
+    }
+    template: {
+      containers: [
+        {
+          name: 'ocrsync'
+          image: image
+          args: ['ocr-sync', '--max-runtime-secs', string(ocrSyncMaxRuntimeSecs)]
+          resources: { cpu: json('0.5'), memory: '1Gi' }
+          env: concat(env, [
+            { name: 'USNM_OCR_QUEUE_URL', value: ocrQueueEndpoint }
+            { name: 'USNM_OCR_OUT_URL', value: '${ocrBlobEndpoint}ocr-out' }
+            { name: 'USNM_OCR_QUARANTINE_URL', value: '${ocrBlobEndpoint}ocr-quarantine' }
+          ], ocrSeedEnv)
+        }
+      ]
+    }
+  }
+}
+
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 
@@ -384,3 +454,4 @@ output ingestJobName string = ingest.name
 output backfillJobName string = backfill.name
 output jaOcrJobName string = empty(jaOcrImage) ? '' : jaOcr.name
 output jaAuditJobName string = empty(jaOcrImage) ? '' : jaAudit.name
+output ocrSyncJobName string = ocrSync ? ocrSyncJob.name : ''

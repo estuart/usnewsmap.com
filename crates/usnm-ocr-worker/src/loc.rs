@@ -8,7 +8,8 @@
 //! that base plus `/full/full/0/default.jpg`. The item JSON is cached (LRU),
 //! so the pages of one issue cost one API request. loc.gov's API and its
 //! image server are each paced by a gap between requests shared by every
-//! task on the node, `Retry-After` is honoured on 429 and 503, and every
+//! task on the node, `Retry-After` is honoured on 429 and 503, a 403 holds
+//! the server the same way (a block isn't the page's fault), and every
 //! request names the site in its User-Agent.
 
 use std::collections::BTreeMap;
@@ -75,6 +76,12 @@ impl Pacer {
                 return;
             }
         }
+    }
+
+    /// Until when callers are held, if a hold is still running.
+    pub fn held_until(&self) -> Option<Instant> {
+        let held = *self.held.lock().expect("pacer lock");
+        held.filter(|h| *h > Instant::now())
     }
 
     /// Hold every caller for at least `d` from now (the server said to wait).
@@ -189,8 +196,9 @@ pub fn page_images(iiif_root: &str, item: &Value) -> BTreeMap<u16, String> {
     out
 }
 
-/// A `Retry-After` value: seconds or an HTTP date.
-fn retry_after(resp: &reqwest::Response) -> Option<Duration> {
+/// A `Retry-After` value (seconds or an HTTP date), capped at an hour, and
+/// whether the cap cut it.
+fn retry_after(resp: &reqwest::Response) -> Option<(Duration, bool)> {
     let v = resp
         .headers()
         .get(reqwest::header::RETRY_AFTER)?
@@ -204,7 +212,7 @@ fn retry_after(resp: &reqwest::Response) -> Option<Duration> {
             .duration_since(std::time::SystemTime::now())
             .unwrap_or_default(),
     };
-    Some(d.min(MAX_RETRY_AFTER))
+    Some((d.min(MAX_RETRY_AFTER), d > MAX_RETRY_AFTER))
 }
 
 impl LocClient {
@@ -240,12 +248,17 @@ impl LocClient {
                 },
                 Ok(resp) => {
                     let status = resp.status();
+                    // A 403 is how a block looks: hold the server as for a
+                    // 429, rather than dead-letter pages at the paced rate.
                     if matches!(
                         status,
-                        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+                        StatusCode::TOO_MANY_REQUESTS
+                            | StatusCode::SERVICE_UNAVAILABLE
+                            | StatusCode::FORBIDDEN
                     ) {
                         let asked = retry_after(&resp);
-                        let d = asked.map_or(wait, |r| r.max(wait));
+                        let capped = asked.is_some_and(|(_, c)| c);
+                        let d = asked.map_or(wait, |(r, _)| r.max(wait));
                         // Everyone waits, not just this request.
                         pacer.hold(d);
                         let server = if std::ptr::eq(pacer, &self.api) {
@@ -259,11 +272,15 @@ impl LocClient {
                                 KeyValue::new("status", i64::from(status.as_u16())),
                                 KeyValue::new("server", server),
                                 KeyValue::new("retry_after", asked.is_some()),
+                                // Retry-After over an hour, cut to one.
+                                KeyValue::new("capped", capped),
                             ],
                         );
                         tracing::warn!(
                             status = status.as_u16(),
+                            server,
                             wait_secs = d.as_secs(),
+                            capped,
                             "loc.gov asked us to slow down"
                         );
                         last = format!("HTTP {}", status.as_u16());
@@ -288,8 +305,17 @@ impl LocClient {
         Err(FetchError::Transient(format!("giving up on {url}: {last}")))
     }
 
+    /// Until when loc.gov's API or image server holds this node's requests.
+    pub fn held_until(&self) -> Option<Instant> {
+        match (self.api.held_until(), self.tile.held_until()) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     /// seq → IIIF base for `key`'s issue, from the cache or one API request.
-    /// An issue loc.gov doesn't have is cached as no pages.
+    /// Only answers are cached: a 4xx on the issue fails this page and is
+    /// asked again for the next, so a refusal can't empty a whole issue.
     async fn issue_pages(&self, key: &PageKey) -> Result<Pages, FetchError> {
         let issue = format!(
             "{}/{}/ed-{}",
@@ -307,7 +333,6 @@ impl LocClient {
                         })?;
                         Ok(Arc::new(page_images(&self.cfg.iiif_root, &item)))
                     }
-                    Err(FetchError::Permanent(_)) => Ok(Arc::new(BTreeMap::new())),
                     Err(e) => Err(e),
                 }
             })
@@ -403,16 +428,16 @@ mod tests {
     #[test]
     fn builds_iiif_bases_from_the_item_json() {
         let item = serde_json::json!({"resources": [{"files": [
-            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/batch_nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0365.jp2"},
+            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0365.jp2"},
              {"mimetype": "text/xml", "url": "https://tile.loc.gov/x.xml"}],
-            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/batch_nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0364.jp2"}],
+            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0364.jp2"}],
             [{"mimetype": "text/xml", "url": "https://tile.loc.gov/y.xml"}]
         ]}]});
         let pages = page_images("https://tile.loc.gov/image-services/iiif/", &item);
         assert_eq!(pages.len(), 2);
         assert_eq!(
             pages[&1],
-            "https://tile.loc.gov/image-services/iiif/service:ndnp:nbu:batch_nbu_gage_ver01:data:sn83045462:00271743700:1890050301:0365"
+            "https://tile.loc.gov/image-services/iiif/service:ndnp:nbu:nbu_gage_ver01:data:sn83045462:00271743700:1890050301:0365"
         );
         assert!(pages[&2].ends_with(":0364"));
         assert_eq!(iiif_base("r/", "https://elsewhere/x.jp2"), None);
@@ -514,5 +539,92 @@ mod tests {
             loc.scan(&other).await,
             Err(FetchError::Permanent(_))
         ));
+    }
+
+    /// A stand-in loc.gov whose image server answers its first request
+    /// with 403, and whose API refuses one issue with 404; counts both.
+    async fn blocking_loc(images: Arc<AtomicU32>, refused: Arc<AtomicU32>) -> String {
+        use axum::http::StatusCode as S;
+        use axum::response::IntoResponse;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let item = serde_json::json!({"resources": [{"files": [
+            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/x/batch_x/data/sn1/1/1890050301/0001.jp2"}],
+        ]}]});
+        let app = axum::Router::new()
+            .route(
+                "/item/sn1/1890-05-03/ed-1/",
+                axum::routing::get(move || {
+                    let item = item.clone();
+                    async move { axum::Json(item) }
+                }),
+            )
+            .route(
+                "/item/sn1/1890-05-04/ed-1/",
+                axum::routing::get(move || {
+                    let refused = refused.clone();
+                    async move {
+                        refused.fetch_add(1, Ordering::SeqCst);
+                        S::NOT_FOUND
+                    }
+                }),
+            )
+            .route(
+                "/iiif/{service}/full/full/0/default.jpg",
+                axum::routing::get(move || {
+                    let images = images.clone();
+                    async move {
+                        match images.fetch_add(1, Ordering::SeqCst) {
+                            0 => S::FORBIDDEN.into_response(),
+                            _ => b"jpeg".to_vec().into_response(),
+                        }
+                    }
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        root
+    }
+
+    #[tokio::test]
+    async fn a_403_holds_the_server_and_an_issue_refusal_isnt_cached() {
+        let (images, refused) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+        let root = blocking_loc(images.clone(), refused.clone()).await;
+        let loc = LocClient::new(LocConfig {
+            api_gap: Duration::from_millis(10),
+            tile_gap: Duration::from_millis(10),
+            attempts: 3,
+            backoff: Duration::from_millis(300),
+            api_root: root.clone(),
+            iiif_root: format!("{root}/iiif/"),
+        })
+        .unwrap();
+        assert_eq!(loc.held_until(), None);
+        let t0 = std::time::Instant::now();
+        let p1: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
+        // The 403 held the image server and was retried: not permanent.
+        let s1 = loc.scan(&p1).await.unwrap();
+        assert_eq!(&s1.jpeg[..], b"jpeg");
+        assert_eq!(images.load(Ordering::SeqCst), 2);
+        assert!(t0.elapsed() >= Duration::from_millis(300), "held");
+        // A 4xx on an issue fails the page, and is asked again next time.
+        let other: PageKey = "sn1/1890-05-04/ed-1/seq-1".parse().unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                loc.scan(&other).await,
+                Err(FetchError::Permanent(_))
+            ));
+        }
+        assert_eq!(refused.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_pacer_reports_its_hold() {
+        let pacer = Pacer::new(Duration::from_millis(10));
+        assert_eq!(pacer.held_until(), None);
+        pacer.hold(Duration::from_secs(3600));
+        let until = pacer.held_until().unwrap();
+        assert_eq!(until - Instant::now(), Duration::from_secs(3600));
+        tokio::time::sleep(Duration::from_secs(3601)).await;
+        assert_eq!(pacer.held_until(), None);
     }
 }

@@ -20,9 +20,14 @@
 #   2. unless the node is already connected, creates a throwaway app
 #      registration and service principal with a 2-hour secret and only
 #      Azure Connected Machine Onboarding on the environment's group;
-#   3. copies scripts/ocr-node/node-setup.sh to the node and runs it with
+#   3. copies scripts/ocr-node/node-setup.sh and the worker's unit,
+#      usnm-ocr-worker.service, to the node and runs node-setup.sh with
 #      sudo, sending the tenant, app id and secret on its stdin (never on a
-#      command line, never on the node's disk), and the exchange account
+#      command line, never on the node's disk); on a RHEL node that isn't
+#      registered with Red Hat yet, also the organization id and activation
+#      key, which it reads from the nodes' Key Vault (OCR_KEYVAULT, secrets
+#      rhel-org-id and rhel-activation-key) with your sign-in, the same way
+#      (docs/operations.md); and the exchange account
 #      and the nodes' Application Insights connection string
 #      (OCR_NODE_APPINSIGHTS) as arguments (not secrets) for the worker's
 #      unit;
@@ -40,7 +45,8 @@
 #
 # --dry-run checks the settings and your sign-in and prints the plan; it
 # registers nothing, creates nothing in Entra, doesn't connect to the node,
-# adds no group member and installs nothing.
+# adds no group member and installs nothing. It lists the Key Vault's secret
+# names (not their values) to check the Red Hat ones are there.
 #
 # Needs az signed in with the right to register applications in the tenant,
 # to assign roles on the environment's group and to write its Arc machines,
@@ -48,7 +54,9 @@
 # User Access Administrator plus Contributor, or plus Azure Connected
 # Machine Resource Administrator and Monitoring Contributor), and to add
 # members to the nodes' group (an owner of it, as group.sh makes you), and
-# ssh. Registering the three providers is a subscription-level action
+# ssh. For a RHEL node, also Key Vault Secrets Officer on the nodes' Key
+# Vault (USNM_OCR_KEYVAULT_ADMINS), from an address its firewall allows
+# (USNM_OCR_NODE_IPS). Registering the three providers is a subscription-level action
 # (Microsoft.<namespace>/register/action, in Contributor or Owner on the
 # subscription); without it they have to be registered already.
 # Works with macOS's bash 3.2.
@@ -96,6 +104,8 @@ NODE_GROUP=$(aget USNM_OCR_NODE_GROUP)
 CONN=$(aget OCR_NODE_APPINSIGHTS)
 APPI_ID=$(aget OCR_NODE_APPINSIGHTS_ID)
 DCR_ID=$(aget OCR_NODE_DCR_ID)
+# The nodes' Key Vault, for a RHEL node's Red Hat registration.
+KEYVAULT=$(aget OCR_KEYVAULT)
 [ -n "$SUBSCRIPTION" ] && [ -n "$TENANT" ] && [ -n "$GROUP" ] ||
   die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/provision.sh $ENV_NAME"
 [ "$NODES" = true ] ||
@@ -130,6 +140,7 @@ echo "node group $NODE_GROUP_NAME ($NODE_GROUP)"
 appi=${APPI_ID##*/}
 echo "data collection rule ${DCR_ID##*/}; worker telemetry to ${appi:-none}"
 echo "node $HOST, Arc resource $NAME"
+echo "Red Hat secrets, for a RHEL node: ${KEYVAULT:-no OCR_KEYVAULT}"
 [ "$DRY_RUN" = false ] || echo "dry run: nothing is changed"
 
 TAGS="project=usnewsmap,environment=$ENV_NAME,role=ocr-node"
@@ -189,7 +200,7 @@ cleanup() {
   # called once node-setup.sh has finished.
   # shellcheck disable=SC2319
   local status=$? ids id deleted="" ok attempt
-  SECRET=""
+  SECRET="" RH_ORG="" RH_KEY=""
   [ "$SP_CREATED" = true ] || return "$status"
   set +e
   step "Deleting the onboarding service principal"
@@ -292,9 +303,38 @@ elif [ "$DRY_RUN" = true ]; then
   echo "assign it Azure Connected Machine Onboarding ($ONBOARD_ROLE) on $SCOPE,"
   echo "and delete all three (purging the Entra objects) when this script exits"
 fi
+# The Red Hat organization id and activation key: read from the nodes' Key
+# Vault only for a RHEL node that isn't registered, kept in this shell's
+# memory, sent on node-setup.sh's stdin and cleared. Never printed.
+RH_ORG="" RH_KEY=""
+RH_SECRETS="rhel-org-id rhel-activation-key"
+read_rh_secrets() {
+  [ -n "$KEYVAULT" ] ||
+    die "$HOST runs RHEL and isn't registered with Red Hat, and there's no OCR_KEYVAULT for $ENV_NAME: run scripts/provision.sh $ENV_NAME, then set the secrets (docs/operations.md)"
+  local why="(you need Key Vault Secrets Officer, from USNM_OCR_KEYVAULT_ADMINS, and to be at an address in USNM_OCR_NODE_IPS)"
+  RH_ORG=$(az keyvault secret show --vault-name "$KEYVAULT" --name rhel-org-id --query value -o tsv) ||
+    die "can't read rhel-org-id from $KEYVAULT $why"
+  RH_KEY=$(az keyvault secret show --vault-name "$KEYVAULT" --name rhel-activation-key --query value -o tsv) ||
+    die "can't read rhel-activation-key from $KEYVAULT $why"
+  [ -n "$RH_ORG" ] && [ -n "$RH_KEY" ] || die "rhel-org-id or rhel-activation-key in $KEYVAULT is empty"
+  echo "read rhel-org-id and rhel-activation-key from $KEYVAULT"
+}
 if [ "$DRY_RUN" = true ]; then
-  echo "would copy scripts/ocr-node/node-setup.sh to $HOST and run:"
-  echo "  sudo bash node-setup.sh $SETUP_ARGS < (tenant, app id and secret)"
+  if [ -z "$KEYVAULT" ]; then
+    echo "warning: no OCR_KEYVAULT, so a RHEL node that isn't registered with Red Hat can't be onboarded; run scripts/provision.sh $ENV_NAME"
+  elif names=$(az keyvault secret list --vault-name "$KEYVAULT" --query '[].name' -o tsv 2> /dev/null); then
+    for n in $RH_SECRETS; do
+      if grep -qx "$n" <<< "$names"; then
+        echo "$KEYVAULT has $n"
+      else
+        echo "warning: $KEYVAULT has no $n; a RHEL node that isn't registered can't be onboarded (docs/operations.md)"
+      fi
+    done
+  else
+    echo "warning: can't list $KEYVAULT's secrets (Key Vault Secrets Officer from USNM_OCR_KEYVAULT_ADMINS, at an address in USNM_OCR_NODE_IPS?)"
+  fi
+  echo "would copy scripts/ocr-node/node-setup.sh and usnm-ocr-worker.service to $HOST and run:"
+  echo "  sudo bash node-setup.sh $SETUP_ARGS < (tenant, app id and secret; on RHEL not yet registered, the Red Hat organization id and activation key from ${KEYVAULT:-OCR_KEYVAULT})"
 else
   if [ "$connected" != Connected ]; then
     # macOS date, then GNU date.
@@ -329,19 +369,36 @@ else
     die "can't reach $HOST over ssh"
   # shellcheck disable=SC2029 # $remote is meant to expand here
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/node-setup.sh" < scripts/ocr-node/node-setup.sh
-  # The tenant, app id and secret go to the node on ssh's stdin, never on a
-  # command line; node-setup.sh reads them there. On a connected node,
-  # nothing is sent.
+  # shellcheck disable=SC2029
+  ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/usnm-ocr-worker.service" < scripts/ocr-node/usnm-ocr-worker.service
+  # A RHEL node registers with Red Hat before node-setup.sh installs
+  # anything; one that's registered already needs no secrets.
+  # shellcheck disable=SC2016 # expanded on the node
+  rh=$(ssh "${SSH_OPTS[@]}" "$HOST" 'id=$(. /etc/os-release && printf %s "${ID:-}")
+    if [ "$id" != rhel ]; then echo other
+    elif sudo -n subscription-manager identity > /dev/null 2>&1; then echo registered
+    else echo unregistered; fi' < /dev/null) || die "can't check $HOST's OS over ssh"
+  case "$rh" in
+    other) ;;
+    registered) echo "$HOST runs RHEL and is registered with Red Hat" ;;
+    unregistered) read_rh_secrets ;;
+    *) die "unexpected answer from $HOST about its OS: $rh" ;;
+  esac
+  # The tenant, app id and secret, then the Red Hat organization id and
+  # activation key, go to the node on ssh's stdin, never on a command line;
+  # node-setup.sh reads them there. printf is a shell builtin, so they
+  # aren't in this machine's process list either. On a connected,
+  # registered node, nothing is sent.
   status=0
-  if [ -n "$SECRET" ]; then
+  if [ -n "$SECRET$RH_KEY" ]; then
     # shellcheck disable=SC2029 # the arguments are meant to expand here
-    printf '%s\n%s\n%s\n' "$TENANT" "$APP_ID" "$SECRET" |
+    printf '%s\n%s\n%s\n%s\n%s\n' "${SECRET:+$TENANT}" "${SECRET:+$APP_ID}" "$SECRET" "$RH_ORG" "$RH_KEY" |
       ssh "${SSH_OPTS[@]}" "$HOST" "sudo bash $remote/node-setup.sh $SETUP_ARGS" || status=$?
   else
     # shellcheck disable=SC2029
     ssh "${SSH_OPTS[@]}" "$HOST" "sudo bash $remote/node-setup.sh $SETUP_ARGS" < /dev/null || status=$?
   fi
-  SECRET=""
+  SECRET="" RH_ORG="" RH_KEY=""
   # shellcheck disable=SC2029
   ssh "${SSH_OPTS[@]}" "$HOST" "rm -rf $remote" || true
   [ "$status" -eq 0 ] || die "node-setup.sh failed on $HOST ($status)"

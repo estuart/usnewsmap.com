@@ -3,3 +3,5 @@
 set -euo pipefail
 docker run --rm "$1" --version
 docker run --rm --entrypoint quickwit "$1" --version
+# The search cluster's commands (#239).
+docker run --rm --entrypoint usnm-qwcluster "$1" --version
