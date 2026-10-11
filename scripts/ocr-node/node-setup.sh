@@ -136,7 +136,8 @@ else
     echo "already registered with Red Hat"
   else
     [ -n "$RH_KEY" ] ||
-      die "RHEL isn't registered and no Red Hat organization id and activation key came on stdin"         "(onboard.sh reads rhel-org-id and rhel-activation-key from the nodes' Key Vault)"
+      die "RHEL isn't registered and no Red Hat organization id and activation key came on stdin" \
+        "(onboard.sh reads rhel-org-id and rhel-activation-key from the nodes' Key Vault)"
     subscription-manager register --org "$RH_ORG" --activationkey "$RH_KEY"
   fi
   # Enabling an enabled repository changes nothing. CodeReady Builder is
