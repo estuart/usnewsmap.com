@@ -41,6 +41,10 @@ done
 IFS=, read -r -a IPS <<< "$NODE_IPS"
 for ip in "${IPS[@]}"; do
   [[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--node-ips: $ip isn't an IPv4 address"
+  IFS=. read -r -a octets <<< "$ip"
+  for o in "${octets[@]}"; do
+    [ "$((10#$o))" -le 255 ] || die "--node-ips: $ip isn't an IPv4 address"
+  done
 done
 [ "$(id -u)" = 0 ] || die "run as root on the Proxmox host"
 command -v zfs > /dev/null || die "no zfs here"

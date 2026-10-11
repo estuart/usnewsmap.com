@@ -264,14 +264,23 @@ pub fn sample(rows: &[ManifestRow], n: usize) -> Vec<ManifestRow> {
         }
         shares.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(b.1)));
         let mut left = (n - keys.len()).saturating_sub(given);
-        for (_, k) in shares.iter().cycle().take(shares.len() * 2) {
-            if left == 0 {
-                break;
+        // Round after round in remainder order, until the sample is full or
+        // every stratum is.
+        while left > 0 {
+            let mut gave = false;
+            for (_, k) in &shares {
+                if left == 0 {
+                    break;
+                }
+                let t = take.get_mut(*k).expect("set above");
+                if *t < strata[*k].len() {
+                    *t += 1;
+                    left -= 1;
+                    gave = true;
+                }
             }
-            let t = take.get_mut(*k).expect("set above");
-            if *t < strata[*k].len() {
-                *t += 1;
-                left -= 1;
+            if !gave {
+                break;
             }
         }
     }
@@ -452,6 +461,8 @@ impl Run {
         if let Some(n) = verified(&path, &row, size).await {
             c.already_there.fetch_add(1, Ordering::SeqCst);
             c.bytes_there.fetch_add(n, Ordering::SeqCst);
+            // A page that is done breaks a run of failures too.
+            c.in_a_row.store(0, Ordering::SeqCst);
             return Ok(());
         }
         let key = row.key()?;
@@ -535,8 +546,18 @@ pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
         None => rows,
     };
     if opts.order == Order::Priority {
-        // Stable: issue order within each group.
-        rows.sort_by_key(priority);
+        // By issue, so an issue's pages stay together and its item JSON is
+        // asked for once: each issue goes in its best page's group. Stable,
+        // so issue order holds within each group.
+        let mut best: std::collections::HashMap<(String, chrono::NaiveDate, u16), u8> =
+            std::collections::HashMap::new();
+        for r in &rows {
+            let e = best
+                .entry((r.lccn.clone(), r.date, r.edition))
+                .or_insert(u8::MAX);
+            *e = (*e).min(priority(r));
+        }
+        rows.sort_by_key(|r| best[&(r.lccn.clone(), r.date, r.edition)]);
     }
     if let Some(l) = opts.limit {
         rows.truncate(l);
@@ -650,7 +671,9 @@ pub async fn run(
             drop(permit);
         });
         // Collect what's finished as we go, so the set stays small.
-        while tasks.try_join_next().is_some() {}
+        while let Some(r) = tasks.try_join_next() {
+            r?;
+        }
     }
     while let Some(r) = tasks.join_next().await {
         r?;
@@ -829,6 +852,39 @@ mod tests {
         assert_eq!((n2(&s, "deu"), n2(&s, "eng"), n2(&s, "srp")), (1, 1, 0));
         // More than there are: everything.
         assert_eq!(sample(&rows, 500).len(), 100);
+    }
+
+    #[test]
+    fn fills_the_sample_when_small_strata_are_full() {
+        // One 100-row stratum and 100 one-row strata: 150 asked, 150 given.
+        let mut rows: Vec<ManifestRow> = (1..=100).map(|i| row("sn1", 1885, i, "deu")).collect();
+        for y in 0..100 {
+            rows.push(row("sn2", 1700 + y * 10, 1, "eng"));
+        }
+        assert_eq!(sample(&rows, 150).len(), 150);
+    }
+
+    #[test]
+    fn priority_order_keeps_an_issue_together() {
+        let mut rows = vec![
+            row("sn1", 1890, 1, "eng"),
+            row("sn1", 1890, 2, "deu"),
+            row("sn2", 1890, 1, "deu"),
+            row("sn3", 1890, 1, "ces"),
+        ];
+        prefetch::sort(&mut rows);
+        let picked = select(rows, &Options::default());
+        let ids: Vec<String> = picked.iter().map(|r| r.doc_id.clone()).collect();
+        // sn1's English page goes with its German one, in the German group.
+        assert_eq!(
+            ids,
+            [
+                "sn1_1890-05-03_ed-1_seq-1",
+                "sn1_1890-05-03_ed-1_seq-2",
+                "sn2_1890-05-03_ed-1_seq-1",
+                "sn3_1890-05-03_ed-1_seq-1"
+            ]
+        );
     }
 
     fn n2(s: &[ManifestRow], l: &str) -> usize {

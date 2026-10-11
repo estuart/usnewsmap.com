@@ -26,8 +26,10 @@
 //! `alto/` in that container, and its lifecycle rule removes the copy
 //! after 30 days; the curated store keeps the original.
 //!
-//! The list is written once: a full manifest that is already there is kept,
-//! and a partial one gets a new stamp. It logs counts, never text.
+//! The list is written once: a full manifest that is already there with
+//! the same rows is kept and its summary and copy are finished, one with
+//! other rows is refused, and a partial one gets a new stamp. It logs
+//! counts, never text.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -384,8 +386,18 @@ pub async fn run(
         )
         .await?
     {
-        bail!("{manifest_path} is already there: a full manifest is written once; delete it and its summary to build it again");
+        // Written once. The same rows again (a run that stopped before the
+        // summary or the copy) go on to finish those; other rows are refused.
+        let there = curated
+            .get(&manifest_path)
+            .await?
+            .with_context(|| format!("{manifest_path} vanished"))?;
+        if hex(&Sha256::digest(&there)) != summary.manifest_sha256 {
+            bail!("{manifest_path} is already there with other rows: a full manifest is written once; delete it and its summary to build it again");
+        }
+        tracing::info!(manifest = %manifest_path, "ocr prefetch manifest already there with the same rows");
     }
+    // A summary from an earlier run of the same rows is kept.
     curated
         .put_new(
             &format!("{folder}/summary.json"),
@@ -670,11 +682,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(summary, s);
-        // Written once.
-        assert!(
-            run(f.curated.as_ref(), f.reference.as_ref(), None, &opts(false))
+        // Written once: the same rows again finish what's missing (here the
+        // exchange copy) and keep the summary; other rows are refused.
+        run(
+            f.curated.as_ref(),
+            f.reference.as_ref(),
+            Some(f.exchange.as_ref()),
+            &opts(false),
+        )
+        .await
+        .unwrap();
+        assert!(f
+            .exchange
+            .exists("manifests/v1/manifest.parquet")
+            .await
+            .unwrap());
+        let again: Summary = serde_json::from_slice(
+            &f.curated
+                .get("audit/damage/v2/prefetch/v1/summary.json")
                 .await
-                .is_err()
-        );
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(again, s);
+        let o = Options {
+            min_damage: 0.45,
+            ..opts(false)
+        };
+        assert!(run(f.curated.as_ref(), f.reference.as_ref(), None, &o)
+            .await
+            .is_err());
     }
 }
