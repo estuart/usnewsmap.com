@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
+use usnm_core::ocr_variants;
 use usnm_core::params::Filters;
 use usnm_core::query::{wildcard_matches, Node, Term};
 use usnm_core::text::{fold, index_tokens, tokenize, Analyzer, MAX_TOKEN_CHARS, USNM_TEXT};
@@ -130,7 +131,7 @@ pub fn as_analyzed(query: &Node) -> Node {
         }
     };
     match query {
-        Node::Term(t) if !t.prefix && !t.wildcard && t.fuzzy == 0 => {
+        Node::Term(t) if t.is_exact() => {
             let w = words(&t.text);
             if w.len() == 1 && w[0] == t.text {
                 query.clone()
@@ -145,6 +146,10 @@ pub fn as_analyzed(query: &Node) -> Node {
         },
         Node::And(c) => Node::And(c.iter().map(as_analyzed).collect()),
         Node::Or(c) => Node::Or(c.iter().map(as_analyzed).collect()),
+        Node::AtLeast { min, of } => Node::AtLeast {
+            min: *min,
+            of: of.iter().map(as_analyzed).collect(),
+        },
         Node::Not(n) => Node::Not(Box::new(as_analyzed(n))),
     }
 }
@@ -484,6 +489,11 @@ pub fn eval_scored<T: Position>(node: &Node, texts: &[&[T]], scoring: Scoring) -
             .any(|tokens| phrase_count(terms, *slop, tokens, scoring) > 0),
         Node::And(c) => c.iter().all(|n| eval_scored(n, texts, scoring)),
         Node::Or(c) => c.iter().any(|n| eval_scored(n, texts, scoring)),
+        // Each item may match in a different text, as in the engine's
+        // `OR` of `AND`s (`quickwit::render`).
+        Node::AtLeast { min, of } => {
+            of.iter().filter(|n| eval_scored(n, texts, scoring)).count() >= usize::from(*min)
+        }
         Node::Not(n) => !eval_scored(n, texts, scoring),
     }
 }
@@ -504,6 +514,8 @@ pub(crate) fn term_matches(t: &Term, token: &str) -> bool {
         token.starts_with(&t.text)
     } else if t.wildcard {
         wildcard_matches(&t.text, token)
+    } else if t.ocr {
+        ocr_variants::is_variant(&t.text, token)
     } else if t.fuzzy > 0 {
         levenshtein_within(&t.text, token, usize::from(t.fuzzy))
     } else {
@@ -587,7 +599,9 @@ fn mentions<T: Position>(node: &Node, tokens: &[T]) -> usize {
     match node {
         Node::Term(t) => tokens.iter().filter(|tok| term_at(t, *tok)).count(),
         Node::Phrase { terms, slop } => phrase_count(terms, *slop, tokens, Scoring::On) as usize,
-        Node::And(c) | Node::Or(c) => c.iter().map(|n| mentions(n, tokens)).sum(),
+        Node::And(c) | Node::Or(c) | Node::AtLeast { of: c, .. } => {
+            c.iter().map(|n| mentions(n, tokens)).sum()
+        }
         Node::Not(_) => 0,
     }
 }
@@ -619,6 +633,27 @@ mod tests {
         assert!(eval(&parse("manki*d").unwrap(), &t));
         assert!(!eval(&parse("manki??d").unwrap(), &t));
         assert!(!eval(&parse("cross*ld").unwrap(), &t));
+        // A word's OCR spellings, one misreading away (#124).
+        let ocr = toks("Tlie Presldent spoke of goid");
+        assert!(eval(
+            &parse("the~ocr president~ocr gold~ocr").unwrap(),
+            &ocr
+        ));
+        assert!(!eval(&parse("the").unwrap(), &ocr));
+        assert!(!eval(&parse("spake~ocr").unwrap(), &ocr));
+        // At least N of the items, each matched as usual.
+        let q = |s: &str| eval(&parse(s).unwrap(), &t);
+        assert!(q("2 OF (silver gold bryan)"));
+        assert!(q(r#"3 OF (silver "cross of gold" bryan cruci*)"#));
+        assert!(!q("3 OF (silver gold bryan coin)"));
+        assert!(q("mankind -3 OF (silver gold bryan coin)"));
+        assert_eq!(mentions(&parse("2 OF (gold bryan silver)").unwrap(), &t), 2);
+        // In two texts, items may match in different ones, as in the engine.
+        let (a, b) = (toks("gold"), toks("silver"));
+        assert!(eval_texts(
+            &parse("2 OF (gold silver bryan)").unwrap(),
+            &[&a, &b]
+        ));
     }
 
     /// NEAR searches as Quickwit 0.9.1's phrase scorer runs them (#243, 05

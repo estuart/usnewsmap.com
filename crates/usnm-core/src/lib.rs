@@ -9,6 +9,7 @@
 //! - `damage` (feature `damage`): the OCR damage metric, version 2 (12 §12.5, #296)
 //! - [`decade`]: decade partitions, so date-limited searches skip splits (05 §5.5.5, #123)
 //! - [`ja`]: Japanese tokens and folding for our own OCR (04 §4.8, #139)
+//! - [`ocr_variants`]: the spellings OCR commonly gives a word, for `word~ocr` (06 §6.4, #124)
 //! - [`lang`]: MARC, ISO 639-3 and word-list language codes; with feature `damage`, the word lists (12 §12.5, #296)
 //! - [`query`]: the user query language and its limits (06 §6.4)
 //! - [`query_language`]: the language of a query's words, for its baseline (06 §6.3.3, #237)
@@ -29,6 +30,7 @@ pub mod ids;
 pub mod ja;
 pub mod lang;
 pub mod names;
+pub mod ocr_variants;
 pub mod page_language;
 pub mod params;
 pub mod query;

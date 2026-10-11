@@ -571,9 +571,10 @@ pub fn ja_snippets(printed: &str, query: &Node, analyzer: Analyzer) -> Vec<Strin
     let mut stack = vec![query];
     while let Some(node) = stack.pop() {
         match node {
-            // Prefix, wildcard (a Latin word in a Japanese query) and fuzzy
-            // (memory backend only) terms: mark each printed word they match.
-            Node::Term(t) if t.prefix || t.wildcard || t.fuzzy > 0 => {
+            // Prefix, wildcard and `~ocr` (a Latin word in a Japanese query)
+            // and fuzzy (memory backend only) terms: mark each printed word
+            // they match.
+            Node::Term(t) if !t.is_exact() => {
                 for tok in tokens.iter().filter(|tok| memory::term_matches(t, tok)) {
                     phrases.push(vec![tok.clone()]);
                 }
@@ -581,7 +582,7 @@ pub fn ja_snippets(printed: &str, query: &Node, analyzer: Analyzer) -> Vec<Strin
             Node::Term(t) => phrases.push(vec![t.text.clone()]),
             Node::Phrase { terms, slop: 0 } => phrases.push(terms.clone()),
             Node::Phrase { terms, .. } => phrases.extend(terms.iter().map(|t| vec![t.clone()])),
-            Node::And(c) | Node::Or(c) => stack.extend(c),
+            Node::And(c) | Node::Or(c) | Node::AtLeast { of: c, .. } => stack.extend(c),
             Node::Not(_) => {}
         }
     }

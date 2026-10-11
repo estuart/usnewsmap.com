@@ -591,7 +591,7 @@ pub(crate) fn uses_fuzzy(node: &usnm_core::query::Node) -> bool {
     match node {
         Node::Term(t) => t.fuzzy > 0,
         Node::Phrase { .. } => false,
-        Node::And(c) | Node::Or(c) => c.iter().any(uses_fuzzy),
+        Node::And(c) | Node::Or(c) | Node::AtLeast { of: c, .. } => c.iter().any(uses_fuzzy),
         Node::Not(n) => uses_fuzzy(n),
     }
 }

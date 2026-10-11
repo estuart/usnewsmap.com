@@ -291,6 +291,17 @@ enum Command {
     /// Rebuild `catalog/titles.json` and `places.json` from the cached records
     /// and `overrides/places.json` (no network).
     Geocode,
+    /// Save titles-sync's record cache and the catalog to the raw store
+    /// (`USNM_RAW_URL`) as `titles/{time}.json`, unless the newest copy
+    /// there is the same (docs/operations.md, "Dev environment lifecycle").
+    /// titles-sync does this itself after each run; this is for doing it by
+    /// hand, e.g. before a teardown.
+    TitlesArchive,
+    /// Start a new environment's record cache and catalog from the newest
+    /// copy in the raw store (`USNM_RAW_URL`), so it needs no fresh
+    /// titles-sync. Writes nothing if the environment has a record cache
+    /// already; never replaces a file.
+    TitlesSeed,
     /// Copy retained archives and kept batch lists between raw stores, e.g.
     /// from this environment's own `raw` container into the archival
     /// account (docs/operations.md, "Archival storage"). Each archive is
@@ -634,7 +645,26 @@ async fn titles_sync(
     .await?;
     tracing::info!(?report, "title records");
     geocode(reference.as_ref()).await?;
+    // Keep what the sync has outside the environment (#275). A failed copy
+    // doesn't fail the sync: the next run tries again.
+    if let Some(raw) = &cli.raw {
+        if let Err(e) = titles_archive(reference.as_ref(), raw).await {
+            tracing::warn!(error = %format!("{e:#}"), "the title records weren't copied to the raw store");
+        }
+    }
     Ok(report)
+}
+
+/// Copy the record cache and catalog to the raw store (`titles/{time}.json`).
+async fn titles_archive(reference: &dyn usnm_store::ObjectStore, raw: &str) -> anyhow::Result<()> {
+    let saved = usnm_ingest::titles_archive::save(
+        reference,
+        usnm_store::open(raw)?.as_ref(),
+        chrono::Utc::now(),
+    )
+    .await?;
+    tracing::info!(?saved, "title records in the raw store");
+    Ok(())
 }
 
 /// What titles-sync left undone, if anything: it stopped early, or some
@@ -978,6 +1008,8 @@ impl Command {
             Command::Release { .. } => "release",
             Command::TitlesSync { .. } => "titles-sync",
             Command::Geocode => "geocode",
+            Command::TitlesArchive => "titles-archive",
+            Command::TitlesSeed => "titles-seed",
             Command::Duplicates => "duplicates",
             Command::ArchiveCopy { .. } => "archive-copy",
             Command::Prune { .. } => "prune",
@@ -1008,6 +1040,8 @@ fn first_step(command: &Command) -> Option<Step> {
         Command::Enqueue { .. }
         | Command::Curate { .. }
         | Command::Geocode
+        | Command::TitlesArchive
+        | Command::TitlesSeed
         | Command::Duplicates
         | Command::ArchiveCopy { .. }
         | Command::Prune { .. }
@@ -1116,6 +1150,39 @@ async fn command(
         Command::Geocode => geocode(usnm_store::open(&cli.stores.reference)?.as_ref())
             .await
             .map(|()| None),
+        Command::TitlesArchive => {
+            let raw = cli
+                .stores
+                .raw
+                .as_deref()
+                .context("titles-archive needs USNM_RAW_URL")?;
+            titles_archive(usnm_store::open(&cli.stores.reference)?.as_ref(), raw)
+                .await
+                .map(|()| None)
+        }
+        Command::TitlesSeed => {
+            let raw = cli
+                .stores
+                .raw
+                .as_deref()
+                .context("titles-seed needs USNM_RAW_URL")?;
+            let seeded = usnm_ingest::titles_archive::seed(
+                usnm_store::open(raw)?.as_ref(),
+                usnm_store::open(&cli.stores.reference)?.as_ref(),
+            )
+            .await?;
+            match (&seeded.from, seeded.written.is_empty()) {
+                (None, _) => tracing::warn!(
+                    "no title records in the raw store to start from; run titles-sync"
+                ),
+                (Some(_), true) => tracing::info!(
+                    ?seeded,
+                    "this environment has its own title records; left as they are"
+                ),
+                (Some(_), false) => tracing::info!(?seeded, "title records seeded"),
+            }
+            Ok(None)
+        }
         Command::ArchiveCopy { from, to, batches } => {
             let copied = usnm_ingest::raw::copy(
                 usnm_store::open(from)?.as_ref(),

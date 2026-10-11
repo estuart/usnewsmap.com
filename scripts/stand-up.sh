@@ -5,7 +5,9 @@
 # so no push to main rolls it. It provisions the environment, builds the
 # checkout's images in its registry with ACR Tasks (az acr build), points
 # the environment at them (USNM_IMAGE_TAG exp-<commit>, USNM_USE_ACR true)
-# and provisions again. scripts/teardown.sh takes it down afterwards.
+# and provisions again. With the archival account and the ingest job, it
+# then starts the title records and catalog from the account's newest copy
+# (scripts/titles-seed.sh). scripts/teardown.sh takes it down afterwards.
 #
 #   scripts/stand-up.sh --env dev --experiment 275 [--archive]
 #
@@ -160,6 +162,18 @@ if [ "$ARCHIVE" = true ]; then
   aset USNM_ARCHIVE_ACCOUNT "$archive"
 fi
 provision
+
+# The title records and catalog from the archival account's newest copy, so
+# a release here needs no titles-sync paced against LoC. Never replaces a
+# cache the environment has.
+if [ -n "$(aget USNM_ARCHIVE_ACCOUNT)" ]; then
+  step "Title records from the archival account"
+  if [ -z "$(aget INGEST_JOB)" ]; then
+    echo "no ingest job (USNM_INGEST_JOBS is off): not seeded. With the job on, run scripts/titles-seed.sh --env $ENV_NAME"
+  elif ! scripts/titles-seed.sh --env "$ENV_NAME"; then
+    echo "warning: the title records weren't seeded; $ENV_NAME is up without them. Again: scripts/titles-seed.sh --env $ENV_NAME" >&2
+  fi
+fi
 
 step "Done"
 echo "$ENV_NAME runs $TAG for experiment #$EXPERIMENT. API: $(aget API_URL)"

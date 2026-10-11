@@ -1,0 +1,23 @@
+// Title records kept in the raw store, outside the environment (#275):
+// each titles-sync's copy to `titles/{time}.json` (or that the newest copy
+// was the same), and what titles-seed wrote into a new environment from the
+// newest copy, or that the environment kept its own. Lines that could carry
+// the managed identity endpoint's secret are dropped.
+ContainerAppConsoleLogs
+| where ContainerName == "ingest"
+| where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+| where Log has "title records"
+| extend j = parse_json(Log)
+| extend Message = tostring(j.fields.message)
+| where Message in (
+    "title records in the raw store",
+    "the title records weren't copied to the raw store",
+    "title records seeded",
+    "this environment has its own title records; left as they are",
+    "no title records in the raw store to start from; run titles-sync")
+| project
+    TimeGenerated,
+    Execution = extract(@"^(.+)-[a-z0-9]+$", 1, ContainerGroupName),
+    Message,
+    Detail = coalesce(tostring(j.fields.saved), tostring(j.fields.seeded), tostring(j.fields.error))
+| order by TimeGenerated desc
