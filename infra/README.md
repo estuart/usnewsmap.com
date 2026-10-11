@@ -55,7 +55,7 @@ One command stands up an environment in any subscription or tenant, wires this r
 ```sh
 az login [--tenant TENANT]                 # and select the subscription, or pass --subscription
 gh auth login
-scripts/bootstrap.sh prod --alert-email you@example.org --domain usnewsmap.com --ingest
+scripts/bootstrap.sh --env prod --alert-email you@example.org --domain usnewsmap.com --ingest
 ```
 
 Prerequisites: `az` (2.61 or later), `gh` and `curl`; **Owner** on the subscription (the deployment creates role assignments and policy definitions); admin on the GitHub repository (it creates the GitHub Environment and its variables). No tenant-level objects are created.
@@ -76,14 +76,14 @@ Options: `--subscription`, `--location` (default `eastus2`), `--repo` (default: 
 Check the result:
 
 ```sh
-curl "$(scripts/settings.sh prod API_URL)/v1/meta"   # "synthetic": true until the corpus is loaded
-curl "$(scripts/settings.sh prod API_URL)/readyz"
-curl "$(scripts/settings.sh prod API_URL)/v1/status"  # "pipeline": {"available": true, …} once the Cosmos role has propagated
+curl "$(scripts/settings.sh --env prod --key API_URL)/v1/meta"   # "synthetic": true until the corpus is loaded
+curl "$(scripts/settings.sh --env prod --key API_URL)/readyz"
+curl "$(scripts/settings.sh --env prod --key API_URL)/v1/status"  # "pipeline": {"available": true, …} once the Cosmos role has propagated
 ```
 
 After that, every green `ci` run on `main` publishes the images to each listed environment and rolls its API app, which carries the site, onto the commit. The rollout also applies the Quickwit searcher's config, `infra/quickwit/searcher.yaml`, when the running one differs (`scripts/ci/roll-api.sh`), so a change to that file goes live on merge.
 
-**Other stack changes are not deployed by a merge.** CI's identity can only roll the app ([Container registry](#container-registry)), so a change to the Bicep (resources, settings, scale rules, alerts, workbooks) waits until someone with Owner runs `scripts/provision.sh <env>` from an up-to-date `main`. The index configs in `infra/quickwit/` (`pages-index.yaml`, `pages-ja-index.yaml`) are not stack changes: they are compiled into the ingest image, which every merge publishes. CI says so on the run: the `stack change needs a provision` job adds a warning and the commands to the run's summary. To pin a specific build instead, run `scripts/settings.sh prod USNM_IMAGE_TAG <commit sha>` (default `main`) and `scripts/provision.sh prod`.
+**Other stack changes are not deployed by a merge.** CI's identity can only roll the app ([Container registry](#container-registry)), so a change to the Bicep (resources, settings, scale rules, alerts, workbooks) waits until someone with Owner runs `scripts/provision.sh --env <env>` from an up-to-date `main`. The index configs in `infra/quickwit/` (`pages-index.yaml`, `pages-ja-index.yaml`) are not stack changes: they are compiled into the ingest image, which every merge publishes. CI says so on the run: the `stack change needs a provision` job adds a warning and the commands to the run's summary. To pin a specific build instead, run `scripts/settings.sh --env prod --key USNM_IMAGE_TAG --value <commit sha>` (default `main`) and `scripts/provision.sh --env prod`.
 
 | Parameter                     | Setting                                    | Default                                                                                                                                                                                                                                                                                                                                                                                              |
 | ----------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -119,9 +119,9 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 An environment's settings are `KEY="value"` lines in `.azure/<env>/.env`, which is git-ignored. It uses the layout azd used, so environments created with azd carry over. `infra/main.bicepparam` reads the settings from the environment (bootstrap exports those with a value; the rest take the defaults above), and the template's outputs (`API_URL`, `ACR_NAME`, …) are written back after each deployment.
 
 ```sh
-scripts/settings.sh prod                      # show all
-scripts/settings.sh prod USNM_SEARCH_BACKEND quickwit
-scripts/provision.sh prod                     # deploy the stack with the new settings
+scripts/settings.sh --env prod                      # show all
+scripts/settings.sh --env prod --key USNM_SEARCH_BACKEND --value quickwit
+scripts/provision.sh --env prod                     # deploy the stack with the new settings
 ```
 
 Everything is one **deployment stack** at subscription scope, `usnm-<env>` ([ADR-0011](../docs/design/adr/0011-deployment-stacks.md)):
@@ -130,7 +130,7 @@ Everything is one **deployment stack** at subscription scope, `usnm-<env>` ([ADR
 - **Nothing the stack manages can be deleted outside it.** `--deny-settings-mode denyDelete` puts a deny assignment on every managed resource, the resource groups included, that blocks deletes by anyone, Owners too. Changes still go through the stack. To delete by hand in an emergency, deploy once with `--deny-settings-mode none`.
 - Resources the template doesn't declare (the certificates bootstrap binds, anything made in the portal) aren't managed: the stack neither protects nor deletes them.
 - The guard-rail policy definitions every environment in the subscription assigns (`infra/guardrails.bicep`) are a stack of their own, `usnm-guardrails`, deployed just before the environment's. The archival account's group assigns them too, and `scripts/archive-store.sh deploy` deploys the stack the same way. Two stacks never manage the same resource.
-- `scripts/teardown.sh <env>` deletes an environment: its resource groups, its custom role, the guard-rail stack (`usnm-guardrails`, the policy definitions) when no other environment in the subscription, and not the archival account, uses it, and its GitHub Environment. It asks for the name first, and works in the environment's recorded subscription. `--subscription OLD` removes only the Azure copy left in an old subscription after a move.
+- `scripts/teardown.sh --env <env>` deletes an environment: its resource groups, its custom role, the guard-rail stack (`usnm-guardrails`, the policy definitions) when no other environment in the subscription, and not the archival account, uses it, and its GitHub Environment. It asks for the name first, and works in the environment's recorded subscription. `--subscription OLD` removes only the Azure copy left in an old subscription after a move.
 
 ## Web app
 
@@ -141,8 +141,8 @@ The API app serves the site ([ADR-0010](../docs/design/adr/0010-site-served-by-t
 The zone for the site's domain lives in Azure DNS (~$0.50/month):
 
 ```sh
-scripts/bootstrap.sh prod --domain usnewsmap.com
-scripts/settings.sh prod NAME_SERVERS   # set these four as the domain's name servers at the registrar
+scripts/bootstrap.sh --env prod --domain usnewsmap.com
+scripts/settings.sh --env prod --key NAME_SERVERS   # set these four as the domain's name servers at the registrar
 ```
 
 The zone holds:

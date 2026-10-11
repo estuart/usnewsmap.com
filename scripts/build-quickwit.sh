@@ -4,7 +4,7 @@
 # environment in infra/quickwit-image.json, where infra/main.bicep (the
 # searcher sidecar, the ingest job's init container) and CI's publish (the
 # ingest image's base) read it. Commit that change; after it merges and
-# publish has run, `scripts/provision.sh <env>` moves the sidecar.
+# publish has run, `scripts/provision.sh --env <env>` moves the sidecar.
 #
 #   scripts/build-quickwit.sh --env prod
 #   scripts/build-quickwit.sh --env dev --from prod
@@ -51,7 +51,7 @@ registry_of() (
   . scripts/lib/env.sh
   [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"
   acr=$(aget ACR_NAME) sub=$(aget AZURE_SUBSCRIPTION_ID)
-  [ -n "$acr" ] && [ -n "$sub" ] || die "$ENV_NAME has no ACR_NAME or AZURE_SUBSCRIPTION_ID; run scripts/provision.sh $ENV_NAME"
+  [ -n "$acr" ] && [ -n "$sub" ] || die "$ENV_NAME has no ACR_NAME or AZURE_SUBSCRIPTION_ID; run scripts/provision.sh --env $ENV_NAME"
   printf '%s %s\n' "$acr" "$sub"
 )
 reg=$(registry_of "$TARGET")
@@ -67,7 +67,7 @@ record() {
     '.environments[$env] = {digest: $digest, image: $image, tag: $tag}' "$PINS" > "$tmp"
   mv "$tmp" "$PINS"
   echo "recorded $TARGET: $1:$2@$3 in $PINS"
-  echo "next: commit $PINS, merge, let CI publish, then scripts/provision.sh $TARGET"
+  echo "next: commit $PINS, merge, let CI publish, then scripts/provision.sh --env $TARGET"
 }
 
 if [ -n "$FROM_ENV" ]; then

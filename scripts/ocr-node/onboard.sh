@@ -90,7 +90,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 # shellcheck source=scripts/lib/env.sh
 . scripts/lib/env.sh
-[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh $ENV_NAME first"
+[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh --env $ENV_NAME first"
 
 SUBSCRIPTION=$(aget AZURE_SUBSCRIPTION_ID)
 TENANT=$(aget AZURE_TENANT_ID)
@@ -107,17 +107,17 @@ DCR_ID=$(aget OCR_NODE_DCR_ID)
 # The nodes' Key Vault, for a RHEL node's Red Hat registration.
 KEYVAULT=$(aget OCR_KEYVAULT)
 [ -n "$SUBSCRIPTION" ] && [ -n "$TENANT" ] && [ -n "$GROUP" ] ||
-  die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/provision.sh $ENV_NAME"
+  die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/provision.sh --env $ENV_NAME"
 [ "$NODES" = true ] ||
-  die "USNM_OCR_NODES isn't true for $ENV_NAME: scripts/settings.sh $ENV_NAME USNM_OCR_NODES true, then scripts/provision.sh $ENV_NAME"
+  die "USNM_OCR_NODES isn't true for $ENV_NAME: scripts/settings.sh --env $ENV_NAME --key USNM_OCR_NODES --value true, then scripts/provision.sh --env $ENV_NAME"
 [ -n "$EXCHANGE" ] ||
-  die "no OCR_EXCHANGE_ACCOUNT for $ENV_NAME yet: run scripts/provision.sh $ENV_NAME first"
+  die "no OCR_EXCHANGE_ACCOUNT for $ENV_NAME yet: run scripts/provision.sh --env $ENV_NAME first"
 [ -n "$NODE_GROUP" ] ||
-  die "no USNM_OCR_NODE_GROUP for $ENV_NAME: scripts/ocr-node/group.sh --env $ENV_NAME, then scripts/provision.sh $ENV_NAME"
+  die "no USNM_OCR_NODE_GROUP for $ENV_NAME: scripts/ocr-node/group.sh --env $ENV_NAME, then scripts/provision.sh --env $ENV_NAME"
 [ -n "$DCR_ID" ] ||
-  die "no OCR_NODE_DCR_ID for $ENV_NAME (the nodes' data collection rule): run scripts/provision.sh $ENV_NAME first"
+  die "no OCR_NODE_DCR_ID for $ENV_NAME (the nodes' data collection rule): run scripts/provision.sh --env $ENV_NAME first"
 [ -n "$CONN" ] ||
-  echo "warning: OCR_NODE_APPINSIGHTS (the nodes' Application Insights) is empty, so the worker will send no telemetry; run scripts/provision.sh $ENV_NAME"
+  echo "warning: OCR_NODE_APPINSIGHTS (the nodes' Application Insights) is empty, so the worker will send no telemetry; run scripts/provision.sh --env $ENV_NAME"
 [ -n "$NODE_IPS" ] ||
   echo "warning: USNM_OCR_NODE_IPS is empty, so the exchange account's firewall lets no node in; set it to the node's public IP and provision"
 
@@ -310,7 +310,7 @@ RH_ORG="" RH_KEY=""
 RH_SECRETS="rhel-org-id rhel-activation-key"
 read_rh_secrets() {
   [ -n "$KEYVAULT" ] ||
-    die "$HOST runs RHEL and isn't registered with Red Hat, and there's no OCR_KEYVAULT for $ENV_NAME: run scripts/provision.sh $ENV_NAME, then set the secrets (docs/operations.md)"
+    die "$HOST runs RHEL and isn't registered with Red Hat, and there's no OCR_KEYVAULT for $ENV_NAME: run scripts/provision.sh --env $ENV_NAME, then set the secrets (docs/operations.md)"
   local why="(you need Key Vault Secrets Officer, from USNM_OCR_KEYVAULT_ADMINS, and to be at an address in USNM_OCR_NODE_IPS)"
   RH_ORG=$(az keyvault secret show --vault-name "$KEYVAULT" --name rhel-org-id --query value -o tsv) ||
     die "can't read rhel-org-id from $KEYVAULT $why"
@@ -321,7 +321,7 @@ read_rh_secrets() {
 }
 if [ "$DRY_RUN" = true ]; then
   if [ -z "$KEYVAULT" ]; then
-    echo "warning: no OCR_KEYVAULT, so a RHEL node that isn't registered with Red Hat can't be onboarded; run scripts/provision.sh $ENV_NAME"
+    echo "warning: no OCR_KEYVAULT, so a RHEL node that isn't registered with Red Hat can't be onboarded; run scripts/provision.sh --env $ENV_NAME"
   elif names=$(az keyvault secret list --vault-name "$KEYVAULT" --query '[].name' -o tsv 2> /dev/null); then
     for n in $RH_SECRETS; do
       if grep -qx "$n" <<< "$names"; then
@@ -661,6 +661,6 @@ echo "$NAME has the node roles on $EXCHANGE through $NODE_GROUP_NAME; no provisi
 echo "A token the node fetched for storage before it joined the group lacks the membership"
 echo "until it expires (up to about 24 hours for a managed identity; ADR-0015)."
 echo "Its heartbeat and counters reach the nodes' workspace within about 10 minutes:"
-echo "  scripts/logs.sh $ENV_NAME ocr-node-health"
+echo "  scripts/logs.sh --env $ENV_NAME --query-name ocr-node-health"
 echo "The worker starts once its binary is installed on the node, as root:"
 echo "  install -m 0755 usnm-ocr-worker /usr/local/bin/ && systemctl enable --now usnm-ocr-worker"

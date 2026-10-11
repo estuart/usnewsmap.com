@@ -6,12 +6,13 @@ workspace through the module's placeholder (which provisioning replaces with
 the environment's workspace) and holds no workspace resource id of its own
 (left over from copying the JSON out of the portal).
 
-    scripts/ci/check-workbooks.py [module]    (default: infra/modules/workbooks.bicep)
+    scripts/ci/check-workbooks.py [--module FILE]    (default: infra/modules/workbooks.bicep)
 
 Reads the placeholder and the file names from the module, so they can't
 drift from it. Standard library only. Exits 1 listing every problem.
 """
 
+import argparse
 import json
 import re
 import sys
@@ -51,7 +52,18 @@ def problems(path: Path, placeholder: str) -> list[str]:
 
 
 def main() -> int:
-    module = Path(sys.argv[1]) if len(sys.argv) > 1 else MODULE
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--module", type=Path, help="the Bicep module (default infra/modules/workbooks.bicep)")
+    # The positional form (`check-workbooks.py FILE`) works for one release,
+    # with a warning (#277).
+    ap.add_argument("legacy_module", nargs="?", type=Path, help=argparse.SUPPRESS)
+    a = ap.parse_args()
+    if a.legacy_module is not None:
+        if a.module is not None:
+            ap.error("give the module once, as --module")
+        print("warning: a positional module is deprecated; use --module (#277)", file=sys.stderr)
+        a.module = a.legacy_module
+    module = a.module or MODULE
     placeholder, files = module_parts(module.read_text(encoding="utf-8"))
     if placeholder is None or not files:
         print(f"{module}: no `var placeholder` or no loadTextContent: update this check", file=sys.stderr)

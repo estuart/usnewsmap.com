@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Reconstruct the build records of index versions released before #161.
 
-    scripts/reconstruct-index-history.py prod --merge ops/index-history.json > /tmp/h.json \
-      && scripts/check-index-history.py /tmp/h.json && mv /tmp/h.json ops/index-history.json
+    scripts/reconstruct-index-history.py --env prod --merge ops/index-history.json > /tmp/h.json \
+      && scripts/check-index-history.py --path /tmp/h.json && mv /tmp/h.json ops/index-history.json
 
 (scripts/check-index-history.py checks the output against
 ops/index-history.schema.json, as CI checks the committed file.)
@@ -48,7 +48,7 @@ NOTE = ("Reconstructed: the commit is the last usnewsmap-ingest image pushed bef
 
 
 def setting(env: str, key: str) -> str:
-    return subprocess.run([str(ROOT / "scripts/settings.sh"), env, key], capture_output=True,
+    return subprocess.run([str(ROOT / "scripts/settings.sh"), "--env", env, "--key", key], capture_output=True,
                           text=True, check=True).stdout.strip()
 
 
@@ -88,7 +88,7 @@ def sort_keys(o):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("env", nargs="?", default="prod")
+    ap.add_argument("--env", help="the environment (default prod)")
     ap.add_argument("--site", default="https://usnewsmap.com")
     # Without these, from scripts/settings.sh (which reads .azure/<env>/.env).
     ap.add_argument("--from-status", action="store_true")
@@ -96,7 +96,16 @@ def main() -> None:
     ap.add_argument("--resource-group")
     ap.add_argument("--job")
     ap.add_argument("--acr")
+    # The positional form (`reconstruct-index-history.py ENV`) works for one
+    # release, with a warning (#277).
+    ap.add_argument("legacy_env", nargs="?", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.legacy_env is not None:
+        if a.env is not None:
+            ap.error("give the environment once, as --env")
+        print("warning: a positional environment is deprecated; use --env (#277)", file=sys.stderr)
+        a.env = a.legacy_env
+    a.env = a.env or "prod"
     rg = a.resource_group or setting(a.env, "AZURE_RESOURCE_GROUP")
     job = a.job or setting(a.env, "INGEST_JOB")
     acr = a.acr or setting(a.env, "ACR_NAME")

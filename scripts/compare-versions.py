@@ -2,8 +2,8 @@
 """Capture what a fixed set of searches returns on the live index version,
 and compare two captures (#161).
 
-    scripts/compare-versions.py capture [base-url] > ops/version-snapshots/<version>.json
-    scripts/compare-versions.py diff A.json B.json
+    scripts/compare-versions.py capture [--base-url URL] > ops/version-snapshots/<version>.json
+    scripts/compare-versions.py diff --before A.json --after B.json
 
 A capture's format is ops/version-snapshots/schema.json; CI checks committed
 captures against it (scripts/check-version-snapshots.py).
@@ -184,16 +184,32 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("capture")
-    c.add_argument("base", nargs="?", default="https://usnewsmap.com")
+    c.add_argument("--base-url", help="the site to capture (default https://usnewsmap.com)")
     d = sub.add_parser("diff")
-    d.add_argument("a")
-    d.add_argument("b")
+    d.add_argument("--before", help="the earlier capture")
+    d.add_argument("--after", help="the later capture")
     d.add_argument("--threshold", type=float, default=1.0)
+    # The positional forms (`capture URL`, `diff A B`) work for one release,
+    # with a warning (#277).
+    c.add_argument("legacy", nargs="?", help=argparse.SUPPRESS)
+    d.add_argument("legacy", nargs="*", help=argparse.SUPPRESS)
     a = ap.parse_args()
     if a.cmd == "capture":
-        capture(a.base.rstrip("/"))
-    else:
-        diff(a.a, a.b, a.threshold)
+        if a.legacy is not None:
+            if a.base_url is not None:
+                c.error("give the base URL once, as --base-url")
+            print("warning: a positional base URL is deprecated; use --base-url (#277)", file=sys.stderr)
+            a.base_url = a.legacy
+        capture((a.base_url or "https://usnewsmap.com").rstrip("/"))
+        return
+    if a.legacy:
+        if len(a.legacy) != 2 or a.before is not None or a.after is not None:
+            d.error("name the captures as --before A --after B")
+        print("warning: `diff A B` is deprecated; use --before A --after B (#277)", file=sys.stderr)
+        a.before, a.after = a.legacy
+    if a.before is None or a.after is None:
+        d.error("--before and --after are required")
+    diff(a.before, a.after, a.threshold)
 
 
 if __name__ == "__main__":

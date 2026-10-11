@@ -3,8 +3,8 @@
 # top queries, searches per day, the searches that found nothing, and the
 # share of searches by date span and by decade partitions touched (#123).
 #
-#   scripts/searches.sh prod          # the last 30 days
-#   scripts/searches.sh prod 7        # the last 7 days
+#   scripts/searches.sh --env prod             # the last 30 days
+#   scripts/searches.sh --env prod --days 7    # the last 7 days
 #
 # Reads with the operator's Entra sign-in (az storage ... --auth-mode login,
 # ADR-0009), which needs Storage Blob Data Reader on the container: add your
@@ -12,9 +12,23 @@
 # connections only through its private endpoint, so run this from a network
 # that reaches it. The raw queries stay on this machine and are deleted at exit.
 set -euo pipefail
-[ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '2,13s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-ENV_NAME=$1
-DAYS=${2:-30}
+usage() { sed -n '2,13s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+# The positional form (`searches.sh prod [DAYS]`) works for one release,
+# with a warning (#277).
+if [ $# -ge 1 ] && [ $# -le 2 ] && [[ $1 != -* ]]; then
+  echo "warning: \`scripts/searches.sh ENV [DAYS]\` is deprecated; use --env and --days (#277)" >&2
+  set -- --env "$1" --days "${2:-30}"
+fi
+ENV_NAME="" DAYS=30
+while [ $# -gt 0 ]; do
+  case $1 in
+    --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
+    --days) [ $# -ge 2 ] || usage; DAYS=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
+[ -n "$ENV_NAME" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 . scripts/lib/env.sh
@@ -24,7 +38,7 @@ command -v jq > /dev/null || die "jq is needed to summarize the records"
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"
 account=$(aget STORAGE_ACCOUNT)
 [ -n "$account" ] ||
-  die "STORAGE_ACCOUNT isn't set for $ENV_NAME; run scripts/provision.sh $ENV_NAME to save the stack outputs"
+  die "STORAGE_ACCOUNT isn't set for $ENV_NAME; run scripts/provision.sh --env $ENV_NAME to save the stack outputs"
 
 # The first day to include, UTC (GNU date, then BSD date).
 since=$(date -u -d "-$((DAYS - 1)) days" +%F 2> /dev/null || date -u -v "-$((DAYS - 1))d" +%F)

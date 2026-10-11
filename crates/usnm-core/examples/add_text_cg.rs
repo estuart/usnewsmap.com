@@ -3,13 +3,33 @@
 //! `text_as_cg` for those with American Stories' `text_as` (05 §5.5.4).
 //! scripts/quickwit-fixtures.sh loads the fixture indexes through it.
 //!
-//! `add_text_cg [VERSION]`: the pairs at `common_grams` version `VERSION`,
-//! by default the latest (`usnm_core::common_grams::VERSION`).
+//! `add_text_cg [--common-grams-version N]`: the pairs at `common_grams`
+//! version `N`, by default the latest (`usnm_core::common_grams::VERSION`).
 
 use std::io::{self, BufRead, Write};
 
 fn main() -> io::Result<()> {
-    let version = match std::env::args().nth(1) {
+    let usage = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: add_text_cg [--common-grams-version N]",
+        )
+    };
+    let mut args = std::env::args().skip(1).peekable();
+    // The positional form (`add_text_cg N`) works for one release, with a
+    // warning (#277).
+    let mut version = None;
+    if let Some(v) = args.next_if(|a| !a.starts_with('-')) {
+        eprintln!("warning: `add_text_cg N` is deprecated; use --common-grams-version N (#277)");
+        version = Some(v);
+    }
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--common-grams-version" => version = Some(args.next().ok_or_else(usage)?),
+            _ => return Err(usage()),
+        }
+    }
+    let version = match version {
         Some(v) => v
             .parse()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("{v}: {e}")))?,

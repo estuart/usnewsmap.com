@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the OCR engines on the sampled pages (#128).
 
-    scripts/ja-ocr/run.py SAMPLE_DIR --engine ndlocr-lite --ndlocr ~/code/ndlocr-lite
-    scripts/ja-ocr/run.py SAMPLE_DIR --engine tesseract --tessdata SAMPLE_DIR/tessdata
-    scripts/ja-ocr/run.py SAMPLE_DIR --engine azure --endpoint "$OCR_ENDPOINT"
+    scripts/ja-ocr/run.py --sample-dir SAMPLE_DIR --engine ndlocr-lite --ndlocr ~/code/ndlocr-lite
+    scripts/ja-ocr/run.py --sample-dir SAMPLE_DIR --engine tesseract --tessdata SAMPLE_DIR/tessdata
+    scripts/ja-ocr/run.py --sample-dir SAMPLE_DIR --engine azure --endpoint "$OCR_ENDPOINT"
 
 The azure engine calls Document Intelligence's prebuilt-read model with an
 Entra token from az (the account has no keys; the caller needs Cognitive
@@ -115,13 +115,23 @@ def azure(endpoint: str, img: Path, out: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("sample", type=Path)
+    ap.add_argument("--sample-dir", dest="sample", type=Path, help="the sample to OCR (required)")
+    # The positional form (`run.py SAMPLE_DIR`) works for one release, with a
+    # warning (#277).
+    ap.add_argument("legacy_sample", nargs="?", type=Path, help=argparse.SUPPRESS)
     ap.add_argument("--engine", required=True, choices=["ndlocr-lite", "tesseract", "azure"])
     ap.add_argument("--endpoint", help="Document Intelligence endpoint (azure)")
     ap.add_argument("--ndlocr", type=Path, default=Path.home() / "code/ndlocr-lite")
     ap.add_argument("--tessdata", type=Path)
     ap.add_argument("--lang", default="jpn_vert")
     a = ap.parse_args()
+    if a.legacy_sample is not None:
+        if a.sample is not None:
+            ap.error("give SAMPLE_DIR once, as --sample-dir")
+        print("warning: a positional SAMPLE_DIR is deprecated; use --sample-dir (#277)", file=sys.stderr)
+        a.sample = a.legacy_sample
+    if a.sample is None:
+        ap.error("--sample-dir is required")
     if a.engine == "azure" and not a.endpoint:
         ap.error("--engine azure needs --endpoint")
     if a.engine == "tesseract" and not a.tessdata:
