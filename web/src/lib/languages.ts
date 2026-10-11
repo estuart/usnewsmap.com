@@ -118,9 +118,11 @@ export function languageCounts(counts: Record<string, number> | undefined, title
  * is the matching pages of papers in that language against all matching
  * pages; a page of a paper in several languages counts in each, so the
  * shares can add up to more than 100%. At most five languages, then "N more".
+ * Counted by page language (`by: "page"`, #289): "Matches in 12 newspapers:
+ * pages in English 90% and German 12%.", a page in two languages in each.
  */
 export function languageMix(
-  langs: { code: string[]; hits: number[] } | undefined,
+  langs: { code: string[]; hits: number[]; by?: "page" } | undefined,
   totalHits: number,
   papers: number | undefined,
 ): string | null {
@@ -133,5 +135,5 @@ export function languageMix(
     papers === undefined
       ? "Matches"
       : `Matches in ${papers.toLocaleString("en-US")} ${papers === 1 ? "newspaper" : "newspapers"}`;
-  return `${where}: ${list}.`;
+  return `${where}: ${langs.by === "page" ? "pages in " : ""}${list}.`;
 }

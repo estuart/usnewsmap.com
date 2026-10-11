@@ -23,6 +23,12 @@ export interface Meta {
    * parameter accepts, most pages first. Absent from older APIs.
    */
   languages?: MetaLanguage[];
+  /**
+   * What `lang` matches (06 §6.3.1): `page`, each page's own languages,
+   * found from its words (#289); `title`, the languages its newspaper lists.
+   * Absent from older APIs, which match title languages.
+   */
+  language_filter?: "page" | "title";
   capabilities: {
     fuzzy: boolean;
     max_slop: number;
@@ -75,7 +81,11 @@ export interface MetaLanguage {
   name: string;
   /** Titles that list it; a title in several languages counts in each. */
   titles: number;
-  /** Null when the snapshot doesn't record pages per title. */
+  /**
+   * Pages of the titles that list it, or with `language_filter: "page"`
+   * pages written in it (a page in two languages counts in each). Null when
+   * the snapshot doesn't record pages per title.
+   */
   pages: number | null;
 }
 
@@ -176,9 +186,10 @@ export interface AggregateResponse {
   /**
    * Matching pages per title language, most first. A page of a paper in
    * several languages counts in each, so these can add up to more than
-   * `total.hits` (#121). Absent from older APIs.
+   * `total.hits` (#121). With `by: "page"`, per page language instead
+   * (#289): a page in two languages counts in each. Absent from older APIs.
    */
-  languages?: { code: string[]; hits: number[] };
+  languages?: { code: string[]; hits: number[]; by?: "page" };
   /**
    * Which pages `series.baseline` and `cube.baseline_ref` count (#237): those
    * of titles that list any of `languages`, or every page when it's empty.

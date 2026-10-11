@@ -324,6 +324,7 @@ export function SearchBar({ view, meta, onSearch, busy = false, titles, titlesFa
           <LanguageFilter
             id={id}
             choices={languages}
+            byPage={meta?.language_filter === "page"}
             value={draft.lang}
             onChange={(lang) => setDraft({ ...draft, lang })}
           />
