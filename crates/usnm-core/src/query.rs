@@ -503,8 +503,25 @@ impl Parser {
                 }
                 Tok::Word { .. } | Tok::Phrase { .. } => {
                     let item = self.primary()?;
-                    if !matches!(item, Node::Term(_) | Node::Phrase { .. }) {
-                        return Err(QueryError::at(AT_LEAST_ITEMS, t.pos));
+                    match (&t.tok, &item) {
+                        (_, Node::Term(_)) | (Tok::Phrase { .. }, Node::Phrase { .. }) => {}
+                        // A Japanese word is a phrase of its characters
+                        // (§6.4), and one item, as a word is.
+                        (Tok::Word { text, .. }, Node::Phrase { .. }) if has_ja(text) => {}
+                        // `gold-silver` would be the phrase "gold silver":
+                        // an item is a word or a quoted phrase, so the
+                        // phrase has to be written as one.
+                        (Tok::Word { .. }, Node::Phrase { terms, .. }) => {
+                            return Err(QueryError::at(
+                                format!(
+                                    "N OF (...) takes words and phrases; punctuation splits \
+                                     this word, so quote it as a phrase: \"{}\"",
+                                    terms.join(" ")
+                                ),
+                                t.pos,
+                            ));
+                        }
+                        _ => return Err(QueryError::at(AT_LEAST_ITEMS, t.pos)),
                     }
                     of.push(item);
                 }
@@ -1681,6 +1698,38 @@ mod tests {
         ] {
             assert!(err(q).message.contains("takes words and phrases"), "{q}");
         }
+        // An unquoted word that punctuation splits is refused, not read as
+        // a phrase item; quoted, the phrase is one (#378 review).
+        let e = err("2 OF (gold-silver bryan)");
+        assert!(e.message.contains("quote it as a phrase"), "{}", e.message);
+        assert!(e.message.contains(r#""gold silver""#), "{}", e.message);
+        assert_eq!(e.position, Some(6));
+        assert!(err("2 OF (a1 b1 o'brien)")
+            .message
+            .contains("quote it as a phrase"));
+        assert!(err("2 OF (gold-silver bryan coin)")
+            .message
+            .contains("quote it as a phrase"));
+        // Quoted, it gets as far as the item count (2 OF two items is AND).
+        assert!(err(r#"2 OF ("gold silver" bryan)"#)
+            .message
+            .contains("use AND"));
+        assert_eq!(
+            parse(r#"2 OF ("gold silver" bryan coin)"#).unwrap(),
+            Node::AtLeast {
+                min: 2,
+                of: vec![
+                    Node::Phrase {
+                        terms: vec!["gold".into(), "silver".into()],
+                        slop: 0
+                    },
+                    term("bryan"),
+                    term("coin"),
+                ]
+            }
+        );
+        // A Japanese word is a phrase of its characters, and one item.
+        assert!(parse("2 OF (東京 大阪 a1)").is_ok());
         assert_eq!(err("gold 2 OF (a1 b1 c1").message, "missing ')'");
         assert_eq!(err("gold 2 OF (a1 b1 c1").position, Some(10));
         // The 12-term limit counts every item.

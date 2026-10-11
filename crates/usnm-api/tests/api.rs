@@ -1271,6 +1271,7 @@ async fn ocr_spellings_and_at_least_n_count_and_refuse() {
         ("%C2%BD~ocr", "single word of letters and digits"),
         ("2+OF+(gold+silver)", "use AND"),
         ("2+OF+(gold+OR+silver+bryan)", "takes words and phrases"),
+        ("2+OF+(gold-silver+bryan+coin)", "quote it as a phrase"),
         ("9+OF+(gold+silver+bryan)", "N from 2 to 5"),
     ] {
         let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
