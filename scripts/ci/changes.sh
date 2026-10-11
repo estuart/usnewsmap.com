@@ -53,8 +53,8 @@ if [ -n "$files" ] && grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwi
   provision=true
 fi
 # The index version snapshots and the index history must match their schemas
-# (and what writes them).
-matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history)\.py$|scripts/ci/requirements-ops\.txt$|\.github/workflows/ci\.yml$)' && ops=true
+# (and what writes them); searches.sh's date-span summary has its tests there too.
+matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history|test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$|\.github/workflows/ci\.yml$)' && ops=true
 matches '^\.github/' && all "workflow changed"
 # The Rust build and tests: the crates, the files compiled into binaries
 # (index config, place overrides, the example searches the API warms, the

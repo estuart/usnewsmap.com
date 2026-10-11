@@ -438,8 +438,10 @@ The API keeps every search from the site, with only its filters, page count and 
 ```sh
 scripts/settings.sh prod USNM_SEARCH_LOG_READERS "$(az ad signed-in-user show --query id -o tsv)"
 scripts/provision.sh prod
-scripts/searches.sh prod 30      # searches per day, top queries, queries that found nothing
+scripts/searches.sh prod 30      # searches per day, top queries, queries that found nothing, date spans
 ```
+
+The last two tables count searches by date span (the whole corpus range, over 10 years, 1–10 years, a year or less) and by the decade partitions they touch, bucketed as `usnm_core::decade` (pre-1820 is one). They hold counts and shares only, never queries. A search is whole range when it covers the corpus bounds the site serves (`/v1/meta`, read from the environment's `SITE_URL`); if those can't be read, the script says so and takes each version's widest search instead. They decide whether to build the next full base with `USNM_PARTITION_DECADE` (#123): only date-limited searches skip splits.
 
 The data account is reachable only through its private endpoint, so run `searches.sh` from a network that reaches it. The first day file appears an hour after the first full UTC day with the log deployed.
 

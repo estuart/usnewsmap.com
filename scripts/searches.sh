@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Summarize the anonymous search log (the searches container, ADR-0012):
-# top queries, searches per day and the searches that found nothing.
+# top queries, searches per day, the searches that found nothing, and the
+# share of searches by date span and by decade partitions touched (#123).
 #
 #   scripts/searches.sh prod          # the last 30 days
 #   scripts/searches.sh prod 7        # the last 7 days
@@ -11,7 +12,7 @@
 # connections only through its private endpoint, so run this from a network
 # that reaches it. The raw queries stay on this machine and are deleted at exit.
 set -euo pipefail
-[ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '2,12s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '2,13s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 ENV_NAME=$1
 DAYS=${2:-30}
 die() { echo "error: $*" >&2; exit 1; }
@@ -84,4 +85,27 @@ jq -r '["searches", "query"],
   (map(select(.pages == 0)) | group_by(.query) | map({n: length, query: .[0].query})
    | sort_by(-.n, .query)[:50][] | [.n, .query])
   | map(tostring | gsub("[\t\r\n]+"; " ")) | @tsv' "$records" | table
+echo
+# Aggregates only (scripts/lib/date-spans.jq): whether date-limited searches
+# are common enough to build the next full base by decade (USNM_PARTITION_DECADE).
+# "Whole range" compares each search with the corpus bounds the site serves
+# (/v1/meta); without them it falls back to the widest search of each version.
+bounds='{}'
+site=$(aget SITE_URL)
+if [ -n "$site" ] && meta=$(curl -fsS --max-time 20 "${site%/}/v1/meta" 2> /dev/null) &&
+  bounds=$(jq -c '{news: .bounds}
+    + (if (.congress.series // []) | length > 0
+       then {congress: {from: (.congress.series | map(.from) | min),
+                        to: (.congress.series | map(.to) | max)}} else {} end)' <<< "$meta"); then
+  echo "Whole range: the bounds $site/v1/meta serves now ($(jq -r '[.news.from, .news.to] | join(" to ")' <<< "$bounds") for newspapers)"
+else
+  bounds='{}'
+  echo "warning: couldn't read the corpus bounds from ${site:-the site}/v1/meta; \"whole range\" is each version's widest search, which overcounts it when no one searched the whole range" >&2
+fi
+echo
+echo "Searches by date span"
+jq -r --arg by span --argjson bounds "$bounds" -f scripts/lib/date-spans.jq "$records" | table
+echo
+echo "Searches by decade partitions touched (pre-1820 is one)"
+jq -r --arg by decades --argjson bounds "$bounds" -f scripts/lib/date-spans.jq "$records" | table
 echo "($(jq length "$records") searches, ${#files[@]} files)" >&2
