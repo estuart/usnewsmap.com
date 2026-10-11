@@ -129,10 +129,11 @@ jobs:
         run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-version-snapshots.py'
       - name: ops/index-history.json matches ops/index-history.schema.json, keys sorted
         run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-index-history.py'
-      - name: The checkers' tests pass
+      - name: The checkers' and searches.sh date-span tests pass
         run: >-
           "$RUNNER_TEMP/ops/bin/python" -m unittest -v
           scripts/test_check_version_snapshots.py scripts/test_check_index_history.py
+          scripts/test_date_spans.py
 
   image:
     name: container image builds

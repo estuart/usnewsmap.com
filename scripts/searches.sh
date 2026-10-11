@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Summarize the anonymous search log (the searches container, ADR-0012):
-# top queries, searches per day and the searches that found nothing.
+# top queries, searches per day, the searches that found nothing, and the
+# share of searches by date span and by decade partitions touched (#123).
 #
 #   scripts/searches.sh prod          # the last 30 days
 #   scripts/searches.sh prod 7        # the last 7 days
@@ -11,7 +12,7 @@
 # connections only through its private endpoint, so run this from a network
 # that reaches it. The raw queries stay on this machine and are deleted at exit.
 set -euo pipefail
-[ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '2,12s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '2,13s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 ENV_NAME=$1
 DAYS=${2:-30}
 die() { echo "error: $*" >&2; exit 1; }
@@ -84,4 +85,12 @@ jq -r '["searches", "query"],
   (map(select(.pages == 0)) | group_by(.query) | map({n: length, query: .[0].query})
    | sort_by(-.n, .query)[:50][] | [.n, .query])
   | map(tostring | gsub("[\t\r\n]+"; " ")) | @tsv' "$records" | table
+echo
+# Aggregates only (scripts/lib/date-spans.jq): whether date-limited searches
+# are common enough to build the next full base by decade (USNM_PARTITION_DECADE).
+echo "Searches by date span"
+jq -r --arg by span -f scripts/lib/date-spans.jq "$records" | table
+echo
+echo "Searches by decade partitions touched (pre-1820 is one)"
+jq -r --arg by decades -f scripts/lib/date-spans.jq "$records" | table
 echo "($(jq length "$records") searches, ${#files[@]} files)" >&2
