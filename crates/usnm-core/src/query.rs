@@ -591,6 +591,15 @@ fn word(
         0 => Err(QueryError::at("word has no searchable characters", pos)),
         1 if ocr => {
             let text = tokens.into_iter().next().expect("one token");
+            // Folded by `Analyzer::V1`, one word can be several (`ﷺ`) or
+            // hold a separator (`½`): not one index token, so not one
+            // member of the term set the engine is sent.
+            if !ocr_variants::is_one_token(&text) {
+                return Err(QueryError::at(
+                    "~ocr needs a single word of letters and digits; this one is several words in the index",
+                    pos,
+                ));
+            }
             let n = ocr_variants::variants(&text).len();
             if n > ocr_variants::MAX_OCR_VARIANTS {
                 return Err(QueryError::at(
@@ -1586,6 +1595,20 @@ mod tests {
             .contains("not a phrase"));
         assert!(err("well-known~ocr").message.contains("single word"));
         assert!(err("東京~ocr").message.contains("Japanese"));
+        // A word `Analyzer::V1` folds into several words or around a
+        // separator isn't one index token, so it can't be one term-set
+        // member; from V2 it folds as itself.
+        for w in ["ﷺ", "½", "61¼"] {
+            let q = format!("{w}~ocr");
+            let e = parse_with(&q, Analyzer::V1).unwrap_err();
+            assert!(
+                e.message.contains("single word of letters and digits"),
+                "{w}"
+            );
+            assert_eq!(e.position, Some(0));
+            assert_eq!(parse_with(&q, Analyzer::V2).unwrap(), ocr(w), "{w}");
+        }
+        assert!(parse_with("Æsop~ocr", Analyzer::V1).is_ok());
         // A word with too many spellings is refused, not cut short.
         let long = "the".repeat(13);
         assert!(err(&format!("{long}~ocr"))

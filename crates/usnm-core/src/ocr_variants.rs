@@ -45,11 +45,39 @@ pub fn variants(word: &str) -> Vec<String> {
     out.into_iter().collect()
 }
 
-/// Whether `token` is one of `word`'s [`variants`], without building them
-/// all when it can't be.
+/// Whether `token` is one of `word`'s [`variants`]: `word` itself, or
+/// `word` with one occurrence of one side of a pair in [`CONFUSIONS`]
+/// replaced by the other. Checked in place, without building the variants:
+/// it runs on every word of every page a `~ocr` search reads.
 pub fn is_variant(word: &str, token: &str) -> bool {
-    token == word
-        || (token.len().abs_diff(word.len()) <= 1 && variants(word).iter().any(|v| v == token))
+    if token == word {
+        return true;
+    }
+    if token.len().abs_diff(word.len()) > 1 {
+        return false;
+    }
+    let (w, t) = (word.as_bytes(), token.as_bytes());
+    CONFUSIONS
+        .iter()
+        .flat_map(|&(a, b)| [(a, b), (b, a)])
+        .filter(|(from, to)| w.len() + to.len() == t.len() + from.len())
+        .any(|(from, to)| {
+            word.match_indices(from).any(|(i, _)| {
+                t[..i] == w[..i]
+                    && &t[i..i + to.len()] == to.as_bytes()
+                    && t[i + to.len()..] == w[i + from.len()..]
+            })
+        })
+}
+
+/// Whether `word` is one index token that a term set can hold as typed:
+/// letters and digits only. [`Analyzer::V1`](crate::text::Analyzer::V1)
+/// can fold one word into several (`ﷺ` into four Arabic words) or into
+/// text with a separator (`½` into `1⁄2`), which the engine's term-set
+/// syntax would split into several members, and no page token equals.
+/// Its [`variants`] only swap ASCII letters, so they are one token too.
+pub fn is_one_token(word: &str) -> bool {
+    !word.is_empty() && word.chars().all(char::is_alphanumeric)
 }
 
 #[cfg(test)]
@@ -93,8 +121,93 @@ mod tests {
             assert!(!is_variant(w, "silver"));
         }
         assert!(is_variant("gold", "goid"));
+        assert!(!is_variant("gold", "gol"));
+        assert!(!is_variant("gold", "golcll"));
+        assert!(!is_variant("the", "tlic"));
         assert!(is_variant("gold", "golcl"));
         assert!(!is_variant("gold", "goicl"));
+    }
+
+    /// The direct check accepts exactly the generated set: every variant,
+    /// and no token one edit of the table's letters away that isn't one.
+    #[test]
+    fn is_variant_is_exactly_the_variant_set() {
+        let mut words: Vec<String> = [
+            "president",
+            "the",
+            "money",
+            "rnoney",
+            "tlie",
+            "congress",
+            "gold",
+            "golcl",
+            "washington",
+            "vvest",
+            "thth",
+            "lili",
+            "hh",
+            "x",
+            "ſo",
+            "café",
+            "½",
+        ]
+        .map(String::from)
+        .to_vec();
+        // Every side of every pair, alone and inside a word.
+        for (a, b) in CONFUSIONS {
+            for s in [a, b] {
+                words.push(s.into());
+                words.push(format!("a{s}a"));
+            }
+        }
+        let letters: Vec<String> = CONFUSIONS
+            .iter()
+            .flat_map(|(a, b)| [*a, *b])
+            .chain(["a", "o", "x", ""])
+            .map(String::from)
+            .collect();
+        for w in &words {
+            let set: BTreeSet<String> = variants(w).into_iter().collect();
+            for v in &set {
+                assert!(is_variant(w, v), "{w} {v}");
+            }
+            // Candidates: each byte position's span replaced by each side
+            // of each pair (or nothing), plus each variant's own variants.
+            let mut candidates: BTreeSet<String> = set.iter().flat_map(|v| variants(v)).collect();
+            for i in 0..=w.len() {
+                for j in i..=(i + 2).min(w.len()) {
+                    let (Some(pre), Some(post)) = (w.get(..i), w.get(j..)) else {
+                        continue;
+                    };
+                    for l in &letters {
+                        candidates.insert(format!("{pre}{l}{post}"));
+                    }
+                }
+            }
+            for c in &candidates {
+                assert_eq!(is_variant(w, c), set.contains(c), "{w} {c}");
+            }
+        }
+        for w in crate::query_language::ENGLISH_WORDS.lines().take(2000) {
+            let set = variants(w);
+            for v in set.iter().flat_map(|v| variants(v)) {
+                assert_eq!(is_variant(w, &v), set.contains(&v), "{w} {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn one_token_is_letters_and_digits() {
+        assert!(is_one_token("president"));
+        assert!(is_one_token("1896"));
+        assert!(is_one_token("½"));
+        assert!(!is_one_token(""));
+        assert!(!is_one_token("1⁄2"));
+        assert!(!is_one_token("a b"));
+        assert!(!is_one_token("a]"));
+        use crate::text::{fold, Analyzer};
+        assert!(!is_one_token(&fold("ﷺ", Analyzer::V1)));
+        assert!(is_one_token(&fold("ﷺ", Analyzer::V2)));
     }
 
     #[test]

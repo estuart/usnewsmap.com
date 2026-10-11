@@ -421,10 +421,22 @@ fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, Searc
         Node::Term(t) if t.prefix => format!("{text}:{}*", t.text),
         // `word~ocr` (#124): the word and its OCR spellings as one term set,
         // which the engine looks up in the term dictionary like a word.
-        Node::Term(t) if t.ocr => format!(
-            "{text}:IN [{}]",
-            usnm_core::ocr_variants::variants(&t.text).join(" ")
-        ),
+        // Members are split at whitespace and not analyzed, so each must be
+        // one index token as it stands. The parser refuses a word that isn't
+        // (`ﷺ` folded by `Analyzer::V1`); this never sends one split into
+        // several members.
+        Node::Term(t) if t.ocr => {
+            let variants = usnm_core::ocr_variants::variants(&t.text);
+            if !variants
+                .iter()
+                .all(|v| usnm_core::ocr_variants::is_one_token(v))
+            {
+                return Err(SearchError::Unsupported(
+                    "~ocr on a word the index holds as several words".into(),
+                ));
+            }
+            format!("{text}:IN [{}]", variants.join(" "))
+        }
         // With `?` or `*` in it (#124), an unquoted word is a wildcard query
         // in Quickwit 0.9, matched against the index's words.
         Node::Term(t) => format!("{text}:{}", t.text),
@@ -1219,6 +1231,32 @@ mod tests {
             query_string(&parse("gold~ocr").unwrap(), false, true).unwrap(),
             "(text:IN [goid golcl gold] OR text_as:IN [goid golcl gold])"
         );
+        // A word that isn't one index token (`ﷺ` or `½` folded by
+        // `Analyzer::V1`) is never sent split into several members; the
+        // parser refuses it, and a term built without the parser is refused
+        // here.
+        for text in [
+            usnm_core::text::fold("ﷺ", Analyzer::V1),
+            usnm_core::text::fold("½", Analyzer::V1),
+            "gold]".into(),
+        ] {
+            let node = Node::Term(usnm_core::query::Term {
+                text: text.clone(),
+                fuzzy: 0,
+                prefix: false,
+                wildcard: false,
+                ocr: true,
+            });
+            for american_stories in [false, true] {
+                assert!(
+                    matches!(
+                        query_string(&node, false, american_stories),
+                        Err(SearchError::Unsupported(_))
+                    ),
+                    "{text}"
+                );
+            }
+        }
         // At least N: each N of them, ANDed, ORed.
         assert_eq!(
             query_string(&parse("2 OF (gold silver bryan)").unwrap(), false, false).unwrap(),

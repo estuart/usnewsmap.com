@@ -1265,6 +1265,10 @@ async fn ocr_spellings_and_at_least_n_count_and_refuse() {
     for (q, detail) in [
         ("gold~ocr*", "not both"),
         ("%22cross+of+gold%22~ocr", "not a phrase"),
+        // The fixture's analyzer (V1) folds `ﷺ` to four words and `½` to
+        // `1⁄2`: not one index token, so not one term-set member.
+        ("%EF%B7%BA~ocr", "single word of letters and digits"),
+        ("%C2%BD~ocr", "single word of letters and digits"),
         ("2+OF+(gold+silver)", "use AND"),
         ("2+OF+(gold+OR+silver+bryan)", "takes words and phrases"),
         ("9+OF+(gold+silver+bryan)", "N from 2 to 5"),
