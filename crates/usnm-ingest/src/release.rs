@@ -2162,11 +2162,13 @@ impl Release {
     }
 
     async fn put_new(&self, path: &str, body: Vec<u8>) -> anyhow::Result<()> {
-        if !self
-            .reference
-            .put_new(path, body, "application/json")
-            .await?
-        {
+        // Every snapshot file is JSON but `ocr_local_pages.bin`.
+        let content_type = if path.ends_with(".bin") {
+            "application/octet-stream"
+        } else {
+            "application/json"
+        };
+        if !self.reference.put_new(path, body, content_type).await? {
             bail!("`{path}` already exists; reference snapshots are immutable");
         }
         Ok(())
