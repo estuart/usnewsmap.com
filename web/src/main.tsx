@@ -5,15 +5,20 @@ import { App } from "./App";
 import { isRetryable, VersionChangedError } from "./api/client";
 import { NotFound } from "./components/NotFound";
 import { trackPageView } from "./pageview";
-import { pageFor } from "./route";
+import { DATASETS_PATH, OLD_DATASETS_PATH, pageFor } from "./route";
 import "./styles.css";
 
-// The status and privacy pages are their own routes, loaded only when
-// visited. The API serves index.html for app paths, so /status and /privacy
-// work as direct links; other paths get it with a 404, and the not-found page.
-const StatusPage = lazy(() => import("./status/StatusPage"));
+// The dataset details and privacy pages are their own routes, loaded only
+// when visited. The API serves index.html for app paths, so /datasets and
+// /privacy work as direct links; other paths get it with a 404, and the
+// not-found page.
+const DatasetsPage = lazy(() => import("./status/StatusPage"));
 const PrivacyPage = lazy(() => import("./privacy/PrivacyPage"));
 const page = pageFor(window.location.pathname);
+// The old path, where a server didn't redirect it: show the new one.
+if (page === "datasets" && window.location.pathname.replace(/\/+$/, "") === OLD_DATASETS_PATH) {
+  window.history.replaceState(null, "", `${DATASETS_PATH}${window.location.search}${window.location.hash}`);
+}
 // One page view per page shown; each page is a page load (no client router).
 trackPageView(page);
 
@@ -40,9 +45,9 @@ const client: QueryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={client}>
-      {page === "status" ? (
+      {page === "datasets" ? (
         <Suspense fallback={<p role="status">Loading…</p>}>
-          <StatusPage />
+          <DatasetsPage />
         </Suspense>
       ) : page === "privacy" ? (
         <Suspense fallback={<p role="status">Loading…</p>}>

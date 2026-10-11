@@ -1,33 +1,32 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, API_BASE } from "../api/client";
-import type { Backfill, HourBin, Indexing, OcrJa, Status, TitlesPipeline } from "../api/types";
+import type { Backfill, HourBin, Indexing, Status, TitlesPipeline, Versions } from "../api/types";
 import { TITLES } from "../route";
 import { count, health, relative, span, when } from "./format";
-import {
-  STATE_LABEL,
-  headline,
-  lastUpdate,
-  longDate,
-  auditRate,
-  ocrAudit,
-  ocrExperiment,
-  rightNow,
-  steps,
-  localDate,
-} from "./now";
+import { STATE_LABEL, headline, rightNow, steps, localDate } from "./now";
 import { TERMS } from "./terms";
-import { languageName } from "../lib/languages";
 import { Brand } from "../components/Brand";
-import { LanguagesSection, StatesSection } from "./PagesTables";
+import { InTheIndex, Languages, OurOcr, Places, TheDatasets, VersionsSection, lastPublished } from "./Datasets";
+import { Bar, Stats, Table, Time, Unavailable } from "./parts";
 
 const REFRESH_MS = 30_000;
 
-/** `/status`: how much of the collection is searchable and what the pipeline is doing now, for anyone (no sign-in). */
-export default function StatusPage() {
+/**
+ * `/datasets`: what the site searches, where its text comes from, and what is
+ * being added now, for anyone (no sign-in). It reads `/v1/status` and
+ * `/v1/versions` (07 §7.10).
+ */
+export default function DatasetsPage() {
   const status = useQuery({
     queryKey: ["status"],
     queryFn: ({ signal }) => api.status(signal),
+    refetchInterval: REFRESH_MS,
+    staleTime: 0,
+  });
+  const versions = useQuery({
+    queryKey: ["versions"],
+    queryFn: ({ signal }) => api.versions(signal),
     refetchInterval: REFRESH_MS,
     staleTime: 0,
   });
@@ -39,7 +38,7 @@ export default function StatusPage() {
   }, []);
   const now = Math.max(tick, status.dataUpdatedAt);
   useEffect(() => {
-    document.title = TITLES.status;
+    document.title = TITLES.datasets;
   }, []);
 
   const s = status.data;
@@ -49,18 +48,29 @@ export default function StatusPage() {
         <Brand />
       </header>
       <main className="status">
-        <h1>Pipeline status</h1>
+        <h1>Dataset details</h1>
+        <p className="status-intro">
+          What the site searches, where its text comes from, and what is being added. The numbers are those of the
+          search index the site uses now, and the page refreshes every 30 seconds.
+        </p>
         {status.error && (
           <p className="notice notice--error" role="alert">
-            The status could not be loaded{s ? "; showing the last copy" : ""}. It is retried every 30 seconds.
+            The details could not be loaded{s ? "; showing the last copy" : ""}. They are retried every 30 seconds.
           </p>
         )}
         {!s && !status.error && <p role="status">Loading…</p>}
-        {s && <RightNow s={s} now={now} />}
-        {s && <Headline s={s} />}
-        {s && <Steps s={s} now={now} />}
-        {s && <Searchable s={s} />}
-        {s && <OcrExperiments s={s} now={now} />}
+        {s?.published.synthetic && (
+          <p className="notice notice--demo" role="note">
+            Demo data: this server serves a small synthetic set of pages.
+          </p>
+        )}
+        {s && <InTheIndex s={s} />}
+        {s && <TheDatasets s={s} now={now} />}
+        {s && <OurOcr s={s} now={now} />}
+        {s && <Languages s={s} />}
+        {s && <Places s={s} />}
+        {s && <InProgress s={s} now={now} versions={versions.data} />}
+        {s && <VersionsSection versions={versions.data} error={versions.isError} now={now} />}
         {s && <Technical s={s} now={now} />}
       </main>
       <footer className="credits">
@@ -78,12 +88,26 @@ export default function StatusPage() {
   );
 }
 
+/** 6. In progress: what the pipeline is doing now, how far it has got, and the last update. */
+function InProgress({ s, now, versions }: { s: Status; now: number; versions: Versions | undefined }) {
+  const last = lastPublished(versions);
+  return (
+    <section aria-labelledby="in-progress" className="status-section">
+      <h2 id="in-progress">In progress</h2>
+      <RightNow s={s} now={now} />
+      {last && <p>{last}</p>}
+      <Headline s={s} />
+      <Steps s={s} now={now} />
+    </section>
+  );
+}
+
 /** "Right now": the pipeline's current activity in one plain sentence. */
 function RightNow({ s, now }: { s: Status; now: number }) {
   const line = rightNow(s, now);
   return (
-    <section aria-labelledby="right-now" className="status-section status-now">
-      <h2 id="right-now">Right now</h2>
+    <section aria-labelledby="right-now" className="status-subsection status-now">
+      <h3 id="right-now">Right now</h3>
       <p className="status-now__line">{line.text}</p>
       {line.progress && <Bar value={line.progress.done} max={line.progress.total} label={line.progress.label} />}
       {line.notes.map((n) => (
@@ -102,11 +126,6 @@ function RightNow({ s, now }: { s: Status; now: number }) {
         )}{" "}
         · this page refreshes every 30 s
       </p>
-      {s.published.synthetic && (
-        <p className="notice notice--demo" role="note">
-          Demo data: this server serves a small synthetic set of pages.
-        </p>
-      )}
     </section>
   );
 }
@@ -115,10 +134,10 @@ function RightNow({ s, now }: { s: Status; now: number }) {
 function Headline({ s }: { s: Status }) {
   const h = headline(s);
   return (
-    <section aria-labelledby="searchable-now" className="status-section status-headline">
-      <h2 id="searchable-now" className="status-headline__text">
+    <section aria-labelledby="searchable-now" className="status-subsection status-headline">
+      <h3 id="searchable-now" className="status-headline__text">
         {h.text}
-      </h2>
+      </h3>
       {h.share !== null && (
         <Bar
           // Copies against copies: the published pages plus the duplicate copies they left out.
@@ -138,8 +157,8 @@ function Headline({ s }: { s: Status }) {
 function Steps({ s, now }: { s: Status; now: number }) {
   const list = steps(s, now);
   return (
-    <section aria-labelledby="steps" className="status-section">
-      <h2 id="steps">How pages get onto the map</h2>
+    <section aria-labelledby="steps" className="status-subsection">
+      <h3 id="steps">How pages get onto the map</h3>
       <ol className="steps">
         {list.map((st, i) => {
           const current = st.state === "active" || st.state === "paused";
@@ -153,10 +172,10 @@ function Steps({ s, now }: { s: Status; now: number }) {
                 {st.state === "done" ? "✓" : i + 1}
               </span>
               <div className="step__body">
-                <h3 className="step__title">
+                <h4 className="step__title">
                   <span className="visually-hidden">Step {i + 1}: </span>
                   {st.title}
-                </h3>
+                </h4>
                 <p className="step__state">
                   <span className={`step-badge step-badge--${st.state}`}>{STATE_LABEL[st.state]}</span>{" "}
                   <span className="step__detail">{st.detail}</span>
@@ -171,112 +190,13 @@ function Steps({ s, now }: { s: Status; now: number }) {
   );
 }
 
-/** What the site searches: the published version's facts and its pages tables. */
-function Searchable({ s }: { s: Status }) {
-  const p = s.published;
-  return (
-    <section aria-labelledby="whats-searchable" className="status-section">
-      <h2 id="whats-searchable">What&apos;s searchable now</h2>
-      <p>
-        The site searches the update that went live {localDate(lastUpdate(s))}: {count(p.pages)} pages from{" "}
-        {count(p.titles)} newspapers in {count(p.places)} places, dated {longDate(p.bounds.from)} to{" "}
-        {longDate(p.bounds.to)}
-        {p.batches !== null && `, from ${count(p.batches)} batches`}.
-      </p>
-      {p.by_state && <StatesSection rows={p.by_state} pages={p.pages} />}
-      {p.by_language && <LanguagesSection data={p.by_language} />}
-    </section>
-  );
-}
-
-/** Our own OCR of the Japanese pages LoC has no text for: not a pipeline step. */
-function OcrExperiments({ s, now }: { s: Status; now: number }) {
-  const line = ocrExperiment(s, now);
-  const audit = ocrAudit(s, now);
-  if (!line && !audit) return null;
-  const o = s.ocr_ja?.available ? s.ocr_ja : null;
-  return (
-    <section aria-labelledby="ocr-experiments" className="status-section">
-      <h2 id="ocr-experiments">OCR experiments</h2>
-      {line && <JapaneseOcr line={line} o={o} now={now} />}
-      {audit && <OcrAudit audit={audit} s={s} />}
-    </section>
-  );
-}
-
-/** The OCR quality audit: progress, then the summary by language. */
-function OcrAudit({ audit, s }: { audit: NonNullable<ReturnType<typeof ocrAudit>>; s: Status }) {
-  const q = s.ocr_quality?.available ? s.ocr_quality : null;
-  const rows = q?.finished_at ? (q.summary?.languages ?? []) : [];
-
-  return (
-    <section aria-labelledby="ocr-audit" className="status-subsection">
-      <h3 id="ocr-audit">OCR quality audit</h3>
-      <p>
-        We check how readable the Library of Congress&apos;s text is. For a sample of pages, we detect each page&apos;s
-        language and count how often that language&apos;s 20 most common words are misread by one letter
-        (&quot;tbe&quot; for &quot;the&quot;, &quot;ift&quot; for German &quot;ist&quot;) instead of read correctly. The
-        table calls this the misread rate.
-      </p>
-      <p className="status-ocr__line">{audit.text}</p>
-      {audit.progress && <Bar value={audit.progress.done} max={audit.progress.total} label={audit.progress.label} />}
-      {audit.agreement && <p>{audit.agreement}</p>}
-      {rows.length > 0 && (
-        <Table
-          caption="Misread rate by page language"
-          head={["Language", "Pages sampled", "Misread rate, median page", "Pages with misread rate over 10%"]}
-          empty="No languages."
-          rows={rows.map((r) => [
-            languageName(r.language),
-            count(r.pages),
-            auditRate(r.damage_rate_median),
-            auditRate(r.damaged_share),
-          ])}
-        />
-      )}
-      {rows.some((r) => r.damage_rate_median === null) && (
-        <p className="status-note">– means we have no word list for that language.</p>
-      )}
-    </section>
-  );
-}
-
-/** Our own OCR of the Japanese pages LoC has no text for. */
-function JapaneseOcr({
-  line,
-  o,
-  now,
-}: {
-  line: NonNullable<ReturnType<typeof ocrExperiment>>;
-  o: OcrJa | null;
-  now: number;
-}) {
-  return (
-    <>
-      <p>
-        The Library of Congress has no searchable text for its Japanese-language pages. We read those page images
-        ourselves with NDLOCR-Lite, text-recognition software from Japan&apos;s National Diet Library. This runs apart
-        from the steps above.
-      </p>
-      <p className="status-ocr__line">{line.text}</p>
-      {line.progress && <Bar value={line.progress.done} max={line.progress.total} label={line.progress.label} />}
-      <p>{line.searchable}</p>
-      {o && (
-        <p className="status-meta">
-          Last report <Time iso={o.updated_at} now={now} />
-          {o.engine && <> · {o.engine.replace(/^(\S+ [0-9a-f]{7})[0-9a-f]+$/, "$1")}</>}
-        </p>
-      )}
-    </>
-  );
-}
-
 /** Operator details, collapsed: the pipeline's own numbers and terms. */
 function Technical({ s, now }: { s: Status; now: number }) {
   const h = health(s, now);
   return (
     <section aria-labelledby="technical" className="status-section">
       <h2 id="technical">Technical details</h2>
+      <p>For the people who run the site: the pipeline&apos;s own numbers, in its own terms.</p>
       <details className="status-technical">
         <summary>Show the pipeline&apos;s own numbers and terms</summary>
         <p className="status-note">
@@ -373,93 +293,6 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
         </>
       )}
     </>
-  );
-}
-
-function Unavailable({ reason }: { reason: string }) {
-  return (
-    <p className="notice" role="note">
-      Not available. {reason}
-    </p>
-  );
-}
-
-function Bar({ value, max, label }: { value: number; max: number; label: string }) {
-  const pct = max > 0 ? Math.min(100, (100 * value) / max) : 0;
-  return (
-    <div
-      className="progress"
-      role="progressbar"
-      aria-valuemin={0}
-      aria-valuemax={max}
-      aria-valuenow={value}
-      aria-valuetext={label}
-      aria-label={label}
-    >
-      <div className="progress__fill" style={{ width: `${pct}%` }} />
-    </div>
-  );
-}
-
-function Stats({ items }: { items: [string, ReactNode][] }) {
-  return (
-    <dl className="stats">
-      {items.map(([k, v]) => (
-        <div key={k}>
-          <dt>{k}</dt>
-          <dd>{v}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function Table({
-  caption,
-  head,
-  rows,
-  empty,
-}: {
-  caption: string;
-  head: string[];
-  rows: ReactNode[][];
-  empty: string;
-}) {
-  if (rows.length === 0) return <p className="status-empty">{empty}</p>;
-  return (
-    // Focusable so keyboard users can scroll a wide table on a narrow screen.
-    <div className="table-scroll" tabIndex={0} role="region" aria-label={caption}>
-      <table className="places status-table">
-        <caption>{caption}</caption>
-        <thead>
-          <tr>
-            {head.map((h) => (
-              <th key={h} scope="col">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              {r.map((c, j) => (
-                <td key={j}>{c}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function Time({ iso, now }: { iso: string | null; now: number }) {
-  if (!iso) return <>–</>;
-  return (
-    <time dateTime={iso} title={when(iso)}>
-      {relative(iso, now)}
-    </time>
   );
 }
 

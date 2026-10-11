@@ -57,7 +57,7 @@ body {
    is too close to the text colour (under 3:1) to mark a link on its own
    (WCAG 1.4.1, axe link-in-text-block). That is paragraphs and every link in
    the footer's credits, which run on as one line of text: the source links
-   and "Pipeline status" and "Privacy" after About (#212). Hover and keyboard
+   and "Dataset details" and "Privacy" after About (#212). Hover and keyboard
    focus underline. */
 a {
   color: var(--accent);
@@ -65,6 +65,7 @@ a {
 }
 p a,
 .credits a,
+.dataset-facts a,
 a:not(.brand):hover,
 a:not(.brand):focus-visible,
 .link-button:hover,
@@ -1316,7 +1317,7 @@ select {
   }
 }
 
-/* Pipeline status page (/status). */
+/* Dataset details page (/datasets). */
 /* A long document that scrolls, unlike the search view's fixed viewport. */
 .app.status-page {
   height: auto;
@@ -1595,6 +1596,7 @@ details.status-error > summary {
 }
 .status-now {
   border-left: 4px solid var(--accent);
+  padding-left: 12px;
 }
 .status-now__line,
 .status-ocr__line {
@@ -1707,6 +1709,37 @@ details.status-error > summary {
 .terms dd {
   display: inline;
   margin: 0;
+}
+/* Dataset details: one dataset's facts, a label column beside its text. */
+.status-intro {
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+.dataset-facts {
+  display: grid;
+  grid-template-columns: minmax(8em, max-content) 1fr;
+  gap: 6px 16px;
+  margin: 8px 0 12px;
+  line-height: 1.5;
+}
+.dataset-facts div {
+  display: contents;
+}
+.dataset-facts dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+.dataset-facts dd {
+  margin: 0;
+}
+@media (max-width: 600px) {
+  .dataset-facts {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .dataset-facts dd {
+    margin-bottom: 8px;
+  }
 }
 @media (min-width: 900px) {
   .steps {

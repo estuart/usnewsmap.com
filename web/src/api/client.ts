@@ -9,6 +9,7 @@ import type {
   Problem,
   Status,
   TitlesResponse,
+  Versions,
 } from "./types";
 
 /** API origin: same-origin (the API serves the site; the dev server proxies) unless configured. */
@@ -341,8 +342,10 @@ export const api = {
   // Always revalidate: /v1/meta is cacheable for 5 minutes, and after a
   // version change a cached copy would name the old version again.
   meta: (signal?: AbortSignal) => getJson<Meta>("/v1/meta", { signal, cache: "no-cache" }),
-  /** The pipeline status page's data; the API recomputes it at most once a minute. */
+  /** The dataset details page's data; the API recomputes it at most once a minute. */
   status: (signal?: AbortSignal) => getJson<Status>("/v1/status", { signal, cache: "no-cache" }),
+  /** Every index version the pipeline built, from the same reading as `/v1/status`. */
+  versions: (signal?: AbortSignal) => getJson<Versions>("/v1/versions", { signal, cache: "no-cache" }),
   places: (version: string, signal?: AbortSignal) =>
     getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, { signal }),
   /** Every newspaper of the version, for the newspaper filter (07 §7.13). */

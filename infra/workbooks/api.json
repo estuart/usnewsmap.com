@@ -481,7 +481,7 @@
     {
       "type": 1,
       "content": {
-        "json": "## Traffic\nPage views the web app reports through `POST /v1/beacon`, which the API forwards to `AppPageViews` (cloud role `usnm-web`). Each is a page name (`search`, `status`, `privacy`, `not-found`), never a path or query string. Referrers are origins only (`direct` for none, `internal` for the site itself). The country comes from the visitor's address at ingestion; Application Insights stores `0.0.0.0` in its place. Visitors with Do Not Track or Global Privacy Control, and crawlers, are not counted (`api.beacons` by outcome)."
+        "json": "## Traffic\nPage views the web app reports through `POST /v1/beacon`, which the API forwards to `AppPageViews` (cloud role `usnm-web`). Each is a page name (`search`, `datasets`, `privacy`, `not-found`; `datasets` was `status` before #294), never a path or query string. Referrers are origins only (`direct` for none, `internal` for the site itself). The country comes from the visitor's address at ingestion; Application Insights stores `0.0.0.0` in its place. Visitors with Do Not Track or Global Privacy Control, and crawlers, are not counted (`api.beacons` by outcome)."
       },
       "name": "traffic-title"
     },

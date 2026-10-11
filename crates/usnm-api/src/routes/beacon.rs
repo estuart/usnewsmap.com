@@ -34,7 +34,7 @@ pub const MAX_ORIGIN: usize = 253;
 /// `not-found` is any other path, so it has no URL.
 pub const ROUTES: [(&str, Option<&str>); 4] = [
     ("search", Some("/")),
-    ("status", Some("/status")),
+    ("datasets", Some("/datasets")),
     ("privacy", Some("/privacy")),
     ("not-found", None),
 ];
@@ -413,7 +413,8 @@ mod tests {
             "home",
             "Search",
             "search?q=gold",
-            "/status",
+            "/datasets",
+            "status",
         ] {
             assert!(validate(beacon(route), "usnewsmap.com").is_err(), "{route}");
         }
