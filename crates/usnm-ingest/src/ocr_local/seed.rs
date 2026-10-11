@@ -748,6 +748,13 @@ pub(super) async fn seed(
             ocr_damage::versions_path(&version)
         ),
     };
+    if list.metric_version != usnm_core::damage::VERSION {
+        bail!(
+            "{version}'s damage tables are metric v{}, this build scores v{}: run ocr-damage again",
+            list.metric_version,
+            usnm_core::damage::VERSION
+        );
+    }
     let tables: Tables = list
         .batches
         .into_iter()
@@ -1094,14 +1101,14 @@ pub(super) async fn seed(
         return Ok(report);
     }
     if !out.is_empty() {
-        if let Some(l) = lease {
-            l.check()?;
-        }
         let mut qr = QueueReport::default();
-        enqueue::send_all(curated, stores.queue, &run, now, out, &mut qr).await?;
+        enqueue::send_all(curated, stores.queue, lease, &run, now, out, &mut qr).await?;
         report.ledger = qr.ledger;
     }
     if !done_now.is_empty() {
+        if let Some(l) = lease {
+            l.check()?;
+        }
         let path = format!("{}/{run}.json", done_dir(&opts.plan));
         if !curated
             .put_new(&path, serde_json::to_vec(&done_now)?, "application/json")

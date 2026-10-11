@@ -66,45 +66,64 @@ pub fn message_language(detected: Option<&str>, title_languages: &[String]) -> O
         .or_else(|| title_languages.first().and_then(|l| iso(l)))
 }
 
-/// Send messages after writing their ledger rows.
+/// Record pages whose ledger rows are written but whose messages were
+/// never put, so they aren't outstanding; returns how many.
+async fn record_not_sent(
+    curated: &dyn ObjectStore,
+    run: &str,
+    rest: &[(Queued, OcrMessage)],
+) -> usize {
+    let at = Utc::now();
+    let rows: Vec<Outcome> = rest
+        .iter()
+        .map(|(q, _)| Outcome {
+            doc_id: q.doc_id.clone(),
+            outcome: NOT_SENT.to_owned(),
+            cause: None,
+            kind: None,
+            source: run.to_owned(),
+            at,
+            run: run.to_owned(),
+        })
+        .collect();
+    if let Err(w) = ledger::write_outcomes(curated, &rows, at, run).await {
+        tracing::error!(
+            error = %format!("{w:#}"),
+            pages = rows.len(),
+            "could not record the pages not sent; they stay outstanding until they time out"
+        );
+    }
+    rows.len()
+}
+
+/// Send messages after writing their ledger rows, checking the lock (when
+/// held) before the write and before each put.
 pub(super) async fn send_all(
     curated: &dyn ObjectStore,
     queue: &Arc<dyn Queue>,
+    lease: Option<&Lease>,
     run: &str,
     now: DateTime<Utc>,
     batch: Vec<(Queued, OcrMessage)>,
     report: &mut QueueReport,
 ) -> anyhow::Result<()> {
+    if let Some(l) = lease {
+        l.check()?;
+    }
     let rows: Vec<Queued> = batch.iter().map(|(q, _)| q.clone()).collect();
     report.ledger = ledger::write_queued(curated, &rows, now, run).await?;
     for (i, (q, m)) in batch.iter().enumerate() {
+        if let Some(Err(e)) = lease.map(Lease::check) {
+            let n = record_not_sent(curated, run, &batch[i..]).await;
+            return Err(e.context(format!("{n} pages recorded as not sent")));
+        }
         if let Err(e) = queue.send(queue_for(m.reason), &m.encode()).await {
             // The pages after this one never went out: not outstanding.
-            let at = Utc::now();
-            let rest: Vec<Outcome> = batch[i + 1..]
-                .iter()
-                .map(|(q, _)| Outcome {
-                    doc_id: q.doc_id.clone(),
-                    outcome: NOT_SENT.to_owned(),
-                    cause: None,
-                    kind: None,
-                    source: run.to_owned(),
-                    at,
-                    run: run.to_owned(),
-                })
-                .collect();
-            if let Err(w) = ledger::write_outcomes(curated, &rest, at, run).await {
-                tracing::error!(
-                    error = %format!("{w:#}"),
-                    pages = rest.len(),
-                    "could not record the pages not sent; they stay outstanding until they time out"
-                );
-            }
+            let n = record_not_sent(curated, run, &batch[i + 1..]).await;
             return Err(e.context(format!(
-                "queueing {} ({} pages after it are recorded as not sent; this one's ledger row \
+                "queueing {} ({n} pages after it are recorded as not sent; this one's ledger row \
                  is written and may have gone out: --include-outstanding queues it again)",
-                q.doc_id,
-                rest.len()
+                q.doc_id
             )));
         }
         report.queued += 1;
@@ -172,20 +191,27 @@ pub struct EnqueueOptions {
     pub dry_run: bool,
 }
 
-/// Run `f` under the `ocr-sync` lock, unless it is a dry run.
-async fn locked<T>(
+/// Take the `ocr-sync` lock, unless it is a dry run.
+async fn take(state: &State, owner: &str, dry_run: bool) -> anyhow::Result<Option<Lease>> {
+    Ok(if dry_run {
+        None
+    } else {
+        Some(Lease::take(state, owner).await?)
+    })
+}
+
+/// Give the lock back, if held, and return the run's result.
+async fn release<T>(
     state: &State,
-    dry_run: bool,
-    f: impl std::future::Future<Output = anyhow::Result<T>>,
+    owner: &str,
+    lease: Option<Lease>,
+    result: anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    if dry_run {
-        return f.await;
-    }
-    let owner = crate::owner_id();
-    let lease = Lease::take(state, &owner).await?;
-    let result = f.await;
+    let Some(lease) = lease else {
+        return result;
+    };
     drop(lease);
-    let unlocked = state.unlock(super::LOCK, &owner).await;
+    let unlocked = state.unlock(super::LOCK, owner).await;
     let out = result?;
     unlocked?;
     Ok(out)
@@ -199,20 +225,19 @@ pub async fn enqueue(
     queue: &Arc<dyn Queue>,
     opts: &EnqueueOptions,
 ) -> anyhow::Result<QueueReport> {
-    locked(
-        state,
-        opts.dry_run,
-        enqueue_unlocked(state, curated, reference, queue, opts),
-    )
-    .await
+    let owner = crate::owner_id();
+    let lease = take(state, &owner, opts.dry_run).await?;
+    let result = enqueue_locked(state, curated, reference, queue, opts, lease.as_ref()).await;
+    release(state, &owner, lease, result).await
 }
 
-async fn enqueue_unlocked(
+async fn enqueue_locked(
     state: &State,
     curated: &dyn ObjectStore,
     reference: &dyn ObjectStore,
     queue: &Arc<dyn Queue>,
     opts: &EnqueueOptions,
+    lease: Option<&Lease>,
 ) -> anyhow::Result<QueueReport> {
     if opts.pages.len() > MAX_PAGES {
         bail!(
@@ -322,7 +347,7 @@ async fn enqueue_unlocked(
         return Ok(report);
     }
     if !out.is_empty() {
-        send_all(curated, queue, &run, now, out, &mut report).await?;
+        send_all(curated, queue, lease, &run, now, out, &mut report).await?;
     }
     tracing::info!(queued = report.queued, skipped = ?report.skipped, ledger = ?report.ledger, "ocr-enqueue finished");
     Ok(report)
@@ -377,20 +402,19 @@ pub async fn requeue(
     queue: &Arc<dyn Queue>,
     opts: &RequeueOptions,
 ) -> anyhow::Result<QueueReport> {
-    locked(
-        state,
-        opts.dry_run,
-        requeue_unlocked(state, curated, reference, queue, opts),
-    )
-    .await
+    let owner = crate::owner_id();
+    let lease = take(state, &owner, opts.dry_run).await?;
+    let result = requeue_locked(state, curated, reference, queue, opts, lease.as_ref()).await;
+    release(state, &owner, lease, result).await
 }
 
-async fn requeue_unlocked(
+async fn requeue_locked(
     state: &State,
     curated: &dyn ObjectStore,
     reference: &dyn ObjectStore,
     queue: &Arc<dyn Queue>,
     opts: &RequeueOptions,
+    lease: Option<&Lease>,
 ) -> anyhow::Result<QueueReport> {
     const CAUSES: [&str; 4] = ["dequeue_count", "invalid", "permanent", "unroutable"];
     if !CAUSES.contains(&opts.cause.as_str()) {
@@ -496,7 +520,7 @@ async fn requeue_unlocked(
         return Ok(report);
     }
     if !out.is_empty() {
-        send_all(curated, queue, &run, now, out, &mut report).await?;
+        send_all(curated, queue, lease, &run, now, out, &mut report).await?;
     }
     tracing::info!(queued = report.queued, skipped = ?report.skipped, ledger = ?report.ledger, "ocr-requeue finished");
     Ok(report)

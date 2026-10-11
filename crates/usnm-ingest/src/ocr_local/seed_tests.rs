@@ -693,3 +693,24 @@ async fn the_automatic_window_follows_the_imports() {
         .unwrap();
     assert!((1400..=1440).contains(&r.window), "{}", r.window);
 }
+
+#[tokio::test]
+async fn tables_of_another_metric_version_are_refused() {
+    let fx = fixture().await;
+    let path = ocr_damage::versions_path("v1");
+    let mut list: VersionList =
+        serde_json::from_slice(&fx.curated.get(&path).await.unwrap().unwrap()).unwrap();
+    list.metric_version += 1;
+    fx.curated
+        .put(&path, serde_json::to_vec(&list).unwrap(), "x")
+        .await
+        .unwrap();
+    let err = fx
+        .seed(&Options {
+            dry_run: true,
+            ..plan(100)
+        })
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("run ocr-damage again"));
+}

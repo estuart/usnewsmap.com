@@ -703,16 +703,26 @@ async fn run_locked(
         last_run: counts,
         totals,
         queues,
-        outstanding: if matches!(seeded, Some(Ok(_))) {
-            // Seeding wrote queued rows: read the ledger again.
-            ledger::load(stores.curated.as_ref())
-                .await?
-                .outstanding_count() as u64
-        } else {
-            let mut after = ctx.ledger.clone();
-            for o in written {
-                after.add_outcome(o);
-            }
+        outstanding: {
+            // Seeding may have written queued rows, even when it failed:
+            // read the ledger again.
+            let reread = match seeded {
+                Some(_) => match ledger::load(stores.curated.as_ref()).await {
+                    Ok(l) => Some(l),
+                    Err(e) => {
+                        tracing::warn!(error = %format!("{e:#}"), "ledger not read again after seeding");
+                        None
+                    }
+                },
+                None => None,
+            };
+            let after = reread.unwrap_or_else(|| {
+                let mut after = ctx.ledger.clone();
+                for o in written {
+                    after.add_outcome(o);
+                }
+                after
+            });
             after.outstanding_count() as u64
         },
         parts_left: left.len() as u64,
