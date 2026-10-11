@@ -377,6 +377,7 @@ struct Run {
     counts: Counts,
     status: Mutex<Status>,
     status_path: PathBuf,
+    status_write: Mutex<()>,
     index: Lines,
     failures: Lines,
     started: Instant,
@@ -415,6 +416,9 @@ impl Run {
     }
 
     fn write_status(&self, state: &str) {
+        // One write at a time: the ticker and the page tasks share the
+        // `.tmp` file.
+        let _one = self.status_write.lock().expect("status write lock");
         let s = self.snapshot(state);
         let write = || -> anyhow::Result<()> {
             let mut tmp = self.status_path.as_os_str().to_owned();
@@ -547,8 +551,9 @@ pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
     };
     if opts.order == Order::Priority {
         // By issue, so an issue's pages stay together and its item JSON is
-        // asked for once: each issue goes in its best page's group. Stable,
-        // so issue order holds within each group.
+        // asked for once (even when its pages came from different batches):
+        // each issue goes in its best page's group, then issue and page
+        // order within the group.
         let mut best: std::collections::HashMap<(String, chrono::NaiveDate, u16), u8> =
             std::collections::HashMap::new();
         for r in &rows {
@@ -557,7 +562,10 @@ pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
                 .or_insert(u8::MAX);
             *e = (*e).min(priority(r));
         }
-        rows.sort_by_key(|r| best[&(r.lccn.clone(), r.date, r.edition)]);
+        rows.sort_by_cached_key(|r| {
+            let issue = (r.lccn.clone(), r.date, r.edition);
+            (best[&issue], issue, r.seq)
+        });
     }
     if let Some(l) = opts.limit {
         rows.truncate(l);
@@ -603,6 +611,7 @@ pub async fn run(
             ..Status::default()
         }),
         status_path: opts.out.join(format!("status-{t}.json")),
+        status_write: Mutex::new(()),
         index: Lines::open(&opts.out.join(format!("index-{t}.jsonl")))?,
         failures: Lines::open(&opts.out.join(format!("failures-{t}.jsonl")))?,
         started: Instant::now(),
@@ -678,7 +687,9 @@ pub async fn run(
     while let Some(r) = tasks.join_next().await {
         r?;
     }
+    // Stopped before the last write, so it can't put `running` back.
     ticker.abort();
+    let _ = ticker.await;
     let (state, error) = run
         .stop
         .lock()
@@ -872,6 +883,8 @@ mod tests {
             row("sn2", 1890, 1, "deu"),
             row("sn3", 1890, 1, "ces"),
         ];
+        // The German page came from another batch, which sorts first.
+        rows[1].batch = "aaa_other".into();
         prefetch::sort(&mut rows);
         let picked = select(rows, &Options::default());
         let ids: Vec<String> = picked.iter().map(|r| r.doc_id.clone()).collect();

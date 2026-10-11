@@ -114,7 +114,7 @@ fi
 if $CONFIGURE; then
   [ -n "$MANIFEST" ] || die "--configure needs --manifest"
   [[ $MANIFEST == /tank/ocr/manifests/* ]] || die "--manifest must be under /tank/ocr/manifests"
-  [[ $RESOLUTION == full || $RESOLUTION =~ ^scaled:[0-9]{1,2}$ ]] || die "--resolution: full or scaled:<n>"
+  [[ $RESOLUTION == full || $RESOLUTION =~ ^scaled:[1-9][0-9]?$ ]] || die "--resolution: full or scaled:<1-99>"
   [[ $ORDER == priority || $ORDER == issue ]] || die "--order: priority or issue"
   [ -z "$MAX_BYTES" ] || [[ $MAX_BYTES =~ ^[0-9]+$ ]] || die "--max-total-bytes: a number of bytes"
   [[ $CONCURRENCY =~ ^[1-4]$ ]] || die "--concurrency: 1 to 4"
