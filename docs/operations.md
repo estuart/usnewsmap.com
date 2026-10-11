@@ -110,8 +110,8 @@ The pool numbers are a reading once a minute, not an average, so a short burst c
 
 A second searcher (a Quickwit cluster, #239) is deferred until either of these holds for a week (#238, 10 October 2026): the p90 of the wait for a computation slot (`api.search_queue_wait_seconds`) above 3 s, or a replica's CPU above 3 vCPU outside releases. With alert emails set, two severity 4 alerts watch them (08 §8.1.2):
 
-- _Search capacity: searches waiting for a slot_ emails once a day while each of the last two days had more than 10% of its searches (at least 20) wait over 3 s. Seven emails in a row are the week.
-- `alert-usnm-api-replica-cpu-<env>` emails when the replicas' CPU averages over 3 vCPU for 6 hours, and again when it clears (prod only: where the app scales to zero, a window could hold only a start's samples).
+- _Search capacity: searches waiting for a slot_ emails once a day while each of the last two days had more than 10% of its searches (at least 20) wait over 3 s. The first email covers two days and each later one adds a day, so six emails in a row are the week.
+- `alert-usnm-api-replica-cpu-<env>` emails when the replicas' CPU averages over 3 vCPU for 6 hours, and again when it clears (prod only: where the app scales to zero, a window could hold only a start's samples). It averages the replicas together, so with a second replica sharing the load a hot one can sit under it: the workbook's per-replica chart is the record.
 
 An alert can't look back a week (a log search alert reads at most 2 days), so judge the week in the "usnewsmap API" workbook's Search capacity section, which covers the last 14 days by day whatever the time range. Leave out days with a release or a new index version (every search is cold then), and check `scripts/logs.sh prod searcher-threads 24h` for whether the search pool or the main runtime is the one that's full. If it holds, the next step is moving Quickwit out of the API's replica (#267), then the cluster in #239.
 
