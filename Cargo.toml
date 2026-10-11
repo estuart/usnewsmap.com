@@ -1,11 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/usnm-alto",
     "crates/usnm-core",
     "crates/usnm-search",
     "crates/usnm-store",
     "crates/usnm-api",
     "crates/usnm-ingest",
+    "crates/usnm-ocr-contract",
     "crates/usnm-ocr-worker",
     "crates/usnm-overlay",
     "crates/usnm-state",
@@ -19,7 +21,9 @@ rust-version = "1.95"
 repository = "https://github.com/tgoodyear/usnewsmap.com"
 
 [workspace.dependencies]
+usnm-alto = { path = "crates/usnm-alto" }
 usnm-core = { path = "crates/usnm-core" }
+usnm-ocr-contract = { path = "crates/usnm-ocr-contract" }
 usnm-overlay = { path = "crates/usnm-overlay" }
 usnm-search = { path = "crates/usnm-search" }
 usnm-store = { path = "crates/usnm-store" }
@@ -44,6 +48,8 @@ http-body-util = "0.1"
 futures = "0.3"
 governor = "0.10"
 httpdate = "1"
+# The bounded ALTO reader (usnm-alto): streaming, no DTD processing.
+quick-xml = "0.42"
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 moka = { version = "0.12", features = ["future"] }
 # Telemetry to Application Insights (usnm-telemetry). The opentelemetry crates move together;

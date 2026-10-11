@@ -50,6 +50,24 @@ pub enum StoreError {
     AlreadyExists(String),
 }
 
+/// One object as a listing shows it ([`ObjectStore::list_info`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectInfo {
+    pub path: String,
+    pub size: u64,
+    /// Changes whenever the object is written: a conditional read or delete
+    /// ([`ObjectStore::get_if_match`], [`ObjectStore::delete_if_match`])
+    /// acts only on the bytes the listing saw.
+    pub etag: String,
+    /// When the store created the object, by the store's clock (Blob
+    /// Storage's `Creation-Time`; a local file's modification time).
+    pub created: Option<std::time::SystemTime>,
+}
+
+fn unsupported(op: &str) -> StoreError {
+    StoreError::Io(format!("{op} is not supported by this store"))
+}
+
 #[async_trait]
 pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     /// Read a whole object; `None` if it doesn't exist.
@@ -124,6 +142,35 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     /// The paths of the objects under `prefix` (a directory-like path
     /// without a trailing `/`), sorted. Only the search log (`usnm-api`) uses this.
     async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError>;
+
+    /// The objects under `prefix` with their size, ETag and creation time,
+    /// sorted by path. The OCR pickup (`usnm-ingest ocr-sync`) checks sizes
+    /// before it reads anything.
+    async fn list_info(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
+        let _ = prefix;
+        Err(unsupported("list_info"))
+    }
+
+    /// Read an object only while its ETag is still `etag`, and only if it is
+    /// at most `max_bytes`: `None` if it is gone or was written again since.
+    /// Fails with [`StoreError::TooLarge`] past `max_bytes`, without reading
+    /// the rest.
+    async fn get_if_match(
+        &self,
+        path: &str,
+        etag: &str,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let _ = (path, etag, max_bytes);
+        Err(unsupported("get_if_match"))
+    }
+
+    /// Delete an object only while its ETag is still `etag`. Returns whether
+    /// this call deleted it: `false` if it is gone or was written again.
+    async fn delete_if_match(&self, path: &str, etag: &str) -> Result<bool, StoreError> {
+        let _ = (path, etag);
+        Err(unsupported("delete_if_match"))
+    }
 }
 
 /// Open a store: an `https://{account}.blob.core.windows.net/{container}[/prefix]`

@@ -1652,6 +1652,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2538,6 +2547,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "usnm-alto"
+version = "0.1.0"
+dependencies = [
+ "quick-xml",
+ "thiserror",
+]
+
+[[package]]
 name = "usnm-api"
 version = "0.1.0"
 dependencies = [
@@ -2627,6 +2644,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "usnm-ocr-contract"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "usnm-core",
+]
+
+[[package]]
 name = "usnm-ocr-worker"
 version = "0.1.0"
 dependencies = [
@@ -2650,6 +2679,7 @@ dependencies = [
  "tracing",
  "usnm-core",
  "usnm-ingest",
+ "usnm-ocr-contract",
  "usnm-overlay",
  "usnm-store",
  "usnm-telemetry",

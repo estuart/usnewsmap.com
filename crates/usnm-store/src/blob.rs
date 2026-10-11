@@ -9,11 +9,11 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, IF_NONE_MATCH};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, IF_MATCH, IF_NONE_MATCH};
 use reqwest::{Method, StatusCode, Url};
 
 use crate::credential::Credential;
-use crate::{validate_path, ByteStream, ObjectStore, StoreError, MAX_OBJECT_BYTES};
+use crate::{validate_path, ByteStream, ObjectInfo, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 
 /// Bytes per block of a streamed upload (`put_stream`): 50,000 blocks of
 /// 8 MiB allow 390 GiB, and the largest batch archive is 3.8 GB.
@@ -159,6 +159,18 @@ impl BlobStore {
 }
 
 /// The text of each `<tag>…</tag>` element, with XML's five entities decoded.
+/// Each `<tag>…</tag>` element's raw content, entities left as they are:
+/// for an element whose children are read with [`xml_values`], so text is
+/// decoded once and a name holding `&lt;/Name&gt;` stays text.
+fn xml_elements<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    xml.split(open.as_str())
+        .skip(1)
+        .filter_map(|rest| rest.split_once(close.as_str()).map(|(v, _)| v))
+        .collect()
+}
+
 fn xml_values(xml: &str, tag: &str) -> std::vec::IntoIter<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -182,6 +194,27 @@ fn error_code(resp: &reqwest::Response) -> &str {
         .get("x-ms-error-code")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
+}
+
+/// One `<Blob>` of a List Blobs response: its name, size, ETag and
+/// creation time. `None` for an entry without a name or size.
+fn blob_info(blob_xml: &str) -> Option<(String, u64, String, Option<SystemTime>)> {
+    let one = |tag: &str| xml_values(blob_xml, tag).next();
+    let name = one("Name")?;
+    let size = one("Content-Length")?.trim().parse().ok()?;
+    let etag = one("Etag").unwrap_or_default();
+    let created = one("Creation-Time").and_then(|t| httpdate::parse_http_date(t.trim()).ok());
+    Some((name, size, etag, created))
+}
+
+/// An ETag as an `If-Match` value: quoted, as the service sends it in headers
+/// (List Blobs gives it bare).
+fn quoted(etag: &str) -> String {
+    if etag.starts_with('"') {
+        etag.to_owned()
+    } else {
+        format!("\"{etag}\"")
+    }
 }
 
 fn transport(op: &'static str, path: &str, e: reqwest::Error) -> StoreError {
@@ -441,8 +474,95 @@ impl ObjectStore for BlobStore {
         }
     }
 
-    /// List Blobs, following continuation markers.
     async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        let mut names: Vec<String> = self
+            .list_blobs(prefix)
+            .await?
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    async fn list_info(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
+        let mut out = Vec::new();
+        for (path, xml) in self.list_blobs(prefix).await? {
+            let (_, size, etag, created) = blob_info(&xml)
+                .ok_or_else(|| StoreError::Io(format!("list `{prefix}`: no size for `{path}`")))?;
+            out.push(ObjectInfo {
+                path,
+                size,
+                etag,
+                created,
+            });
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(out)
+    }
+
+    async fn get_if_match(
+        &self,
+        path: &str,
+        etag: &str,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let mut resp = self
+            .request(Method::GET, path)
+            .await?
+            .header(IF_MATCH, quoted(etag))
+            .send()
+            .await
+            .map_err(|e| transport("get", path, e))?;
+        match resp.status() {
+            StatusCode::NOT_FOUND | StatusCode::PRECONDITION_FAILED => return Ok(None),
+            s if !s.is_success() => {
+                return Err(StoreError::Http {
+                    op: "get",
+                    path: path.into(),
+                    status: s.as_u16(),
+                })
+            }
+            _ => {}
+        }
+        let max = max_bytes.min(MAX_OBJECT_BYTES);
+        if resp.content_length().is_some_and(|n| n > max) {
+            return Err(StoreError::TooLarge(path.into()));
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
+            if (body.len() + chunk.len()) as u64 > max {
+                return Err(StoreError::TooLarge(path.into()));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Some(body))
+    }
+
+    async fn delete_if_match(&self, path: &str, etag: &str) -> Result<bool, StoreError> {
+        let resp = self
+            .request(Method::DELETE, path)
+            .await?
+            .header(IF_MATCH, quoted(etag))
+            .send()
+            .await
+            .map_err(|e| transport("delete", path, e))?;
+        match resp.status() {
+            StatusCode::ACCEPTED => Ok(true),
+            StatusCode::NOT_FOUND | StatusCode::PRECONDITION_FAILED => Ok(false),
+            s => Err(StoreError::Http {
+                op: "delete",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+        }
+    }
+}
+
+impl BlobStore {
+    /// List Blobs under `prefix`, following continuation markers: each
+    /// blob's path (relative to the store) and its `<Blob>` element.
+    async fn list_blobs(&self, prefix: &str) -> Result<Vec<(String, String)>, StoreError> {
         validate_path(prefix)?;
         // `base` is `{origin}/{container}[/{store prefix}]`.
         let (container, store_prefix) = match self.base.split_once("://") {
@@ -463,7 +583,7 @@ impl ObjectStore for BlobStore {
         } else {
             format!("{store_prefix}/")
         };
-        let mut names = Vec::new();
+        let mut blobs = Vec::new();
         let mut marker = String::new();
         loop {
             let token = self.credential.token().await?;
@@ -496,10 +616,13 @@ impl ObjectStore for BlobStore {
                 .text()
                 .await
                 .map_err(|e| transport("list", prefix, e))?;
-            for name in xml_values(&xml, "Name") {
+            for blob in xml_elements(&xml, "Blob") {
+                let Some(name) = xml_values(blob, "Name").next() else {
+                    continue;
+                };
                 if let Some(path) = name.strip_prefix(&strip) {
                     if validate_path(path).is_ok() {
-                        names.push(path.to_owned());
+                        blobs.push((path.to_owned(), blob.to_owned()));
                     }
                 }
             }
@@ -508,8 +631,7 @@ impl ObjectStore for BlobStore {
                 break;
             }
         }
-        names.sort();
-        Ok(names)
+        Ok(blobs)
     }
 }
 
@@ -541,6 +663,117 @@ mod tests {
         );
         assert_eq!(xml_values(xml, "NextMarker").next().as_deref(), Some("m1"));
         assert_eq!(xml_values("<NextMarker />", "NextMarker").next(), None);
+    }
+
+    #[test]
+    fn list_entries_with_properties() {
+        let xml = "<EnumerationResults><Blobs><Blob><Name>pages/a.parquet</Name><Properties>\
+                   <Creation-Time>Fri, 09 Oct 2026 21:04:30 GMT</Creation-Time>\
+                   <Last-Modified>Fri, 09 Oct 2026 21:05:00 GMT</Last-Modified>\
+                   <Etag>0x8DCE1</Etag><Content-Length>1234</Content-Length></Properties></Blob>\
+                   <Blob><Name>pages/b</Name><Properties /></Blob></Blobs></EnumerationResults>";
+        let blobs: Vec<&str> = xml_elements(xml, "Blob");
+        assert_eq!(blobs.len(), 2);
+        let (name, size, etag, created) = blob_info(blobs[0]).unwrap();
+        assert_eq!(
+            (name.as_str(), size, etag.as_str()),
+            ("pages/a.parquet", 1234, "0x8DCE1")
+        );
+        assert_eq!(
+            created,
+            Some(httpdate::parse_http_date("Fri, 09 Oct 2026 21:04:30 GMT").unwrap())
+        );
+        assert_eq!(blob_info(blobs[1]), None, "no size");
+        // A name holding escaped markup stays one name: decoded once.
+        let sneaky = "<Blobs><Blob><Name>pages/a&lt;/Name&gt;&lt;Content-Length&gt;1</Name>\
+                      <Properties><Content-Length>99</Content-Length></Properties></Blob></Blobs>";
+        let b = xml_elements(sneaky, "Blob");
+        let (name, size, _, _) = blob_info(b[0]).unwrap();
+        assert_eq!(
+            (name.as_str(), size),
+            ("pages/a</Name><Content-Length>1", 99)
+        );
+        assert!(validate_path(&name).is_err());
+        assert_eq!(quoted("0x8DCE1"), "\"0x8DCE1\"");
+        assert_eq!(quoted("\"0x8DCE1\""), "\"0x8DCE1\"");
+    }
+
+    /// A stand-in container holding one blob with ETag `"e1"`: List Blobs
+    /// with properties, and Get and Delete Blob honouring `If-Match`.
+    async fn conditional_service() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use axum::http::{HeaderMap, StatusCode as S};
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (l1, l2) = (log.clone(), log.clone());
+        let matches =
+            |h: &HeaderMap| h.get("if-match").and_then(|v| v.to_str().ok()) == Some("\"e1\"");
+        let app = axum::Router::new()
+            .route(
+                "/c",
+                axum::routing::get(|| async {
+                    "<EnumerationResults><Blobs><Blob><Name>out/pages/a.parquet</Name><Properties>\
+                     <Creation-Time>Fri, 09 Oct 2026 21:04:30 GMT</Creation-Time><Etag>e1</Etag>\
+                     <Content-Length>5</Content-Length></Properties></Blob></Blobs>\
+                     <NextMarker /></EnumerationResults>"
+                }),
+            )
+            .route(
+                "/c/out/pages/a.parquet",
+                axum::routing::get(move |h: HeaderMap| {
+                    l1.lock().unwrap().push("get".into());
+                    async move {
+                        if matches(&h) {
+                            (S::OK, "hello").into_response()
+                        } else {
+                            S::PRECONDITION_FAILED.into_response()
+                        }
+                    }
+                })
+                .delete(move |h: HeaderMap| {
+                    l2.lock().unwrap().push("delete".into());
+                    async move {
+                        if matches(&h) {
+                            S::ACCEPTED
+                        } else {
+                            S::PRECONDITION_FAILED
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}/c/out"), log)
+    }
+
+    use axum::response::IntoResponse;
+
+    #[tokio::test]
+    async fn conditional_reads_and_deletes() {
+        let (url, log) = conditional_service().await;
+        let store = BlobStore::new(&url, cred()).unwrap();
+        let listed = store.list_info("pages").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        let a = &listed[0];
+        assert_eq!(
+            (a.path.as_str(), a.size, a.etag.as_str()),
+            ("pages/a.parquet", 5, "e1")
+        );
+        assert!(a.created.is_some());
+        assert_eq!(
+            store.get_if_match(&a.path, &a.etag, 5).await.unwrap(),
+            Some(b"hello".to_vec())
+        );
+        assert!(matches!(
+            store.get_if_match(&a.path, &a.etag, 4).await,
+            Err(StoreError::TooLarge(_))
+        ));
+        assert_eq!(store.get_if_match(&a.path, "e2", 5).await.unwrap(), None);
+        assert!(!store.delete_if_match(&a.path, "e2").await.unwrap());
+        assert!(store.delete_if_match(&a.path, &a.etag).await.unwrap());
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["get", "get", "get", "delete", "delete"]
+        );
     }
 
     #[test]

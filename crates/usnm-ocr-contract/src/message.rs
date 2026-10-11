@@ -294,6 +294,15 @@ fn is_name(s: &str, max: usize, extra: &[u8]) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || extra.contains(&b))
 }
 
+/// An engine id as 13 §13.8.1 defines it: `[a-z0-9][a-z0-9_.+-]{0,63}`.
+pub fn is_engine_id(s: &str) -> bool {
+    let b = s.as_bytes();
+    (1..=64).contains(&b.len())
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter()
+            .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.+-".contains(&c))
+}
+
 impl DeadLetter {
     /// A v2 dead letter for `cause`.
     #[allow(clippy::too_many_arguments)]
@@ -369,9 +378,16 @@ impl DeadLetter {
                 if cause == Cause::Invalid && self.message.is_some() {
                     return Err(e("an invalid message is never kept"));
                 }
+                // A permanent or unroutable dead letter is about a page that
+                // passed its checks, so it keeps the message. A dequeue-count
+                // one may not: an invalid payload received too often has no
+                // safe message to keep.
+                if matches!(cause, Cause::Permanent | Cause::Unroutable) && self.message.is_none() {
+                    return Err(e("message"));
+                }
                 let engines_ok = match (cause, &self.engines) {
                     (Cause::Unroutable, Some(ids)) => {
-                        (1..=16).contains(&ids.len()) && ids.iter().all(|i| is_name(i, 64, b"-._"))
+                        (1..=16).contains(&ids.len()) && ids.iter().all(|i| is_engine_id(i))
                     }
                     (Cause::Unroutable, None) => false,
                     (_, ids) => ids.is_none(),
@@ -588,6 +604,25 @@ mod tests {
         let mut d = dead(Cause::Unroutable);
         d.engines = Some(vec![]);
         assert!(d.validate().is_err());
+        // Engine ids by 13 §13.8.1: lower case, `+` allowed.
+        let mut d = dead(Cause::Unroutable);
+        d.engines = Some(vec!["tesseract-5.5+deu_latf".into()]);
+        assert!(d.validate().is_ok());
+        for bad in ["Tesseract-5.5", "-x", "a b", "a/b", &"x".repeat(65)] {
+            let mut d = dead(Cause::Unroutable);
+            d.engines = Some(vec![bad.to_owned()]);
+            assert!(d.validate().is_err(), "{bad}");
+        }
+        // Permanent and unroutable dead letters are about a checked page:
+        // they keep its message. A dequeue-count one may have none.
+        for cause in [Cause::Permanent, Cause::Unroutable] {
+            let mut d = dead(cause);
+            d.message = None;
+            assert_eq!(d.validate(), Err(DeadLetterError("message")), "{cause:?}");
+        }
+        let mut d = dead(Cause::DequeueCount);
+        d.message = None;
+        assert!(d.validate().is_ok());
         let mut d = dead(Cause::Permanent);
         d.error = "e".repeat(MAX_ERROR_CHARS + 1);
         assert!(d.validate().is_err());

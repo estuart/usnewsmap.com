@@ -76,7 +76,7 @@ image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.jso
 fixtures='^fixtures/'
 # The OCR worker's release: the worker, the crates it uses, the workspace's
 # build files, its Tesseract image and the release script.
-ocr_worker='^(crates/(usnm-ocr-worker|usnm-core|usnm-overlay|usnm-store|usnm-telemetry)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|ocr/engines/tesseract/|scripts/ci/ocr-worker-release\.sh$)'
+ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-contract|usnm-core|usnm-overlay|usnm-store|usnm-telemetry)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|ocr/engines/tesseract/|scripts/ci/ocr-worker-release\.sh$)'
 for part in rust quickwit web image fixtures ocr_worker; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done

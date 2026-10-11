@@ -6,7 +6,9 @@
 
 pub mod engine;
 pub mod loc;
-pub mod message;
+/// The work message and dead letter, from `usnm-ocr-contract` (shared
+/// with the cloud jobs that fill and drain the queues).
+pub use usnm_ocr_contract::message;
 pub mod queue;
 pub mod telemetry;
 pub mod worker;
