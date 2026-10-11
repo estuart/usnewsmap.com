@@ -184,6 +184,9 @@ pub struct AppState {
     /// Set while the first version warms up after a start: `/readyz` says
     /// not ready (see [`spawn_startup_warm_up`]).
     pub warming: AtomicBool,
+    /// Set while a warm-up after a searcher restart runs (see
+    /// [`spawn_searcher_warm_up`]).
+    pub searcher_warming: AtomicBool,
     /// The anonymous search log (`None` records nothing).
     pub search_log: Option<Arc<searchlog::SearchLog>>,
 }
@@ -225,6 +228,7 @@ impl AppState {
             metrics: telemetry::Metrics::global(),
             page_views: None,
             warming: AtomicBool::new(false),
+            searcher_warming: AtomicBool::new(false),
             search_log: None,
         }
     }
@@ -431,6 +435,28 @@ pub fn spawn_startup_warm_up(state: Arc<AppState>) -> tokio::task::JoinHandle<()
         }
         state.warming.store(false, Ordering::Relaxed);
     })
+}
+
+/// Warm up the serving version again after the searcher restarted under
+/// this running replica (its own app, #267, or the sidecar alone): the new
+/// searcher's caches are empty. The replica stays ready; it is warm itself.
+/// `None` when a start's warm-up or another of these is still running, which
+/// warms the new searcher anyway.
+pub fn spawn_searcher_warm_up(state: Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
+    if state.warming.load(Ordering::Relaxed)
+        || state
+            .searcher_warming
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+    {
+        tracing::info!("the searcher restarted during a warm-up; not starting another");
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let snapshot = state.snapshot.load_full();
+        prewarm::run(&state, snapshot, prewarm::Trigger::SearcherRestart).await;
+        state.searcher_warming.store(false, Ordering::Release);
+    }))
 }
 
 /// Poll `current.json` every `refresh_interval` (no-op without a loader), and

@@ -113,7 +113,41 @@ A second searcher (a Quickwit cluster, #239) is deferred until either of these h
 - _Search capacity: searches waiting for a slot_ emails once a day while each of the last two days had more than 10% of its searches (at least 20) wait over 3 s. The first email covers two days and each later one adds a day, so six emails in a row are the week.
 - `alert-usnm-api-replica-cpu-<env>` emails when the replicas' CPU averages over 3 vCPU for 6 hours, and again when it clears (prod only: where the app scales to zero, a window could hold only a start's samples). It averages the replicas together, so with a second replica sharing the load a hot one can sit under it: the workbook's per-replica chart is the record.
 
-An alert can't look back a week (a log search alert reads at most 2 days), so judge the week in the "usnewsmap API" workbook's Search capacity section, which covers the last 14 days by day whatever the time range. Leave out days with a release or a new index version (every search is cold then), and check `scripts/logs.sh prod searcher-threads 24h` for whether the search pool or the main runtime is the one that's full. If it holds, the next step is moving Quickwit out of the API's replica (#267), then the cluster in #239.
+An alert can't look back a week (a log search alert reads at most 2 days), so judge the week in the "usnewsmap API" workbook's Search capacity section, which covers the last 14 days by day whatever the time range. Leave out days with a release or a new index version (every search is cold then), and check `scripts/logs.sh prod searcher-threads 24h` for whether the search pool or the main runtime is the one that's full. If it holds, the next step is moving Quickwit out of the API's replica (#267, [the searcher app](#searcher-app)), then the cluster in #239.
+
+## Searcher app
+
+By default the Quickwit searcher is a sidecar in each API replica, so every new API image, which also carries the site, starts a new searcher with empty caches and a warm-up (#267). `USNM_SEARCHER_APP` runs the searcher as its own Container App instead, `usnm-searcher-ca-<env>`, which API and web deploys never restart. It is off until it has been measured; whether to keep it is pending those numbers (below).
+
+**What it deploys** (`infra/modules/containerapp.bicep`). The searcher app runs the sidecar's container: the same image, `infra/quickwit/searcher.yaml`, 3.75 vCPU / 7.5 GiB, thread counts and startup and liveness probes, plus a readiness probe on `/health/readyz`. It listens on all interfaces and advertises its replica's address, and still runs alone (its own cluster id, no peers). Its ingress is internal only: `http://usnm-searcher-ca-<env>` (port 80, to Quickwit's 7280) inside the environment. It runs one replica, always in prod (elsewhere it scales to zero with the API): a second would start cold and split the cache hits; more search capacity is a cluster (#239). Its system-assigned identity has Blob Data Reader on `qw-index` alone, as the sidecar's had, and the API's user-assigned identity pulls the image. The API app keeps the `api` container alone (0.25 vCPU / 0.5 GiB), loses its system-assigned identity and that role, and its `USNM_QUICKWIT_URL` names the searcher app. The replica CPU alert and the workbook's replica CPU chart follow the searcher app.
+
+**Turn it on:**
+
+```sh
+scripts/settings.sh prod USNM_SEARCHER_APP true
+scripts/provision.sh prod
+scripts/settings.sh prod SEARCHER_APP          # usnm-searcher-ca-prod
+```
+
+The provision creates the searcher app and its role first, then rolls the API onto a revision without the sidecar. The old revision, with its sidecar, serves until the new one has loaded and warmed up against the new searcher. The searcher's first revision can start before its role has reached Blob and restart once or twice.
+
+**Deploys with it on.** CI's publish (`scripts/ci/roll-api.sh`) finds the searcher app from the API's `USNM_QUICKWIT_URL`. When `searcher.yaml` changed, it applies it to the searcher app, waits for its new revision, then rolls the API, whose start warms the new searcher; otherwise it leaves the searcher app alone. A new Quickwit image still moves with a provision, and restarts the searcher alone. The API sees the restart in the searcher's metrics within a minute (its counters start again from 0) and runs its start's warm-up again while it stays ready: `trigger` is `searcher_restart` in `scripts/logs.sh prod warm-up 2d`. Like a start's, that run reads what the response caches hold and computes only the rest, so the searcher's own caches mostly fill on visitors' first searches.
+
+**What to measure**, a week with it against a week without, leaving out days with a release or a new index version:
+
+- **API to searcher latency:** `scripts/logs.sh prod backend-latency 14d`, `AvgMs` and `MinMs` per endpoint. The network hop should add a few milliseconds per call to searches of seconds.
+- **Deploys:** after a merge that changes only the site, the API's log has no `the searcher restarted` line, and `scripts/logs.sh prod searcher-caches 1d` shows the caches kept their contents.
+- **Idle billing of each app:** Cost Management, per resource and meter, daily: idle and active vCPU-seconds of `usnm-searcher-ca-prod` and of `ca-usnm-prod`, against about 180,000 idle and 14,000 to 32,000 active vCPU-seconds a day for the one app at 2.25 vCPU (3 to 8 October 2026, 09 §9.5). The searcher still polls the metastore every 30 s and answers the API's metrics read every minute; the API app now bills on its own between visitors.
+- **Capacity:** with two API replicas, both send searches to the one searcher (each with its own computation slots, 06 §6.6), and both report its metrics, so read one replica's rows in `searcher-caches` and `searcher-threads`.
+
+**Roll back:**
+
+```sh
+scripts/settings.sh prod USNM_SEARCHER_APP ""
+scripts/provision.sh prod
+```
+
+The API gets its sidecar back (a new revision, with a new system-assigned identity and its role on `qw-index`) and the stack deletes the searcher app and its role. The stack deletes them when the deployment returns, which is before the API's new revision is ready, so the old revision has no searcher until then: searches fail, and once its readiness fails the site too, for the new revision's load and warm-up (up to about 13 minutes). Roll back at a quiet hour.
 
 ## The Quickwit image
 

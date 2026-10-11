@@ -53,6 +53,11 @@
 //!
 //! A scrape that fails (the sidecar starting, restarting or gone) records
 //! nothing. The first failure in a row is logged once, and the recovery once.
+//!
+//! The searcher can run as its own app (#267) rather than a sidecar on
+//! localhost; the API reads the same endpoint at `USNM_QUICKWIT_URL` either
+//! way. A restart the scrapes find is also handed to [`spawn`]'s
+//! `on_restart`, which warms the new searcher's caches (06 §6.5).
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -162,8 +167,9 @@ impl Scraper {
         self.failures
     }
 
-    /// Record one scrape taken at `now`.
-    pub fn observe(&mut self, scraped: Result<SearcherMetrics, String>, now: Instant) {
+    /// Record one scrape taken at `now`; true if it found that the searcher
+    /// restarted since the last successful one.
+    pub fn observe(&mut self, scraped: Result<SearcherMetrics, String>, now: Instant) -> bool {
         let metrics = match scraped {
             Ok(m) => m,
             Err(error) => {
@@ -171,7 +177,7 @@ impl Scraper {
                 if self.failures == 1 {
                     tracing::warn!(%error, "searcher metrics unavailable; retrying quietly");
                 }
-                return;
+                return false;
             }
         };
         if self.failures > 0 {
@@ -183,7 +189,8 @@ impl Scraper {
         }
         // Counters that went down: the searcher restarted, and all of its
         // caches and runtimes count from 0 again.
-        if self.last.as_ref().is_some_and(|l| restarted(l, &metrics)) {
+        let restart = self.last.as_ref().is_some_and(|l| restarted(l, &metrics));
+        if restart {
             tracing::info!("the searcher restarted; its counters start again from 0");
             self.last = None;
             self.footer_evictions_logged = false;
@@ -192,6 +199,7 @@ impl Scraper {
         self.observe_threads(&metrics.threads, now);
         self.last = Some(metrics);
         self.last_at = Some(now);
+        restart
     }
 
     /// Record the caches of one scrape.
@@ -305,11 +313,18 @@ fn restarted(before: &SearcherMetrics, now: &SearcherMetrics) -> bool {
 }
 
 /// Scrape with `fetch` every `interval` (the first after one interval, once
-/// the sidecar has had time to start), for as long as the process runs.
-pub fn spawn<F, Fut>(interval: Duration, meter: &Meter, mut fetch: F) -> tokio::task::JoinHandle<()>
+/// the searcher has had time to start), for as long as the process runs,
+/// calling `on_restart` when a scrape finds the searcher restarted.
+pub fn spawn<F, Fut, R>(
+    interval: Duration,
+    meter: &Meter,
+    mut fetch: F,
+    mut on_restart: R,
+) -> tokio::task::JoinHandle<()>
 where
     F: FnMut() -> Fut + Send + 'static,
     Fut: Future<Output = Result<SearcherMetrics, String>> + Send,
+    R: FnMut() + Send + 'static,
 {
     let mut scraper = Scraper::new(Instruments::new(meter));
     tokio::spawn(async move {
@@ -319,7 +334,9 @@ where
         loop {
             tick.tick().await;
             let scraped = fetch().await;
-            scraper.observe(scraped, Instant::now());
+            if scraper.observe(scraped, Instant::now()) {
+                on_restart();
+            }
         }
     })
 }

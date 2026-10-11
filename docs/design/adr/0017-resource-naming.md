@@ -121,6 +121,7 @@ The registry lives in `infra/naming.bicep`. A new function word is added there i
 | `searchlog` | The search log writer role (ADR-0012)                                                                                                                                                                                                                                      |
 | `archive`   | What reaches the shared archive from an environment: its private endpoint and the archive writer role                                                                                                                                                                      |
 | `qw`        | Search cluster experiments (#240)                                                                                                                                                                                                                                          |
+| `searcher`  | The Quickwit searcher's own app (#267, `USNM_SEARCHER_APP`), `usnm-searcher-ca-{env}`                                                                                                                                                                                      |
 
 ### Length budgets
 

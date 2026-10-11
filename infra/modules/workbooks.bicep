@@ -36,6 +36,9 @@ param api bool
 @description('The API\'s container app, for its platform metrics; empty without the API.')
 param apiAppName string = ''
 
+@description('The searcher\'s own app (#267), whose CPU the API workbook\'s replica CPU chart then shows; empty while the searcher is the API\'s sidecar.')
+param searcherAppName string = ''
+
 @description('Create the OCR nodes workbook (the on-prem OCR nodes\' monitoring exists).')
 param ocrNodes bool = false
 
@@ -50,7 +53,10 @@ param ocrNodeDailyCapGb string = ''
 
 var placeholder = '__WORKSPACE_ID__'
 var apiAppPlaceholder = '__API_APP_ID__'
-var apiAppId = empty(apiAppName) ? '' : resourceId('Microsoft.App/containerApps', apiAppName)
+// Only the replica CPU chart names an app: the one the searcher runs in.
+var apiAppId = empty(apiAppName)
+  ? ''
+  : resourceId('Microsoft.App/containerApps', empty(searcherAppName) ? apiAppName : searcherAppName)
 // Azure stores sourceId in lowercase; matching it avoids a change on every
 // deployment.
 var sourceId = toLower(appInsightsId)

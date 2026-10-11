@@ -13,7 +13,9 @@ use serde_json::Value;
 use tower::ServiceExt;
 use usnm_api::config::Config;
 use usnm_api::prewarm::{self, Trigger};
-use usnm_api::{app, reload_if_changed, spawn_startup_warm_up, AppState, Engine, Loader};
+use usnm_api::{
+    app, reload_if_changed, spawn_searcher_warm_up, spawn_startup_warm_up, AppState, Engine, Loader,
+};
 use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::text::Analyzers;
@@ -1096,5 +1098,38 @@ async fn examples_warm_counts_what_the_cache_still_holds() {
         .count();
     assert!(held < n, "the cache held all {n} examples");
     assert_eq!(report.examples_warm, held, "{report:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_searcher_restart_warms_again_while_the_replica_stays_ready() {
+    // The searcher restarted under a running API (its own app, #267): the
+    // API runs the start's warm-up again, one at a time, and keeps serving.
+    let dir = temp_reference("searcher-restart");
+    let backend = Counting::new(Duration::from_millis(20), false);
+    let state = Arc::new(reloading_state(&dir, config(), backend.clone()).await);
+
+    // During a start's warm-up, which warms the new searcher anyway: none.
+    let starting = spawn_startup_warm_up(state.clone());
+    assert!(spawn_searcher_warm_up(state.clone()).is_none());
+    starting.await.unwrap();
+
+    // What the start warmed is gone from the searcher, and here from the
+    // in-process cache too, so the run has to search again.
+    state.cache.invalidate_all();
+    let before = backend.calls();
+    let rewarm = spawn_searcher_warm_up(state.clone()).expect("a warm-up after the restart");
+    assert!(
+        spawn_searcher_warm_up(state.clone()).is_none(),
+        "one at a time"
+    );
+    assert_eq!(readyz(&state).await, StatusCode::OK);
+    rewarm.await.unwrap();
+    assert!(backend.calls() > before, "the warm-up searched nothing");
+    assert_eq!(visit_examples(&state, &backend, "fixture-v1").await, 0);
+
+    // The next restart warms again.
+    let again = spawn_searcher_warm_up(state.clone()).expect("a later restart's warm-up");
+    again.await.unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
