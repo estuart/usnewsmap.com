@@ -208,14 +208,20 @@ impl MemoryBackend {
         }
         let (from, to) = (filters.from_day(), filters.to_day());
         let analyzed = as_analyzed(query);
+        let language = indexes.language_match(&filters.langs);
         Ok(selected.into_iter().flatten().filter(move |d| {
             let doc = &d.doc;
             doc.day >= from
                 && doc.day <= to
                 && (filters.states.is_empty() || filters.states.contains(&doc.state))
                 && (filters.lccns.is_empty() || filters.lccns.contains(&doc.lccn))
-                && (filters.langs.is_empty()
-                    || doc.language.iter().any(|l| filters.langs.contains(l)))
+                && language.as_ref().is_none_or(|m| {
+                    m.matches(
+                        &doc.language,
+                        &doc.page_language,
+                        doc.page_language_set.as_deref(),
+                    )
+                })
                 && (!filters.front_only || doc.front_page)
                 && (filters.series.is_empty()
                     || doc
@@ -253,12 +259,18 @@ impl SearchBackend for MemoryBackend {
         let mut days = std::collections::BTreeSet::new();
         let mut papers: BTreeMap<&str, u64> = BTreeMap::new();
         let mut languages: BTreeMap<&str, u64> = BTreeMap::new();
+        let by_page = indexes.page_languages().is_some();
         for d in self.matching(indexes, query, filters, Scoring::Off)? {
             let day = d.doc.day;
             total += 1;
             days.insert(day);
             *papers.entry(&d.doc.lccn).or_default() += 1;
-            for l in &d.doc.language {
+            let langs = if by_page {
+                &d.doc.page_language
+            } else {
+                &d.doc.language
+            };
+            for l in langs {
                 *languages.entry(l).or_default() += 1;
             }
             series[spec.index_of_day(day)] += 1;
@@ -719,6 +731,8 @@ mod shard_tests {
             ocr_source: None,
             ocr_engine: None,
             text_as: None,
+            page_language: Vec::new(),
+            page_language_set: None,
             congress: Default::default(),
             doc_id: format!("sn99{i:06}_1896-07-10_ed-1_seq-1"),
             day: 71_000 + i,

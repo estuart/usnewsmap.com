@@ -18,7 +18,8 @@ use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::memory::MemoryBackend;
 use usnm_search::quickwit::QuickwitBackend;
 use usnm_search::{
-    CubeCell, HitSort, HitsQuery, IndexSet, PageDoc, SearchBackend, SearchError, Summary,
+    CubeCell, HitSort, HitsQuery, IndexSet, PageDoc, PageLanguageSets, PageLanguageSide,
+    SearchBackend, SearchError, Summary,
 };
 
 const INDEXES: [&str; 2] = ["pages-base-fixture", "pages-delta-fixture-1"];
@@ -1548,4 +1549,203 @@ async fn congress_searches_match_the_reference_backend() {
         }
     }
     assert!(nonzero > 20, "only {nonzero} Congress searches matched");
+}
+
+// ------------------------------------------------- page languages (#289)
+
+#[path = "../../../fixtures/page_language.rs"]
+mod page_language;
+
+/// The fixture base and delta with page languages (05 §5.5.8,
+/// `fixtures/page_language.rs`), as a release writes them
+/// (scripts/quickwit-fixtures.sh loads them).
+const PAGE_LANGUAGE_INDEXES: [&str; 2] = [
+    "pages-base-fixture-page-language",
+    "pages-delta-fixture-1-page-language",
+];
+
+/// The reference: the same pages with the same page languages.
+fn page_language_memory() -> (MemoryBackend, PageLanguageSets) {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/indexes");
+    let mut m = MemoryBackend::new();
+    let mut pages: std::collections::BTreeMap<Vec<String>, u64> = Default::default();
+    for (from, to) in INDEXES.iter().zip(PAGE_LANGUAGE_INDEXES) {
+        let file = std::fs::File::open(dir.join(format!("{from}.jsonl"))).expect("fixture");
+        let docs: Vec<PageDoc> = std::io::BufReader::new(file)
+            .lines()
+            .map(|l| {
+                let mut doc: serde_json::Value = serde_json::from_str(&l.expect("line")).unwrap();
+                page_language::add(&mut doc);
+                serde_json::from_value(doc).expect("doc")
+            })
+            .collect();
+        for d in &docs {
+            *pages.entry(d.page_language.clone()).or_default() += 1;
+        }
+        m.add_index(to, docs);
+    }
+    // Each set's pages, as the page-language baselines would count them
+    // (the documents here: the fixture's pages without text don't matter).
+    (m, PageLanguageSets::new(pages))
+}
+
+/// The indexes with page languages, rendering `lang=` on the smaller side
+/// and always on the match side, in LoC's text and in both texts.
+fn page_language_sets(sets: &PageLanguageSets) -> Vec<(&'static str, IndexSet)> {
+    let ids: Vec<String> = PAGE_LANGUAGE_INDEXES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    let smaller = IndexSet::new(ids).with_page_languages(Some(std::sync::Arc::new(sets.clone())));
+    let matching = smaller
+        .clone()
+        .with_page_languages(Some(std::sync::Arc::new(
+            sets.clone().with_side(PageLanguageSide::Match),
+        )));
+    vec![
+        ("smaller side", smaller.clone()),
+        ("match side", matching.clone()),
+        (
+            "smaller side, both texts",
+            smaller.with_american_stories(true),
+        ),
+        (
+            "match side, both texts",
+            matching.with_american_stories(true),
+        ),
+    ]
+}
+
+/// One language and several, the majority's (rendered as the complement),
+/// languages of a few pages, and one no page is in.
+fn page_language_filter_cases() -> Vec<(&'static str, Filters)> {
+    let lang = |l: &[&str]| {
+        let mut f = filters("1895-01-01", "1897-12-31");
+        f.langs = l.iter().map(|s| (*s).to_owned()).collect();
+        f
+    };
+    let mut states = lang(&["eng"]);
+    states.states = vec!["GA".into(), "SC".into(), "NY".into()];
+    vec![
+        ("eng", lang(&["eng"])),
+        ("ger", lang(&["ger"])),
+        ("fre", lang(&["fre"])),
+        ("spa", lang(&["spa"])),
+        ("eng or ger", lang(&["eng", "ger"])),
+        ("ger or spa", lang(&["ger", "spa"])),
+        ("dak", lang(&["dak"])),
+        ("eng in three states", states),
+    ]
+}
+
+/// The fixture's sets put English on the complement side and the others on
+/// the match side, as a version's would.
+#[test]
+fn page_language_filters_take_the_smaller_side() {
+    let (_, sets) = page_language_memory();
+    let set = IndexSet::new(vec![]).with_page_languages(Some(std::sync::Arc::new(sets)));
+    let clause = |langs: &[&str]| {
+        let f = Filters {
+            langs: langs.iter().map(|s| (*s).to_owned()).collect(),
+            ..filters("1895-01-01", "1897-12-31")
+        };
+        usnm_search::quickwit::filter_clauses(&f, &set)
+            .last()
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(clause(&["eng"]), "NOT page_language_set:IN [ger spa none]");
+    assert_eq!(clause(&["ger"]), "page_language:IN [ger]");
+    assert_eq!(clause(&["dak"]), "page_language:IN [dak]");
+}
+
+/// Both renderings select the same pages: the reference backend's
+/// summaries and hits are the same on either side, and count pages by
+/// their own languages.
+#[tokio::test]
+async fn page_language_renderings_find_the_same_pages() {
+    let (mem, sets) = page_language_memory();
+    let all = page_language_sets(&sets);
+    let mut matched = 0;
+    for (qname, q) in queries() {
+        for (fname, f) in page_language_filter_cases() {
+            let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
+            let mut got = Vec::new();
+            for (sname, set) in all.iter().filter(|(n, _)| !n.contains("both")) {
+                let s = mem.summary(set, &q, &f, &spec).await.unwrap();
+                let page = HitsQuery {
+                    limit: 20,
+                    ..Default::default()
+                };
+                let hits = mem.hits(set, &q, &f, &page).await.unwrap();
+                let ids: Vec<String> = hits.hits.iter().map(|h| h.doc_id.clone()).collect();
+                got.push((sname, s, hits.total, ids));
+            }
+            let ctx = format!("{qname} / {fname}");
+            assert_eq!(got[0].1, got[1].1, "summary: {ctx}");
+            assert_eq!((got[0].2, &got[0].3), (got[1].2, &got[1].3), "hits: {ctx}");
+            // The counts by language are by page language: every counted
+            // language is one of a matching page's own.
+            for l in &got[0].1.languages {
+                assert!(
+                    sets.sets().iter().any(|(s, _)| s.contains(&l.key)),
+                    "{ctx}: {}",
+                    l.key
+                );
+            }
+            matched += got[0].1.total_hits;
+        }
+    }
+    assert!(matched > 0, "no search matched a page");
+}
+
+/// Quickwit returns exactly the reference's pages on both sides, and counts
+/// them by page language.
+#[tokio::test]
+async fn page_language_searches_match_the_reference_backend() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let (mem, sets) = page_language_memory();
+    let mut matched = 0;
+    for ((sname, set), (qname, q)) in page_language_sets(&sets)
+        .into_iter()
+        .flat_map(|s| queries().into_iter().map(move |q| (s.clone(), q)))
+    {
+        let set = &set;
+        for (fname, f) in page_language_filter_cases() {
+            let ctx = format!("{sname} / {qname} / {fname}");
+            let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
+            let want = mem.summary(set, &q, &f, &spec).await.unwrap();
+            let got = qw.summary(set, &q, &f, &spec).await.expect(&ctx);
+            assert!(close(got.days, want.days), "days: {ctx}");
+            assert_eq!(
+                Summary { days: 0, ..got },
+                Summary {
+                    days: 0,
+                    ..want.clone()
+                },
+                "summary: {ctx}"
+            );
+            matched += want.total_hits;
+            let all: Vec<u8> = (0..8).collect();
+            let want = sorted_cells(mem.cube(set, &q, &f, &spec, &all).await.unwrap());
+            let got = sorted_cells(qw.cube(set, &q, &f, &spec, &all).await.expect(&ctx));
+            assert_eq!(got, want, "cube: {ctx}");
+            let page = HitsQuery {
+                limit: 9,
+                sort: HitSort::Oldest,
+                ..Default::default()
+            };
+            let want = mem.hits(set, &q, &f, &page).await.unwrap();
+            let got = qw.hits(set, &q, &f, &page).await.expect(&ctx);
+            assert_eq!(got.total, want.total, "hits total: {ctx}");
+            let ids = |p: &usnm_search::HitsPage| {
+                p.hits.iter().map(|h| h.doc_id.clone()).collect::<Vec<_>>()
+            };
+            assert_eq!(ids(&got), ids(&want), "hits: {ctx}");
+        }
+    }
+    assert!(matched > 0, "no search matched a page");
 }

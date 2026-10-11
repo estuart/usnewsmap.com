@@ -83,6 +83,8 @@ param congressJobName string = ''
 param partitionDecade bool = false
 @description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.7). Only a full base takes it; deltas follow the published version.')
 param singleTextField bool = false
+@description('Give a full rebuild\'s pages their own languages, found from their words, so lang= filters by them (#289, 05 §5.5.8). Only a full base takes it; deltas follow the published version.')
+param pageLanguage bool = false
 @description('Pages per split of a full rebuild\'s base in place of the template\'s 30,000 (#283); 0: the template\'s. Only a full base takes it; deltas keep the template\'s.')
 @minValue(0)
 @maxValue(999999)
@@ -264,6 +266,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             congress ? ['--congress'] : [],
             partitionDecade ? ['--partition-decade'] : [],
             singleTextField ? ['--single-text-field'] : [],
+            pageLanguage ? ['--page-language'] : [],
             splitDocs > 0 ? ['--split-docs', string(splitDocs)] : []
           )
           resources: ingestResources

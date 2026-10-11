@@ -22,6 +22,7 @@ pub mod ocr_damage;
 pub mod ocr_ja;
 pub mod ocr_local;
 pub mod ocr_prefetch;
+pub mod page_language;
 pub mod places;
 pub mod progress;
 pub mod prune;

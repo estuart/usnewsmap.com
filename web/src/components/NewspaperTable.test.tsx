@@ -60,4 +60,10 @@ describe("newspapers (#121)", () => {
       "Matches in 1 newspaper: English 70%, German 10%, Spanish 5%, French 5%, Italian 4% and 2 more.",
     );
   });
+
+  it("says when the languages are the pages' own (#289)", () => {
+    expect(languageMix({ code: ["eng", "ger"], hits: [90, 12], by: "page" }, 100, 12)).toBe(
+      "Matches in 12 newspapers: pages in English 90% and German 12%.",
+    );
+  });
 });

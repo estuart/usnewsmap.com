@@ -66,6 +66,9 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
                 "lon": -77.0091,
             },
         })),
+        // What `lang=` matches (06 §6.3.1): each page's own languages on
+        // a version with them (05 §5.5.8), its title's otherwise.
+        "language_filter": if rd.uses_page_language() { "page" } else { "title" },
         "languages": filter_languages(rd),
         "capabilities": snap.backend.capabilities(),
         "limits": {
@@ -90,18 +93,38 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
 /// The choices for the site's language filter: each catalog language the
 /// `lang` parameter accepts, with its titles and (when the snapshot records
 /// them) pages, most pages first. A title in several languages counts in each,
-/// as a search filtered to any of them finds its pages. Languages without a
+/// as a search filtered to any of them finds its pages. On a version with
+/// page languages (05 §5.5.8) the pages are those written in the language,
+/// a page in two languages counting in each. Languages without a
 /// three-letter code, and titles with none recorded, can't be filtered on, so
 /// they are left out (06 §6.3.2).
 fn filter_languages(rd: &crate::refdata::RefData) -> Vec<serde_json::Value> {
-    crate::status::assemble::by_language(rd)
-        .rows
-        .into_iter()
-        .filter_map(|r| {
-            let code = r.code?;
-            (code.len() == 3 && code.bytes().all(|b| b.is_ascii_lowercase())).then(
-                || json!({"code": code, "name": r.name, "titles": r.titles, "pages": r.pages}),
-            )
+    let by_page = rd.page_language_pages();
+    let mut rows: Vec<(String, String, usize, Option<u64>)> =
+        crate::status::assemble::by_language(rd)
+            .rows
+            .into_iter()
+            .filter_map(|r| {
+                let code = r.code?;
+                usnm_core::page_language::is_code(&code).then(|| {
+                    let pages = match &by_page {
+                        Some(p) => Some(p.get(&code).copied().unwrap_or(0)),
+                        None => r.pages,
+                    };
+                    (code, r.name, r.titles, pages)
+                })
+            })
+            .collect();
+    if by_page.is_some() {
+        rows.sort_by(|a, b| {
+            b.3.cmp(&a.3)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| a.1.cmp(&b.1))
+        });
+    }
+    rows.into_iter()
+        .map(|(code, name, titles, pages)| {
+            json!({"code": code, "name": name, "titles": titles, "pages": pages})
         })
         .collect()
 }

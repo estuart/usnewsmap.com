@@ -140,13 +140,15 @@ impl Decades {
 }
 
 /// How this run's new main index lays its pages out: by decade (05
-/// §5.5.5), in which text fields (05 §5.5.7) and in splits of how many
-/// pages. Only the main index takes it; the Japanese index keeps its own
-/// mapping.
+/// §5.5.5), in which text fields (05 §5.5.7), with the page languages or
+/// not (05 §5.5.8) and in splits of how many pages. Only the main index
+/// takes it; the Japanese index keeps its own mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MainLayout {
     pub decades: Decades,
     pub text: TextLayout,
+    /// The `page_language` and `page_language_set` fields.
+    pub page_language: bool,
     /// The split target in place of the template's (`--split-docs`, #283):
     /// only a full base takes one. `None` keeps the template's.
     pub split_docs: Option<u64>,
@@ -171,13 +173,67 @@ impl MainLayout {
 }
 
 /// The main index's config for this run: the template with the writer's
-/// tuning, the split target, the decade layout and the text fields.
+/// tuning, the split target, the decade layout, the text fields and the
+/// page languages.
 pub fn main_template(tuning: &WriterTuning, layout: MainLayout) -> anyhow::Result<String> {
     let mut template = text_fields(layout.text, &tuning.apply(INDEX_TEMPLATE)?)?;
     if let Some(docs) = layout.split_docs {
         template = split_target(docs, &template)?;
     }
+    let template = page_language_fields(layout.page_language, &template)?;
     layout.decades.apply(&template)
+}
+
+/// The template line the page-language fields follow: the title languages.
+const TEMPLATE_LANGUAGE: &str =
+    "- { name: language, type: array<text>, tokenizer: raw, fast: true }";
+
+/// `template` with the page-language fields (05 §5.5.8, #289) after the
+/// title languages' when `on`; as it is otherwise. That line must be there
+/// exactly once, so a template change can't silently drop the fields.
+pub fn page_language_fields(on: bool, template: &str) -> anyhow::Result<String> {
+    use usnm_core::page_language::{FIELD, SET_FIELD};
+    if !on {
+        return Ok(template.to_owned());
+    }
+    let mut found = 0;
+    let mut out = Vec::new();
+    for line in template.lines() {
+        let indent = &line[..line.len() - line.trim_start().len()];
+        out.push(line.to_owned());
+        if line.trim() == TEMPLATE_LANGUAGE {
+            found += 1;
+            out.push(format!(
+                "{indent}# The page's own languages, found from its words (05 §5.5.8, #289): \
+                 `lang=` matches them"
+            ));
+            out.push(format!(
+                "{indent}# and the counts by language read them. Sorted; a mixed page has two."
+            ));
+            out.push(format!(
+                "{indent}- {{ name: {FIELD}, type: array<text>, tokenizer: raw, fast: true }}"
+            ));
+            out.push(format!(
+                "{indent}# The same languages as one keyword (`eng_ger`, `none`): the filter's \
+                 complement side."
+            ));
+            out.push(format!(
+                "{indent}- {{ name: {SET_FIELD}, type: text, tokenizer: raw, indexed: true, \
+                 stored: false, fast: false }}"
+            ));
+        }
+    }
+    if found != 1 {
+        bail!(
+            "the index template needs exactly one `{TEMPLATE_LANGUAGE}` line to add the page \
+             languages after, not {found}"
+        );
+    }
+    let mut out = out.join("\n");
+    if template.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// The template line [`split_target`] replaces.
@@ -1669,6 +1725,7 @@ mod tests {
         let layout = MainLayout {
             decades: Decades::Partitioned,
             text: TextLayout::Single,
+            page_language: false,
             split_docs: Some(120_000),
         };
         let yaml = main_template(&t, layout).unwrap();
@@ -1679,6 +1736,54 @@ mod tests {
         let no_pairs = INDEX_TEMPLATE.replace(TEMPLATE_TEXT_FIELDS[1], "");
         assert!(text_fields(TextLayout::Single, &no_pairs).is_err());
         assert!(text_fields(TextLayout::Single, "version: 0.9").is_err());
+    }
+
+    #[test]
+    fn page_languages_add_two_keyword_fields() {
+        assert_eq!(
+            page_language_fields(false, INDEX_TEMPLATE).unwrap(),
+            INDEX_TEMPLATE
+        );
+        let yaml = page_language_fields(true, INDEX_TEMPLATE).unwrap();
+        let fields: Vec<&str> = yaml
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("- { name: page_language") || *l == TEMPLATE_LANGUAGE)
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                TEMPLATE_LANGUAGE,
+                "- { name: page_language, type: array<text>, tokenizer: raw, fast: true }",
+                "- { name: page_language_set, type: text, tokenizer: raw, indexed: true, stored: false, fast: false }",
+            ]
+        );
+        // The template's lines, in order, with the new ones between them.
+        let mut lines = yaml.lines();
+        assert!(INDEX_TEMPLATE.lines().all(|l| lines.any(|y| y == l)));
+        assert_eq!(yaml.lines().count(), INDEX_TEMPLATE.lines().count() + 5);
+        // With every other layout.
+        let t = WriterTuning {
+            heap: "6GiB".into(),
+            commit_timeout_secs: 120,
+            queue: "4GiB".into(),
+        };
+        let layout = MainLayout {
+            decades: Decades::Partitioned,
+            text: TextLayout::Single,
+            page_language: true,
+            split_docs: Some(120_000),
+        };
+        let yaml = main_template(&t, layout).unwrap();
+        for field in [
+            "name: text_all,",
+            "name: decade,",
+            "name: page_language_set,",
+            "split_num_docs_target: 120000\n",
+        ] {
+            assert!(yaml.contains(field), "{field}");
+        }
+        assert!(page_language_fields(true, "version: 0.9").is_err());
     }
 
     #[test]

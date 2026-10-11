@@ -142,6 +142,12 @@ pub struct Config {
     /// (`USNM_CONGRESS_SEARCH`, #229). Off, Congress searches answer 422 and
     /// `/v1/meta` lists no Congress sources, whatever `current.json` says.
     pub congress_search: bool,
+    /// Which side a page-language `lang=` filter is rendered as
+    /// (`USNM_PAGE_LANGUAGE_FILTER`, 06 §6.3.1): `smaller` (the default,
+    /// the side with fewer pages) or `match` (always `page_language:IN`).
+    /// Both find the same pages; the setting is for measuring one against
+    /// the other.
+    pub page_language_filter: usnm_search::PageLanguageSide,
     /// End-to-end tests only, and only with the memory backend: an aggregate
     /// search whose query contains this term waits this long before it runs,
     /// to stand in for a cold search on the real corpus.
@@ -279,6 +285,15 @@ impl Config {
             searcher_metrics_interval: Duration::from_secs(num("USNM_SEARCHER_METRICS_SECS", 60)?),
             american_stories_search: flag("USNM_AMERICAN_STORIES_SEARCH", true)?,
             congress_search: flag("USNM_CONGRESS_SEARCH", true)?,
+            page_language_filter: match var("USNM_PAGE_LANGUAGE_FILTER").as_deref() {
+                None | Some("smaller") => usnm_search::PageLanguageSide::Smaller,
+                Some("match") => usnm_search::PageLanguageSide::Match,
+                Some(other) => {
+                    return Err(format!(
+                        "USNM_PAGE_LANGUAGE_FILTER must be smaller or match, not `{other}`"
+                    ))
+                }
+            },
             fixture_slow,
         })
     }
@@ -312,6 +327,18 @@ mod tests {
         assert!(c.fixture_slow.is_none());
         assert_eq!(c.searcher_metrics_interval, Duration::from_secs(60));
         assert!(c.american_stories_search);
+        assert_eq!(
+            c.page_language_filter,
+            usnm_search::PageLanguageSide::Smaller
+        );
+        let side = |v: &str| {
+            let v = v.to_owned();
+            Config::from_lookup(move |k| (k == "USNM_PAGE_LANGUAGE_FILTER").then(|| v.clone()))
+                .map(|c| c.page_language_filter)
+        };
+        assert_eq!(side("match"), Ok(usnm_search::PageLanguageSide::Match));
+        assert_eq!(side("smaller"), Ok(usnm_search::PageLanguageSide::Smaller));
+        assert!(side("complement").is_err());
         let american = |v: &str| {
             let v = v.to_owned();
             Config::from_lookup(move |k| (k == "USNM_AMERICAN_STORIES_SEARCH").then(|| v.clone()))

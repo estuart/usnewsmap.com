@@ -257,6 +257,12 @@ enum Command {
         /// Only a full base takes it; deltas follow the published version.
         #[arg(long)]
         single_text_field: bool,
+        /// Give a full base's pages their own languages, found from their
+        /// words (#289, 05 §5.5.8), and the version page-language baselines,
+        /// so `lang=` filters by them. Only a full base takes it; deltas
+        /// follow the published version.
+        #[arg(long)]
+        page_language: bool,
         /// Pages per split of a full base, in place of the index template's
         /// 30,000 (#283): fewer, larger splits for a cold search to open.
         /// Bounded by the writer's memory and scratch share (08 §8.4). Only
@@ -564,6 +570,9 @@ enum Command {
         #[arg(long)]
         single_text_field: bool,
         /// As for `release`.
+        #[arg(long)]
+        page_language: bool,
+        /// As for `release`.
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..usnm_ingest::sink::MAX_SPLIT_DOCS))]
         split_docs: Option<u64>,
         /// As `curate --max-runtime-secs`, counted from the start of `run`:
@@ -798,6 +807,7 @@ async fn release(
     congress: bool,
     partition_decade: bool,
     single_text_field: bool,
+    page_language: bool,
     split_docs: Option<u64>,
     titles_left: Option<String>,
     t: &IndexTarget,
@@ -818,6 +828,7 @@ async fn release(
         congress,
         partition_decade,
         single_text_field,
+        page_language,
         split_docs,
     };
     // Held from before the writer node starts until after it stops, and
@@ -1479,6 +1490,7 @@ async fn command(
             congress,
             partition_decade,
             single_text_field,
+            page_language,
             split_docs,
             target,
         } => {
@@ -1493,6 +1505,7 @@ async fn command(
                 *congress,
                 *partition_decade,
                 *single_text_field,
+                *page_language,
                 *split_docs,
                 None,
                 target,
@@ -1511,6 +1524,7 @@ async fn command(
             congress,
             partition_decade,
             single_text_field,
+            page_language,
             split_docs,
             curate_max_runtime_secs,
             titles_max_runtime_secs,
@@ -1559,6 +1573,7 @@ async fn command(
                 *congress,
                 *partition_decade,
                 *single_text_field,
+                *page_language,
                 *split_docs,
                 titles_left,
                 target,
@@ -1670,6 +1685,7 @@ mod tests {
             "--congress",
             "--partition-decade",
             "--single-text-field",
+            "--page-language",
             "--split-docs",
             "120000",
             "--titles-max-runtime-secs",
@@ -1687,6 +1703,7 @@ mod tests {
             congress,
             partition_decade,
             single_text_field,
+            page_language,
             split_docs,
             ..
         } = cli.command
@@ -1703,10 +1720,12 @@ mod tests {
                 congress,
                 partition_decade,
                 single_text_field,
+                page_language,
                 split_docs
             ),
             (
                 Some(28800),
+                true,
                 true,
                 true,
                 true,
@@ -1884,6 +1903,7 @@ mod tests {
             congress,
             partition_decade,
             single_text_field,
+            page_language,
             split_docs,
             ..
         } = cli.command
@@ -1897,6 +1917,7 @@ mod tests {
         assert!(!congress, "off unless asked for");
         assert!(!partition_decade, "off unless asked for");
         assert!(!single_text_field, "off unless asked for");
+        assert!(!page_language, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
         assert_eq!(target.min_free_gib, 0);
     }

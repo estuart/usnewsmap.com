@@ -37,6 +37,7 @@ jobs:
       provision: ${{ steps.f.outputs.provision }}
       markdown: ${{ steps.f.outputs.markdown }}
       ocr_worker: ${{ steps.f.outputs.ocr_worker }}
+      page_language: ${{ steps.f.outputs.page_language }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,6 +69,23 @@ jobs:
       # the workspace turns on yet (12 §12.5 Step 4).
       - run: cargo clippy -p usnm-core --all-targets --features damage --locked -- -D warnings
       - run: cargo test -p usnm-core --features damage --locked
+
+  # The page-language detector on text of known language (05 §5.5.8): behind
+  # #[ignore], so the rust job doesn't run it.
+  page-language-samples:
+    name: page language samples
+    needs: changes
+    if: needs.changes.outputs.page_language == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo test -p usnm-core --test page_language_samples --locked -- --ignored
 
   quickwit:
     name: quickwit (parity, ingest release)
@@ -194,9 +212,11 @@ jobs:
           load: true
           cache-from: type=gha,scope=ja-ocr
           cache-to: type=gha,scope=ja-ocr,mode=max
+      # The whole checkout, read-only: test_page_language_parity.py checks
+      # the Rust port's word list and parity fixture against this Python.
       - name: The Japanese OCR job's tests pass
         run: |
-          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD/ja-ocr:/t:ro" -w /t --entrypoint python3 usnm-ja-ocr-check \
+          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo/ja-ocr --entrypoint python3 usnm-ja-ocr-check \
             -m unittest discover -v -p 'test_*.py'
       - name: The Japanese OCR image reads Japanese
         run: scripts/ci/check-ja-ocr-image.sh --image usnm-ja-ocr-check
@@ -523,7 +543,7 @@ jobs:
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
     # Environment holds its own variables, written by scripts/bootstrap.sh.
-    needs: [changes, rust, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e]
+    needs: [changes, rust, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e]
     # Only when the images changed, and every check that ran passed: a job
     # skipped as irrelevant must not block the deploy, and a failed one must.
     if: >-

@@ -482,8 +482,9 @@ fn join(
         .join(sep))
 }
 
-/// Filter clauses (values are validated by `usnm_core::params`).
-pub fn filter_clauses(filters: &Filters) -> Vec<String> {
+/// Filter clauses (values are validated by `usnm_core::params`), `lang=` as
+/// `indexes` match it (title or page languages, 05 §5.5.8).
+pub fn filter_clauses(filters: &Filters, indexes: &IndexSet) -> Vec<String> {
     let mut out = vec![format!(
         "day:[{} TO {}]",
         filters.from_day(),
@@ -496,8 +497,8 @@ pub fn filter_clauses(filters: &Filters) -> Vec<String> {
     if !filters.lccns.is_empty() {
         out.push(set("lccn", &filters.lccns));
     }
-    if !filters.langs.is_empty() {
-        out.push(set("language", &filters.langs));
+    if let Some(m) = indexes.language_match(&filters.langs) {
+        out.push(m.clause());
     }
     if filters.front_only {
         out.push("front_page:true".into());
@@ -546,7 +547,7 @@ fn full_query(
 /// `query` with the filters and the hidden copies' clauses.
 fn scoped(query: String, filters: &Filters, indexes: &IndexSet, extra: Vec<String>) -> String {
     let mut parts = vec![query];
-    parts.extend(filter_clauses(filters));
+    parts.extend(filter_clauses(filters, indexes));
     parts.extend(decade_clause(filters, indexes));
     parts.extend(hidden_clauses(indexes));
     parts.extend(extra);
@@ -587,7 +588,7 @@ pub fn summary_request(
             },
             "days": { "cardinality": { "field": "day" } },
             "papers": { "terms": { "field": "lccn", "size": MAX_PAPERS } },
-            "languages": { "terms": { "field": "language", "size": MAX_LANGUAGES } }
+            "languages": { "terms": { "field": indexes.language_field(), "size": MAX_LANGUAGES } }
         }
     }))
 }
@@ -1126,11 +1127,14 @@ mod tests {
     #[test]
     fn series_filter_is_a_term_set_and_absent_by_default() {
         let mut f = filters();
-        assert!(!filter_clauses(&f).iter().any(|c| c.starts_with("series")));
+        let set = IndexSet::new(vec!["congress".into()]);
+        assert!(!filter_clauses(&f, &set)
+            .iter()
+            .any(|c| c.starts_with("series")));
         f.front_only = false;
         f.series = vec!["globe".into(), "serialset".into()];
         assert_eq!(
-            filter_clauses(&f).last().map(String::as_str),
+            filter_clauses(&f, &set).last().map(String::as_str),
             Some("series:IN [globe serialset]")
         );
     }

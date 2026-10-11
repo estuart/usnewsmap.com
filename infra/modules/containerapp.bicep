@@ -56,6 +56,9 @@ param ingestCron string = ''
 param americanStoriesSearch bool = true
 @description('Search the Congress pages on a version with a Congress index set (#229). False sets USNM_CONGRESS_SEARCH=false.')
 param congressSearch bool = true
+@description('How a page-language lang= filter is rendered (#289, 05 §5.5.8): smaller (the API\'s default) or match. Empty leaves USNM_PAGE_LANGUAGE_FILTER unset.')
+@allowed(['', 'smaller', 'match'])
+param pageLanguageFilter string = ''
 @description('Run the searcher as its own app, `searcherName`, with internal ingress, instead of a sidecar in each API replica (#267). Needs searchBackend quickwit.')
 param searcherApp bool = false
 @description('The searcher app\'s name (with searcherApp); a container app name is under 32 characters (ADR-0017).')
@@ -116,6 +119,9 @@ var americanStoriesEnv = americanStoriesSearch
   ? []
   : [{ name: 'USNM_AMERICAN_STORIES_SEARCH', value: 'false' }]
 var congressEnv = congressSearch ? [] : [{ name: 'USNM_CONGRESS_SEARCH', value: 'false' }]
+var pageLanguageFilterEnv = empty(pageLanguageFilter)
+  ? []
+  : [{ name: 'USNM_PAGE_LANGUAGE_FILTER', value: pageLanguageFilter }]
 // How long a start stays not ready (06 §6.6). In single-revision mode the
 // old revision keeps the traffic until the new one's replicas pass their
 // startup and readiness probes, so the API holds /readyz until its startup
@@ -150,7 +156,7 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, readyEnv)
+  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, readyEnv)
   probes: [
     {
       // A start loads the published version (loadSecs), then warms the

@@ -48,6 +48,9 @@ pub struct Built {
     /// The text fields (05 §5.5.7): of the main index this run writes, and
     /// of the version's main indexes, which all have the same ones.
     pub text_layout: usnm_core::text_layout::TextLayout,
+    /// The page languages (05 §5.5.8): the main index this run writes has
+    /// the fields, and so do the version's other main indexes.
+    pub page_language: bool,
     /// The split target of the main index this run writes, when it isn't
     /// the template's (`--split-docs`, a full base only, #283).
     pub split_docs: Option<u64>,
@@ -72,6 +75,7 @@ fn templates(b: &Built) -> Vec<(&'static str, String)> {
         let layout = crate::sink::MainLayout {
             decades: b.decades,
             text: b.text_layout,
+            page_language: b.page_language,
             split_docs: b.split_docs,
         };
         let pages = crate::sink::main_template(&b.writer, layout)
@@ -79,7 +83,10 @@ fn templates(b: &Built) -> Vec<(&'static str, String)> {
         t.push(("pages", pages));
     }
     if b.ja_index {
-        t.push(("pages-ja", crate::ocr_ja::JA_TEMPLATE.to_owned()));
+        // With the page languages too on a version with them (05 §5.5.8).
+        let ja = crate::sink::page_language_fields(b.page_language, crate::ocr_ja::JA_TEMPLATE)
+            .unwrap_or_else(|_| crate::ocr_ja::JA_TEMPLATE.to_owned());
+        t.push(("pages-ja", ja));
     }
     if b.congress_index {
         t.push(("congress", crate::congress::TEMPLATE.to_owned()));
@@ -136,6 +143,10 @@ pub fn summary(b: &Built) -> Value {
     if b.text_layout != usnm_core::text_layout::TextLayout::Separate {
         features["text_layout"] = json!(b.text_layout.version());
     }
+    // Likewise, as its `page_language`.
+    if b.page_language {
+        features["page_language"] = json!(usnm_core::page_language::VERSION);
+    }
     // A split target other than the template's: the index config in
     // `templates` has it too, but a feature is easier to find.
     if let Some(docs) = b.split_docs {
@@ -168,11 +179,38 @@ mod tests {
             ocr_local: false,
             decades: crate::sink::Decades::Off,
             text_layout: usnm_core::text_layout::TextLayout::Separate,
+            page_language: false,
             split_docs: None,
             analyzer: usnm_core::text::Analyzer::LATEST,
             congress: false,
             congress_index: false,
         }
+    }
+
+    #[test]
+    fn records_the_page_languages_and_their_fields() {
+        let off = record(&built(true, false));
+        assert!(off["features"].get("page_language").is_none(), "{off}");
+        let mut b = built(true, false);
+        b.page_language = true;
+        let v = record(&b);
+        assert_eq!(
+            v["features"]["page_language"],
+            usnm_core::page_language::VERSION
+        );
+        let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(yaml.contains("name: page_language_set,"), "{yaml}");
+        // The Japanese index has them too.
+        b.ja_index = true;
+        let v = record(&b);
+        let ja = v["templates"]["pages-ja"]["yaml"].as_str().unwrap();
+        assert!(ja.contains("name: page_language_set,"), "{ja}");
+        b.page_language = false;
+        let ja = record(&b)["templates"]["pages-ja"]["yaml"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!ja.contains("page_language"), "{ja}");
     }
 
     #[test]

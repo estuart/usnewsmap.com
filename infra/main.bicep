@@ -66,6 +66,10 @@ param americanStoriesSearch bool = true
 @description('Search the Congress pages (#229) on a version whose current.json names a Congress index set. False makes the API leave them unloaded and answer source=congress with 422, without a release; the provision restarts the API (docs/configuration.md, USNM_CONGRESS_SEARCH).')
 param congressSearch bool = true
 
+@description('How the API renders a page-language lang= filter (#289, 05 §5.5.8): smaller (the side with fewer pages, the default) or match (page_language:IN always), for measuring one against the other. Both find the same pages; empty leaves the API\'s default (docs/configuration.md, USNM_PAGE_LANGUAGE_FILTER).')
+@allowed(['', 'smaller', 'match'])
+param pageLanguageFilter string = ''
+
 @description('Give each ingest release the Congress pages curated under curated/congress/ (#229, the ingest job\'s --congress): an index set of their own, rebuilt when the curated pages change and kept otherwise. Clearing it makes the next release publish a version without them (docs/operations.md, "Congress pages").')
 param congress bool = false
 
@@ -82,6 +86,9 @@ param partitionDecade bool = false
 
 @description('Search the next full rebuild\'s texts, LoC\'s and American Stories\', in one field (#283, 05 §5.5.7), so a search looks each word up once. Only a full base takes it; deltas follow the published version, and a full rebuild without it searches a field per text again (docs/operations.md, "Full rebuild").')
 param singleTextField bool = false
+
+@description('Give the next full rebuild\'s pages their own languages, found from their words (#289, 05 §5.5.8): lang= then filters by page language and the counts by language count pages. Only a full base takes it; deltas follow the published version, and a full rebuild without it filters by title language again (docs/operations.md, "Full rebuild").')
+param pageLanguage bool = false
 
 @description('Pages per split of the next full rebuild\'s base, in place of the 30,000 in pages-index.yaml (#283): fewer, larger splits for a cold search to open. 0: the template\'s. Only a full base takes it; deltas keep the template\'s. A larger target needs the E4 profile\'s memory for the split uploads (08 §8.4; docs/operations.md, "Full rebuild").')
 @minValue(0)
@@ -574,6 +581,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     ingestCron: ingestJobs && useAcr ? ingestCron : ''
     americanStoriesSearch: americanStoriesSearch
     congressSearch: congressSearch
+    pageLanguageFilter: pageLanguageFilter
   }
 }
 
@@ -679,6 +687,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     congressJobName: congressJobName
     partitionDecade: partitionDecade
     singleTextField: singleTextField
+    pageLanguage: pageLanguage
     splitDocs: splitDocs
     workers: backfillWorkers
     backfillCron: backfillCron

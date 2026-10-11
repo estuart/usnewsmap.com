@@ -1,6 +1,7 @@
 // The search form's language filter (07 §7.9): a button that opens a
 // checklist of the catalog's languages. A choice applies with the rest of
-// the form when the visitor presses Search.
+// the form when the visitor presses Search. On a version with page
+// languages (#289) it filters by each page's own languages, and says so.
 
 import { useEffect, useRef, useState } from "react";
 import type { MetaLanguage } from "../api/types";
@@ -11,6 +12,8 @@ export interface LanguageChoice {
   name: string;
   /** Newspapers that list it; null for a code the catalog doesn't have. */
   titles: number | null;
+  /** Pages written in it, on a version with page languages; null otherwise or when unknown. */
+  pages: number | null;
 }
 
 /**
@@ -25,21 +28,36 @@ export function languageChoices(
     code: l.code,
     name: languageName(l.code, l.name),
     titles: l.titles,
+    pages: l.pages,
   }));
   const known = new Set(out.map((c) => c.code));
-  for (const code of chosen) if (!known.has(code)) out.push({ code, name: languageName(code), titles: null });
+  for (const code of chosen)
+    if (!known.has(code)) out.push({ code, name: languageName(code), titles: null, pages: null });
   return out;
 }
 
-/** "Languages: any", "Languages: German", "Languages: German, Spanish", "Languages: 3 chosen". */
-export function languageSummary(chosen: readonly string[], choices: readonly LanguageChoice[]): string {
+/**
+ * "Languages: any", "Languages: German", "Languages: German, Spanish", "Languages: 3 chosen"; by
+ * page language (#289), "Languages: pages in German", "Languages: pages in German, Spanish",
+ * "Languages: pages in 3 languages".
+ */
+export function languageSummary(chosen: readonly string[], choices: readonly LanguageChoice[], byPage = false): string {
   const name = (code: string) => choices.find((c) => c.code === code)?.name ?? languageName(code);
   if (chosen.length === 0) return "Languages: any";
+  if (byPage) {
+    if (chosen.length <= 2) return `Languages: pages in ${chosen.map(name).join(", ")}`;
+    return `Languages: pages in ${chosen.length} languages`;
+  }
   if (chosen.length <= 2) return `Languages: ${chosen.map(name).join(", ")}`;
   return `Languages: ${chosen.length} chosen`;
 }
 
-export function choiceLabel(c: LanguageChoice): string {
+/** "German (2 newspapers)"; by page language, "German (412,345 pages)". */
+export function choiceLabel(c: LanguageChoice, byPage = false): string {
+  if (byPage) {
+    if (c.pages === null || c.pages === 0) return `${c.name} (no pages)`;
+    return `${c.name} (${c.pages.toLocaleString("en-US")} ${c.pages === 1 ? "page" : "pages"})`;
+  }
   if (c.titles === null || c.titles === 0) return `${c.name} (no newspapers)`;
   return `${c.name} (${c.titles.toLocaleString("en-US")} ${c.titles === 1 ? "newspaper" : "newspapers"})`;
 }
@@ -50,9 +68,11 @@ interface Props {
   /** Chosen codes, sorted. */
   value: string[];
   onChange: (codes: string[]) => void;
+  /** The version filters by each page's own languages (`/v1/meta`'s `language_filter: "page"`, #289). */
+  byPage?: boolean;
 }
 
-export function LanguageFilter({ id, choices, value, onChange }: Props) {
+export function LanguageFilter({ id, choices, value, onChange, byPage = false }: Props) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -87,11 +107,15 @@ export function LanguageFilter({ id, choices, value, onChange }: Props) {
         aria-controls={listId}
         onClick={() => setOpen((o) => !o)}
       >
-        {languageSummary(value, choices)}
+        {languageSummary(value, choices, byPage)}
       </button>
       <fieldset id={listId} className="langs__list" hidden={!open}>
-        <legend>Newspaper languages</legend>
-        <p className="langs__hint">Pages from newspapers in any of these. Leave all unchecked for every language.</p>
+        <legend>{byPage ? "Page languages" : "Newspaper languages"}</legend>
+        <p className="langs__hint">
+          {byPage
+            ? "Pages written in any of these, found from each page's words. Leave all unchecked for every language."
+            : "Pages from newspapers in any of these. Leave all unchecked for every language."}
+        </p>
         <ul>
           {choices.map((c) => (
             <li key={c.code}>
@@ -102,7 +126,7 @@ export function LanguageFilter({ id, choices, value, onChange }: Props) {
                   checked={value.includes(c.code)}
                   onChange={(e) => toggle(c.code, e.target.checked)}
                 />{" "}
-                {choiceLabel(c)}
+                {choiceLabel(c, byPage)}
               </label>
             </li>
           ))}

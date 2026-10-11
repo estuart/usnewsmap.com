@@ -241,6 +241,8 @@ mod tests {
             ocr_source: None,
             ocr_engine: None,
             text_as: None,
+            page_language: Vec::new(),
+            page_language_set: None,
             congress: Default::default(),
             doc_id: format!("sn99{i:06}_x_ed-1_seq-1"),
             day,

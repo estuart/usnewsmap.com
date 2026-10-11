@@ -50,6 +50,7 @@ use crate::dedup::{self, Plan};
 use crate::merges::IndexLayout;
 use crate::ocr_ja;
 use crate::ocr_local;
+use crate::page_language::{self as page_lang, Moves};
 use crate::progress::{self, Progress};
 use crate::sink::{Decades, IndexSink, MainLayout};
 use crate::source::hex;
@@ -108,6 +109,14 @@ pub struct Release {
     /// delta follows the published version, whatever this says. Off: the
     /// documents, the index config and `current.json` are as before.
     pub single_text_field: bool,
+    /// Give a full base's pages their own languages, found from their
+    /// words (05 §5.5.8, #289): `page_language` and `page_language_set` on
+    /// every main-index document, the page-language baselines and the
+    /// pages that move to them in the snapshot, and `current.json` says so
+    /// (`page_language`). Only a full base takes it: a delta follows the
+    /// published version, whatever this says. Off: the documents, the index
+    /// config, the snapshot and `current.json` are as before.
+    pub page_language: bool,
     /// The split target of a full base's main index in place of the
     /// template's 30,000 pages (#283): a merge stops taking splits once it
     /// holds this many, so a larger one leaves fewer, larger splits for a
@@ -375,6 +384,9 @@ struct PublishedPointer {
     decades: Option<u32>,
     /// `text_layout`: the text fields of every main index (05 §5.5.7).
     text_layout: Option<u32>,
+    /// `page_language`: every main index of the version has the page
+    /// languages, and its snapshot their baselines (05 §5.5.8).
+    page_language: Option<u32>,
     /// `congress`: the Congress index set (#229), as published.
     congress: Option<Value>,
 }
@@ -539,6 +551,7 @@ impl Release {
         let previous_as = pointer.as_ref().and_then(|p| p.american_stories);
         let previous_decades = pointer.as_ref().and_then(|p| p.decades);
         let previous_layout = pointer.as_ref().map(|p| p.text_layout);
+        let previous_page_language = pointer.as_ref().and_then(|p| p.page_language);
         // Every batch's last committed curation, whatever its current status.
         let curated: BTreeMap<String, Curated> = self
             .state
@@ -620,6 +633,7 @@ impl Release {
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
         let decades = self.decade_layout(full, previous_decades);
         let text_layout = self.text_layout(full, published_layout.flatten());
+        let page_language = self.page_language_on(full, previous_page_language);
         let split_docs = self.split_docs(full);
         let analyzer = match published_analyzer {
             Some(a) if !full => a,
@@ -957,6 +971,21 @@ impl Release {
             );
         }
 
+        // The pages the version's main indexes hold in a set of page
+        // languages other than their title's (05 §5.5.8): a delta keeps the
+        // published version's, but for the copies it now hides, and adds its
+        // own documents' below; a full base starts afresh.
+        let mut moves = if page_language {
+            let mut m = match &previous {
+                Some(prev) if !full => self.previous_moves(&prev.index_version).await?,
+                _ => Moves::new(),
+            };
+            m.drop_hidden(&dedup.hidden);
+            Some(m)
+        } else {
+            None
+        };
+
         // Our own OCR (12 §12.5 Step 9): listed once, loaded batch by batch
         // as the build reaches each.
         let local = if self.ocr_local && !overlay_only {
@@ -1060,6 +1089,7 @@ impl Release {
             ocr_local: local.is_some(),
             decades,
             text_layout,
+            page_language,
             split_docs,
             analyzer,
             congress: !matches!(congress_plan, CongressPlan::Off),
@@ -1093,7 +1123,7 @@ impl Release {
         span.record("version", version.as_str());
         span.record("full", full);
         span.record("batches", scope.len());
-        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, text_layout = text_layout.version(), split_docs, "building index");
+        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, text_layout = text_layout.version(), page_language, split_docs, "building index");
 
         report.version(&version);
         report.step(Step::Indexing).await;
@@ -1117,9 +1147,11 @@ impl Release {
                     MainLayout {
                         decades,
                         text: text_layout,
+                        page_language,
                         split_docs,
                     },
                     analyzer,
+                    moves.as_mut(),
                     report,
                 )
                 .await?
@@ -1138,7 +1170,15 @@ impl Release {
                 )
                 .await?;
             let ja = self
-                .build_ja_index(lease, sink, &version, &overlay, &catalog, analyzer)
+                .build_ja_index(
+                    lease,
+                    sink,
+                    &version,
+                    &overlay,
+                    &catalog,
+                    analyzer,
+                    moves.as_ref(),
+                )
                 .await?;
             // What it built in the end: the Japanese index can come out empty.
             built.ja_index = ja.is_some();
@@ -1174,6 +1214,7 @@ impl Release {
                     },
                     stories_record,
                     &local_files,
+                    moves.as_ref(),
                     congress_out.as_ref(),
                     &build_info::record(&built),
                     analyzer,
@@ -1238,6 +1279,13 @@ impl Release {
         // text, as before the setting.
         if text_layout != TextLayout::Separate {
             pointer["text_layout"] = json!(text_layout.version());
+        }
+        // Every main index of the version has the page languages at this
+        // version: a base this run built with them, or one the published
+        // version has, with deltas written like it (05 §5.5.8). Absent: the
+        // API filters and counts by title language, as before the setting.
+        if page_language {
+            pointer["page_language"] = json!(usnm_core::page_language::VERSION);
         }
         // The Japanese pages' index (#139), folded with the same analyzer
         // as the main indexes. An API without Japanese search ignores the
@@ -1322,6 +1370,7 @@ impl Release {
             american_stories: feature("american_stories"),
             decades: feature("decades"),
             text_layout: feature("text_layout"),
+            page_language: feature("page_language"),
             congress: pointer.get("congress").filter(|c| c.is_object()).cloned(),
         };
         Ok(Some((run, published)))
@@ -1388,6 +1437,59 @@ impl Release {
             );
         }
         layout
+    }
+
+    /// Whether this release's main index has the page languages (05
+    /// §5.5.8): a full base's as `page_language` says; a delta's (or an
+    /// overlay-only release's, which keeps the main indexes) as the
+    /// published version has them, at this code's version, so every main
+    /// index of a version has the fields or none does. A published version
+    /// with another version of them gets a delta without: its
+    /// `current.json` loses the key, and searches filter by title language
+    /// until the next full rebuild.
+    fn page_language_on(&self, full: bool, published: Option<u32>) -> bool {
+        if full {
+            return self.page_language;
+        }
+        match published {
+            Some(v) if v == usnm_core::page_language::VERSION => true,
+            Some(v) => {
+                tracing::warn!(
+                    published = v,
+                    api = usnm_core::page_language::VERSION,
+                    "the published version has another version of the page languages; this \
+                     delta has none, so searches filter by title language until the next full release"
+                );
+                false
+            }
+            None => {
+                if self.page_language {
+                    tracing::info!(
+                        "the published version has no page languages: --page-language takes \
+                         effect at the next full release"
+                    );
+                }
+                false
+            }
+        }
+    }
+
+    /// The pages `version`'s main indexes hold in a set of page languages
+    /// other than their title's (its `page_languages.json`), which a
+    /// version with page languages must have.
+    async fn previous_moves(&self, version: &str) -> anyhow::Result<Moves> {
+        let path = format!("{version}/{}", page_lang::PAGE_LANGUAGES_FILE);
+        let bytes = self.reference.get(&path).await?.with_context(|| {
+            format!("`{path}` is missing, though the published version has page languages")
+        })?;
+        let moves: Moves = serde_json::from_slice(&bytes).context(path.clone())?;
+        anyhow::ensure!(
+            moves.version == usnm_core::page_language::VERSION,
+            "`{path}` is of page-language version {}, not {}",
+            moves.version,
+            usnm_core::page_language::VERSION
+        );
+        Ok(moves)
     }
 
     /// The split target of this release's main index (#283): a full
@@ -1520,6 +1622,7 @@ impl Release {
         local: Option<&LocalRun>,
         layout: MainLayout,
         analyzer: Analyzer,
+        mut moves: Option<&mut Moves>,
         report: &Reporter,
     ) -> anyhow::Result<(
         u64,
@@ -1729,6 +1832,14 @@ impl Release {
                     Ok(())
                 })
                 .with_context(|| path.clone())?;
+                // Each page's own languages (05 §5.5.8), on a few threads,
+                // and the pages that move to another set than their title's.
+                if let Some(m) = moves.as_deref_mut() {
+                    page_lang::annotate(&mut part_docs);
+                    for d in &part_docs {
+                        m.record(d)?;
+                    }
+                }
                 // Pages LoC has no usable text for are documents with another's.
                 progress.add_expected(without_locs);
                 if let Some(r) = record.as_mut() {
@@ -1762,7 +1873,11 @@ impl Release {
                 let place = catalog.place(&title.place_id).context("place")?;
                 // With the version's decade field, and a decade at a time
                 // in a partitioned base, like LoC's pages.
-                let d = ocr_ja::latin_doc(p, text, title, place, format);
+                let mut d = ocr_ja::latin_doc(p, text, title, place, format);
+                if let Some(m) = moves.as_deref_mut() {
+                    page_lang::annotate_one(&mut d);
+                    m.record(&d)?;
+                }
                 match order.as_mut() {
                     Some(o) => o.add(sink, &d).await?,
                     None => sink.add(&d).await?,
@@ -1801,6 +1916,12 @@ impl Release {
                 replaced = local_tally.replaced,
                 kept = ?local_tally.kept,
                 "weighed our OCR against LoC's text"
+            );
+        }
+        if let Some(m) = &moves {
+            tracing::info!(
+                pages = m.pages(),
+                "pages whose own languages differ from their title's, in the version"
             );
         }
         progress.snapshot().log(None);
@@ -2028,6 +2149,8 @@ impl Release {
 
     /// Build the Japanese pages' index for `version` from the overlay's pages
     /// with text, or nothing when there are none. Its name and page count.
+    // The lease, sink and moves are the release's, threaded through.
+    #[allow(clippy::too_many_arguments)]
     async fn build_ja_index(
         &self,
         lease: &WriterLease,
@@ -2036,18 +2159,28 @@ impl Release {
         overlay: &ocr_ja::Overlay,
         catalog: &Catalog,
         analyzer: Analyzer,
+        moves: Option<&Moves>,
     ) -> anyhow::Result<Option<(String, u64)>> {
+        // On a version with page languages (05 §5.5.8), each page carries
+        // the languages the page-language baselines count it in, so that a
+        // Japanese search filters and counts as its baseline does.
+        let by_page = moves.map(Moves::sets_by_page);
         let mut docs = Vec::new();
         for p in overlay.pages.iter().filter(|p| p.indexable()) {
             let title = catalog.title(&p.key.lccn).context("title")?;
             let place = catalog.place(&title.place_id).context("place")?;
-            docs.push(ocr_ja::ja_doc(p, title, place, analyzer));
+            let mut doc = ocr_ja::ja_doc(p, title, place, analyzer);
+            if let Some(by_page) = &by_page {
+                Moves::annotate_as_counted(&mut doc, title, by_page);
+            }
+            docs.push(doc);
         }
         if docs.is_empty() {
             return Ok(None);
         }
         let id = ocr_ja::index_id(version);
-        sink.create_with(&id, ocr_ja::JA_TEMPLATE).await?;
+        let template = crate::sink::page_language_fields(moves.is_some(), ocr_ja::JA_TEMPLATE)?;
+        sink.create_with(&id, &template).await?;
         for d in &docs {
             lease.check()?;
             sink.add(d).await?;
@@ -2079,6 +2212,7 @@ impl Release {
         latin: &Latin<'_>,
         stories: Option<(&american_stories::Source, &american_stories::Record)>,
         local: &LocalFiles,
+        moves: Option<&Moves>,
         congress: Option<&CongressOut>,
         build: &Value,
         analyzer: Analyzer,
@@ -2188,18 +2322,12 @@ impl Release {
             .into_iter()
             .map(|(k, v)| (k, v.into_iter().collect()))
             .collect();
-        let language_baselines = LanguageBaselines {
-            sets: by_language
-                .into_iter()
-                .map(|(languages, places)| LanguageSet {
-                    languages,
-                    baselines: places
-                        .into_iter()
-                        .map(|(k, v)| (k, v.into_iter().collect()))
-                        .collect(),
-                })
-                .collect(),
-        };
+        // The same pages by their own languages (05 §5.5.8): the title
+        // sets with the moves applied, so a page still counts once.
+        let page_language_baselines = moves
+            .map(|m| m.apply(&by_language, catalog).map(language_baselines))
+            .transpose()?;
+        let language_baselines = language_baselines(by_language);
 
         let mut snapshot_files: Vec<(&str, Vec<u8>)> = vec![
             ("titles.json", serde_json::to_vec(&titles)?),
@@ -2214,6 +2342,15 @@ impl Release {
             (RUN_BATCHES_FILE, serde_json::to_vec(batches)?),
             (DUPLICATES_FILE, serde_json::to_vec(&dedup.hidden)?),
         ];
+        // Only for a version with page languages, so one without has the
+        // same files as before.
+        if let (Some(m), Some(b)) = (moves, &page_language_baselines) {
+            snapshot_files.push((
+                page_lang::PAGE_LANGUAGE_BASELINES_FILE,
+                serde_json::to_vec(b)?,
+            ));
+            snapshot_files.push((page_lang::PAGE_LANGUAGES_FILE, serde_json::to_vec(m)?));
+        }
         // Which overlay parts the Japanese pages came from (only when there are any,
         // so a version without them has the same files as before).
         if !overlay.parts.is_empty() {
@@ -2301,6 +2438,9 @@ impl Release {
         }
         if let Some(summary) = &local.summary {
             manifest["built_from"]["ocr_local"] = summary.clone();
+        }
+        if let Some(m) = moves {
+            manifest["page_languages"] = m.summary();
         }
         if let Some(c) = congress {
             manifest["built_from"]["congress"] = json!({
@@ -2536,13 +2676,23 @@ impl TitleDays {
 /// The languages a title lists, sorted and without repeats; `None` when it
 /// lists none (no language filter matches its pages).
 fn language_set(title: &Title) -> Option<Vec<String>> {
-    let set: BTreeSet<&str> = title
-        .languages
-        .iter()
-        .map(String::as_str)
-        .filter(|l| !l.is_empty())
-        .collect();
-    (!set.is_empty()).then(|| set.into_iter().map(str::to_owned).collect())
+    page_lang::title_set(title)
+}
+
+/// `{languages: {place: {day: pages}}}` as the snapshot's language baselines.
+fn language_baselines(by_language: page_lang::BySet) -> LanguageBaselines {
+    LanguageBaselines {
+        sets: by_language
+            .into_iter()
+            .map(|(languages, places)| LanguageSet {
+                languages,
+                baselines: places
+                    .into_iter()
+                    .map(|(k, v)| (k, v.into_iter().collect()))
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]
