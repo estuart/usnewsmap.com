@@ -218,9 +218,11 @@ resource rule 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
 // alone could stay under the threshold while the node sends twice as much.
 // Only this component's rows count (__COMPONENT_ID__), whatever role they
 // name. Each source falls back to an empty table, since a table with no
-// rows yet may not exist. The threshold is a tenth of the daily cap
-// (__CAP_GB__ GB), so one node that keeps it up fills the cap within 10
-// hours; the estimate is under 1 MB an hour.
+// rows yet may not exist. The Application Insights tables are listed by
+// name: log search alert rules don't support a wildcard union such as
+// App* (Microsoft). The threshold is a tenth of the daily cap (__CAP_GB__
+// GB), so one node that keeps it up fills the cap within 10 hours; the
+// estimate is under 1 MB an hour.
 var nodeVolume = '''
 let cap_mb = todouble("__CAP_GB__") * 1000;
 let component = "__COMPONENT_ID__";
@@ -232,7 +234,9 @@ let agent = union isfuzzy=true
     (datatable(Node: string, Size: real)[])
     | summarize AgentMB = sum(Size) / 1e6 by Node
     | extend WorkerMB = 0.0;
-let worker = union isfuzzy=true App*, (datatable(_ResourceId: string, AppRoleInstance: string, _BilledSize: real)[])
+let worker = union isfuzzy=true AppAvailabilityResults, AppBrowserTimings, AppDependencies, AppEvents,
+        AppExceptions, AppMetrics, AppPageViews, AppPerformanceCounters, AppRequests, AppSystemEvents, AppTraces,
+        (datatable(_ResourceId: string, AppRoleInstance: string, _BilledSize: real)[])
     | where _ResourceId =~ component
     | summarize WorkerMB = sum(_BilledSize) / 1e6 by Node = coalesce(AppRoleInstance, "(no instance)")
     | extend AgentMB = 0.0;

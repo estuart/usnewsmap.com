@@ -53,7 +53,7 @@
 # subscription); without it they have to be registered already.
 # Works with macOS's bash 3.2.
 set -euo pipefail
-usage() { sed -n '10,11s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '11,12s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
