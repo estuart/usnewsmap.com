@@ -768,6 +768,42 @@ impl Tesseract {
     }
 }
 
+/// Size caps on an engine's files (13 §13.4.7).
+const MAX_TEXT: u64 = 8 << 20;
+const MAX_ALTO: u64 = 64 << 20;
+
+/// Reads a file an engine wrote: it must be a regular file, not a symlink
+/// (checked before opening, and refused by `O_NOFOLLOW` when opening), and
+/// at most `max` bytes. The container has exited by then, so nothing
+/// changes the file meanwhile.
+fn read_output(path: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() {
+        bail!("{} isn't a regular file", path.display());
+    }
+    if meta.len() > max {
+        bail!("{} is {} bytes, over {max}", path.display(), meta.len());
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let file = opts.open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        bail!("{} isn't a regular file", path.display());
+    }
+    let mut buf = Vec::new();
+    file.take(max + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > max {
+        bail!("{} is over {max} bytes", path.display());
+    }
+    Ok(buf)
+}
+
 /// Point ALTO's `sourceImageInformation/fileName` at the scan's URL rather
 /// than the scratch file it was read from.
 pub fn set_alto_file_name(alto: &str, name: &str) -> String {
@@ -882,12 +918,13 @@ impl Engine for Tesseract {
                 tail(&String::from_utf8_lossy(&out.stderr), 400)
             )
         };
-        let text = tokio::fs::read_to_string(base.with_extension("txt"))
-            .await
-            .with_context(|| format!("tesseract wrote no text ({})", said()))?;
-        let alto = tokio::fs::read(base.with_extension("xml"))
-            .await
-            .with_context(|| format!("tesseract wrote no ALTO ({})", said()))?;
+        // The engine wrote these, so they're read as untrusted (13 §13.4.7):
+        // regular files only, no symlinks, size-capped.
+        let text = read_output(&base.with_extension("txt"), MAX_TEXT)
+            .with_context(|| format!("tesseract wrote no usable text ({})", said()))?;
+        let text = String::from_utf8(text).context("tesseract's text isn't UTF-8")?;
+        let alto = read_output(&base.with_extension("xml"), MAX_ALTO)
+            .with_context(|| format!("tesseract wrote no usable ALTO ({})", said()))?;
         Ok(EngineOutput {
             text,
             alto,
@@ -1083,6 +1120,23 @@ mod tests {
                         {"container_id": 1, "host_id": 231072, "size": 1000}]"#;
         assert!(parse_info(&info(r#"["cpu", "memory", "pids"]"#, small)).is_err());
         assert!(parse_info("nope").is_err());
+    }
+
+    #[test]
+    fn engine_files_are_read_as_untrusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("page.txt");
+        std::fs::write(&f, b"hello").unwrap();
+        assert_eq!(read_output(&f, 5).unwrap(), b"hello");
+        assert!(read_output(&f, 4).is_err());
+        assert!(read_output(dir.path(), 100).is_err());
+        assert!(read_output(&dir.path().join("none"), 100).is_err());
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("page.xml");
+            std::os::unix::fs::symlink(&f, &link).unwrap();
+            assert!(read_output(&link, 100).is_err());
+        }
     }
 
     #[test]

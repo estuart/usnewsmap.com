@@ -2615,6 +2615,7 @@ dependencies = [
  "moka",
  "opentelemetry",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

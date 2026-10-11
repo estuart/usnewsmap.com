@@ -45,7 +45,8 @@
 # node too: it applies the lockdown and the unit as they are now.
 #
 # AlmaLinux 9 or RHEL 10 (Arc supports both; it doesn't support Fedora),
-# unless --force-unsupported.
+# unless --force-unsupported, which also lets it go on with SELinux not
+# enforcing.
 set -euo pipefail
 usage() { sed -n '5,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -507,7 +508,13 @@ OCR_GID=$(getent group usnmocr | cut -d: -f3)
 # /var/lib, where SELinux's home directory rules don't reach.
 store=/var/lib/usnmeng/.local/share/containers
 install -d -o usnmeng -g usnmeng -m 0700 /var/lib/usnmeng/.local /var/lib/usnmeng/.local/share "$store"
-if [ "$(getenforce 2> /dev/null || echo Disabled)" != Disabled ]; then
+# The engines' isolation rests on SELinux labels (13 §13.3).
+selinux=$(getenforce 2> /dev/null || echo Disabled)
+if [ "$selinux" != Enforcing ]; then
+  [ "$FORCE" = true ] || die "SELinux is $selinux; the engine runtime needs it enforcing (setenforce 1, and SELINUX=enforcing in /etc/selinux/config)"
+  echo "warning: SELinux is $selinux, not enforcing; continuing (--force-unsupported)"
+fi
+if [ "$selinux" != Disabled ]; then
   if semanage fcontext -l -C | grep -qF "$store = /var/lib/containers"; then
     echo "$store is labelled like /var/lib/containers"
   else
@@ -515,8 +522,6 @@ if [ "$(getenforce 2> /dev/null || echo Disabled)" != Disabled ]; then
     echo "$store: labelled like /var/lib/containers"
   fi
   restorecon -R "$store"
-else
-  echo "warning: SELinux is disabled; ADR-0016 expects it enforcing"
 fi
 
 # cgroup delegation: systemd gives user managers only the memory and pids
