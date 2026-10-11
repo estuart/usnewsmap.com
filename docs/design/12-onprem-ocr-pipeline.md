@@ -510,10 +510,10 @@ Rust in `usnm-ingest` and `usnm-api`; Bicep for the setting.
 Built in #346, which differs from the plan above in these ways:
 
 - **Setting.** Only the flag, `--ocr-local` on `release` and `run`. The Bicep setting (`USNM_OCR_LOCAL` through `main.bicepparam`, `main.bicep` and `ingestjobs.bicep`) is still to come.
-- **Rule.** `ocr_local::rule` holds rule v1 as constants (`VERSION` 1, `MARGIN` 0.05, `HEAD_TEST`), which `ocr_local.json` records. A rate exactly 0.05 lower counts as lower, and an equal head count passes. When LoC's text is `und` or empty and the title lists no language, ours must be in English. `ocr-sync --report` applies the same rule to stored scores, without the title-language test.
+- **Rule.** `ocr_local::rule` holds rule v1 as constants (`VERSION` 1, `MARGIN` 0.05, `HEAD_TEST`), which `ocr_local.json` records. A rate exactly 0.05 lower passes, and so does an equal head count. When LoC's text is `und` or empty and the title lists no language, ours must be in English. `ocr-sync --report` applies the same rule to stored scores, without the title-language test.
 - **Revocations.** A file holds `reason` and `reference` and at least one of `node`, `engine` (full tag or short key), `run` (the `ocr-sync` import run, which is the merged part's stem), `from` and `to` (on `ocred_at`). Every field given must match. Matching rows are left out before a page's row is picked, so another node's reading of the page can still win. A file the release can't read stops the release.
 - **Records.** In `ocr_local_pages.bin` (`usnm_state::ocr_local`) the engine table holds each engine's `ocr_source` together with its short key, and the batch index points into the version's `batches.json` order. A delta carries the published file forward whether or not the flag is set. `ocr_local.json` also lists the revocations applied and the count of pages carried, dropped and added. Pages the Japanese overlay has are counted as kept with the reason `japanese_ocr`, and pages whose every row was revoked are counted with the reason `revoked`.
-- **Timing.** The estimate for published batches only counts rows whose queued batch the version keeps from its published indexes. It goes in the log and in `ocr_local.json`, as `estimate_published`.
+- **Timing.** The estimate for published batches counts only rows whose queued batch the version keeps from its published indexes. It goes in the log and in `ocr_local.json`, as `estimate_published`.
 
 ### Step 10: Seeder (M)
 
