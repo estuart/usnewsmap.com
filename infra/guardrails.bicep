@@ -12,6 +12,9 @@ param devBudgetEmails string = ''
 @description('The dev budget\'s start month, YYYY-MM-01. A budget\'s start date can\'t change; scripts/lib/env.sh keeps the stack\'s value once the budget exists.')
 param devBudgetStart string = ''
 
+@description('dev\'s region, which names the group its Container Apps environment creates: scripts/lib/env.sh passes dev\'s when dev provisions, and the stack\'s value otherwise.')
+param devBudgetLocation string = 'eastus2'
+
 // The definitions' names; main.bicep imports them to build the ids.
 @export()
 var guardrailPolicyNames = {
@@ -263,7 +266,7 @@ resource noRegistryLocalAuth 'Microsoft.Authorization/policyDefinitions@2023-04-
 // groups says it was left up. It lives here, not in dev's stack, so it
 // exists while dev doesn't. A budget filters by exact group names: the
 // project group, the Spot group, and the group the Container Apps
-// environment creates for its load balancer (East US 2, the default region).
+// environment creates for its load balancer, named for dev's region.
 // A distinct name from the budget-usnm-<env> dev's own stack can deploy.
 var devEmails = filter(map(split(devBudgetEmails, ','), e => trim(e)), e => !empty(e))
 
@@ -278,7 +281,7 @@ resource devBudget 'Microsoft.Consumption/budgets@2023-11-01' = if (!empty(devEm
       dimensions: {
         name: 'ResourceGroupName'
         operator: 'In'
-        values: ['rg-usnm-dev', 'rg-usnm-dev-spot', 'ME_cae-usnm-dev_rg-usnm-dev_eastus2']
+        values: ['rg-usnm-dev', 'rg-usnm-dev-spot', 'ME_cae-usnm-dev_rg-usnm-dev_${devBudgetLocation}']
       }
     }
     notifications: {

@@ -66,6 +66,7 @@ class Stubbed(unittest.TestCase):
         shutil.rmtree(self.tmp)
 
     def settings_file(self, text, env="dev"):
+        os.makedirs(os.path.join(self.settings, env), exist_ok=True)
         with open(os.path.join(self.settings, env, ".env"), "w") as f:
             f.write(text)
 
@@ -102,6 +103,13 @@ class ExperimentMarker(Stubbed):
         self.settings_file('AZURE_ENV_NAME="dev"\n')
         r = self.lib("experiment_marker", NO_EXPERIMENT_CHECK="true")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_teardown_reads_no_marker(self):
+        # Not even a malformed one, nor the group's tags.
+        self.settings_file('USNM_EXPERIMENT="search"\n')
+        r = self.lib("experiment_marker", NO_EXPERIMENT_CHECK="true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(self.log) and any(c.startswith("group show") for c in self.calls()))
 
     def test_other_environments_need_none(self):
         r = self.lib("experiment_marker", env_name="prod")
@@ -157,6 +165,20 @@ class GuardrailBudget(Stubbed):
         self.lib("deploy_guardrails",
                  STUB_PARAMS="devBudgetEmails\tdevBudgetStart\nops@example.org\t2026-10-01")
         self.assertIn("devBudgetEmails=new@example.org devBudgetStart=2026-10-01 ", self.create_call())
+
+
+    def test_dev_names_its_region(self):
+        self.settings_file('AZURE_LOCATION="westus3"\n')
+        self.lib("deploy_guardrails")
+        self.assertIn("devBudgetLocation=westus3", self.create_call())
+
+    def test_other_environments_keep_the_region(self):
+        self.settings_file('AZURE_LOCATION="eastus2"\n', env="prod")
+        r = self.lib("deploy_guardrails", env_name="prod",
+                     STUB_PARAMS="devBudgetEmails\tdevBudgetStart\tdevBudgetLocation\n"
+                                 "ops@example.org\t2026-10-01\twestus3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("devBudgetLocation=westus3", self.create_call())
 
 
 class DevStatus(Stubbed):

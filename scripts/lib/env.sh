@@ -127,7 +127,15 @@ deploy_guardrails() {
   # recipients, or keeps the ones it has when this environment has none, so
   # provisioning an environment without recipients doesn't delete it. A
   # budget's start date can't change and can't be in a past month, so it's
-  # this month for a new budget and the stack's own value after that.
+  # this month for a new budget and the stack's own value after that. The
+  # region names the Container Apps environment's own group: dev's region
+  # when dev provisions, the stack's value otherwise.
+  local budget_location
+  if [ "$ENV_NAME" = dev ]; then
+    budget_location=$(stack_location) || return 1
+  else
+    budget_location=$(stack_param "$params" devBudgetLocation)
+  fi
   emails=$(aget USNM_ALERT_EMAILS) || return 1
   kept=$(stack_param "$params" devBudgetEmails)
   [ -z "$kept" ] || start=$(stack_param "$params" devBudgetStart)
@@ -136,6 +144,7 @@ deploy_guardrails() {
   az stack sub create --name "$GUARDRAILS_STACK" --location "$location" \
     --template-file infra/guardrails.bicep \
     --parameters devBudgetEmails="$emails" devBudgetStart="$start" \
+    devBudgetLocation="${budget_location:-eastus2}" \
     --action-on-unmanage deleteResources \
     --deny-settings-mode denyDelete \
     --description "usnewsmap guard-rail policy definitions, shared by every environment in the subscription" \
@@ -242,9 +251,11 @@ ocr_vault_recover() {
 experiment_marker() {
   local exp out tagged started=""
   [ "$ENV_NAME" = dev ] || return 0
+  # Teardown's provision reads and checks nothing: a bad marker or a tag it
+  # can't read mustn't stop the detach.
+  [ "${NO_EXPERIMENT_CHECK:-}" = true ] && return 0
   exp=$(aget USNM_EXPERIMENT) || return 1
   if [ -z "$exp" ]; then
-    [ "${NO_EXPERIMENT_CHECK:-}" = true ] && return 0
     echo "error: dev exists only during an experiment: first scripts/settings.sh dev USNM_EXPERIMENT <issue number> (or scripts/stand-up.sh)" >&2
     return 1
   fi

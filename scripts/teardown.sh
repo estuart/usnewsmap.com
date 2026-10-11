@@ -279,8 +279,10 @@ if [ -n "$archive" ]; then
     ! grep -qi "/resourceGroups/$g/" <<< "$conns" ||
       die "$archive_name still has an endpoint connection from $g:"$'\n'"$conns"
   done
-  trap - EXIT INT TERM
+  # The traps stay until the lock is back, so an interrupt meanwhile still
+  # puts it back on.
   restore_lock || die "detached from $archive_name, but its lock isn't back on (see above); then run this again"
+  trap - EXIT INT TERM
   rm -f "$archive_mark"
   az account set --subscription "$SUBSCRIPTION"
   # The stack no longer manages the endpoint, the roles or the archive's
