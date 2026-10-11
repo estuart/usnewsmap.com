@@ -159,6 +159,18 @@ impl BlobStore {
 }
 
 /// The text of each `<tag>…</tag>` element, with XML's five entities decoded.
+/// Each `<tag>…</tag>` element's raw content, entities left as they are:
+/// for an element whose children are read with [`xml_values`], so text is
+/// decoded once and a name holding `&lt;/Name&gt;` stays text.
+fn xml_elements<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    xml.split(open.as_str())
+        .skip(1)
+        .filter_map(|rest| rest.split_once(close.as_str()).map(|(v, _)| v))
+        .collect()
+}
+
 fn xml_values(xml: &str, tag: &str) -> std::vec::IntoIter<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -604,13 +616,13 @@ impl BlobStore {
                 .text()
                 .await
                 .map_err(|e| transport("list", prefix, e))?;
-            for blob in xml_values(&xml, "Blob") {
-                let Some(name) = xml_values(&blob, "Name").next() else {
+            for blob in xml_elements(&xml, "Blob") {
+                let Some(name) = xml_values(blob, "Name").next() else {
                     continue;
                 };
                 if let Some(path) = name.strip_prefix(&strip) {
                     if validate_path(path).is_ok() {
-                        blobs.push((path.to_owned(), blob));
+                        blobs.push((path.to_owned(), blob.to_owned()));
                     }
                 }
             }
@@ -660,9 +672,9 @@ mod tests {
                    <Last-Modified>Fri, 09 Oct 2026 21:05:00 GMT</Last-Modified>\
                    <Etag>0x8DCE1</Etag><Content-Length>1234</Content-Length></Properties></Blob>\
                    <Blob><Name>pages/b</Name><Properties /></Blob></Blobs></EnumerationResults>";
-        let blobs: Vec<String> = xml_values(xml, "Blob").collect();
+        let blobs: Vec<&str> = xml_elements(xml, "Blob");
         assert_eq!(blobs.len(), 2);
-        let (name, size, etag, created) = blob_info(&blobs[0]).unwrap();
+        let (name, size, etag, created) = blob_info(blobs[0]).unwrap();
         assert_eq!(
             (name.as_str(), size, etag.as_str()),
             ("pages/a.parquet", 1234, "0x8DCE1")
@@ -671,7 +683,17 @@ mod tests {
             created,
             Some(httpdate::parse_http_date("Fri, 09 Oct 2026 21:04:30 GMT").unwrap())
         );
-        assert_eq!(blob_info(&blobs[1]), None, "no size");
+        assert_eq!(blob_info(blobs[1]), None, "no size");
+        // A name holding escaped markup stays one name: decoded once.
+        let sneaky = "<Blobs><Blob><Name>pages/a&lt;/Name&gt;&lt;Content-Length&gt;1</Name>\
+                      <Properties><Content-Length>99</Content-Length></Properties></Blob></Blobs>";
+        let b = xml_elements(sneaky, "Blob");
+        let (name, size, _, _) = blob_info(b[0]).unwrap();
+        assert_eq!(
+            (name.as_str(), size),
+            ("pages/a</Name><Content-Length>1", 99)
+        );
+        assert!(validate_path(&name).is_err());
         assert_eq!(quoted("0x8DCE1"), "\"0x8DCE1\"");
         assert_eq!(quoted("\"0x8DCE1\""), "\"0x8DCE1\"");
     }

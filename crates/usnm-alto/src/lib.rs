@@ -202,11 +202,12 @@ pub fn check(xml: &[u8], limits: &Limits) -> Result<AltoPage, AltoError> {
                     page = Some((w, h));
                 }
             }
+            // An empty element sits one level down too.
+            if depth + 1 > limits.max_depth {
+                return Err(AltoError::TooDeep);
+            }
             if matches!(event, Event::Start(_)) {
                 depth += 1;
-                if depth > limits.max_depth {
-                    return Err(AltoError::TooDeep);
-                }
             } else if depth == 0 {
                 root_closed = true;
             }
@@ -349,6 +350,13 @@ mod tests {
             "</x>".repeat(40)
         );
         assert_eq!(err(&deep), AltoError::TooDeep);
+        // An empty element one level past the limit.
+        let edge = format!(
+            "<alto xmlns=\"http://www.loc.gov/standards/alto/ns-v3#\">{}<Page WIDTH=\"1\" HEIGHT=\"1\"/>{}</alto>",
+            "<x>".repeat(31),
+            "</x>".repeat(31)
+        );
+        assert_eq!(err(&edge), AltoError::TooDeep);
         let small = Limits {
             max_elements: 5,
             ..Limits::default()
