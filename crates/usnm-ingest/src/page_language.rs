@@ -210,6 +210,42 @@ impl Moves {
         }
     }
 
+    /// Each moved page's set of page languages, by doc id
+    /// (`lccn_date_ed-N_seq-M`), whichever batch's copy moved.
+    pub fn sets_by_page(&self) -> std::collections::HashMap<String, &str> {
+        let mut out = std::collections::HashMap::new();
+        for titles in self.batches.values() {
+            for (lccn, sets) in titles {
+                for (set, dates) in sets {
+                    for (date, pages) in dates {
+                        for [ed, seq] in pages {
+                            out.insert(format!("{lccn}_{date}_ed-{ed}_seq-{seq}"), set.as_str());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Give a page not in the main indexes' documents (the Japanese index's,
+    /// 05 §5.5.8) the languages the page-language baselines count it in: its
+    /// moved set if a main-index document of it moved, else its title's.
+    /// `by_page` is [`Moves::sets_by_page`].
+    pub fn annotate_as_counted(
+        doc: &mut Value,
+        title: &Title,
+        by_page: &std::collections::HashMap<String, &str>,
+    ) {
+        let key = match doc["doc_id"].as_str().and_then(|id| by_page.get(id)) {
+            Some(set) => (*set).to_owned(),
+            None => set_key(&title_set(title).unwrap_or_default()),
+        };
+        let langs: Vec<String> = set_languages(&key).map(str::to_owned).collect();
+        doc[pl::SET_FIELD] = key.into();
+        doc[pl::FIELD] = langs.into();
+    }
+
     /// Pages that move.
     pub fn pages(&self) -> u64 {
         self.batches

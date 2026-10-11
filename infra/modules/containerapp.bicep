@@ -44,6 +44,9 @@ param ingestCron string = ''
 param americanStoriesSearch bool = true
 @description('Search the Congress pages on a version with a Congress index set (#229). False sets USNM_CONGRESS_SEARCH=false.')
 param congressSearch bool = true
+@description('How a page-language lang= filter is rendered (#289, 05 §5.5.8): smaller (the API\'s default) or match. Empty leaves USNM_PAGE_LANGUAGE_FILTER unset.')
+@allowed(['', 'smaller', 'match'])
+param pageLanguageFilter string = ''
 @description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
 param customDomains array = []
 
@@ -84,6 +87,9 @@ var americanStoriesEnv = americanStoriesSearch
   ? []
   : [{ name: 'USNM_AMERICAN_STORIES_SEARCH', value: 'false' }]
 var congressEnv = congressSearch ? [] : [{ name: 'USNM_CONGRESS_SEARCH', value: 'false' }]
+var pageLanguageFilterEnv = empty(pageLanguageFilter)
+  ? []
+  : [{ name: 'USNM_PAGE_LANGUAGE_FILTER', value: pageLanguageFilter }]
 // How long a start stays not ready (06 §6.6). In single-revision mode the
 // old revision keeps the traffic until the new one's replicas pass their
 // startup and readiness probes, so the API holds /readyz until its startup
@@ -116,7 +122,7 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, readyEnv)
+  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, readyEnv)
   probes: [
     {
       // A start loads the published version (loadSecs), then warms the

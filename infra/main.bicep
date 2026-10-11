@@ -63,6 +63,10 @@ param americanStoriesSearch bool = true
 @description('Search the Congress pages (#229) on a version whose current.json names a Congress index set. False makes the API leave them unloaded and answer source=congress with 422, without a release; the provision restarts the API (docs/configuration.md, USNM_CONGRESS_SEARCH).')
 param congressSearch bool = true
 
+@description('How the API renders a page-language lang= filter (#289, 05 §5.5.8): smaller (the side with fewer pages, the default) or match (page_language:IN always), for measuring one against the other. Both find the same pages; empty leaves the API\'s default (docs/configuration.md, USNM_PAGE_LANGUAGE_FILTER).')
+@allowed(['', 'smaller', 'match'])
+param pageLanguageFilter string = ''
+
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
 
@@ -541,6 +545,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     ingestCron: ingestJobs && useAcr ? ingestCron : ''
     americanStoriesSearch: americanStoriesSearch
     congressSearch: congressSearch
+    pageLanguageFilter: pageLanguageFilter
   }
 }
 

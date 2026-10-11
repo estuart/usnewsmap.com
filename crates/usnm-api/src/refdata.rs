@@ -364,7 +364,7 @@ impl RefData {
                 for series in lb.sets.iter_mut().flat_map(|s| s.baselines.values_mut()) {
                     series.sort_unstable();
                 }
-                rd.page_language_sets = Some(Arc::new(page_language_sets(&lb.sets)));
+                rd.page_language_sets = Some(Arc::new(page_language_sets(&lb.sets, rd.pages)));
                 rd.page_language_baselines = Some(lb.sets);
             }
             if let Some((path, bytes)) = ja_latin {
@@ -669,12 +669,16 @@ impl RefData {
             )
     }
 
-    /// The Japanese pages' index set, when the version has one.
+    /// The Japanese pages' index set, when the version has one. On a
+    /// version with page languages its pages carry the languages the
+    /// page-language baselines count them in (05 §5.5.8), so `lang=` and
+    /// the counts by language use them, as the baselines do.
     pub fn ja_index_set(&self) -> Option<IndexSet> {
-        self.current
-            .ja
-            .as_ref()
-            .map(|j| IndexSet::new(j.indexes.clone()).with_analyzer(self.analyzers().ja))
+        self.current.ja.as_ref().map(|j| {
+            IndexSet::new(j.indexes.clone())
+                .with_analyzer(self.analyzers().ja)
+                .with_page_languages(self.page_language_sets.clone())
+        })
     }
 
     /// The Congress index set (#229), when the version has one built with
@@ -773,8 +777,8 @@ impl RefData {
 
     /// Whether `lang=` means page language on this version (05 §5.5.8): its
     /// main indexes have them at this API's version, and its snapshot their
-    /// baselines. The Japanese index never has them; its pages' language
-    /// is their title's, which a Japanese title's pages keep.
+    /// baselines. Its Japanese index has them too, each page in the set the
+    /// baselines count it in ([`Self::ja_index_set`]).
     pub fn uses_page_language(&self) -> bool {
         self.page_language_baselines.is_some()
     }
@@ -861,17 +865,30 @@ impl RefData {
     }
 }
 
-/// Each set of page languages with its pages, every place and day summed.
-fn page_language_sets(sets: &[LanguageSet]) -> PageLanguageSets {
-    PageLanguageSets::new(sets.iter().map(|s| {
-        let pages = s
-            .baselines
-            .values()
-            .flatten()
-            .map(|&(_, n)| u64::from(n))
-            .sum();
-        (s.languages.clone(), pages)
-    }))
+/// Each set of page languages with its pages, every place and day summed,
+/// and the pages with no language (`page_language_set` `none`): the
+/// baselines leave that set out, as no filter matches it, but the
+/// complement side names it, so its pages count on that side. They are the
+/// version's pages (`total`, the sum of `baselines.json`) less every set's.
+fn page_language_sets(sets: &[LanguageSet], total: u64) -> PageLanguageSets {
+    let mut out: Vec<(Vec<String>, u64)> = sets
+        .iter()
+        .map(|s| {
+            let pages = s
+                .baselines
+                .values()
+                .flatten()
+                .map(|&(_, n)| u64::from(n))
+                .sum();
+            (s.languages.clone(), pages)
+        })
+        .collect();
+    let counted: u64 = out.iter().map(|(_, n)| n).sum();
+    let none = total.saturating_sub(counted);
+    if none > 0 {
+        out.push((Vec::new(), none));
+    }
+    PageLanguageSets::new(out)
 }
 
 /// Add a place's sorted `(day, pages)` series that fall inside `spec` to `out`.
@@ -959,4 +976,41 @@ fn parse<T: for<'de> Deserialize<'de>>(path: &str, bytes: &[u8]) -> Result<T, St
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use usnm_search::LanguageMatch;
+
+    fn set(langs: &[&str], pages: u32) -> LanguageSet {
+        LanguageSet {
+            languages: langs.iter().map(|l| (*l).to_owned()).collect(),
+            baselines: [("P1".to_owned(), vec![(70_000, pages)])].into(),
+        }
+    }
+
+    /// Pages with no language aren't in the page-language baselines, but
+    /// the complement side holds them: they come from the total, so the
+    /// side is chosen on every page.
+    #[test]
+    fn pages_with_no_language_count_on_the_complement_side() {
+        let sets = [set(&["eng"], 60), set(&["ger"], 10)];
+        let eng = vec!["eng".to_owned()];
+        // Without them English is the larger side, and the complement is rendered.
+        assert!(matches!(
+            page_language_sets(&sets, 70).matching(&eng),
+            LanguageMatch::NotPageSets(_)
+        ));
+        // 55 pages with no language make the complement (65) the larger side.
+        let s = page_language_sets(&sets, 125);
+        assert!(s.sets().contains(&(Vec::new(), 55)), "{:?}", s.sets());
+        assert_eq!(s.matching(&eng), LanguageMatch::Page(eng.clone()));
+        assert_eq!(s.pages_in("eng"), 60);
+        // Never fewer than none.
+        assert!(!page_language_sets(&sets, 50)
+            .sets()
+            .iter()
+            .any(|(l, _)| l.is_empty()));
+    }
 }

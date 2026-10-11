@@ -1087,7 +1087,15 @@ impl Release {
                 )
                 .await?;
             let ja = self
-                .build_ja_index(lease, sink, &version, &overlay, &catalog, analyzer)
+                .build_ja_index(
+                    lease,
+                    sink,
+                    &version,
+                    &overlay,
+                    &catalog,
+                    analyzer,
+                    moves.as_ref(),
+                )
                 .await?;
             // What it built in the end: the Japanese index can come out empty.
             built.ja_index = ja.is_some();
@@ -1878,6 +1886,8 @@ impl Release {
 
     /// Build the Japanese pages' index for `version` from the overlay's pages
     /// with text, or nothing when there are none. Its name and page count.
+    // The lease, sink and moves are the release's, threaded through.
+    #[allow(clippy::too_many_arguments)]
     async fn build_ja_index(
         &self,
         lease: &WriterLease,
@@ -1886,18 +1896,28 @@ impl Release {
         overlay: &ocr_ja::Overlay,
         catalog: &Catalog,
         analyzer: Analyzer,
+        moves: Option<&Moves>,
     ) -> anyhow::Result<Option<(String, u64)>> {
+        // On a version with page languages (05 §5.5.8), each page carries
+        // the languages the page-language baselines count it in, so that a
+        // Japanese search filters and counts as its baseline does.
+        let by_page = moves.map(Moves::sets_by_page);
         let mut docs = Vec::new();
         for p in overlay.pages.iter().filter(|p| p.indexable()) {
             let title = catalog.title(&p.key.lccn).context("title")?;
             let place = catalog.place(&title.place_id).context("place")?;
-            docs.push(ocr_ja::ja_doc(p, title, place, analyzer));
+            let mut doc = ocr_ja::ja_doc(p, title, place, analyzer);
+            if let Some(by_page) = &by_page {
+                Moves::annotate_as_counted(&mut doc, title, by_page);
+            }
+            docs.push(doc);
         }
         if docs.is_empty() {
             return Ok(None);
         }
         let id = ocr_ja::index_id(version);
-        sink.create_with(&id, ocr_ja::JA_TEMPLATE).await?;
+        let template = crate::sink::page_language_fields(moves.is_some(), ocr_ja::JA_TEMPLATE)?;
+        sink.create_with(&id, &template).await?;
         for d in &docs {
             lease.check()?;
             sink.add(d).await?;

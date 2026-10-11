@@ -3453,7 +3453,7 @@ async fn page_language_state(version: u32, side: Option<&str>) -> (Arc<AppState>
     .unwrap();
     let dir = temp_data_dir(&format!(
         "page-language-{version}-{}",
-        side.unwrap_or("smaller")
+        side.unwrap_or("default")
     ));
     std::fs::write(dir.join("fixture-v1/page_language_baselines.json"), &body).unwrap();
     let manifest = dir.join("fixture-v1/manifest.json");
@@ -3554,7 +3554,8 @@ async fn lang_filters_by_page_language_on_a_version_with_them() {
 /// finds the same pages.
 #[tokio::test]
 async fn both_sides_of_a_page_language_filter_answer_alike() {
-    let (smaller, _) = page_language_state(usnm_core::page_language::VERSION, None).await;
+    let (smaller, _) =
+        page_language_state(usnm_core::page_language::VERSION, Some("smaller")).await;
     let (matching, _) = page_language_state(usnm_core::page_language::VERSION, Some("match")).await;
     let eng = vec!["eng".to_owned()];
     let side = |s: &Arc<AppState>| s.snapshot.load().refdata.index_set().language_match(&eng);
@@ -3581,6 +3582,39 @@ async fn both_sides_of_a_page_language_filter_answer_alike() {
         }
         assert_eq!(a, b, "{uri}");
     }
+}
+
+/// The Japanese index set uses page languages too on such a version, so a
+/// Japanese search's `lang=`, counts and baselines agree (its pages carry
+/// the languages the baselines count them in); never on a title-language
+/// version.
+#[tokio::test]
+async fn the_japanese_index_set_follows_the_version_s_language_mode() {
+    let ja =
+        json!({"indexes": ["pages-ja-fixture"], "fold": usnm_core::ja::FOLD_VERSION, "pages": 1});
+    let mut rd = refdata().await;
+    rd.current.ja = serde_json::from_value(ja.clone()).unwrap();
+    assert!(rd.ja_index_set().unwrap().page_languages().is_none());
+    // The page-language version's snapshot, its pointer naming a Japanese index.
+    let _ = page_language_state(usnm_core::page_language::VERSION, Some("ja")).await;
+    let dir = std::env::temp_dir().join(format!(
+        "usnm-page-language-{}-ja-{}",
+        usnm_core::page_language::VERSION,
+        std::process::id()
+    ));
+    let current = dir.join("current.json");
+    let mut c: Value = serde_json::from_str(&std::fs::read_to_string(&current).unwrap()).unwrap();
+    c["ja"] = ja;
+    std::fs::write(&current, c.to_string()).unwrap();
+    let rd = RefData::load(&LocalStore::new(&dir)).await.unwrap();
+    let set = rd.ja_index_set().unwrap();
+    assert!(set.page_languages().is_some());
+    assert_eq!(set.language_field(), "page_language");
+    let ger = vec!["ger".to_owned()];
+    assert_eq!(
+        set.language_match(&ger),
+        Some(usnm_search::LanguageMatch::Page(ger.clone()))
+    );
 }
 
 /// Page languages of another version than the API's are left alone:

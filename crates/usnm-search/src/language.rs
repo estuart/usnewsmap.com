@@ -98,7 +98,12 @@ impl PageLanguageSets {
         }
         let quotable = others.iter().all(|s| s.iter().all(|l| is_code(l)));
         if self.side == PageLanguageSide::Smaller && rest < matching && quotable {
-            let mut keys: Vec<String> = others.iter().map(|s| set_key(s)).collect();
+            // The pages with no language are a set too (`none`), named once.
+            let mut keys: Vec<String> = others
+                .iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| set_key(s))
+                .collect();
             keys.push(NO_LANGUAGE.to_owned());
             LanguageMatch::NotPageSets(keys)
         } else {
@@ -182,6 +187,29 @@ mod tests {
         assert_eq!(
             LanguageMatch::Title(langs(&["eng", "ger"])).clause(),
             "language:IN [eng ger]"
+        );
+    }
+
+    #[test]
+    fn pages_with_no_language_are_on_the_complement_side_once() {
+        let s = PageLanguageSets::new([
+            (langs(&["eng"]), 900),
+            (langs(&["ger"]), 20),
+            (Vec::new(), 30),
+        ]);
+        assert_eq!(
+            s.matching(&langs(&["eng"])),
+            LanguageMatch::NotPageSets(langs(&["ger", "none"]))
+        );
+        // 950 pages with no language: the match side is now the smaller.
+        let s = PageLanguageSets::new([
+            (langs(&["eng"]), 900),
+            (langs(&["ger"]), 20),
+            (Vec::new(), 950),
+        ]);
+        assert_eq!(
+            s.matching(&langs(&["eng"])),
+            LanguageMatch::Page(langs(&["eng"]))
         );
     }
 

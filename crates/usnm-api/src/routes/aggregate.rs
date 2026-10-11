@@ -262,8 +262,8 @@ async fn compute(
     let snap = &ctx.snap;
     let rd = &snap.refdata;
     let indexes = rd.index_set_for_request(&req)?;
-    // Counted by page language when the index set has them (05 §5.5.8):
-    // never the Japanese index's.
+    // Counted by page language when the index set has them (05 §5.5.8),
+    // the Japanese index's included on such a version.
     let by_page = indexes.page_languages().is_some();
     let mut spec = req.bucket_spec();
     let mut coarsened = false;

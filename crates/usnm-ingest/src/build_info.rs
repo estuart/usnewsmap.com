@@ -74,7 +74,10 @@ fn templates(b: &Built) -> Vec<(&'static str, String)> {
         t.push(("pages", pages));
     }
     if b.ja_index {
-        t.push(("pages-ja", crate::ocr_ja::JA_TEMPLATE.to_owned()));
+        // With the page languages too on a version with them (05 §5.5.8).
+        let ja = crate::sink::page_language_fields(b.page_language, crate::ocr_ja::JA_TEMPLATE)
+            .unwrap_or_else(|_| crate::ocr_ja::JA_TEMPLATE.to_owned());
+        t.push(("pages-ja", ja));
     }
     t
 }
@@ -173,6 +176,17 @@ mod tests {
         );
         let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
         assert!(yaml.contains("name: page_language_set,"), "{yaml}");
+        // The Japanese index has them too.
+        b.ja_index = true;
+        let v = record(&b);
+        let ja = v["templates"]["pages-ja"]["yaml"].as_str().unwrap();
+        assert!(ja.contains("name: page_language_set,"), "{ja}");
+        b.page_language = false;
+        let ja = record(&b)["templates"]["pages-ja"]["yaml"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!ja.contains("page_language"), "{ja}");
     }
 
     #[test]

@@ -4643,6 +4643,102 @@ async fn a_base_with_page_languages_and_the_releases_after_it() {
         .is_none());
 }
 
+/// On a version with page languages (05 §5.5.8), the Japanese index's
+/// pages carry the languages the page-language baselines count them in: a
+/// page whose main-index document moved takes its moved set, any other its
+/// title's. So a Japanese search filters and counts as its baseline does.
+#[tokio::test]
+async fn the_japanese_index_carries_the_page_languages_it_is_counted_in() {
+    use usnm_core::page_language::{FIELD, SET_FIELD};
+    let e = env().await;
+    // The English and German title's first pages in German: they move to
+    // `ger`, and the Japanese OCR of one of them must say so.
+    let pages: Vec<Page> = fixture_pages()
+        .into_iter()
+        .map(|mut p| {
+            if p.lccn == "sn99000002" && p.seq == 1 && !p.text.is_empty() {
+                p.text = GERMAN_PAGE.to_owned();
+            }
+            p
+        })
+        .collect();
+    let path = e.root.join("batch_fx_ja_ver01.tar.gz");
+    let all: Vec<&Page> = pages.iter().collect();
+    write_archive(&path, &all, false, true);
+    curate(
+        &e,
+        vec![listed("batch_fx_ja_ver01", &path, Some(sha256_file(&path)))],
+    )
+    .await;
+    let p0 = pages
+        .iter()
+        .find(|p| p.lccn == "sn99000002" && p.seq == 1 && !p.text.is_empty())
+        .unwrap();
+    let row = |seq, loc_text, text| JaRow {
+        lccn: &p0.lccn,
+        date: p0.date,
+        seq,
+        batch: "batch_fx_ja",
+        loc_text,
+        text,
+        ocred_at: 1,
+    };
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[
+            row(p0.seq, "garbled", "日本"),
+            row(90, "missing", "米國と日本"),
+        ],
+    )
+    .await;
+    let r = Release {
+        page_language: true,
+        ..e.releaser(5, true)
+    };
+    let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
+    let published = r.run(&mut sink).await.unwrap().unwrap();
+    let ja_id = format!(
+        "pages-ja-{}",
+        published.index_version.trim_start_matches("pages-v")
+    );
+    let ja = e.index(&ja_id);
+    assert_eq!(ja.len(), 2);
+    let main = e.index(&published.indexes[0]);
+    let moved = format!("{}_{}_ed-1_seq-{}", p0.lccn, p0.date, p0.seq);
+    assert_eq!(main[&moved][FIELD], serde_json::json!(["ger"]));
+    // The page with a main-index document: its document's languages.
+    assert_eq!(ja[&moved][FIELD], serde_json::json!(["ger"]));
+    assert_eq!(ja[&moved][SET_FIELD], "ger");
+    // The page curation never had: its title's, as the baselines count it.
+    let missing = &ja[&format!("{}_{}_ed-1_seq-90", p0.lccn, p0.date)];
+    assert_eq!(missing[FIELD], serde_json::json!(["eng", "ger"]));
+    assert_eq!(missing[SET_FIELD], "eng_ger");
+    // The Japanese template has the fields.
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", published.index_version))
+        .await;
+    let yaml = manifest["build"]["templates"]["pages-ja"]["yaml"]
+        .as_str()
+        .unwrap();
+    assert!(yaml.contains("name: page_language_set,"), "{yaml}");
+    // Without the setting, none of it.
+    let r = Release {
+        page_language: false,
+        ..e.releaser(12, true)
+    };
+    let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
+    let published = r.run(&mut sink).await.unwrap().unwrap();
+    let ja_id = format!(
+        "pages-ja-{}",
+        published.index_version.trim_start_matches("pages-v")
+    );
+    assert!(e
+        .index(&ja_id)
+        .values()
+        .all(|d| d.get(FIELD).is_none() && d.get(SET_FIELD).is_none()));
+}
+
 /// A base built with `--page-language` on a real Quickwit writer (05
 /// §5.5.8), and a delta on it: the index takes both fields, and the two
 /// renderings of a page-language filter find the same pages, the ones the
