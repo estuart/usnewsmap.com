@@ -61,12 +61,25 @@ pub struct Item {
     pub content: Option<Vec<u8>>,
 }
 
+/// Where a reject's content goes: under its source's own path when that
+/// fits the store's path rules with the prefix and the record's suffix, or
+/// else under the sha256 of the source, so no source name can make the
+/// write fail and stop every run.
 fn content_path(run: &str, kind: &str, source: &str) -> String {
-    if kind == DEAD_LETTER {
+    let p = if kind == DEAD_LETTER {
         format!("{TOP}/{run}/deadletter/{source}.txt")
     } else {
         format!("{TOP}/{run}/{source}")
+    };
+    if usnm_store::validate_path(&format!("{p}.reason.json")).is_ok() {
+        return p;
     }
+    use sha2::{Digest, Sha256};
+    let h: String = Sha256::digest(source.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("{TOP}/{run}/hashed/{kind}-{h}")
 }
 
 /// Keep `item` in quarantine: its content (if read), then its record.
@@ -113,8 +126,10 @@ pub struct Replayed {
     pub dead_letters: usize,
     /// Records with no content to put back (over a size limit).
     pub without_content: usize,
-    /// Sources already back in `ocr-out`.
+    /// Sources already back in `ocr-out` with the same bytes.
     pub already_there: usize,
+    /// Sources whose path in `ocr-out` holds other bytes: kept in quarantine.
+    pub conflicts: usize,
 }
 
 /// Put every reject with `reason` back where it came from, and remove it
@@ -164,14 +179,20 @@ pub async fn replay(
                 } else {
                     "application/xml"
                 };
-                if out.put_new(&record.source, bytes, ct).await? {
+                if out.put_new(&record.source, bytes.clone(), ct).await? {
                     if record.kind == PART {
                         report.parts += 1;
                     } else {
                         report.alto += 1;
                     }
-                } else {
+                } else if out.get(&record.source).await?.as_deref() == Some(bytes.as_slice()) {
                     report.already_there += 1;
+                } else {
+                    // Something else is at the source path now: keep the
+                    // reject for inspection.
+                    tracing::warn!(source = %record.source, record = %record_path, "source path holds other bytes; reject kept in quarantine");
+                    report.conflicts += 1;
+                    continue;
                 }
             }
             _ => continue,
@@ -184,4 +205,19 @@ pub async fn replay(
         tracing::info!(source = %record.source, kind = %record.kind, reason, "replayed from quarantine");
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_sources_get_a_hashed_path() {
+        let short = content_path("r1", PART, "pages/a.parquet");
+        assert_eq!(short, "rejects/r1/pages/a.parquet");
+        let long = format!("pages/{}", "a/".repeat(500));
+        let p = content_path("r1", PART, &long);
+        assert!(p.starts_with("rejects/r1/hashed/part-"));
+        assert!(usnm_store::validate_path(&format!("{p}.reason.json")).is_ok());
+    }
 }
