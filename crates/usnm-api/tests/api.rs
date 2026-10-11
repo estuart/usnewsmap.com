@@ -785,6 +785,8 @@ async fn health_and_meta() {
     assert_eq!(meta["synthetic"], true);
     assert_eq!(meta["places"], 6);
     assert_eq!(meta["limits"]["min_prefix_chars"], 5);
+    assert_eq!(meta["limits"]["max_at_least_items"], 6);
+    assert_eq!(meta["limits"]["max_ocr_variants"], 32);
     // Every page in the version: the sum of the baselines.
     let baselines: HashMap<String, Vec<(u32, u32)>> = serde_json::from_slice(
         &std::fs::read(data_dir().join("fixture-v1/baselines.json")).unwrap(),
@@ -1230,6 +1232,51 @@ async fn wildcard_words_count_mark_and_refuse() {
     // A question mark that ends a word is still punctuation.
     let (status, _, body) = get(&s, "/v1/aggregate?q=convention%3F&mode=phrase").await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// `word~ocr` and `N OF (...)` (#124): counted, in canonical form, and
+/// refused with a syntax error where they can't work.
+#[tokio::test]
+async fn ocr_spellings_and_at_least_n_count_and_refuse() {
+    let s = state_with(None).await;
+    let all = ["pages-base-fixture", "pages-delta-fixture-1"];
+    let (from, to) = ("1895-01-01", "1897-12-31");
+    for (q, node, canonical) in [
+        ("Gold~OCR", "gold~ocr", "gold%7Eocr"),
+        (
+            "2+OF+(silver+gold+bryan)",
+            "2 OF (bryan gold silver)",
+            "2+OF+%28bryan+gold+silver%29",
+        ),
+    ] {
+        let (status, headers, body) =
+            get(&s, &format!("/v1/aggregate?q={q}&from={from}&to={to}")).await;
+        assert_eq!(status, StatusCode::OK, "{q}: {body}");
+        let expected = oracle_count(node, from, to, &all);
+        assert!(expected > 0, "{q}");
+        assert_eq!(body["total"]["hits"], expected, "{q}");
+        assert!(
+            header_str(&headers, header::CONTENT_LOCATION).contains(&format!("&q={canonical}&")),
+            "{q}: {}",
+            header_str(&headers, header::CONTENT_LOCATION)
+        );
+    }
+    assert!(oracle_count("gold~ocr", from, to, &all) > oracle_count("gold", from, to, &all));
+    for (q, detail) in [
+        ("gold~ocr*", "not both"),
+        ("%22cross+of+gold%22~ocr", "not a phrase"),
+        ("2+OF+(gold+silver)", "use AND"),
+        ("2+OF+(gold+OR+silver+bryan)", "takes words and phrases"),
+        ("9+OF+(gold+silver+bryan)", "N from 2 to 5"),
+    ] {
+        let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{q}");
+        assert_eq!(body["type"], "/errors/query-syntax", "{q}");
+        assert!(
+            body["detail"].as_str().unwrap().contains(detail),
+            "{q}: {body}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -104,6 +104,22 @@ fn queries() -> Vec<(&'static str, Node)> {
         ("wildcard *", parse("conve*tion").unwrap()),
         ("wildcards and", parse("railr*ad weath?r -cotton").unwrap()),
         ("wildcard no match", parse("golde?s").unwrap()),
+        // OCR spellings as a term set, and at least N of (#124). The
+        // fixtures misread `gold` as `goid` and `golcl`, `silver` as `sllver`
+        // and `silvcr`, `fever` as `fevcr`, `standard` as `standarcl`.
+        ("ocr spellings", parse("gold~ocr").unwrap()),
+        (
+            "ocr spellings and",
+            parse("convention~ocr fever~ocr -standard~ocr").unwrap(),
+        ),
+        (
+            "at least 2 of 4",
+            parse("2 OF (gold silver bryan orator)").unwrap(),
+        ),
+        (
+            "at least with phrase, prefix and ocr",
+            parse(r#"2 OF ("cross of gold" silver~ocr railr* "fever port"~4) -cotton"#).unwrap(),
+        ),
         (
             "mode any",
             build("bankers orator", Some(Mode::Any), 0, 0).unwrap(),
@@ -559,6 +575,96 @@ async fn wildcard_hits_mark_the_words_they_match() {
             h.snippets
         );
     }
+}
+
+/// `word~ocr` (#124) finds the pages where LoC's OCR misread the word, and
+/// the hits mark the misreading: `gold~ocr -gold` finds only those.
+#[tokio::test]
+async fn ocr_spellings_find_the_misread_pages() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let f = filters("1895-01-01", "1897-12-31");
+    let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
+    let (_, set) = sets().remove(0);
+    let total = |q: &str| {
+        let (qw, set, f, spec) = (&qw, &set, &f, &spec);
+        let q = parse(q).unwrap();
+        async move { qw.summary(set, &q, f, spec).await.unwrap().total_hits }
+    };
+    let gold = total("gold").await;
+    assert!(total("gold~ocr").await > gold);
+    let q = parse("gold~ocr -gold").unwrap();
+    let page = HitsQuery {
+        limit: 20,
+        ..Default::default()
+    };
+    let hits = qw.hits(&set, &q, &f, &page).await.expect("hits");
+    assert!(hits.total > 0);
+    for h in &hits.hits {
+        assert!(
+            h.snippets.iter().any(|s| {
+                let s = s.to_lowercase();
+                s.contains("<mark>goid</mark>") || s.contains("<mark>golcl</mark>")
+            }),
+            "{:?}",
+            h.snippets
+        );
+    }
+}
+
+/// `N OF (...)` (#124) runs as an `OR` of `AND`s in the query language.
+/// Quickwit's Elasticsearch-compatible API has the same thing natively
+/// (`bool` with `minimum_should_match`): both count the same pages.
+#[tokio::test]
+async fn at_least_n_counts_what_minimum_should_match_does() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let url = std::env::var("QUICKWIT_URL").unwrap();
+    let url = url.trim_end_matches('/');
+    let http = reqwest::Client::new();
+    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
+    let f = filters("1789-01-01", "1925-12-31");
+    let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
+    let words = ["gold", "silver", "bryan", "orator"];
+    let mut matched = 0;
+    for min in 2..words.len() {
+        let q = parse(&format!("{min} OF ({})", words.join(" "))).unwrap();
+        let got = qw.summary(&set, &q, &f, &spec).await.unwrap().total_hits;
+        let body = serde_json::json!({
+            "size": 0,
+            "track_total_hits": true,
+            "query": {"bool": {
+                "should": words.iter().map(|w| serde_json::json!({"term": {"text": w}})).collect::<Vec<_>>(),
+                "minimum_should_match": min,
+            }},
+        });
+        let v: serde_json::Value = http
+            .post(format!(
+                "{url}/api/v1/_elastic/{}/_search",
+                INDEXES.join(",")
+            ))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            Some(got),
+            v["hits"]["total"]["value"].as_u64(),
+            "{min} OF: {v}"
+        );
+        matched += usize::from(got > 0);
+    }
+    assert!(
+        matched >= 2,
+        "only {matched} of the counts matched any page"
+    );
 }
 
 #[tokio::test]

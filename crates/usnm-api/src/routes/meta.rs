@@ -74,7 +74,9 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
             "max_or_branches": query::MAX_OR_BRANCHES,
             "max_slop": query::MAX_SLOP,
             "max_fuzzy": query::MAX_FUZZY,
-            "min_prefix_chars": query::MIN_PREFIX_CHARS
+            "min_prefix_chars": query::MIN_PREFIX_CHARS,
+            "max_at_least_items": query::MAX_AT_LEAST_ITEMS,
+            "max_ocr_variants": usnm_core::ocr_variants::MAX_OCR_VARIANTS
         }
     });
     let mut resp = Json(body).into_response();
