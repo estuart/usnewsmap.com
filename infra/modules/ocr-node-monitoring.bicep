@@ -288,6 +288,61 @@ resource volumeAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!
   }
 }
 
+// loc.gov told a node to wait more than an hour (a Retry-After over the
+// worker's one-hour cap, 12 Step 7): the worker holds that server for the
+// hour and takes no pages, but a longer block means loc.gov wants the nodes
+// to stop for a while, which only a person can decide. Counted by the
+// worker's ocr.loc_slowdowns with capped=true; the role instance is the
+// node.
+var locCapped = '''
+AppMetrics
+| where _ResourceId =~ "__COMPONENT_ID__" and AppRoleName == "usnm-ocr-worker" and Name == "ocr.loc_slowdowns"
+| where tostring(Properties["capped"]) =~ "true"
+| summarize Holds = sum(Sum) by Node = tolower(AppRoleInstance), Server = tostring(Properties["server"]), Status = tostring(Properties["status"])
+| where Holds > 0
+'''
+
+// Stateful, hourly: one email when a node first sees a capped hold,
+// resolved when an hour passes without one.
+resource locCappedAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!empty(actionGroupId)) {
+  name: 'alert-usnm-ocr-loc-hold-${nameSuffix}'
+  location: location
+  tags: tags
+  kind: 'LogAlert'
+  properties: {
+    displayName: 'OCR node: loc.gov asked to wait over an hour'
+    description: 'loc.gov answered an OCR node with a Retry-After of more than an hour; the worker waits an hour (its cap) and takes no pages meanwhile, then tries again. Node, Server (api or tile) and Status (429, 503 or 403) say where. Next: scripts/logs.sh <env> ocr-node-errors for the node\'s lines; if loc.gov keeps asking, stop the workers (systemctl stop usnm-ocr-worker on each node) and raise the LoC gaps (install-worker.sh) before starting them again.'
+    severity: 2
+    enabled: true
+    evaluationFrequency: 'PT1H'
+    windowSize: 'PT1H'
+    scopes: [workspace.id]
+    // A new workspace has no AppMetrics table until a worker first sends.
+    skipQueryValidation: true
+    autoMitigate: true
+    criteria: {
+      allOf: [
+        {
+          query: replace(locCapped, '__COMPONENT_ID__', appInsights.id)
+          timeAggregation: 'Count'
+          operator: 'GreaterThan'
+          threshold: 0
+          dimensions: [
+            { name: 'Node', operator: 'Include', values: ['*'] }
+            { name: 'Server', operator: 'Include', values: ['*'] }
+            { name: 'Status', operator: 'Include', values: ['*'] }
+          ]
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: { actionGroups: [actionGroupId] }
+  }
+}
+
 // The cap reached (OverQuota), as for the environment's workspace (#279,
 // monitoring.bicep): the workspace writes the event to its own Operation
 // table (_LogOperation), which is free and keeps being written when the cap

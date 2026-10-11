@@ -32,6 +32,11 @@ pub enum EngineError {
 pub trait Engine: Send + Sync + std::fmt::Debug {
     /// `ocr_source` for this engine's rows, e.g. `usnm-tesseract`.
     fn source(&self) -> &str;
+    /// Whether this node can read pages in `language` (ISO 639-3). The
+    /// worker asks before it fetches a scan, so a page with no model here
+    /// costs no image request (12 Step 7). The engine contract (ADR-0016,
+    /// #307) answers it from routing.
+    fn can_read(&self, language: &str) -> bool;
     /// Read `image` (a file) for a page in `language` (ISO 639-3), using
     /// `work` for scratch files.
     async fn ocr(
@@ -134,9 +139,17 @@ impl Drop for ContainerGuard {
         let name = self.name.clone();
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
-                if let Err(e) = cmd.status().await {
-                    tracing::warn!(container = %name, error = %e, "couldn't remove a stopped page's container");
+                // `podman rm` can fail while the container is still
+                // stopping; try a few times, and say so if it never goes.
+                for attempt in 1..=3u32 {
+                    match cmd.status().await {
+                        Ok(s) if s.success() => return,
+                        Ok(s) => tracing::warn!(container = %name, attempt, status = %s, "podman rm failed"),
+                        Err(e) => tracing::warn!(container = %name, attempt, error = %e, "podman rm didn't run"),
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5 * u64::from(attempt))).await;
                 }
+                tracing::error!(container = %name, "couldn't remove a stopped page's container; remove it by hand");
             });
         }
     }
@@ -365,6 +378,10 @@ pub fn set_alto_file_name(alto: &str, name: &str) -> String {
 impl Engine for Tesseract {
     fn source(&self) -> &str {
         "usnm-tesseract"
+    }
+
+    fn can_read(&self, language: &str) -> bool {
+        route(language, &self.installed).is_some()
     }
 
     async fn ocr(
