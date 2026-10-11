@@ -11,7 +11,17 @@
 //! [`Options::max_failures_in_a_row`] pages fail in a row the run stops.
 //! A lock file in the output directory keeps it to one fetching process.
 //!
-//! **Layout**: `<out>/<batch>/<lccn>/<date>/<edition>/<seq>.<ext>`, where
+//! **Two sets** (the maintainer's split, #368): the *keep* set, every
+//! non-English page and the worst English batches' pages, is kept for good;
+//! the *buffer* set, the rest of English, is a rolling buffer that the
+//! workers empty as they read it (ADR-0015 decision 9). Keep pages are
+//! fetched first, in [`priority`] order, then buffer pages in issue order,
+//! and the fetcher waits whenever the buffer's scans on disk reach
+//! [`Options::buffer_cap`], looking again every minute.
+//!
+//! **Layout**: `<out>/<set>/<batch>/<lccn>/<date>/<edition>/<seq>.<ext>`
+//! (`<set>` is `keep` or `buffer`, so nothing that empties the buffer can
+//! reach a keep scan), where
 //! `<ext>` is `jpg` for a full scan and `pct<n>.jpg` for one scaled to n%,
 //! with a sidecar `<file>.json` ([`Sidecar`]) holding the LoC URL, the
 //! fetch time, the size and the sha256. The scan is written to a `.part`
@@ -46,6 +56,9 @@ use usnm_ocr_contract::prefetch::{self, ManifestRow};
 
 use crate::loc::{image_url, FetchError, ImageSize, LocClient, USER_AGENT};
 
+/// How often a fetcher waiting at the buffer cap counts the buffer again.
+pub const BUFFER_RECHECK: Duration = Duration::from_secs(60);
+
 /// What to fetch.
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -53,7 +66,14 @@ pub struct Options {
     pub manifest: PathBuf,
     /// The root the scans go under.
     pub out: PathBuf,
+    /// The keep set's resolution.
     pub size: ImageSize,
+    /// The buffer set's resolution.
+    pub buffer_size: ImageSize,
+    /// Which sets to fetch.
+    pub sets: Sets,
+    /// Wait while the buffer set's scans on disk reach this many bytes.
+    pub buffer_cap: u64,
     /// Only the first this many pages (after `sample`).
     pub limit: Option<usize>,
     /// A sample of about this many pages, stratified by language and decade.
@@ -73,6 +93,51 @@ pub struct Options {
     /// `<out>/.prefetch.lock`. Runs into different directories that must
     /// not overlap (a sample beside the bulk fetch) share one.
     pub lock_file: Option<PathBuf>,
+}
+
+/// A page's set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Set {
+    Keep,
+    Buffer,
+}
+
+impl Set {
+    pub fn dir(self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Buffer => "buffer",
+        }
+    }
+}
+
+/// Which sets a run fetches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sets {
+    Keep,
+    Buffer,
+    Both,
+}
+
+impl Sets {
+    fn has(self, s: Set) -> bool {
+        matches!(
+            (self, s),
+            (Self::Both, _) | (Self::Keep, Set::Keep) | (Self::Buffer, Set::Buffer)
+        )
+    }
+}
+
+/// The keep set is every page not detected as English, and every page of
+/// the worst English batches; the rest is the buffer set.
+pub fn set_of(r: &ManifestRow) -> Set {
+    let lang = r.lang_or_und();
+    let iso = usnm_core::lang::marc_to_iso3(lang).unwrap_or(lang);
+    if iso != "eng" || WORST_ENGLISH.contains(&r.batch.as_str()) {
+        Set::Keep
+    } else {
+        Set::Buffer
+    }
 }
 
 /// The order pages are fetched in.
@@ -117,6 +182,9 @@ impl Default for Options {
             manifest: PathBuf::new(),
             out: PathBuf::new(),
             size: ImageSize::Full,
+            buffer_size: ImageSize::Full,
+            sets: Sets::Both,
+            buffer_cap: 1_000_000_000_000,
             limit: None,
             sample: None,
             concurrency: 2,
@@ -137,10 +205,10 @@ pub fn tag(size: ImageSize) -> String {
     }
 }
 
-/// Where a page's scan goes.
+/// Where a page's scan goes: under its set's directory.
 pub fn scan_path(out: &Path, row: &ManifestRow, size: ImageSize) -> PathBuf {
     page_path(
-        out,
+        &out.join(set_of(row).dir()),
         &row.batch,
         &row.lccn,
         row.date,
@@ -150,9 +218,9 @@ pub fn scan_path(out: &Path, row: &ManifestRow, size: ImageSize) -> PathBuf {
     )
 }
 
-/// Where the scan of page `seq` of an issue goes, under `out`.
+/// Where the scan of page `seq` of an issue goes, under a set's directory.
 pub fn page_path(
-    out: &Path,
+    set_dir: &Path,
     batch: &str,
     lccn: &str,
     date: chrono::NaiveDate,
@@ -164,11 +232,32 @@ pub fn page_path(
         ImageSize::Full => "jpg".to_owned(),
         ImageSize::Pct(p) => format!("pct{p}.jpg"),
     };
-    out.join(batch)
+    set_dir
+        .join(batch)
         .join(lccn)
         .join(date.format("%Y-%m-%d").to_string())
         .join(edition.to_string())
         .join(format!("{seq}.{ext}"))
+}
+
+/// The bytes of scans (`*.jpg`) under `dir`, 0 if it isn't there.
+pub fn dir_scan_bytes(dir: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_owned()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let Ok(t) = e.file_type() else { continue };
+            if t.is_dir() {
+                stack.push(e.path());
+            } else if t.is_file() && e.file_name().to_string_lossy().ends_with(".jpg") {
+                total += e.metadata().map_or(0, |m| m.len());
+            }
+        }
+    }
+    total
 }
 
 /// The sidecar beside a scan.
@@ -201,8 +290,8 @@ pub struct Sidecar {
 /// `status-<tag>.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Status {
-    /// `running`, `done`, `budget` (`--max-total-bytes` reached),
-    /// `stopped` (asked to) or `failed`.
+    /// `running`, `waiting` (the buffer is at its cap), `done`, `budget`
+    /// (`--max-total-bytes` reached), `stopped` (asked to) or `failed`.
     pub state: String,
     pub version: String,
     pub pid: u32,
@@ -224,6 +313,13 @@ pub struct Status {
     /// This run's pages on disk: already there plus fetched.
     pub bytes_on_disk: u64,
     pub max_total_bytes: Option<u64>,
+    /// The buffer set's scans on disk, as last counted, and its cap.
+    pub buffer_bytes: u64,
+    pub buffer_cap: u64,
+    pub buffer_resolution: String,
+    /// Pages of each set in this run.
+    pub keep_pages: u64,
+    pub buffer_pages: u64,
     pub elapsed_secs: u64,
     pub fetched_per_hour: f64,
     pub eta_secs: Option<u64>,
@@ -395,6 +491,8 @@ struct Counts {
     bytes_fetched: AtomicU64,
     /// Bytes of scans found already there.
     bytes_there: AtomicU64,
+    /// The buffer set's scans on disk: the last count plus fetches since.
+    buffer_bytes: AtomicU64,
     in_a_row: AtomicU32,
 }
 
@@ -425,6 +523,7 @@ impl Run {
         s.failed_transient = c.failed_transient.load(Ordering::SeqCst);
         s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
         s.bytes_on_disk = s.bytes_fetched + c.bytes_there.load(Ordering::SeqCst);
+        s.buffer_bytes = c.buffer_bytes.load(Ordering::SeqCst);
         let secs = self.started.elapsed().as_secs_f64();
         s.elapsed_secs = secs as u64;
         let worked = s.finished.saturating_sub(s.already_there);
@@ -486,7 +585,11 @@ impl Run {
     }
 
     async fn page(&self, row: ManifestRow) -> anyhow::Result<()> {
-        let size = self.opts.size;
+        let set = set_of(&row);
+        let size = match set {
+            Set::Keep => self.opts.size,
+            Set::Buffer => self.opts.buffer_size,
+        };
         let path = scan_path(&self.opts.out, &row, size);
         let c = &self.counts;
         if let Some(n) = verified(&path, &row, size).await {
@@ -517,6 +620,9 @@ impl Run {
                 self.index.push(&side)?;
                 c.fetched.fetch_add(1, Ordering::SeqCst);
                 c.bytes_fetched.fetch_add(side.bytes, Ordering::SeqCst);
+                if set == Set::Buffer {
+                    c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst);
+                }
                 c.in_a_row.store(0, Ordering::SeqCst);
             }
             Err(e) => {
@@ -572,6 +678,10 @@ fn lock(path: &Path) -> anyhow::Result<std::fs::File> {
 /// The rows a run works through: the manifest, sampled, ordered, then
 /// limited.
 pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
+    let rows: Vec<ManifestRow> = rows
+        .into_iter()
+        .filter(|r| opts.sets.has(set_of(r)))
+        .collect();
     let mut rows = match opts.sample {
         Some(n) => sample(&rows, n),
         None => rows,
@@ -594,6 +704,8 @@ pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
             (best[&issue], issue, r.seq)
         });
     }
+    // The keep set first, whatever the order. Stable, so each set keeps it.
+    rows.sort_by_key(set_of);
     if let Some(l) = opts.limit {
         rows.truncate(l);
     }
@@ -635,6 +747,10 @@ pub async fn run(
             out: opts.out.display().to_string(),
             pages: rows.len() as u64,
             max_total_bytes: opts.max_total_bytes,
+            buffer_cap: opts.buffer_cap,
+            buffer_resolution: opts.buffer_size.to_string(),
+            keep_pages: rows.iter().filter(|r| set_of(r) == Set::Keep).count() as u64,
+            buffer_pages: rows.iter().filter(|r| set_of(r) == Set::Buffer).count() as u64,
             ..Status::default()
         }),
         status_path: opts.out.join(format!("status-{t}.json")),
@@ -653,6 +769,21 @@ pub async fn run(
         out = %run.opts.out.display(),
         "prefetch starting"
     );
+    let buffer_dir = run.opts.out.join(Set::Buffer.dir());
+    let count_buffer = {
+        let dir = buffer_dir.clone();
+        move || {
+            let dir = dir.clone();
+            async move {
+                tokio::task::spawn_blocking(move || dir_scan_bytes(&dir))
+                    .await
+                    .unwrap_or(0)
+            }
+        }
+    };
+    run.counts
+        .buffer_bytes
+        .store(count_buffer().await, Ordering::SeqCst);
     run.write_status("running");
     // A status write every 30 s, so a long hold still shows.
     let ticker = {
@@ -682,6 +813,26 @@ pub async fn run(
         };
         if run.stopping() {
             break;
+        }
+        // The buffer at its cap: wait for the workers to empty some of it,
+        // counting again every minute.
+        if set_of(&row) == Set::Buffer {
+            while run.counts.buffer_bytes.load(Ordering::SeqCst) >= run.opts.buffer_cap {
+                run.write_status("waiting");
+                tokio::select! {
+                    _ = tokio::time::sleep(BUFFER_RECHECK) => {}
+                    _ = stop.wait_for(|s| *s) => {
+                        run.stop_with("stopped", None);
+                        break;
+                    }
+                }
+                run.counts
+                    .buffer_bytes
+                    .store(count_buffer().await, Ordering::SeqCst);
+            }
+            if run.stopping() {
+                break;
+            }
         }
         if let Some(max) = run.opts.max_total_bytes {
             let c = &run.counts;
@@ -921,7 +1072,7 @@ mod tests {
     #[test]
     fn priority_order_keeps_an_issue_together() {
         let mut rows = vec![
-            row("sn1", 1890, 1, "eng"),
+            row("sn1", 1890, 1, "pol"),
             row("sn1", 1890, 2, "deu"),
             row("sn2", 1890, 1, "deu"),
             row("sn3", 1890, 1, "ces"),
@@ -931,7 +1082,7 @@ mod tests {
         prefetch::sort(&mut rows);
         let picked = select(rows, &Options::default());
         let ids: Vec<String> = picked.iter().map(|r| r.doc_id.clone()).collect();
-        // sn1's English page goes with its German one, in the German group.
+        // sn1's Polish page goes with its German one, in the German group.
         assert_eq!(
             ids,
             [
@@ -948,22 +1099,83 @@ mod tests {
     }
 
     #[test]
-    fn lays_scans_out_by_batch_title_issue_and_page() {
-        let r = row("sn83045462", 1890, 7, "deu");
-        let p = scan_path(Path::new("/tank/ocr-scans"), &r, ImageSize::Full);
+    fn lays_scans_out_by_set_batch_title_issue_and_page() {
+        let r = row("sn83045462", 1890, 7, "ger");
+        let p = scan_path(Path::new("/tank/ocr/scans"), &r, ImageSize::Full);
         assert_eq!(
             p,
-            Path::new("/tank/ocr-scans/batch_x/sn83045462/1890-05-03/1/7.jpg")
+            Path::new("/tank/ocr/scans/keep/batch_x/sn83045462/1890-05-03/1/7.jpg")
         );
-        let p = scan_path(Path::new("/t"), &r, ImageSize::Pct(50));
+        let e = row("sn83045462", 1890, 7, "eng");
+        let p = scan_path(Path::new("/t"), &e, ImageSize::Pct(50));
         assert_eq!(
             p,
-            Path::new("/t/batch_x/sn83045462/1890-05-03/1/7.pct50.jpg")
+            Path::new("/t/buffer/batch_x/sn83045462/1890-05-03/1/7.pct50.jpg")
         );
         assert_eq!(
             sidecar_path(&p),
-            Path::new("/t/batch_x/sn83045462/1890-05-03/1/7.pct50.jpg.json")
+            Path::new("/t/buffer/batch_x/sn83045462/1890-05-03/1/7.pct50.jpg.json")
         );
+    }
+
+    #[test]
+    fn keeps_non_english_and_the_worst_english_batches() {
+        assert_eq!(set_of(&row("sn1", 1890, 1, "ger")), Set::Keep);
+        assert_eq!(set_of(&row("sn1", 1890, 1, "yid")), Set::Keep);
+        assert_eq!(set_of(&row("sn1", 1890, 1, "eng")), Set::Buffer);
+        let mut r = row("sn1", 1890, 1, "eng");
+        r.batch = "txdn_japan".into();
+        assert_eq!(set_of(&r), Set::Keep);
+        // Keep pages first, whatever the order; one set alone on request.
+        let rows = vec![row("sn1", 1890, 1, "eng"), row("sn2", 1890, 1, "pol")];
+        let ids = |o: &Options| -> Vec<String> {
+            select(rows.clone(), o)
+                .into_iter()
+                .map(|r| r.lccn)
+                .collect()
+        };
+        let issue = Options {
+            order: Order::Issue,
+            ..Options::default()
+        };
+        assert_eq!(ids(&issue), ["sn2", "sn1"]);
+        let only = Options {
+            sets: Sets::Buffer,
+            ..Options::default()
+        };
+        assert_eq!(ids(&only), ["sn1"]);
+    }
+
+    #[tokio::test]
+    async fn waits_at_the_buffer_cap_until_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows: Vec<ManifestRow> = (1..=2).map(|i| row("sn1", 1890, i, "eng")).collect();
+        let manifest = dir.path().join("m.parquet");
+        std::fs::write(&manifest, prefetch::encode(&rows).unwrap()).unwrap();
+        let out = dir.path().join("scans");
+        // Something in the buffer already, over a cap of 1 byte.
+        std::fs::create_dir_all(out.join("buffer/x")).unwrap();
+        std::fs::write(out.join("buffer/x/1.jpg"), b"jpeg").unwrap();
+        let opts = Options {
+            manifest,
+            out: out.clone(),
+            buffer_cap: 1,
+            ..Options::default()
+        };
+        let (tx, rx) = watch::channel(false);
+        let run = tokio::spawn(run(
+            opts,
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx,
+        ));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let status: Status =
+            serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap()).unwrap();
+        assert_eq!(status.state, "waiting");
+        assert_eq!(status.buffer_bytes, 4);
+        tx.send_replace(true);
+        let s = run.await.unwrap().unwrap();
+        assert_eq!((s.state.as_str(), s.fetched), ("stopped", 0));
     }
 
     #[test]

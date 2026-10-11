@@ -197,9 +197,24 @@ enum Command {
         /// Where the scans go: `<out>/<batch>/<lccn>/<date>/<ed>/<seq>.<ext>`.
         #[arg(long, env = "USNM_PREFETCH_OUT")]
         out: PathBuf,
-        /// `full`, or `scaled:<1-99>` (IIIF `pct:<n>`).
+        /// The keep set's resolution: `full`, or `scaled:<1-99>` (IIIF `pct:<n>`).
         #[arg(long, env = "USNM_PREFETCH_RESOLUTION", default_value = "full")]
         resolution: ImageSize,
+        /// The buffer set's resolution.
+        #[arg(long, env = "USNM_PREFETCH_BUFFER_RESOLUTION", default_value = "full")]
+        buffer_resolution: ImageSize,
+        /// `keep` (non-English pages and the worst English batches, kept
+        /// for good), `buffer` (the rest of English, emptied by the
+        /// workers) or `both` (keep first).
+        #[arg(long, env = "USNM_PREFETCH_SETS", value_enum, default_value = "both")]
+        sets: PrefetchSets,
+        /// Wait while the buffer set's scans on disk reach this many bytes.
+        #[arg(
+            long,
+            env = "USNM_PREFETCH_BUFFER_CAP",
+            default_value_t = 1_000_000_000_000
+        )]
+        buffer_cap: u64,
         /// Only the first N pages (after --sample and the order).
         #[arg(long)]
         limit: Option<usize>,
@@ -292,6 +307,13 @@ enum Command {
 
 /// The line `check-engine` renders and must read back.
 const CHECK_TEXT: &str = "HELLO WORLD";
+
+#[derive(Clone, Copy, ValueEnum)]
+enum PrefetchSets {
+    Keep,
+    Buffer,
+    Both,
+}
 
 #[derive(Clone, Copy, ValueEnum)]
 enum PrefetchOrder {
@@ -413,6 +435,9 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             manifest,
             out,
             resolution,
+            buffer_resolution,
+            sets,
+            buffer_cap,
             limit,
             sample,
             order,
@@ -432,6 +457,13 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 manifest,
                 out,
                 size: resolution,
+                buffer_size: buffer_resolution,
+                sets: match sets {
+                    PrefetchSets::Keep => prefetch::Sets::Keep,
+                    PrefetchSets::Buffer => prefetch::Sets::Buffer,
+                    PrefetchSets::Both => prefetch::Sets::Both,
+                },
+                buffer_cap,
                 limit,
                 sample,
                 concurrency: concurrency.max(1),
