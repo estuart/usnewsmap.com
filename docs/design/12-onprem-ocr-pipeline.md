@@ -142,7 +142,7 @@ flowchart TB
   WORKER -->|"read, write, no delete"| OUT
   WORKER -->|"telemetry, Metrics Publisher"| MONN
   AMA -->|"Heartbeat, Perf, Syslog, InsightsMetrics"| MONN
-  WQ -->|"a log row per request"| MON
+  WQ -->|"a log row per request"| MONN
   SYNC -->|"add messages"| WQ
   SYNC -->|"read and delete"| QD
   SYNC -->|"read and delete"| OUT
@@ -375,7 +375,7 @@ Outside these steps, #368 prefetches the scans of the badly damaged pages onto p
 `group.sh`, the provision after #301 and adding node 1 to the group are done (§12.2, §12.2.1).
 
 - **Changes.** Review and merge #303. #303, Step 2 and Step 3 all change `node-setup.sh`, so #303 goes first. Delete the leftover empty `USNM_OCR_NODE_NAMES` line from prod's settings; #301 stopped reading it. When `az feature show --namespace Microsoft.HybridCompute --name HybridComputePreview` says Registered, run `az provider register -n Microsoft.HybridCompute`, then `offboard.sh` and `onboard.sh` for node 1. That makes a new machine with its key in the TPM and a new identity, which `onboard.sh` adds to the group; no provision is needed. Nothing else waits for it: once Step 3 is in, `onboard.sh` attaches the monitoring to the new machine.
-- **Verify.** After the move, `properties.identityKeyStore` of `usnm-ocr-node1` is no longer `Default`; `az ad group member check` for the new identity; once any storage token fetched before joining has expired (up to about 24 hours), a peek from node 1 as `usnm` succeeds and a put gets 403. `dnf list installed htop iftop screen` on node 1.
+- **Verify.** After the move, `properties.identityKeyStore` of node 1's Arc machine (`usnm-ocr-node1-arcs-prod`, as #317's dry run found it; `az connectedmachine list -g rg-usnm-prod -o table` shows the current name) is no longer `Default`; `az ad group member check` for the new identity; once any storage token fetched before joining has expired (up to about 24 hours), a peek from node 1 as `usnm` succeeds and a put gets 403. `dnf list installed htop iftop screen` on node 1.
 
 ### Step 1: Docs catch-up (S)
 
@@ -394,7 +394,7 @@ Outside these steps, #368 prefetches the scans of the badly damaged pages onto p
 
 Rust for the worker changes, YAML for CI, Bash for the install script.
 
-- **Worker.** These `run` flags can also come from the environment, through clap's `env` feature, which the workspace already enables: `USNM_OCR_QUEUE_URL`, `USNM_OCR_OUT_URL`, `USNM_OCR_NODE_ID`, `USNM_OCR_CONCURRENCY`, `USNM_OCR_API_GAP_MS`, `USNM_OCR_TILE_GAP_MS`, `USNM_OCR_VISIBILITY_SECS`. `--shutdown-grace-secs`, `--once` and the engine flags stay command-line only (the engine flags change with ADR-0016). `--version` prints the git commit. A message whose batch ends in `_verNN` is refused: curated rows and the release use the base batch name, so a versioned name would be skipped at release without an error.
+- **Worker.** These `run` flags can also come from the environment, through clap's `env` feature, which the workspace already enables: `USNM_OCR_QUEUE_URL`, `USNM_OCR_OUT_URL`, `USNM_OCR_NODE_ID`, `USNM_OCR_CONCURRENCY`, `USNM_OCR_API_GAP_MS`, `USNM_OCR_TILE_GAP_MS`, `USNM_OCR_VISIBILITY_SECS`. `--shutdown-grace-secs` and `--once` stay command-line only. (The plan kept the engine flags command-line only too; as built, #317 and #341 read them from the environment as well: `USNM_OCR_TESSERACT_IMAGE`, `USNM_OCR_PODMAN_URL`, `USNM_OCR_SCRATCH_DIR` and the `USNM_OCR_ENGINE_*` limits, which the unit's environment file and `install-worker.sh` set.) `--version` prints the git commit. A message whose batch ends in `_verNN` is refused: curated rows and the release use the base batch name, so a versioned name would be skipped at release without an error.
 - **CI.** A job `ocr-worker-el9`, on `main` when the worker or a crate it uses changes, builds `cargo build --release --locked -p usnm-ocr-worker` in an AlmaLinux 9 container, fails if any `GLIBC_` symbol is newer than 2.34 (EL9's), and publishes a GitHub release `ocr-worker-<yyyymmdd>-<sha7>` with the binary, its sha256 and a build provenance attestation. That job needs `contents: write`, `id-token: write` and `attestations: write`; the workflow default stays `contents: read`.
 - **Unit.** It moves from the heredoc in `node-setup.sh` to `scripts/ocr-node/usnm-ocr-worker.service`, which `node-setup.sh` installs disabled: `EnvironmentFile=/etc/usnm/ocr-worker.env`, `ExecStart=/usr/local/bin/usnm-ocr-worker run`, `TimeoutStopSec=120` and `KillMode=mixed`. The 120 s covers the 60 s grace plus the 30 s telemetry flush, with margin; systemd's default of 90 s can cut the flush. `install-worker.sh` doesn't set the grace, and changing it means changing `TimeoutStopSec` with it. `KillMode=mixed` sends SIGTERM to the worker alone, so the engine isn't killed out from under pages that still have their grace. The unit keeps the hardening and the Arc `IDENTITY_ENDPOINT` and `IMDS_ENDPOINT` lines. Changes the engine runtime needs, such as rootless podman's, come with the engine work (ADR-0016, 13 §13.3).
 - **Install script.** `scripts/ocr-node/install-worker.sh --env --name --host [--ssh-key] [--release] [--nodes] [--concurrency] [--enable] [--rollback] [--dry-run]` downloads the release with `gh`, runs `gh attestation verify` and checks the sha256, copies the binary to `/usr/local/lib/usnm-ocr-worker/<release>/` and points `/usr/local/bin/usnm-ocr-worker` at it; `--rollback` points it back. It writes `/etc/usnm/ocr-worker.env` (root:usnm, 0640) from the environment's deployment outputs: `OCR_QUEUE_ENDPOINT` (the worker trims its trailing slash), `OCR_BLOB_ENDPOINT` followed by `ocr-out`, the Arc machine name as the node id, `APPLICATIONINSIGHTS_CONNECTION_STRING` from Step 3's `OCR_NODE_APPINSIGHTS` (left out until Step 3 is deployed, so the worker sends no telemetry), and gaps of 3500 × N and 1000 × N ms. It refuses an N that differs from the group's member count. It enables the unit only with `--enable`, after an `ocr-file` run on a test image succeeds.
@@ -563,7 +563,7 @@ The scan prefetch (#368) doesn't block the pilot, which can fetch from LoC at th
 
 Needs an engine picked for one group (the survey, ADR-0016) with its container on node 1, and Steps 2, 3, 8, 9 and 10 deployed.
 
-1. `scripts/ocr-node/install-worker.sh --env prod --name usnm-ocr-node1 --host <host> --nodes 1 --concurrency 2 --enable`.
+1. `scripts/ocr-node/install-worker.sh --env prod --name usnm-ocr-node1-arcs-prod --host <host> --concurrency 2 --enable` (the Arc machine's name as #317's dry run found it; the script takes the node count from the nodes' group, which has 2 members now that node 2 is in it, and refuses a `--nodes` that differs).
 2. Set `USNM_OCR_SEED_PLAN=pilot-<group>`, `USNM_OCR_SEED_MAX_PAGES=3000` and a bulk window, then provision.
 3. Watch `ocr.pages_done`, `ocr.ocr_seconds`, `ocr-sync`'s status file and the alerts.
 4. Run `ocr-sync --report` for the gain under rule v1, check a hand sample of verdicts, and set the margin and head test for each language family.
