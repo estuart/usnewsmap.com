@@ -1,0 +1,36 @@
+# The scan server (#368, ADR-0015 decision 9) in the scan-fetch container on
+# pve-big (scripts/ocr-node/scanfetch-ct.sh --serve installs it):
+# `usnm-ocr-worker serve-scans` gives the OCR nodes the prefetched scans over
+# HTTP, deletes buffer-set scans the nodes have read, and takes manifests
+# from them. Only the --allow addresses are served; the container's
+# nftables rule says the same. Settings in /etc/usnm/scanserve.env.
+[Unit]
+Description=usnewsmap scan server
+Wants=network-online.target
+After=network-online.target
+ConditionFileIsExecutable=/usr/local/bin/usnm-ocr-worker
+RequiresMountsFor=/tank/ocr/scans /tank/ocr/manifests
+
+[Service]
+Type=simple
+User=scanfetch
+Group=scanfetch
+EnvironmentFile=/etc/usnm/scanserve.env
+ExecStart=/usr/local/bin/usnm-ocr-worker serve-scans
+Restart=on-failure
+RestartSec=10
+# Its JSON lines, one per request, go to the journal.
+SyslogIdentifier=usnm-scanserve
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+# Deletes only under buffer/; writes only manifests.
+ReadWritePaths=/tank/ocr/scans/buffer /tank/ocr/manifests
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

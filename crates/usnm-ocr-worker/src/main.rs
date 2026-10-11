@@ -169,10 +169,11 @@ enum Command {
         /// Gap between image requests to LoC's IIIF server.
         #[arg(long, env = "USNM_OCR_TILE_GAP_MS", default_value_t = 1000)]
         tile_gap_ms: u64,
-        /// The prefetched scans (`/srv/ocr-data/scans`): a page's scan is
-        /// read from here when it matches its sidecar, else fetched.
-        #[arg(long, env = "USNM_OCR_SCAN_CACHE")]
-        scan_cache: Option<PathBuf>,
+        /// The scan server on pve-big (`http://<host>:8380`): a page's scan
+        /// is read from there when it checks out against its sidecar, else
+        /// fetched from LoC. Unset: no cache.
+        #[arg(long, env = "USNM_OCR_SCAN_CACHE_URL")]
+        scan_cache_url: Option<String>,
         /// How long a taken message stays hidden. It isn't renewed, so it
         /// must cover the slowest page; a page not done by 80% of it is
         /// abandoned without output.
@@ -249,6 +250,32 @@ enum Command {
         /// Gap between image requests to LoC's IIIF server.
         #[arg(long, env = "USNM_OCR_TILE_GAP_MS", default_value_t = 1000)]
         tile_gap_ms: u64,
+    },
+    /// Serve the prefetched scans to the OCR nodes over HTTP (#368): GET
+    /// scans and sidecars, DELETE buffer-set scans, PUT manifests, from the
+    /// --allow addresses only. Runs in the scan-fetch container on pve-big.
+    ServeScans {
+        /// `/tank/ocr/scans`, holding `keep/` and `buffer/`.
+        #[arg(long, env = "USNM_SCANSERVE_SCANS", default_value = "/tank/ocr/scans")]
+        scans: PathBuf,
+        /// `/tank/ocr/manifests`.
+        #[arg(
+            long,
+            env = "USNM_SCANSERVE_MANIFESTS",
+            default_value = "/tank/ocr/manifests"
+        )]
+        manifests: PathBuf,
+        /// Address and port to listen on.
+        #[arg(long, env = "USNM_SCANSERVE_LISTEN", default_value = "0.0.0.0:8380")]
+        listen: std::net::SocketAddr,
+        /// The only client addresses served (the OCR nodes), comma-separated.
+        #[arg(
+            long,
+            env = "USNM_SCANSERVE_ALLOW",
+            value_delimiter = ',',
+            required = true
+        )]
+        allow: Vec<std::net::IpAddr>,
     },
     /// Project a manifest's size and fetch time from a sample's index
     /// (`index-<tag>.jsonl` from `prefetch --sample`). Prints JSON.
@@ -382,7 +409,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             once,
             api_gap_ms,
             tile_gap_ms,
-            scan_cache,
+            scan_cache_url,
             visibility_secs,
             shutdown_grace_secs,
             engine,
@@ -415,12 +442,11 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     };
                     let iiif_root = cfg.iiif_root.clone();
                     let loc: Arc<dyn ScanSource> = Arc::new(LocClient::new(cfg)?);
-                    match scan_cache.filter(|p| !p.as_os_str().is_empty()) {
-                        Some(dir) => {
-                            tracing::info_span!("ocr_worker_start").in_scope(|| {
-                                tracing::info!(dir = %dir.display(), "reading prefetched scans first")
-                            });
-                            Arc::new(CachedScans::new(dir, iiif_root, loc))
+                    match scan_cache_url.filter(|u| !u.is_empty()) {
+                        Some(url) => {
+                            tracing::info_span!("ocr_worker_start")
+                                .in_scope(|| tracing::info!(url, "reading prefetched scans first"));
+                            Arc::new(CachedScans::new(&url, iiif_root, loc)?)
                         }
                         None => loc,
                     }
@@ -479,6 +505,23 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             let status = prefetch::run(opts, loc, stop_signal()).await?;
             println!("{}", serde_json::to_string(&status)?);
             Ok(())
+        }
+        Command::ServeScans {
+            scans,
+            manifests,
+            listen,
+            allow,
+        } => {
+            usnm_ocr_worker::serve::serve(
+                listen,
+                usnm_ocr_worker::serve::ServeOptions {
+                    scans,
+                    manifests,
+                    allow,
+                },
+                stop_signal(),
+            )
+            .await
         }
         Command::PrefetchEstimate {
             manifest,

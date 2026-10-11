@@ -1009,6 +1009,21 @@ scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host claude@node
 
 It removes the machine's identity from the nodes' group and deletes its data collection rule associations. With `--host`, it deletes the Azure Monitor Agent extension and waits while the node uninstalls it, then on the node stops and disables `usnm-ocr-worker.service`, removes any extension left (`azcmagent extension remove --all`) and runs `azcmagent disconnect --force-local-only`, which clears the agent's local state without an Azure sign-in, so no onboarding credential is needed. A RHEL node is also unregistered from Red Hat (`subscription-manager unregister`). Last, it deletes the Arc machine with your `az` sign-in, which deletes its identity so it can get no new token. Without `--host` (a node that's gone or unreachable) it leaves the extension to go with the machine and prints the node commands to run later. It needs ownership of the nodes' group and the right to delete resources in the environment's resource group. To cut a node off at once, rather than when its tokens expire, also take its address out of `USNM_OCR_NODE_IPS` and provision; with both nodes behind the same home IP, that cuts off every node. Offboard every node before turning `USNM_OCR_NODES` off. The provision then deletes the exchange account with its queues and `ocr-out`, and the nodes' monitoring: their workspace with its data, their Application Insights component with the group's Monitoring Metrics Publisher grant, the data collection rule and the three node alerts. Azure won't delete a data collection rule that still has associations: with a node still associated, the provision fails until its association is gone. `offboard.sh` deletes the machine's associations. The provision stops before it starts if the rule in `OCR_NODE_DCR_ID` still has any. The Arc machines stay in the resource group, and their identities in the nodes' group, until offboarded.
 
+### Prefetched scans on pve-big (#368)
+
+The scans of the damaged pages are fetched into pve-big's `tank/ocr/scans` by the scan-fetch container, CT 211 `usnm-scanfetch`, and served from there to the nodes over HTTP (12 §12.2.4). Everything runs on pve-big as root, from the repository's `scripts/ocr-node/`:
+
+```sh
+pve-ocr-storage.sh                                   # datasets, ocrdata, no NFS export
+scanfetch-ct.sh --create                             # CT 211 with scans and manifests mounted
+scanfetch-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
+scanfetch-ct.sh --serve --allow 192.168.0.192,192.168.0.243   # the scan server, port 8380
+```
+
+To get a manifest in, build it in Azure (`scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-prefetch-manifest --version <v> --exchange-url <OCR_BLOB_ENDPOINT>ocr-out`, with no other ingest or backfill execution running), then on a node: `sudo pull-manifest.sh --account <OCR_EXCHANGE_ACCOUNT> --index-version <v> --scan-server http://<CT 211>:8380`. Start or move the fetch with `scanfetch-ct.sh --configure --manifest /tank/ocr/manifests/<v>/manifest.parquet [--buffer-cap BYTES] [--buffer-resolution ...] --enable`; it goes on where it stopped.
+
+Check it with `pct exec 211 -- cat /tank/ocr/scans/status-full.json` and `pct exec 211 -- journalctl -u usnm-scanfetch -n 20`. `waiting` means the buffer is at its cap until workers read and delete buffer scans; `failed` after 20 pages in a row means LoC is refusing, so look before starting it again. Point the workers at the server with `install-worker.sh --scan-cache-url http://<CT 211>:8380`. The nodes mount nothing; `node-setup.sh` removes an old `/srv/ocr-data` mount.
+
 ## OCR pickup: ocr-sync (#296)
 
 `usnm-ingest ocr-sync` takes the nodes' output into the lake ([12 §12.5 Step 8](design/12-onprem-ocr-pipeline.md)). It runs hourly at minute 17 (`USNM_OCR_SYNC_CRON`; `manual` turns the schedule off) as `usnm-ocrsync-caj-<env>` (saved as `OCR_SYNC_JOB`), on the ingest image as `id-usnm-ingest`, 0.5 vCPU and 1 GiB. The provision creates the job only when `USNM_OCR_NODES` and the ingest jobs are on, together with the exchange account's `ocr-quarantine` container, the identity's grant on it and two alerts. Runs take the Cosmos lock `ops/ocr-sync`, so two never overlap. Logs carry page ids, paths and reason codes, never text.

@@ -158,8 +158,11 @@ pub struct Scan {
     pub jpeg: Bytes,
     /// How long the image request took (sent to last byte); zero from the cache.
     pub download: Duration,
-    /// Read from the local scan cache, not fetched.
+    /// Read from the prefetch cache, not fetched.
     pub from_cache: bool,
+    /// A buffer-set scan's URL on the scan server, to delete once the
+    /// page's output is uploaded.
+    pub evict: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -415,11 +418,12 @@ impl LocClient {
             jpeg,
             download,
             from_cache: false,
+            evict: None,
         })
     }
 }
 
-async fn read_limited(mut resp: reqwest::Response, max: usize) -> Result<Bytes, String> {
+pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Result<Bytes, String> {
     if resp.content_length().is_some_and(|n| n > max as u64) {
         return Err(format!("response over {max} bytes"));
     }

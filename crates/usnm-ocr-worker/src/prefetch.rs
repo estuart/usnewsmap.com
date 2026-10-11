@@ -511,9 +511,13 @@ struct Counts {
     bytes_fetched: AtomicU64,
     /// The keep set's scans of this run on disk: found there or fetched.
     keep_bytes: AtomicU64,
-    /// The buffer set's scans on disk: the last count plus fetches since.
-    /// Workers delete buffer scans, so it is counted again while waiting.
+    /// The buffer set's scans on disk, all of them: the last count plus
+    /// fetches since. Workers delete buffer scans, so it is counted again
+    /// while waiting. It is what the cap is checked against.
     buffer_bytes: AtomicU64,
+    /// This run's buffer pages found on disk or fetched (for the status and
+    /// `--max-total-bytes`; consumed scans aren't taken off).
+    run_buffer_bytes: AtomicU64,
     in_a_row: AtomicU32,
 }
 
@@ -568,11 +572,10 @@ impl Run {
         s
     }
 
-    /// This run's scans on disk now: its keep scans and the buffer as last
-    /// counted.
+    /// This run's scans: its keep and buffer pages found on disk or fetched.
     fn on_disk(&self) -> u64 {
         let c = &self.counts;
-        c.keep_bytes.load(Ordering::SeqCst) + c.buffer_bytes.load(Ordering::SeqCst)
+        c.keep_bytes.load(Ordering::SeqCst) + c.run_buffer_bytes.load(Ordering::SeqCst)
     }
 
     fn set_state(&self, state: &str) {
@@ -682,9 +685,10 @@ impl Run {
         let c = &self.counts;
         if let Some(n) = verified(&path, &row, size).await {
             c.already_there.fetch_add(1, Ordering::SeqCst);
-            if set == Set::Keep {
-                c.keep_bytes.fetch_add(n, Ordering::SeqCst);
-            }
+            match set {
+                Set::Keep => c.keep_bytes.fetch_add(n, Ordering::SeqCst),
+                Set::Buffer => c.run_buffer_bytes.fetch_add(n, Ordering::SeqCst),
+            };
             // A page that is done breaks a run of failures too.
             c.in_a_row.store(0, Ordering::SeqCst);
             return Ok(true);
@@ -727,7 +731,10 @@ impl Run {
                 c.bytes_fetched.fetch_add(side.bytes, Ordering::SeqCst);
                 match set {
                     Set::Keep => c.keep_bytes.fetch_add(side.bytes, Ordering::SeqCst),
-                    Set::Buffer => c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst),
+                    Set::Buffer => {
+                        c.run_buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst);
+                        c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst)
+                    }
                 };
                 c.in_a_row.store(0, Ordering::SeqCst);
             }

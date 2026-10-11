@@ -5,7 +5,7 @@
 #   node-setup.sh --subscription ID --resource-group NAME --location REGION \
 #     --name ARC_NAME --exchange-account NAME [--app-insights CONNECTION_STRING] \
 #     [--tags K=V,K=V] [--identity-key-store default|tpm] [--scratch-size SIZE] \
-#     [--ocr-data HOST:/PATH] [--force-unsupported] < credentials
+#     [--force-unsupported] < credentials
 #
 # Reads up to five lines from stdin. The first three are the onboarding
 # service principal: tenant id, app id, secret. onboard.sh makes that
@@ -44,10 +44,9 @@
 # agent itself, from Azure, after this. Safe to run again, on a connected
 # node too: it applies the lockdown and the unit as they are now.
 #
-# With --ocr-data (pve-big.tjg.fyi:/tank/ocr), also mounts that NFS export
-# of the OCR data store (pve-ocr-storage.sh, #368) at /srv/ocr-data, from
-# /etc/fstab with systemd's automount, so the worker reads prefetched scans
-# from /srv/ocr-data/scans.
+# The node mounts nothing from pve-big: the worker reads prefetched scans
+# from the scan server over HTTP (#368, ADR-0015 decision 9). A mount at
+# /srv/ocr-data left by an earlier version of this script is removed.
 #
 # AlmaLinux 9 or RHEL 10 (Arc supports both; it doesn't support Fedora),
 # unless --force-unsupported, which also lets it go on with SELinux not
@@ -58,7 +57,7 @@ die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
 SUBSCRIPTION="" GROUP="" LOCATION="" NAME="" EXCHANGE="" CONN="" TAGS="" FORCE=false KEY_STORE=default
-SCRATCH_SIZE=2G OCR_DATA=""
+SCRATCH_SIZE=2G
 OCR_DATA_DIR=/srv/ocr-data
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -71,7 +70,6 @@ while [ $# -gt 0 ]; do
     --tags) TAGS=${2:-}; shift 2 ;;
     --identity-key-store) KEY_STORE=${2:-}; shift 2 ;;
     --scratch-size) SCRATCH_SIZE=${2:-}; shift 2 ;;
-    --ocr-data) OCR_DATA=${2:-}; shift 2 ;;
     --force-unsupported) FORCE=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
@@ -79,8 +77,6 @@ while [ $# -gt 0 ]; do
 done
 case "$KEY_STORE" in default|tpm) ;; *) echo "error: --identity-key-store is default or tpm" >&2; usage ;; esac
 [[ $SCRATCH_SIZE =~ ^[1-9][0-9]*[MG]$ ]] || die "--scratch-size: a size such as 2G or 1536M"
-[ -z "$OCR_DATA" ] || [[ $OCR_DATA =~ ^[A-Za-z0-9.-]+:/[A-Za-z0-9/_.-]+$ ]] ||
-  die "--ocr-data: HOST:/PATH, such as pve-big.tjg.fyi:/tank/ocr"
 for pair in SUBSCRIPTION:subscription GROUP:resource-group LOCATION:location NAME:name \
   EXCHANGE:exchange-account; do
   var=${pair%%:*}
@@ -641,21 +637,23 @@ case "$seen" in
 esac
 echo "scratch: $(findmnt -no SOURCE,OPTIONS "$SCRATCH")"
 
-if [ -n "$OCR_DATA" ]; then
-  step "The OCR data share ($OCR_DATA at $OCR_DATA_DIR)"
-  rpm -q nfs-utils > /dev/null 2>&1 || dnf install -y nfs-utils
-  mkdir -p "$OCR_DATA_DIR"
-  line="$OCR_DATA $OCR_DATA_DIR nfs4 rw,hard,noatime,_netdev,x-systemd.automount,x-systemd.idle-timeout=600 0 0"
-  # One line for the mount point, replaced if it differs.
-  if ! grep -qxF "$line" /etc/fstab; then
-    grep -v "[[:space:]]${OCR_DATA_DIR}[[:space:]]" /etc/fstab > /etc/fstab.usnm-tmp || true
-    printf '%s\n' "$line" >> /etc/fstab.usnm-tmp
-    cat /etc/fstab.usnm-tmp > /etc/fstab
-    rm -f /etc/fstab.usnm-tmp
-  fi
+# The NFS share of pve-big's tank/ocr that an earlier version mounted here:
+# the scans now come over HTTP, so the mount and its fstab line go.
+if grep -q "[[:space:]]${OCR_DATA_DIR}[[:space:]]" /etc/fstab; then
+  step "Removing the old OCR data mount at $OCR_DATA_DIR"
+  grep -v "[[:space:]]${OCR_DATA_DIR}[[:space:]]" /etc/fstab > /etc/fstab.usnm-tmp || true
+  cat /etc/fstab.usnm-tmp > /etc/fstab
+  rm -f /etc/fstab.usnm-tmp
   systemctl daemon-reload
-  systemctl restart remote-fs.target
-  ls "$OCR_DATA_DIR/scans" > /dev/null || die "can't read $OCR_DATA_DIR/scans"
+fi
+# Every run, so a cleanup that failed part way is finished later. The
+# automount outlives its fstab line until it is stopped.
+if [ -d "$OCR_DATA_DIR" ] || mountpoint -q "$OCR_DATA_DIR" 2> /dev/null; then
+  systemctl stop "$(systemd-escape --path "$OCR_DATA_DIR").automount" 2> /dev/null || true
+  umount -l "$OCR_DATA_DIR/scans" 2> /dev/null || true
+  umount -l "$OCR_DATA_DIR" 2> /dev/null || true
+  rmdir "$OCR_DATA_DIR" 2> /dev/null || true
+  ! mountpoint -q "$OCR_DATA_DIR" 2> /dev/null || die "$OCR_DATA_DIR is still mounted"
 fi
 
 step "The worker's settings and unit"

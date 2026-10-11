@@ -31,6 +31,8 @@ pub trait ScanSource: Send + Sync + std::fmt::Debug {
     fn held_until(&self) -> Option<tokio::time::Instant> {
         None
     }
+    /// Delete a buffer-set scan the page no longer needs (best effort).
+    async fn evict(&self, _url: &str) {}
 }
 
 #[async_trait]
@@ -507,9 +509,9 @@ impl Worker {
                     KeyValue::new("language", m.language.clone()),
                 ],
             );
-            Ok((scan.iiif_base, scan_sha256, out))
+            Ok((scan.iiif_base, scan_sha256, scan.evict, out))
         };
-        let (iiif_base, scan_sha256, out) = tokio::time::timeout_at(deadline.into(), read)
+        let (iiif_base, scan_sha256, evict, out) = tokio::time::timeout_at(deadline.into(), read)
             .await
             .map_err(|_| Failure::Abandoned)??;
         let text = usnm_core::text::normalize_ocr(&out.text);
@@ -541,6 +543,13 @@ impl Worker {
             tokio::time::timeout_at(deadline.into(), self.write_output(key, alto, part))
                 .await
                 .map_err(|_| Failure::Abandoned)??;
+        // The output is uploaded: a buffer-set scan isn't needed any more.
+        // Best effort; a failure is logged, never the page's.
+        if let Some(url) = evict {
+            // Within the page's deadline, so a slow server can't push the
+            // message past its hide.
+            let _ = tokio::time::timeout_at(deadline.into(), self.scans.evict(&url)).await;
+        }
         Ok(Done {
             alto: alto_path,
             part: part_path,
@@ -621,6 +630,7 @@ mod tests {
                 jpeg: bytes::Bytes::from_static(b"jpeg"),
                 download: std::time::Duration::ZERO,
                 from_cache: false,
+                evict: None,
             })
         }
     }
