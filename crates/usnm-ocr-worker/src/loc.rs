@@ -34,7 +34,7 @@ pub const USER_AGENT: &str = concat!(
 /// The largest item JSON read.
 const MAX_ITEM_BYTES: usize = 16 * 1024 * 1024;
 /// The largest scan read (full-size JPEGs are a few MB).
-const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
+pub const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 /// The longest `Retry-After` honoured.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
 
@@ -156,8 +156,10 @@ pub struct Scan {
     /// The page's IIIF service base.
     pub iiif_base: String,
     pub jpeg: Bytes,
-    /// How long the image request took (sent to last byte).
+    /// How long the image request took (sent to last byte); zero from the cache.
     pub download: Duration,
+    /// Read from the local scan cache, not fetched.
+    pub from_cache: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -419,6 +421,7 @@ impl LocClient {
             iiif_base: base,
             jpeg,
             download,
+            from_cache: false,
         })
     }
 }

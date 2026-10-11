@@ -91,7 +91,6 @@ The damaged pages' scans are fetched once, onto pve-big's ZFS pool, before the w
   - The **buffer set** is the rest of English, under `scans/buffer/`. It's a rolling buffer: the fetcher waits while the buffer's scans on disk reach `--buffer-cap` (default 1 TB) and counts again every minute. A worker deletes a buffer scan once its output for that page is uploaded (ADR-0015 decision 9); the delete leaves the sidecar as `<scan>.done`, so a later fetch skips the page. Nothing deletes under `keep/`. If the buffer can't be counted, the fetcher takes it as full and waits.
   - `--resolution` sets the keep set's resolution and `--buffer-resolution` the buffer set's. `--sets keep|buffer|both` picks which sets to fetch.
 - **Order and budget.** Keep pages come first, by default German before the 1920s, then the worst English batches, Czech, Serbian, Russian and the rest. Each issue goes in its best page's group, in issue order. Buffer pages follow in issue order. `--max-total-bytes` stops the fetch once this run's scans on disk reach a budget.
-- **The workers don't read it yet.** ADR-0015 decision 9 sets how they will: the cache before LoC, only for a scan that matches its sidecar, recording the sidecar's tile.loc.gov URL and the scan's sha256. That change is the follow-up to #368.
 - **Size.** `prefetch --sample N` fetches about N pages stratified by language and decade, and `prefetch-estimate` projects the manifest's size and fetch time from them. The numbers are on #368.
 
 ### 12.2.3 Text that disagrees with the code

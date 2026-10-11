@@ -894,6 +894,28 @@ pub fn set_alto_file_name(alto: &str, name: &str) -> String {
     }
 }
 
+/// Point ALTO's `sourceImageInformation/fileName` at the scan's URL, as
+/// [`set_alto_file_name`], and record the sha256 of the bytes read in a
+/// `fileIdentifier` after it (ADR-0015 decision 9), so a result can be
+/// traced to the exact scan, fetched or cached.
+pub fn set_alto_source(alto: &str, name: &str, sha256: &str) -> String {
+    let named = set_alto_file_name(alto, name);
+    if !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return named;
+    }
+    match named.find("</fileName>") {
+        Some(b) if named.contains("<fileName>") => {
+            let end = b + "</fileName>".len();
+            format!(
+                "{}<fileIdentifier fileIdentifierLocation=\"sha256\">{sha256}</fileIdentifier>{}",
+                &named[..end],
+                &named[end..]
+            )
+        }
+        _ => named,
+    }
+}
+
 #[async_trait]
 impl Engine for Tesseract {
     fn source(&self) -> &str {
@@ -1264,6 +1286,12 @@ mod tests {
             "<sourceImageInformation><fileName>https://tile.loc.gov/a?b&amp;c</fileName></sourceImageInformation>"
         );
         assert_eq!(set_alto_file_name("<alto/>", "x"), "<alto/>");
+        assert_eq!(
+            set_alto_source(alto, "https://tile.loc.gov/a", "ab12"),
+            "<sourceImageInformation><fileName>https://tile.loc.gov/a</fileName><fileIdentifier fileIdentifierLocation=\"sha256\">ab12</fileIdentifier></sourceImageInformation>"
+        );
+        assert_eq!(set_alto_source("<alto/>", "x", "ab"), "<alto/>");
+        assert!(!set_alto_source(alto, "x", "<x>").contains("fileIdentifier"));
     }
 
     /// Reads a rendered line with the real Tesseract, when it is installed
