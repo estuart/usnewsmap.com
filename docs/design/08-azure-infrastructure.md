@@ -298,3 +298,12 @@ Then, for a full corpus, start the backfill job and let the weekly ingest job pu
 2. Let the new environment rebuild the corpus, and check it on its app's `*.azurecontainerapps.io` name.
 3. Delegate the domain to the new zone's name servers (`scripts/settings.sh <env> NAME_SERVERS`), then **re-run bootstrap**. Once it sees the delegation, it binds the apex, `www` and `api` to the new app and issues their certificates. HTTPS on the custom names needs this step.
 4. The old environment keeps serving until the delegation changes; afterwards, delete it with `scripts/teardown.sh <env> --subscription OLD`. That removes only its Azure resources; the GitHub Environment and the settings belong to the new copy.
+
+## 8.10 Naming
+
+Resource names follow [ADR-0017](adr/0017-resource-naming.md) (proposed): `usnm-{function}-{type}-{env}`, for example `usnm-ocr-appi-prod`, with a compact form for storage accounts, registries and Key Vaults (`usnmocrstprodffapzy`) and the deployment suffix after the environment only on names that are unique across Azure.
+
+- **New resources** take the convention from their first commit, in every environment. Dev and experiment environments are fully conventional.
+- **Existing prod names** move at natural points: the OCR exchange account and node before the worker is installed, the ingest jobs and scratch account during #283 preparation. The stateful core of prod (`rg-usnm-prod`, `cae-usnm-prod`, `vnet-usnm-prod`, `ca-usnm-prod`, `crusnmprodffapzy`, `log-usnm-prod`, `appi-usnm-prod`, the blob and Cosmos DB private endpoints `pe-usnm-blob` and `pe-usnm-cosmos`), the data lake `stusnmdffapzy` and `cosmos-usnm-prod-ffapzy` keep their names until a rebuild such as the subscription move in §8.9. A rebuild in a new subscription gets a new suffix and comes up under the new names, while the old subscription keeps the old ones until it is torn down. The ADR maps every current name to its target.
+- **Names are built in one place**, `infra/naming.bicep`. Scripts and queries read names from stack outputs or tags instead of matching type prefixes such as `caj-usnm-`.
+- The names in §8.1 are shorthand from before the build. The live names are in the ADR's mapping table.

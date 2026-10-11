@@ -4,6 +4,8 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 
 ## What this deploys
 
+Resource names follow [ADR-0017](../docs/design/adr/0017-resource-naming.md) (proposed). The names below are the current ones; prod keeps some of them until a rebuild, and the ADR maps each to its target.
+
 `main.bicep` runs at subscription scope. It creates two resource groups: `rg-usnm-{env}` for the platform and an empty `rg-usnm-{env}-spot` for the backfill launcher's ACI Spot groups. Inside `rg-usnm-{env}` it creates:
 
 | Module                                                                              | Resources                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
