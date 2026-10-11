@@ -103,12 +103,61 @@ pub enum FetchError {
     Transient(String),
 }
 
+/// The size asked of LoC's IIIF image server: the full scan, or scaled
+/// to a percentage of it (IIIF's `pct:n` size).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageSize {
+    Full,
+    Pct(u8),
+}
+
+impl ImageSize {
+    /// The IIIF size parameter.
+    pub fn iiif(self) -> String {
+        match self {
+            Self::Full => "full".into(),
+            Self::Pct(p) => format!("pct:{p}"),
+        }
+    }
+}
+
+impl std::fmt::Display for ImageSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full => f.write_str("full"),
+            Self::Pct(p) => write!(f, "scaled:{p}"),
+        }
+    }
+}
+
+impl std::str::FromStr for ImageSize {
+    type Err = String;
+    /// `full`, or `scaled:<1-99>`.
+    fn from_str(s: &str) -> Result<Self, String> {
+        if s == "full" {
+            return Ok(Self::Full);
+        }
+        s.strip_prefix("scaled:")
+            .and_then(|p| p.parse::<u8>().ok())
+            .filter(|p| (1..100).contains(p))
+            .map(Self::Pct)
+            .ok_or_else(|| format!("{s:?} isn't `full` or `scaled:<1-99>`"))
+    }
+}
+
+/// A page's JPEG on the IIIF server, from its service base.
+pub fn image_url(iiif_base: &str, size: ImageSize) -> String {
+    format!("{iiif_base}/full/{}/0/default.jpg", size.iiif())
+}
+
 /// What's fetched for a page.
 #[derive(Debug)]
 pub struct Scan {
     /// The page's IIIF service base.
     pub iiif_base: String,
     pub jpeg: Bytes,
+    /// How long the image request took (sent to last byte).
+    pub download: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -235,15 +284,23 @@ impl LocClient {
         })
     }
 
-    /// GET `url`, paced by `pacer`, retrying transient failures.
-    async fn get(&self, url: &str, pacer: &Pacer, max: usize) -> Result<Bytes, FetchError> {
+    /// GET `url`, paced by `pacer`, retrying transient failures. Returns
+    /// the body and how long the answering request took, from sending it to
+    /// the end of the body (no pacing or retries).
+    async fn get(
+        &self,
+        url: &str,
+        pacer: &Pacer,
+        max: usize,
+    ) -> Result<(Bytes, Duration), FetchError> {
         let mut last = String::new();
         for attempt in 1..=self.cfg.attempts.max(1) {
             pacer.wait().await;
             let wait = self.cfg.backoff * attempt;
+            let sent = Instant::now();
             match self.http.get(url).send().await {
                 Ok(resp) if resp.status().is_success() => match read_limited(resp, max).await {
-                    Ok(b) => return Ok(b),
+                    Ok(b) => return Ok((b, sent.elapsed())),
                     Err(e) => last = e,
                 },
                 Ok(resp) => {
@@ -327,7 +384,7 @@ impl LocClient {
         self.items
             .try_get_with(issue, async {
                 match self.get(&url, &self.api, MAX_ITEM_BYTES).await {
-                    Ok(body) => {
+                    Ok((body, _)) => {
                         let item: Value = serde_json::from_slice(&body).map_err(|e| {
                             FetchError::Transient(format!("item JSON for {url}: {e}"))
                         })?;
@@ -345,21 +402,23 @@ impl LocClient {
 
     /// The page's full-size JPEG.
     pub async fn scan(&self, key: &PageKey) -> Result<Scan, FetchError> {
+        self.scan_at(key, ImageSize::Full).await
+    }
+
+    /// The page's JPEG at `size` ([`image_url`]).
+    pub async fn scan_at(&self, key: &PageKey, size: ImageSize) -> Result<Scan, FetchError> {
         let pages = self.issue_pages(key).await?;
         let base = pages
             .get(&key.seq)
             .cloned()
             .ok_or_else(|| FetchError::Permanent(format!("loc.gov lists no image for {key}")))?;
-        let jpeg = self
-            .get(
-                &format!("{base}/full/full/0/default.jpg"),
-                &self.tile,
-                MAX_IMAGE_BYTES,
-            )
+        let (jpeg, download) = self
+            .get(&image_url(&base, size), &self.tile, MAX_IMAGE_BYTES)
             .await?;
         Ok(Scan {
             iiif_base: base,
             jpeg,
+            download,
         })
     }
 }
@@ -615,6 +674,23 @@ mod tests {
             ));
         }
         assert_eq!(refused.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn parses_image_sizes() {
+        assert_eq!("full".parse(), Ok(ImageSize::Full));
+        assert_eq!("scaled:50".parse(), Ok(ImageSize::Pct(50)));
+        for bad in ["scaled:0", "scaled:100", "scaled:", "half", "pct:50"] {
+            assert!(bad.parse::<ImageSize>().is_err(), "{bad}");
+        }
+        assert_eq!(ImageSize::Pct(50).to_string(), "scaled:50");
+        assert_eq!(
+            image_url(
+                "https://tile.loc.gov/image-services/iiif/service:a:b",
+                ImageSize::Pct(50)
+            ),
+            "https://tile.loc.gov/image-services/iiif/service:a:b/full/pct:50/0/default.jpg"
+        );
     }
 
     #[tokio::test(start_paused = true)]
