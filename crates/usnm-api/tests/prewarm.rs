@@ -13,7 +13,9 @@ use serde_json::Value;
 use tower::ServiceExt;
 use usnm_api::config::Config;
 use usnm_api::prewarm::{self, Trigger};
-use usnm_api::{app, reload_if_changed, spawn_startup_warm_up, AppState, Engine, Loader};
+use usnm_api::{
+    app, reload_if_changed, spawn_searcher_warm_up, spawn_startup_warm_up, AppState, Engine, Loader,
+};
 use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::text::Analyzers;
@@ -1131,5 +1133,138 @@ async fn examples_warm_counts_what_the_cache_still_holds() {
         .count();
     assert!(held < n, "the cache held all {n} examples");
     assert_eq!(report.examples_warm, held, "{report:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_searcher_restart_warms_again_while_the_replica_stays_ready() {
+    // The searcher restarted under a running API (its own app, #267): the
+    // API runs the start's warm-up again and keeps serving.
+    let dir = temp_reference("searcher-restart");
+    let backend = Counting::new(Duration::from_millis(20), false);
+    let state = Arc::new(reloading_state(&dir, config(), backend.clone()).await);
+
+    let before = backend.calls();
+    let rewarm = spawn_searcher_warm_up(state.clone()).expect("a warm-up after the restart");
+    assert_eq!(readyz(&state).await, StatusCode::OK);
+    rewarm.await.unwrap();
+    assert!(backend.calls() > before, "the warm-up searched nothing");
+    assert_eq!(visit_examples(&state, &backend, "fixture-v1").await, 0);
+
+    // The next restart warms again.
+    let again = spawn_searcher_warm_up(state.clone()).expect("a later restart's warm-up");
+    again.await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A state whose in-process cache holds nothing, so every warm-up computes
+/// every search, and the backend calls of one warm-up run alone. Each costs
+/// the same, whatever started it and at either version. Two at once would
+/// share their computations at the same version (fewer calls in all), and
+/// interleave them at two versions (more calls before the first ends).
+async fn cold_state(name: &str, backend: Arc<Counting>) -> (PathBuf, Arc<AppState>, usize) {
+    let dir = temp_reference(name);
+    let mut cfg = config();
+    cfg.cache_bytes = 0;
+    let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
+    let before = backend.calls();
+    prewarm::run(&state, state.snapshot.load_full(), Trigger::SearcherRestart).await;
+    let run = backend.calls() - before;
+    assert!(run > 0);
+    (dir, state, run)
+}
+
+/// Whether `calls` since a point is `runs` whole warm-ups, and at most the
+/// first search or two of the next one: the next one starts as soon as the
+/// last ends, possibly before the test looks.
+fn runs_done(calls: usize, run: usize, runs: usize) -> bool {
+    calls >= runs * run && calls < runs * run + run / 10
+}
+
+#[tokio::test]
+async fn a_searcher_restart_during_a_start_warms_once_after_it() {
+    // The start's run may have searched the searcher before it restarted, so
+    // the restart's warm-up runs after it: not alongside it, and not never.
+    let backend = Counting::new(Duration::from_millis(2), false);
+    let (dir, state, run) = cold_state("restart-at-start", backend.clone()).await;
+
+    let before = backend.calls();
+    let starting = spawn_startup_warm_up(state.clone());
+    let rewarm = spawn_searcher_warm_up(state.clone()).expect("a warm-up after the start's");
+    // A second restart before that warm-up began shares it.
+    assert!(spawn_searcher_warm_up(state.clone()).is_none());
+    assert_eq!(readyz(&state).await, StatusCode::SERVICE_UNAVAILABLE);
+    starting.await.unwrap();
+    let started = backend.calls() - before;
+    assert!(runs_done(started, run, 1), "{started} of {run}");
+    assert_eq!(readyz(&state).await, StatusCode::OK);
+    rewarm.await.unwrap();
+    assert_eq!(backend.calls() - before, 2 * run, "one start, one restart");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_searcher_restart_during_a_publish_warms_the_new_version_after_it() {
+    let backend = Counting::new(Duration::from_millis(2), false);
+    let (dir, state, run) = cold_state("restart-at-publish", backend.clone()).await;
+    publish_v2(&dir);
+
+    let before = backend.calls();
+    let publish = tokio::spawn({
+        let state = state.clone();
+        async move { reload_if_changed(&state).await }
+    });
+    // The publish's warm-up has begun.
+    while backend.calls() == before {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let rewarm = spawn_searcher_warm_up(state.clone()).expect("a warm-up after the publish's");
+    assert!(spawn_searcher_warm_up(state.clone()).is_none());
+    assert_eq!(publish.await.unwrap(), Ok(true));
+    let published = backend.calls() - before;
+    assert!(runs_done(published, run, 1), "{published} of {run}");
+    rewarm.await.unwrap();
+    // The new version's searches, computed again.
+    assert_eq!(
+        backend.calls() - before,
+        2 * run,
+        "one publish, one restart"
+    );
+    assert_eq!(state.snapshot.load().refdata.version(), "fixture-v2");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_publish_during_a_restart_warm_up_waits_its_turn() {
+    // Never dropped: the publish runs after the restart's warm-up, and a
+    // restart seen meanwhile runs after the publish.
+    let backend = Counting::new(Duration::from_millis(2), false);
+    let (dir, state, run) = cold_state("publish-at-restart", backend.clone()).await;
+    publish_v2(&dir);
+
+    let before = backend.calls();
+    let first = spawn_searcher_warm_up(state.clone()).expect("a restart's warm-up");
+    let publish = tokio::spawn({
+        let state = state.clone();
+        async move { reload_if_changed(&state).await }
+    });
+    // The publish loads the new version, then waits behind the warm-up.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(backend.calls() - before < run, "the warm-up ended too soon");
+    let second = spawn_searcher_warm_up(state.clone()).expect("queued behind the publish");
+    assert!(spawn_searcher_warm_up(state.clone()).is_none());
+    first.await.unwrap();
+    let restarted = backend.calls() - before;
+    assert!(runs_done(restarted, run, 1), "{restarted} of {run}");
+    assert_eq!(state.snapshot.load().refdata.version(), "fixture-v1");
+    assert_eq!(publish.await.unwrap(), Ok(true));
+    let published = backend.calls() - before;
+    assert!(runs_done(published, run, 2), "{published} of {run}");
+    second.await.unwrap();
+    assert_eq!(
+        backend.calls() - before,
+        3 * run,
+        "restart, publish, restart"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -30,6 +30,9 @@ param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
 @allowed(['fixtures', 'quickwit'])
 param searchBackend string = 'fixtures'
 
+@description('Run the Quickwit searcher as its own Container App, usnm-search-ca-{env}, with internal ingress, instead of a sidecar in each API replica (#267): a new API image, and so a site change, then doesn\'t restart it. Needs searchBackend quickwit. Off (the default) keeps the sidecar; turning it off again deletes the searcher app (docs/operations.md, "Searcher app").')
+param searcherApp bool = false
+
 @description('Pull images from the private registry (08 §8.6). Turn on once CI has pushed them there.')
 param useAcr bool = false
 
@@ -242,6 +245,11 @@ var quickwitUpstream = '${quickwitPins.upstream.image}:${quickwitPins.upstream.t
 // www if there is one. The site calls the API on its own origin, so these
 // matter for the tiles account's CORS (and any cross-origin API caller).
 var appName = 'ca-usnm-${env}'
+// The searcher's own app (searcherApp, #267); a new resource, so it takes
+// ADR-0017's form. 'search', not 'searcher': with a 16-character
+// environment name (environmentName's limit) the name is 31 characters,
+// within the container app limit (containerapp.bicep checks it).
+var searcherName = 'usnm-search-ca-${env}'
 var appOrigin = 'https://${appName}.${containerEnv.outputs.defaultDomain}'
 var domainOrigins = empty(dnsZoneName) ? [] : ['https://${dnsZoneName}', 'https://www.${dnsZoneName}']
 var siteOrigins = union(allowedOrigins, domainOrigins, [appOrigin])
@@ -542,6 +550,11 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     allowedOrigins: siteOrigins
     minReplicas: apiMinReplicas
     searchBackend: searchBackend
+    searcherApp: searcherApp
+    searcherName: searcherName
+    // Warm where the API keeps a replica warm (prod); elsewhere it scales to
+    // zero with the API.
+    searcherMinReplicas: apiMinReplicas > 0 ? 1 : 0
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     ingestCron: ingestJobs && useAcr ? ingestCron : ''
     americanStoriesSearch: americanStoriesSearch
@@ -744,6 +757,7 @@ module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
     appInsightsId: monitoring.outputs.appInsightsId
     actionGroupId: monitoring.outputs.actionGroupId
     apiAppName: api!.outputs.name
+    searcherAppName: api!.outputs.searcherName
     replicaCpu: apiMinReplicas > 0
     siteUrl: !empty(dnsZoneName) && !empty(siteCertificateId) ? 'https://${dnsZoneName}/' : ''
     availabilityFrequency: availabilityFrequency
@@ -765,6 +779,7 @@ module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deplo
     pipeline: ingestJobs && useAcr
     api: deployApi
     apiAppName: deployApi ? api!.outputs.name : ''
+    searcherAppName: deployApi ? api!.outputs.searcherName : ''
     ocrNodes: ocrNodes
     ocrNodeWorkspaceId: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceId : ''
     ocrNodeAppInsightsId: ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsId : ''
@@ -827,6 +842,8 @@ output API_URL string = !deployApi
   ? ''
   : (!empty(dnsZoneName) && !empty(apiCertificateId) ? 'https://api.${dnsZoneName}' : 'https://${api!.outputs.fqdn}')
 output API_APP string = deployApi ? api!.outputs.name : ''
+// The searcher's own app (searcherApp); empty while the searcher is the API's sidecar.
+output SEARCHER_APP string = deployApi ? api!.outputs.searcherName : ''
 // The domain once its certificate is bound, else the app's own hostname.
 output SITE_URL string = !deployApi
   ? ''

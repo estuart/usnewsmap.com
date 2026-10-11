@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use moka::future::Cache;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -184,6 +184,8 @@ pub struct AppState {
     /// Set while the first version warms up after a start: `/readyz` says
     /// not ready (see [`spawn_startup_warm_up`]).
     pub warming: AtomicBool,
+    /// Runs the warm-ups one at a time (see [`WarmUps`]).
+    pub(crate) warm_ups: WarmUps,
     /// The anonymous search log (`None` records nothing).
     pub search_log: Option<Arc<searchlog::SearchLog>>,
 }
@@ -225,6 +227,7 @@ impl AppState {
             metrics: telemetry::Metrics::global(),
             page_views: None,
             warming: AtomicBool::new(false),
+            warm_ups: WarmUps::default(),
             search_log: None,
         }
     }
@@ -398,6 +401,9 @@ async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> 
     let mut snapshot = loader.load(next).await?;
     configure(&state.config, &mut snapshot);
     let snapshot = Arc::new(snapshot);
+    // Held through the swap, so a searcher restart's warm-up waiting for
+    // its turn warms the new version.
+    let _turn = state.warm_ups.claim().turn().await;
     prewarm::run(state, snapshot.clone(), prewarm::Trigger::Publish).await;
     tracing::info!(
         version = snapshot.refdata.version(),
@@ -416,11 +422,15 @@ async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> 
 /// carries on within its own budget.
 pub fn spawn_startup_warm_up(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     state.warming.store(true, Ordering::Relaxed);
+    let claim = state.warm_ups.claim();
     tokio::spawn(async move {
-        let snapshot = state.snapshot.load_full();
         let run = tokio::spawn({
             let state = state.clone();
-            async move { prewarm::run(&state, snapshot, prewarm::Trigger::Startup).await }
+            async move {
+                let _turn = claim.turn().await;
+                let snapshot = state.snapshot.load_full();
+                prewarm::run(&state, snapshot, prewarm::Trigger::Startup).await
+            }
         });
         if tokio::time::timeout(state.config.ready_cap, run)
             .await
@@ -433,6 +443,75 @@ pub fn spawn_startup_warm_up(state: Arc<AppState>) -> tokio::task::JoinHandle<()
         }
         state.warming.store(false, Ordering::Relaxed);
     })
+}
+
+/// Runs the warm-ups one at a time, whatever started them: a start, a
+/// publish or a searcher restart (06 §6.5): two at once would only take
+/// turns on the warm-up's one computation slot, and a restart's run must
+/// come after a run that may have searched the old searcher. Each waits for
+/// its turn, first come first served, and none is dropped, except that a
+/// searcher restart seen while another restart's warm-up is still waiting
+/// shares that one: at most one waits.
+#[derive(Default)]
+pub(crate) struct WarmUps {
+    turn: Arc<Mutex<()>>,
+    /// Set from a searcher restart until its warm-up's turn comes.
+    restart_waiting: AtomicBool,
+}
+
+/// A place in [`WarmUps`]' line: the turn itself if it was free, else the
+/// wait for it.
+enum Claim {
+    Now(OwnedMutexGuard<()>),
+    Wait(Arc<Mutex<()>>),
+}
+
+impl WarmUps {
+    /// Take the turn now if no warm-up holds it (and none is waiting for it),
+    /// so a warm-up claimed before another is spawned runs first.
+    fn claim(&self) -> Claim {
+        match self.turn.clone().try_lock_owned() {
+            Ok(turn) => Claim::Now(turn),
+            Err(_) => Claim::Wait(self.turn.clone()),
+        }
+    }
+}
+
+impl Claim {
+    /// The turn, held while the warm-up runs.
+    async fn turn(self) -> OwnedMutexGuard<()> {
+        match self {
+            Self::Now(turn) => turn,
+            Self::Wait(turn) => turn.lock_owned().await,
+        }
+    }
+}
+
+/// Warm up the serving version again after the searcher restarted under
+/// this running replica (its own app, #267, or the sidecar alone): the new
+/// searcher's caches are empty. The replica stays ready; it is warm itself.
+/// A restart seen while another warm-up runs (a start's, a publish's or an
+/// earlier restart's) is warmed after it: that run may have searched the
+/// searcher before it restarted. `None` when a restart's warm-up is already
+/// waiting for its turn, which warms this one too.
+pub fn spawn_searcher_warm_up(state: Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
+    if state.warm_ups.restart_waiting.swap(true, Ordering::AcqRel) {
+        tracing::info!("the searcher restarted again; the warm-up waiting for its turn covers it");
+        return None;
+    }
+    let claim = state.warm_ups.claim();
+    if matches!(claim, Claim::Wait(_)) {
+        tracing::info!("the searcher restarted during a warm-up; warming it again after that one");
+    }
+    Some(tokio::spawn(async move {
+        let _turn = claim.turn().await;
+        state
+            .warm_ups
+            .restart_waiting
+            .store(false, Ordering::Release);
+        let snapshot = state.snapshot.load_full();
+        prewarm::run(&state, snapshot, prewarm::Trigger::SearcherRestart).await;
+    }))
 }
 
 /// Poll `current.json` every `refresh_interval` (no-op without a loader), and

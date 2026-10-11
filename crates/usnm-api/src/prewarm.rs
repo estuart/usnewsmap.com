@@ -40,6 +40,18 @@
 //! Searches from the log are logged by rank only (`search-log-3`), never by
 //! their text, and their errors by kind only: an error message can quote
 //! the query.
+//!
+//! When the searcher restarts under a running API (its own app, #267, or a
+//! sidecar restarted alone), the API runs the start's warm-up again
+//! ([`Trigger::SearcherRestart`]): the searcher has lost its caches, and
+//! nothing else would warm them. It reads and computes as a start does, and
+//! stays ready meanwhile: the API itself is warm.
+//!
+//! Warm-ups run one at a time, whatever started them (`WarmUps` in the
+//! crate root): one that starts while another runs waits for its turn, first
+//! come first served, and none is dropped. A restart seen during another
+//! warm-up runs after it, since that run may have searched the searcher
+//! before it restarted; restarts seen while one waits share it.
 
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -113,6 +125,8 @@ pub enum Trigger {
     Startup,
     /// A new version is about to be swapped in.
     Publish,
+    /// The searcher restarted while this replica kept running.
+    SearcherRestart,
 }
 
 impl Trigger {
@@ -121,15 +135,26 @@ impl Trigger {
     /// delays the swap, so it can afford to warm every example.
     fn budget(self, config: &crate::config::Config) -> Duration {
         match self {
-            Self::Startup => config.prewarm_startup_budget,
+            Self::Startup | Self::SearcherRestart => config.prewarm_startup_budget,
             Self::Publish => config.prewarm_budget,
         }
     }
 
-    fn as_str(self) -> &'static str {
+    /// Whether visitors are served the version being warmed: the run reads
+    /// what the caches hold rather than computing it, and gives way to
+    /// visitors' searches.
+    fn serving(self) -> bool {
+        match self {
+            Self::Startup | Self::SearcherRestart => true,
+            Self::Publish => false,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Startup => "startup",
             Self::Publish => "publish",
+            Self::SearcherRestart => "searcher_restart",
         }
     }
 }
@@ -492,7 +517,7 @@ impl Run<'_> {
 
     /// Compute `search` through its handler, then its coverage cube.
     async fn compute(&mut self, search: &Search) {
-        if self.trigger == Trigger::Startup {
+        if self.trigger.serving() {
             self.give_way().await;
         }
         let uri = format!("/v1/aggregate?{}&v={}", search.query, self.v);
@@ -694,9 +719,10 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
         private: true,
     }));
 
-    let pending: Vec<&Search> = match trigger {
-        Trigger::Startup => run.load_cached(&searches).await,
-        Trigger::Publish => searches.iter().collect(),
+    let pending: Vec<&Search> = if trigger.serving() {
+        run.load_cached(&searches).await
+    } else {
+        searches.iter().collect()
     };
     for search in pending {
         run.compute(search).await;
