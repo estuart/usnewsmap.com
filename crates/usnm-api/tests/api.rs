@@ -3541,6 +3541,55 @@ async fn a_dropped_congress_set_comes_back_at_the_next_refresh() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A same-version `current.json` whose `page_language` changed isn't
+/// loaded, not even to bring back a dropped Congress set: the caches key on
+/// the version, so the language mode is fixed for it (#289).
+#[tokio::test]
+async fn a_changed_page_language_under_the_same_version_is_not_loaded() {
+    let dir = temp_data_dir("congress-retry-page-language");
+    let pointer = dir.join("current.json");
+    let mut current: Value =
+        serde_json::from_str(&std::fs::read_to_string(&pointer).unwrap()).unwrap();
+    current["congress"] = json!({
+        "indexes": ["congress-late"],
+        "series": [{"series": "globe", "pages": 78, "from": "1850-01-07", "to": "1850-09-30"}],
+    });
+    std::fs::write(&pointer, current.to_string()).unwrap();
+    let loader = || Loader {
+        reference: Arc::new(LocalStore::new(&dir)),
+        engine: Engine::Memory {
+            indexes_dir: dir.join("indexes"),
+        },
+        congress_search: true,
+    };
+    let snapshot = loader().snapshot().await.unwrap();
+    assert!(snapshot.congress_dropped);
+    assert_eq!(snapshot.refdata.current.page_language, None);
+    let s = Arc::new(AppState::with_loader(config(), snapshot, Some(loader())));
+    std::fs::copy(
+        dir.join("indexes").join(format!("{CONGRESS}.jsonl")),
+        dir.join("indexes").join("congress-late.jsonl"),
+    )
+    .unwrap();
+
+    // The Congress set could come back, but page_language changed: no reload.
+    let mut changed = current.clone();
+    changed["page_language"] = json!(1);
+    std::fs::write(&pointer, changed.to_string()).unwrap();
+    let before = Arc::as_ptr(&s.snapshot.load_full());
+    assert!(!reload_if_changed(&s).await.unwrap());
+    assert_eq!(Arc::as_ptr(&s.snapshot.load_full()), before);
+    assert!(s.snapshot.load_full().congress_dropped);
+
+    // The pointer restored: the Congress set comes back, in title language.
+    std::fs::write(&pointer, current.to_string()).unwrap();
+    assert!(reload_if_changed(&s).await.unwrap());
+    let now = s.snapshot.load_full();
+    assert!(!now.congress_dropped);
+    assert_eq!(now.refdata.current.page_language, None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- Page languages (#289) ----
 
 #[path = "../../../fixtures/page_language.rs"]

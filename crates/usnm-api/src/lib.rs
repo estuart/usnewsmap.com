@@ -392,6 +392,9 @@ async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> 
                 "current.json changed page_language without a new version; ignored \
                  (roll back to a version without page languages instead)"
             );
+            // Nor reloaded for a dropped Congress set: the new snapshot
+            // would take the changed mode under the same cache keys.
+            return Ok(false);
         }
         // The same version: worth another load only to bring back a Congress
         // set it dropped (#229). It goes live only if that set is searchable
