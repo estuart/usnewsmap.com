@@ -179,11 +179,17 @@ ocr_nodes_off_check() {
 # soft-deleted vault of this environment first; the stack takes it back over
 # with its secrets. Prod's has purge protection and is recovered the same way.
 ocr_vault_recover() {
-  local nodes out v
+  local nodes rg out v
   nodes=$(aget USNM_OCR_NODES) || return 1
   [ "$nodes" = true ] || return 0
+  rg=$(aget AZURE_RESOURCE_GROUP) || return 1
+  [ -n "$rg" ] || return 0
+  # Only a vault deleted from this environment's own group: the name prefix
+  # alone could match another environment's vault (the suffix comes from the
+  # full environment name), so the original vault id must name this group.
   out=$(az keyvault list-deleted --resource-type vault \
-    --query "[?starts_with(name, 'usnmocrkv${ENV_NAME:0:9}')].name" -o tsv 2>&1) ||
+    --query "[?starts_with(name, 'usnmocrkv') && contains(to_lower(properties.vaultId), to_lower('/resourceGroups/$rg/providers/'))].name" \
+    -o tsv 2>&1) ||
     { echo "error: can't list deleted Key Vaults: $out" >&2; return 1; }
   [ -n "$out" ] || return 0
   while IFS= read -r v; do
