@@ -444,10 +444,6 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     let loc: Arc<dyn ScanSource> = Arc::new(LocClient::new(cfg)?);
                     match scan_cache_url.filter(|u| !u.is_empty()) {
                         Some(url) => {
-                            anyhow::ensure!(
-                                url.starts_with("http://") || url.starts_with("https://"),
-                                "--scan-cache-url must be an http(s) URL"
-                            );
                             tracing::info_span!("ocr_worker_start")
                                 .in_scope(|| tracing::info!(url, "reading prefetched scans first"));
                             Arc::new(CachedScans::new(&url, iiif_root, loc)?)

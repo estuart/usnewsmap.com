@@ -66,7 +66,15 @@ enum Found {
 }
 
 impl CachedScans {
+    /// `base` must be an `http` or `https` URL with a host (and a valid
+    /// port, if any); anything else fails here, at startup.
     pub fn new(base: &str, iiif_root: String, inner: Arc<dyn ScanSource>) -> anyhow::Result<Self> {
+        let u = reqwest::Url::parse(base)
+            .map_err(|e| anyhow::anyhow!("--scan-cache-url {base:?}: {e}"))?;
+        anyhow::ensure!(
+            matches!(u.scheme(), "http" | "https") && u.host_str().is_some_and(|h| !h.is_empty()),
+            "--scan-cache-url {base:?} must be http(s)://host[:port]"
+        );
         Ok(Self {
             base: base.trim_end_matches('/').to_owned(),
             iiif_root,
@@ -175,11 +183,23 @@ impl CachedScans {
 #[async_trait]
 impl ScanSource for CachedScans {
     async fn scan(&self, key: &PageKey, batch: &str) -> Result<Scan, FetchError> {
-        for set in [Set::Keep, Set::Buffer] {
-            match self.lookup(set, key, batch).await {
-                Found::Scan(s) => return Ok(*s),
-                Found::Missing => continue,
-                Found::GiveUp => break,
+        // One bound on the whole lookup (both sets' sidecars and the scan),
+        // so LoC is never more than REQUEST_TIMEOUT away.
+        let lookup = async {
+            for set in [Set::Keep, Set::Buffer] {
+                match self.lookup(set, key, batch).await {
+                    Found::Scan(s) => return Some(*s),
+                    Found::Missing => continue,
+                    Found::GiveUp => break,
+                }
+            }
+            None
+        };
+        match tokio::time::timeout(REQUEST_TIMEOUT, lookup).await {
+            Ok(Some(s)) => return Ok(s),
+            Ok(None) => {}
+            Err(_) => {
+                tracing::warn!(doc_id = %key.doc_id(), "the scan cache was too slow; fetching from LoC")
             }
         }
         self.inner.scan(key, batch).await
@@ -337,6 +357,18 @@ mod tests {
             assert!(!cache.scan(&key, "batch_x").await.unwrap().from_cache);
             assert_eq!(loc.0.load(Ordering::SeqCst), before + 1);
         }
+    }
+
+    #[test]
+    fn refuses_a_bad_cache_url_at_startup() {
+        let loc: Arc<dyn ScanSource> = Arc::new(Loc::default());
+        for bad in ["http://", "http://host:99999", "ftp://host", "host:8380"] {
+            assert!(
+                CachedScans::new(bad, ROOT.into(), Arc::clone(&loc)).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(CachedScans::new("http://192.168.0.5:8380", ROOT.into(), loc).is_ok());
     }
 
     #[tokio::test]

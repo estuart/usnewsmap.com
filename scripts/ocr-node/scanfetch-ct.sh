@@ -174,6 +174,10 @@ if $SERVE; then
   [ "${#IPS[@]}" -gt 0 ] || die "--serve needs --allow"
   for ip in "${IPS[@]}"; do
     [[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--allow: $ip isn't an IPv4 address"
+    IFS=. read -r -a octets <<< "$ip"
+    for o in "${octets[@]}"; do
+      [ "$((10#$o))" -le 255 ] || die "--allow: $ip isn't an IPv4 address"
+    done
   done
   # The manifests mount read-write, for PUT /manifests.
   # The mount changes only when the container starts again, so it is

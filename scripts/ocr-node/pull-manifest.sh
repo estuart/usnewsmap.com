@@ -28,7 +28,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ $ACCOUNT =~ ^[a-z0-9]{3,24}$ ]] || usage
-[[ $SERVER =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || die "--scan-server: http://HOST:PORT"
+[[ $SERVER =~ ^https?://[A-Za-z0-9.-]+(:([0-9]{1,5}))?$ ]] || die "--scan-server: http://HOST:PORT"
+[ -z "${BASH_REMATCH[2]}" ] || [ "${BASH_REMATCH[2]}" -le 65535 ] || die "--scan-server: port above 65535"
 [[ $VERSION =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "--index-version: a version id"
 [ -z "$STAMP" ] || [[ $STAMP =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "--partial-stamp: yyyymmddThhmmssZ"
 [ "$(id -u)" = 0 ] || die "run as root (the Arc agent's token challenge is readable by root and himds)"
