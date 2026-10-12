@@ -123,7 +123,7 @@ The damaged pages' scans are fetched once, onto pve-big's ZFS pool, before the w
 - ADR-0015 decision 4 and a comment in `ocr-exchange.bicep` say a message taken 5 times goes to `ocr-deadletter`. The code processes it 5 times and dead-letters it on the 6th receive.
 - ADR-0015 decision 5 says the writer role means one node can't remove another's output. The role's `blobs/write` also lets a node overwrite another node's blob, as the Bicep comment says; the worker writes create-only, but a node that has been tampered with need not. The worker's README (Output: "can create blobs but not replace or delete them") makes the same claim.
 - ADR-0015 is still "Proposed", though it is built and deployed. Whether to mark it Accepted is the maintainer's call.
-- 08 §8.5 lists only the tiles account in `publicAccountIds`; with `USNM_OCR_NODES` on, the exchange account and the nodes' Key Vault are there too, as 08 §8.3 already says.
+- 08 §8.5 lists nothing in `publicAccountIds`; with `USNM_OCR_NODES` on, the exchange account and the nodes' Key Vault are there too, as 08 §8.3 already says.
 - 04 §4.7 and 08 §8.4.1 say compaction runs monthly. Nothing schedules a full rebuild. `USNM_INGEST_CRON` (empty in prod) schedules only incremental runs; a full base needs `USNM_INGEST_FULL` and the E4 profile, set by hand and cleared afterwards ([operations, Full rebuild](../operations.md#full-rebuild)). A version with 8 deltas makes the next run full on whatever profile the job is on, and on Consumption a full rebuild runs out of memory (#172).
 
 Step 1 fixes these. Checked on `main` on 11 October 2026: each item above still stands. The worker's "later change" in `docs/operations.md` and `node-setup.sh` is gone. The status part of Step 1 (§12.2 and §12.5) was brought up to date on 11 October 2026; the corrections to ADR-0015, the Bicep comment, the worker's README and 04 and 08 are still to do (§12.5, Step 1).
@@ -148,7 +148,7 @@ In the flowcharts, dashed lines and boxes are planned and solid ones exist on `m
 
 ### 12.3.1 System overview
 
-There are three trust boundaries, numbered in the diagram. The node is on the home network, and everything it writes is untrusted input to the cloud. The exchange account is the only project storage a node has a role on, and the only one it can write to: a public endpoint whose firewall allows the home IP and `snet-cae`. (The tiles account allows public reads, so a node can read it like anyone else.) The data lake allows private endpoints only, so only the jobs and the API inside the VNet reach it.
+There are three trust boundaries, numbered in the diagram. The node is on the home network, and everything it writes is untrusted input to the cloud. The exchange account is the only project storage a node has a role on, and the only one it can write to: a public endpoint whose firewall allows the home IP and `snet-cae`. The data lake allows private endpoints only, so only the jobs and the API inside the VNet reach it.
 
 ```mermaid
 flowchart TB

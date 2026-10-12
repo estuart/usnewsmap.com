@@ -196,7 +196,6 @@ var nameTypes = {
   spotRg: 'rg'
   stateEndpoint: 'pep'
   stateEndpointNic: 'nic'
-  tiles: 'st'
   vnet: 'vnet'
   workspace: 'log'
 }
@@ -286,7 +285,6 @@ type Names = {
   spotRg: string
   stateEndpoint: string
   stateEndpointNic: string
-  tiles: string
   vnet: string
   workspace: string
 }
@@ -376,7 +374,6 @@ func names(env string, sfx string, pinned bool) Names => {
   stateEndpoint: pinned ? 'pe-usnm-cosmos' : usnmName('state-sql', 'pep', env)
   stateEndpointNic: pinned ? '' : usnmName('state-sql', 'nic', env)
   // Removed in Phase 1 (ADR-0017): legacy everywhere until then.
-  tiles: 'stusnmt${sfx}'
   vnet: pinned ? 'vnet-usnm-${env}' : usnmName('core', 'vnet', env)
   workspace: pinned ? 'log-usnm-${env}' : usnmName('core', 'log', env)
 }

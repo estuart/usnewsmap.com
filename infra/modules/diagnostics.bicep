@@ -10,7 +10,7 @@
 // Everything with resource logs is covered, with every category, except
 // where a category would record each request and eat the workspace's daily
 // cap (1 GB in prod, 0.15 GB in dev; a normal prod day is about 53 MB):
-// - Blob reads (StorageRead): the public tiles and the index splits Quickwit
+// - Blob reads (StorageRead): the index splits Quickwit
 //   range-reads on every search. Writes and deletes are the audit trail,
 //   in StorageBlobLogs on the Auxiliary plan (monitoring.bicep), outside
 //   the cap: one row per write or delete request (PutBlob, or PutBlock
@@ -39,7 +39,6 @@ param vnetName string
 param containerEnvName string
 param cosmosName string
 param dataStorageName string
-param tilesStorageName string
 @description('The ingest scratch share\'s account (ingest-scratch.bicep); empty if there is none.')
 param scratchStorageName string = ''
 @description('The on-prem OCR exchange account (ocr-exchange.bicep); empty if there is none.')
@@ -149,7 +148,7 @@ resource cosmosLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' =
   }
 }
 
-// The data and tiles accounts, and the OCR exchange account when there is
+// The data account, and the OCR exchange account when there is
 // one: blob writes and deletes; the queue, table and file services log
 // everything. Only the exchange account uses queues: each node's take,
 // delete and empty poll is a StorageQueueLogs row, so the worker backs off
@@ -161,15 +160,6 @@ module dataStorageLogs 'storage-diagnostics.bicep' = {
   name: 'diagnostics-${dataStorageName}'
   params: {
     storageName: dataStorageName
-    workspaceId: workspaceId
-    settingName: name
-  }
-}
-
-module tilesStorageLogs 'storage-diagnostics.bicep' = {
-  name: 'diagnostics-${tilesStorageName}'
-  params: {
-    storageName: tilesStorageName
     workspaceId: workspaceId
     settingName: name
   }

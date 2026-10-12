@@ -4,7 +4,6 @@
 // (the step provision runs before the stack, #336) both take the list from
 // here, so the two deployments write the same assignment.
 //
-// - the tiles account (public map data);
 // - with ocrNodes, the OCR exchange account and the OCR nodes' Key Vault,
 //   whose firewalls allow only the node IPs (ADR-0015);
 // - with lakeOpen, the data lake, whose firewall allows only the node IPs
@@ -16,7 +15,6 @@ import { Names } from 'naming.bicep'
 @export()
 func publicAccountIds(subscriptionId string, n Names, ocrNodes bool, lakeOpen bool) array =>
   concat(
-    [resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.tiles)],
     ocrNodes
       ? [
           resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.ocrExchange)

@@ -29,7 +29,7 @@ Search can't find a page whose words were misread. Re-reading these pages on clo
 3. **A separate exchange account, `stusnmo<suffix>`, holds the queues and the nodes' output** (`infra/modules/ocr-exchange.bicep`, with `USNM_OCR_NODES`).
    - Entra only: shared keys off, public blob access off.
    - Public network access is on and the firewall's default action is Deny. It allows the node IPs (`USNM_OCR_NODE_IPS`, the operator's home IP, kept in the environment's settings and never in the repository) and the Container Apps subnet, through a Microsoft.Storage service endpoint on `snet-cae`. There's no trusted-service bypass.
-   - The public-network policy exempts it by resource id in the environment's assignment, as it does the tiles account.
+   - The public-network policy exempts it by resource id in the environment's assignment.
 4. **The work queues are Azure Storage queues:** `ocr-priority`, `ocr-bulk` and `ocr-deadletter`.
    - One page per message: lccn, date, edition, sequence, batch, expected language and why it was queued. No search text.
    - A worker takes from `ocr-priority` first. It hides a message for a fixed time when it takes it, long enough for its slowest page. Renewing the hide (Update Message) needs `messages/write`, which would also let a node add or rewrite messages; the nodes don't get it. A crashed worker's page comes back when the time runs out. A message taken 5 times goes to `ocr-deadletter`.

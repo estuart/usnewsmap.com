@@ -23,7 +23,7 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   }
 }
 
-// Reads are left out: public tile fetches and Quickwit's split reads.
+// Reads are left out: Quickwit's split reads.
 resource blobLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   scope: account::blob
   name: settingName

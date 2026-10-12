@@ -25,7 +25,7 @@ param vnetAddressPrefix string
 @description('A public API image, used only while useAcr is off. Empty (the default) skips the API until CI has pushed to the registry and useAcr is on.')
 param apiImage string = ''
 
-@description('Extra origins allowed by API CORS and the tiles account. The app\'s own hostname and, with dnsZoneName, the domain and its www are always allowed.')
+@description('Extra origins allowed by API CORS. The app\'s own hostname and, with dnsZoneName, the domain and its www are always allowed.')
 param allowedOrigins array = []
 
 @description('0 lets dev scale to zero; production keeps one warm replica.')
@@ -285,7 +285,7 @@ var quickwitPin = any(quickwitPins.environments)[?env] ?? quickwitPins.upstream
 var quickwitUpstream = '${quickwitPins.upstream.image}:${quickwitPins.upstream.tag}@${quickwitPins.upstream.digest}'
 // Where the site is served: the API app's own hostname, and the domain and
 // www if there is one. The site calls the API on its own origin, so these
-// matter for the tiles account's CORS (and any cross-origin API caller).
+// matter for the API's CORS.
 var appName = n.apiApp
 var appOrigin = 'https://${appName}.${containerEnv.outputs.defaultDomain}'
 var domainOrigins = empty(dnsZoneName) ? [] : ['https://${dnsZoneName}', 'https://www.${dnsZoneName}']
@@ -404,25 +404,9 @@ module serialSetRunnerGrant 'modules/serialset-runner.bicep' = if (serialSetOnPr
   }
 }
 
-// The tiles account serves public map data. The public-network policy exempts it
-// by resource id; provision writes its assignment before the stack (#336).
-var tilesName = n.tiles
-
-module tiles 'modules/tiles.bicep' = {
-  scope: rg
-  name: 'tiles'
-  dependsOn: [policies]
-  params: {
-    location: location
-    tags: union(tags, { 'usnm-public': 'true' })
-    name: tilesName
-    allowedOrigins: siteOrigins
-  }
-}
-
 // The on-prem OCR exchange account (#296, ADR-0015) allows public network
 // access behind a firewall, so the public-network policy exempts it by
-// resource id like the tiles account, and its assignment goes first.
+// resource id, and its assignment goes first.
 var exchangeName = n.ocrExchange
 
 module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
@@ -579,7 +563,6 @@ module diagnostics 'modules/diagnostics.bicep' = {
     containerEnvName: containerEnv.outputs.name
     cosmosName: cosmos.outputs.name
     dataStorageName: storage.outputs.name
-    tilesStorageName: tiles.outputs.name
     scratchStorageName: nfsAccount ? scratch!.outputs.accountName : ''
     exchangeStorageName: ocrNodes ? ocrExchange!.outputs.name : ''
     ocrNodeWorkspaceId: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceId : ''
@@ -968,7 +951,6 @@ output SITE_URL string = !deployApi
 output CONTAINER_ENV_NAME string = containerEnv.outputs.name
 // Set these as the domain's name servers at the registrar.
 output NAME_SERVERS string = empty(dnsZoneName) ? '' : join(dns!.outputs.nameServers, ' ')
-output TILES_URL string = tiles.outputs.tilesUrl
 output STORAGE_ACCOUNT string = storage.outputs.name
 output COSMOS_ENDPOINT string = cosmos.outputs.endpoint
 output INGEST_JOB string = ingestJobs && useAcr ? ingest!.outputs.ingestJobName : ''

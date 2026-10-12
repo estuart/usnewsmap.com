@@ -240,12 +240,6 @@
     "adr": "ADR-0017, Exceptions",
     "reason": "The prod environment skeleton: kept until a prod rebuild (region or subscription move, or a new Container Apps environment)."
   },
-  "tiles": {
-    "until": "phase-1",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 1: removed with its CORS, exemption and TILES_URL output once its reads have been zero for 30 days. Legacy in every environment until then.",
-    "scope": "all"
-  },
   "vnet": {
     "until": "phase-4",
     "adr": "ADR-0017, Exceptions",
