@@ -11,6 +11,21 @@
 //! task on the node, `Retry-After` is honoured on 429 and 503, a 403 holds
 //! the server the same way (a block isn't the page's fault), and every
 //! request names the site in its User-Agent.
+//!
+//! **Item errors** (#414). Some items answer 503 at once, for hours, while
+//! the rest of loc.gov answers normally: a fault in that item on LoC's
+//! side, not a hold. An item JSON 503 counts as an item error, with
+//! nothing held, only when all of these are true:
+//! - it came back within [`ITEM_ERROR_FAST`], with no `Retry-After`;
+//! - another item answered 2xx within [`ITEM_ERROR_OK_WITHIN`], or one
+//!   paced request for the last item that answered 2xx (the *known-good*
+//!   item) answers 2xx now;
+//! - fewer than [`ITEM_ERROR_TITLES`] different titles, this one included,
+//!   had item errors in the last [`ITEM_ERROR_WINDOW`].
+//!
+//! Anything else (a 429, a 403, a `Retry-After`, a slow 503, a 503 on the
+//! image server, a failed check, or item errors spread over several titles)
+//! holds the server as before. When unsure, it holds.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -37,6 +52,15 @@ const MAX_ITEM_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 /// The longest `Retry-After` honoured.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
+/// An item JSON 503 slower than this is never an item error.
+pub const ITEM_ERROR_FAST: Duration = Duration::from_secs(2);
+/// Another item's 2xx this recent shows loc.gov is serving.
+pub const ITEM_ERROR_OK_WITHIN: Duration = Duration::from_secs(60);
+/// Item errors are remembered this long, by title.
+pub const ITEM_ERROR_WINDOW: Duration = Duration::from_secs(30 * 60);
+/// Item errors from this many titles inside the window look like loc.gov,
+/// not the items: the next one holds the server.
+pub const ITEM_ERROR_TITLES: usize = 3;
 
 /// A minimum gap between requests, shared by every task holding it. Each
 /// caller reserves the next free slot, so N concurrent callers are spaced
@@ -101,6 +125,11 @@ pub enum FetchError {
     Permanent(String),
     #[error("{0}")]
     Transient(String),
+    /// loc.gov answered 503 at once for this item while it served others
+    /// (the module notes): the item is broken on LoC's side. Nothing was
+    /// held; ask again later, not now.
+    #[error("{0}")]
+    Item(String),
 }
 
 /// The size asked of LoC's IIIF image server: the full scan, or scaled
@@ -193,12 +222,30 @@ impl Default for LocConfig {
 
 type Pages = Arc<BTreeMap<u16, String>>;
 
+/// What the API's answers say about telling an item error from a hold.
+#[derive(Debug, Default)]
+struct ApiHealth {
+    /// The last item JSON URL that answered 2xx, and when (`None` for one
+    /// set by [`LocClient::set_known_good`]).
+    known_good: Option<(String, Option<Instant>)>,
+    /// Item errors lately: when, and the title.
+    item_errors: std::collections::VecDeque<(Instant, String)>,
+}
+
+/// What a check of the known-good item found.
+enum Probe {
+    Ok,
+    /// It failed too: a hold, for at least this long if it said so.
+    Failed(Option<Duration>),
+}
+
 pub struct LocClient {
     cfg: LocConfig,
     http: reqwest::Client,
     api: Pacer,
     tile: Pacer,
     items: moka::future::Cache<String, Pages>,
+    health: Mutex<ApiHealth>,
     metrics: Metrics,
 }
 
@@ -276,20 +323,122 @@ impl LocClient {
                 .max_capacity(256)
                 .time_to_live(Duration::from_secs(3600))
                 .build(),
+            health: Mutex::new(ApiHealth::default()),
             cfg,
             http,
             metrics: Metrics::global(),
         })
     }
 
+    /// The item JSON URL of `key`'s issue.
+    pub fn item_url(&self, key: &PageKey) -> String {
+        format!("{}/item/{}/?fo=json", self.cfg.api_root, issue_id(key))
+    }
+
+    /// An item known to have answered 2xx before (from an earlier run),
+    /// to check against when an item answers 503 before any item has
+    /// answered in this process. One answered since takes its place.
+    pub fn set_known_good(&self, url: String) {
+        let mut h = self.health.lock().expect("health lock");
+        if h.known_good.is_none() {
+            h.known_good = Some((url, None));
+        }
+    }
+
+    /// Whether a fast, bare 503 for item `url` of `title` is an item error
+    /// rather than a hold (the module notes), and if not, how long a
+    /// failed check asked to wait. Records it if it is.
+    async fn item_error(&self, url: &str, title: &str) -> Result<(), Option<Duration>> {
+        /// Whether item errors from too many titles, with this one, are
+        /// inside the window.
+        fn too_many_titles(h: &mut ApiHealth, title: &str) -> bool {
+            let now = Instant::now();
+            while h
+                .item_errors
+                .front()
+                .is_some_and(|(t, _)| now.duration_since(*t) > ITEM_ERROR_WINDOW)
+            {
+                h.item_errors.pop_front();
+            }
+            let mut titles: std::collections::BTreeSet<&str> =
+                h.item_errors.iter().map(|(_, t)| t.as_str()).collect();
+            titles.insert(title);
+            if titles.len() >= ITEM_ERROR_TITLES {
+                tracing::warn!(
+                    titles = titles.len(),
+                    "item errors from several titles: holding instead"
+                );
+                return true;
+            }
+            false
+        }
+        let check = {
+            let mut h = self.health.lock().expect("health lock");
+            if too_many_titles(&mut h, title) {
+                return Err(None);
+            }
+            let now = Instant::now();
+            match &h.known_good {
+                Some((good, _)) if good == url => return Err(None),
+                Some((_, Some(at))) if now.duration_since(*at) <= ITEM_ERROR_OK_WITHIN => None,
+                Some((good, _)) => Some(good.clone()),
+                None => return Err(None),
+            }
+        };
+        if let Some(good) = check {
+            match self.probe(&good).await {
+                Probe::Ok => {}
+                Probe::Failed(d) => return Err(d),
+            }
+        }
+        // Checked again with the record, under one lock: callers that
+        // waited on probes together can't all pass the titles rule.
+        let mut h = self.health.lock().expect("health lock");
+        if too_many_titles(&mut h, title) {
+            return Err(None);
+        }
+        h.item_errors.push_back((Instant::now(), title.to_owned()));
+        Ok(())
+    }
+
+    /// One paced request for the known-good item, outside the cache.
+    async fn probe(&self, url: &str) -> Probe {
+        self.api.wait().await;
+        match self.http.get(url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match read_limited(resp, MAX_ITEM_BYTES).await {
+                    Ok(_) => {
+                        self.health.lock().expect("health lock").known_good =
+                            Some((url.to_owned(), Some(Instant::now())));
+                        Probe::Ok
+                    }
+                    Err(_) => Probe::Failed(None),
+                }
+            }
+            Ok(resp) => {
+                tracing::warn!(
+                    status = resp.status().as_u16(),
+                    "the known-good item failed too"
+                );
+                Probe::Failed(retry_after(&resp).map(|(d, _)| d))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e.without_url(), "the known-good item failed too");
+                Probe::Failed(None)
+            }
+        }
+    }
+
     /// GET `url`, paced by `pacer`, retrying transient failures. Returns
     /// the body and how long the answering request took, from sending it to
-    /// the end of the body (no pacing or retries).
+    /// the end of the body (no pacing or retries). `title` is set for an
+    /// item JSON, which can end in [`FetchError::Item`].
     async fn get(
         &self,
         url: &str,
         pacer: &Pacer,
         max: usize,
+        title: Option<&str>,
     ) -> Result<(Bytes, Duration), FetchError> {
         let mut last = String::new();
         for attempt in 1..=self.cfg.attempts.max(1) {
@@ -298,7 +447,13 @@ impl LocClient {
             let sent = Instant::now();
             match self.http.get(url).send().await {
                 Ok(resp) if resp.status().is_success() => match read_limited(resp, max).await {
-                    Ok(b) => return Ok((b, sent.elapsed())),
+                    Ok(b) => {
+                        if title.is_some() {
+                            self.health.lock().expect("health lock").known_good =
+                                Some((url.to_owned(), Some(Instant::now())));
+                        }
+                        return Ok((b, sent.elapsed()));
+                    }
                     Err(e) => last = e,
                 },
                 Ok(resp) => {
@@ -312,8 +467,32 @@ impl LocClient {
                             | StatusCode::FORBIDDEN
                     ) {
                         let asked = retry_after(&resp);
+                        let mut checked = None;
+                        if let Some(title) = title {
+                            // Any Retry-After, even one that can't be
+                            // read, is a hold.
+                            if status == StatusCode::SERVICE_UNAVAILABLE
+                                && !resp.headers().contains_key(reqwest::header::RETRY_AFTER)
+                                && sent.elapsed() < ITEM_ERROR_FAST
+                            {
+                                match self.item_error(url, title).await {
+                                    Ok(()) => {
+                                        tracing::warn!(
+                                            url,
+                                            title,
+                                            "loc.gov answered 503 at once for this item while serving others: an item error, not holding"
+                                        );
+                                        return Err(FetchError::Item(format!(
+                                            "{url} returned HTTP 503 at once while other items answered"
+                                        )));
+                                    }
+                                    Err(d) => checked = d,
+                                }
+                            }
+                        }
                         let capped = asked.is_some_and(|(_, c)| c);
                         let d = asked.map_or(wait, |(r, _)| r.max(wait));
+                        let d = checked.map_or(d, |c| c.min(MAX_RETRY_AFTER).max(d));
                         // Everyone waits, not just this request.
                         pacer.hold(d);
                         let server = if std::ptr::eq(pacer, &self.api) {
@@ -372,16 +551,14 @@ impl LocClient {
     /// Only answers are cached: a 4xx on the issue fails this page and is
     /// asked again for the next, so a refusal can't empty a whole issue.
     async fn issue_pages(&self, key: &PageKey) -> Result<Pages, FetchError> {
-        let issue = format!(
-            "{}/{}/ed-{}",
-            key.lccn,
-            key.date.format("%Y-%m-%d"),
-            key.edition
-        );
-        let url = format!("{}/item/{issue}/?fo=json", self.cfg.api_root);
+        let issue = issue_id(key);
+        let url = self.item_url(key);
         self.items
             .try_get_with(issue, async {
-                match self.get(&url, &self.api, MAX_ITEM_BYTES).await {
+                match self
+                    .get(&url, &self.api, MAX_ITEM_BYTES, Some(&key.lccn))
+                    .await
+                {
                     Ok((body, _)) => {
                         let item: Value = serde_json::from_slice(&body).map_err(|e| {
                             FetchError::Transient(format!("item JSON for {url}: {e}"))
@@ -395,6 +572,7 @@ impl LocClient {
             .map_err(|e: Arc<FetchError>| match &*e {
                 FetchError::Permanent(m) => FetchError::Permanent(m.clone()),
                 FetchError::Transient(m) => FetchError::Transient(m.clone()),
+                FetchError::Item(m) => FetchError::Item(m.clone()),
             })
     }
 
@@ -411,7 +589,7 @@ impl LocClient {
             .cloned()
             .ok_or_else(|| FetchError::Permanent(format!("loc.gov lists no image for {key}")))?;
         let (jpeg, download) = self
-            .get(&image_url(&base, size), &self.tile, MAX_IMAGE_BYTES)
+            .get(&image_url(&base, size), &self.tile, MAX_IMAGE_BYTES, None)
             .await?;
         Ok(Scan {
             iiif_base: base,
@@ -421,6 +599,16 @@ impl LocClient {
             evict: None,
         })
     }
+}
+
+/// `<lccn>/<date>/ed-<n>`, an issue as loc.gov's item URLs name it.
+pub fn issue_id(key: &PageKey) -> String {
+    format!(
+        "{}/{}/ed-{}",
+        key.lccn,
+        key.date.format("%Y-%m-%d"),
+        key.edition
+    )
 }
 
 pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Result<Bytes, String> {
@@ -674,6 +862,248 @@ mod tests {
             ));
         }
         assert_eq!(refused.load(Ordering::SeqCst), 2);
+    }
+
+    /// How the stand-in answers an item.
+    #[derive(Clone, Copy)]
+    enum Answer {
+        Ok,
+        /// 503 at once, no Retry-After: a broken item.
+        Bare503,
+        /// 503 with `Retry-After: n`: a hold.
+        RetryAfter(u32),
+        /// 503 after 2.5 s, no Retry-After.
+        Slow503,
+        Too429,
+        /// 503 at once with a `Retry-After` that can't be read.
+        BadRetryAfter,
+    }
+
+    /// A stand-in loc.gov answering `/item/<lccn>/<date>/ed-1/` as
+    /// `answers` says (keyed by `<lccn>/<date>`, anything else 404), and
+    /// counting requests per item.
+    async fn items_loc(
+        answers: Vec<(&'static str, Answer)>,
+    ) -> (String, Arc<Mutex<BTreeMap<String, u32>>>) {
+        use axum::http::StatusCode as S;
+        use axum::response::IntoResponse;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let answers: Arc<BTreeMap<String, Answer>> = Arc::new(
+            answers
+                .into_iter()
+                .map(|(k, a)| (k.to_owned(), a))
+                .collect(),
+        );
+        let hits: Arc<Mutex<BTreeMap<String, u32>>> = Arc::default();
+        let h = hits.clone();
+        let app = axum::Router::new().route(
+            "/item/{lccn}/{date}/{ed}/",
+            axum::routing::get(
+                move |axum::extract::Path((lccn, date, _ed)): axum::extract::Path<(
+                    String,
+                    String,
+                    String,
+                )>| {
+                    let answers = answers.clone();
+                    let hits = h.clone();
+                    async move {
+                        let k = format!("{lccn}/{date}");
+                        *hits.lock().unwrap().entry(k.clone()).or_default() += 1;
+                        match answers.get(&k) {
+                            None => S::NOT_FOUND.into_response(),
+                            Some(Answer::Ok) => axum::Json(serde_json::json!({"resources": [{"files": [
+                                [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/x/batch_x/data/sn1/1/1890050301/0001.jp2"}],
+                            ]}]}))
+                            .into_response(),
+                            Some(Answer::Bare503) => S::SERVICE_UNAVAILABLE.into_response(),
+                            Some(Answer::RetryAfter(n)) => {
+                                (S::SERVICE_UNAVAILABLE, [("retry-after", n.to_string())])
+                                    .into_response()
+                            }
+                            Some(Answer::Slow503) => {
+                                tokio::time::sleep(Duration::from_millis(2500)).await;
+                                S::SERVICE_UNAVAILABLE.into_response()
+                            }
+                            Some(Answer::Too429) => S::TOO_MANY_REQUESTS.into_response(),
+                            Some(Answer::BadRetryAfter) => {
+                                (S::SERVICE_UNAVAILABLE, [("retry-after", "soon")]).into_response()
+                            }
+                        }
+                    }
+                },
+            ),
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (root, hits)
+    }
+
+    fn items_client(root: &str, attempts: u32) -> LocClient {
+        LocClient::new(LocConfig {
+            api_gap: Duration::from_millis(10),
+            tile_gap: Duration::from_millis(10),
+            attempts,
+            backoff: Duration::from_millis(400),
+            api_root: root.to_owned(),
+            iiif_root: format!("{root}/iiif/"),
+        })
+        .unwrap()
+    }
+
+    fn page(lccn: &str, date: &str) -> PageKey {
+        format!("{lccn}/{date}/ed-1/seq-1").parse().unwrap()
+    }
+
+    /// Ask for `key`'s issue only (no image).
+    async fn item(loc: &LocClient, key: &PageKey) -> Result<Pages, FetchError> {
+        loc.issue_pages(key).await
+    }
+
+    #[tokio::test]
+    async fn an_instant_503_for_one_item_while_others_answer_is_an_item_error() {
+        let (root, hits) = items_loc(vec![
+            ("sn1/1904-07-29", Answer::Ok),
+            ("sn1/1904-07-30", Answer::Bare503),
+            ("sn1/1904-07-31", Answer::Bare503),
+        ])
+        .await;
+        let loc = items_client(&root, 3);
+        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
+        let t0 = std::time::Instant::now();
+        let e = item(&loc, &page("sn1", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Item(_)), "{e:?}");
+        // Nothing held and no retries.
+        assert_eq!(loc.held_until(), None);
+        assert!(t0.elapsed() < Duration::from_millis(400));
+        assert_eq!(hits.lock().unwrap()["sn1/1904-07-30"], 1);
+        // The title's next broken item: an item answered within the
+        // minute, so no check is needed.
+        let e = item(&loc, &page("sn1", "1904-07-31")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Item(_)), "{e:?}");
+        assert_eq!(hits.lock().unwrap()["sn1/1904-07-29"], 1);
+        assert_eq!(loc.held_until(), None);
+    }
+
+    #[tokio::test]
+    async fn real_holds_still_hold() {
+        let (root, hits) = items_loc(vec![
+            ("sn1/1904-07-29", Answer::Ok),
+            ("sn2/1904-07-30", Answer::RetryAfter(1)),
+            ("sn3/1904-07-30", Answer::Too429),
+            ("sn4/1904-07-30", Answer::Slow503),
+            ("sn5/1904-07-30", Answer::BadRetryAfter),
+        ])
+        .await;
+        let loc = items_client(&root, 1);
+        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
+        // A 503 with Retry-After is a hold, though another item answered.
+        let e = item(&loc, &page("sn2", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(loc.held_until().is_some());
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
+        // A 429 is a hold.
+        let e = item(&loc, &page("sn3", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(loc.held_until().is_some());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        // A slow 503 is a hold.
+        let e = item(&loc, &page("sn4", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(loc.held_until().is_some());
+        assert_eq!(hits.lock().unwrap()["sn4/1904-07-30"], 1);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
+        // A Retry-After that can't be read is still a hold.
+        let e = item(&loc, &page("sn5", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(loc.held_until().is_some());
+    }
+
+    #[tokio::test]
+    async fn with_nothing_known_good_an_instant_503_holds() {
+        let (root, _) = items_loc(vec![("sn1/1904-07-30", Answer::Bare503)]).await;
+        let loc = items_client(&root, 1);
+        let e = item(&loc, &page("sn1", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(loc.held_until().is_some());
+    }
+
+    #[tokio::test]
+    async fn an_old_known_good_item_is_asked_again_first() {
+        let (root, hits) = items_loc(vec![
+            ("sn1/1904-07-29", Answer::Ok),
+            ("sn1/1904-07-30", Answer::Bare503),
+            ("sn9/1904-07-29", Answer::Bare503),
+            ("sn9/1904-07-30", Answer::Bare503),
+        ])
+        .await;
+        // From an earlier run: checked with one request, which answers.
+        let loc = items_client(&root, 1);
+        loc.set_known_good(loc.item_url(&page("sn1", "1904-07-29")));
+        let e = item(&loc, &page("sn1", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Item(_)), "{e:?}");
+        assert_eq!(hits.lock().unwrap()["sn1/1904-07-29"], 1);
+        assert_eq!(loc.held_until(), None);
+        // A known-good item that fails too: a hold.
+        let loc = items_client(&root, 1);
+        loc.set_known_good(loc.item_url(&page("sn9", "1904-07-29")));
+        let e = item(&loc, &page("sn9", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(loc.held_until().is_some());
+    }
+
+    #[tokio::test]
+    async fn item_errors_across_titles_become_a_hold() {
+        let (root, _) = items_loc(vec![
+            ("sn1/1904-07-29", Answer::Ok),
+            ("sn2/1904-07-30", Answer::Bare503),
+            ("sn3/1904-07-30", Answer::Bare503),
+            ("sn4/1904-07-30", Answer::Bare503),
+        ])
+        .await;
+        let loc = items_client(&root, 1);
+        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
+        for t in ["sn2", "sn3"] {
+            let e = item(&loc, &page(t, "1904-07-30")).await.unwrap_err();
+            assert!(matches!(e, FetchError::Item(_)), "{t}: {e:?}");
+        }
+        assert_eq!(loc.held_until(), None);
+        // A third title inside the window: loc.gov, not the items.
+        let e = item(&loc, &page("sn4", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(loc.held_until().is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrent_item_errors_after_a_restart_still_count_titles() {
+        let (root, _) = items_loc(vec![
+            ("sn1/1904-07-29", Answer::Ok),
+            ("sn2/1904-07-30", Answer::Bare503),
+            ("sn3/1904-07-30", Answer::Bare503),
+            ("sn4/1904-07-30", Answer::Bare503),
+            ("sn5/1904-07-30", Answer::Bare503),
+        ])
+        .await;
+        let loc = Arc::new(items_client(&root, 1));
+        // Known good from an earlier run: each caller checks it first.
+        loc.set_known_good(loc.item_url(&page("sn1", "1904-07-29")));
+        let mut tasks = Vec::new();
+        for t in ["sn2", "sn3", "sn4", "sn5"] {
+            let loc = loc.clone();
+            tasks.push(tokio::spawn(async move {
+                matches!(
+                    item(&loc, &page(t, "1904-07-30")).await,
+                    Err(FetchError::Item(_))
+                )
+            }));
+        }
+        let mut items = 0;
+        for t in tasks {
+            items += usize::from(t.await.unwrap());
+        }
+        assert_eq!(items, ITEM_ERROR_TITLES - 1);
+        assert!(loc.held_until().is_some());
     }
 
     #[test]

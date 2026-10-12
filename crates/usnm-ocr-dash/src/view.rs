@@ -111,6 +111,8 @@ pub struct FetchView {
     pub failures_last_hour: usize,
     pub failures_last_day: usize,
     pub dead_pages: usize,
+    /// Pages skipped while loc.gov can't serve their issue's item.
+    pub cooling_pages: usize,
     pub recent_failures: Vec<FailureLine>,
     pub keep_eta_secs: Option<u64>,
 }
@@ -304,6 +306,7 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
         failures_last_hour: f.failures_since(now - Duration::hours(1)),
         failures_last_day: f.failures_since(now - Duration::days(1)),
         dead_pages: f.dead.len(),
+        cooling_pages: f.cooling_pages(),
         recent_failures: f.failures.iter().rev().take(15).cloned().collect(),
         keep_eta_secs: keep_eta,
     }
@@ -397,7 +400,7 @@ pub fn build(
                     doc_id: r.doc_id.to_string(),
                     lang: r.lang.to_string(),
                     group: group_name(r.group),
-                    fetched: fetch.fetched.contains(&r.doc_id),
+                    fetched: fetch.fetched.contains_key(&r.doc_id),
                     in_flight: in_flight.contains(&*r.doc_id),
                 })
                 .collect(),

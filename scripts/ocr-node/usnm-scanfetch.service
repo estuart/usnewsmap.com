@@ -3,8 +3,10 @@
 # that fetches from LoC while it runs: `usnm-ocr-worker prefetch` with the
 # worker's client and pacing, writing into /tank/ocr/scans, a bind mount
 # of the host's tank/ocr/scans. Its settings are in /etc/usnm/scanfetch.env.
-# It doesn't restart on failure: it stops after 20 pages fail in a row,
-# which is how a block looks, and someone should look before it goes on.
+# It doesn't restart on failure: it stops after 20 pages from 3 titles
+# fail in a row, which is how a block looks, and someone should look
+# before it goes on. One title's broken items are skipped and asked again
+# after a cool-off instead (#414).
 [Unit]
 Description=usnewsmap scan prefetch
 Wants=network-online.target

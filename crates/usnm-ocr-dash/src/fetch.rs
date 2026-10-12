@@ -44,6 +44,10 @@ pub struct FetchStatus {
     pub fetched: u64,
     pub failed_permanent: u64,
     pub failed_transient: u64,
+    /// Pages skipped while their issue's item cools off (#414).
+    pub failed_item_error: u64,
+    pub issues_cooling: u64,
+    pub issues_item_permanent: u64,
     pub bytes_fetched: u64,
     pub bytes_on_disk: u64,
     pub max_total_bytes: Option<u64>,
@@ -182,7 +186,8 @@ pub struct Fetch {
     pub status_error: Option<String>,
     index: Tail,
     failures_tail: Tail,
-    pub fetched: HashSet<Box<str>>,
+    /// The pages fetched, and when each was last.
+    pub fetched: HashMap<Box<str>, DateTime<Utc>>,
     pub groups: [Tally; 6],
     pub buffer: Tally,
     /// Fetches (time, bytes) over the last day.
@@ -190,6 +195,9 @@ pub struct Fetch {
     /// The latest failures, newest last.
     pub failures: VecDeque<FailureLine>,
     pub dead: HashSet<String>,
+    /// Pages skipped because loc.gov couldn't serve their issue's item
+    /// (`loc_item_error`), and when they last were; until permanent.
+    pub cooling: HashMap<String, DateTime<Utc>>,
     failure_times: VecDeque<DateTime<Utc>>,
     /// LoC holds seen over the last day.
     holds: VecDeque<DateTime<Utc>>,
@@ -214,12 +222,13 @@ impl Fetch {
             plan_error: None,
             status: None,
             status_error: None,
-            fetched: HashSet::new(),
+            fetched: HashMap::new(),
             groups: [Tally::default(); 6],
             buffer: Tally::default(),
             events: VecDeque::new(),
             failures: VecDeque::new(),
             dead: HashSet::new(),
+            cooling: HashMap::new(),
             failure_times: VecDeque::new(),
             holds: VecDeque::new(),
             last_hold_until: None,
@@ -405,9 +414,11 @@ impl Fetch {
         let Some(group) = set else {
             return;
         };
-        if !self.fetched.insert(line.doc_id.into()) {
+        if let Some(old) = self.fetched.get_mut(line.doc_id.as_str()) {
+            *old = (*old).max(line.fetched_at);
             return;
         }
+        self.fetched.insert(line.doc_id.into(), line.fetched_at);
         let t = match group {
             Some(g) => &mut self.groups[usize::from(g)],
             None => &mut self.buffer,
@@ -422,6 +433,7 @@ impl Fetch {
                 Got::Reset => {
                     self.failures.clear();
                     self.dead.clear();
+                    self.cooling.clear();
                     self.failure_times.clear();
                     continue;
                 }
@@ -434,8 +446,16 @@ impl Fetch {
                 let Ok(f) = serde_json::from_str::<FailureLine>(&l) else {
                     continue;
                 };
-                if f.kind == "permanent" {
-                    self.dead.insert(f.doc_id.clone());
+                match f.kind.as_str() {
+                    "permanent" => {
+                        self.cooling.remove(&f.doc_id);
+                        self.dead.insert(f.doc_id.clone());
+                    }
+                    "loc_item_error" => {
+                        let t = self.cooling.entry(f.doc_id.clone()).or_insert(f.at);
+                        *t = (*t).max(f.at);
+                    }
+                    _ => {}
                 }
                 self.failure_times.push_back(f.at);
                 self.failures.push_back(f);
@@ -462,6 +482,14 @@ impl Fetch {
         self.holds.iter().rev().take_while(|t| **t >= since).count()
     }
 
+    /// Pages skipped for an item error and not fetched since.
+    pub fn cooling_pages(&self) -> usize {
+        self.cooling
+            .iter()
+            .filter(|(d, at)| self.fetched.get(d.as_str()).is_none_or(|f| f < *at))
+            .count()
+    }
+
     pub fn failures_since(&self, since: DateTime<Utc>) -> usize {
         self.failure_times.iter().filter(|t| **t >= since).count()
     }
@@ -471,13 +499,14 @@ impl Fetch {
         let Some(plan) = &self.plan else {
             return Vec::new();
         };
-        while self.cursor < plan.keep.len() && self.fetched.contains(&plan.keep[self.cursor].doc_id)
+        while self.cursor < plan.keep.len()
+            && self.fetched.contains_key(&plan.keep[self.cursor].doc_id)
         {
             self.cursor += 1;
         }
         plan.keep[self.cursor..]
             .iter()
-            .filter(|r| !self.fetched.contains(&r.doc_id))
+            .filter(|r| !self.fetched.contains_key(&r.doc_id))
             .take(n)
             .collect()
     }
@@ -550,6 +579,7 @@ mod tests {
 
         let at = (now - Duration::minutes(5)).to_rfc3339();
         let old = (now - Duration::hours(3)).to_rfc3339();
+        let later = (now - Duration::minutes(1)).to_rfc3339();
         std::fs::write(
             dir.path().join("index-full.jsonl"),
             format!(
@@ -562,7 +592,10 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.path().join("failures-full.jsonl"),
-            format!("{{\"doc_id\":\"sn3_1890-01-01_ed-1_seq-1\",\"kind\":\"permanent\",\"error\":\"HTTP 404\",\"at\":\"{at}\"}}\n"),
+            format!("{{\"doc_id\":\"sn3_1890-01-01_ed-1_seq-1\",\"kind\":\"permanent\",\"error\":\"HTTP 404\",\"at\":\"{at}\"}}\n\
+                     {{\"doc_id\":\"sn4_1890-01-01_ed-1_seq-1\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{old}\"}}\n\
+                     {{\"doc_id\":\"sn1_1890-01-01_ed-1_seq-1\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{later}\"}}\n\
+                     {{\"doc_id\":\"sn5_1890-01-01_ed-1_seq-1\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{at}\"}}\n"),
         )
         .unwrap();
         std::fs::write(
@@ -580,6 +613,9 @@ mod tests {
         assert_eq!(f.since(now - Duration::days(1)).bytes, 212);
         assert_eq!(f.current_group(), Some(0));
         assert!(f.dead.contains("sn3_1890-01-01_ed-1_seq-1"));
+        // sn4's page was skipped for an item error and fetched since; sn1's
+        // was fetched before its item error, so it counts, as does sn5's.
+        assert_eq!(f.cooling_pages(), 2);
         assert_eq!(f.holds_since(now - Duration::hours(1)), 1);
         // The same hold seen again isn't counted twice.
         f.poll(now);

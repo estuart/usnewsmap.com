@@ -460,8 +460,9 @@ pub fn render(v: &View) -> String {
     }
     let _ = write!(
         o,
-        "<h3>Failures</h3><p>{} pages LoC can't serve (permanent failures).</p>",
-        int(f.dead_pages as u64)
+        "<h3>Failures</h3><p>{} pages LoC can't serve (permanent failures). {} pages skipped for now because loc.gov answers 503 for their issue while serving others (<code>loc_item_error</code>); the fetcher asks again after a cool-off.</p>",
+        int(f.dead_pages as u64),
+        int(f.cooling_pages as u64)
     );
     if !f.recent_failures.is_empty() {
         o.push_str("<table><tr><th>When</th><th>doc_id</th><th>Kind</th><th>Error</th></tr>");

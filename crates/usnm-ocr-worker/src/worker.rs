@@ -118,7 +118,9 @@ impl From<FetchError> for Failure {
     fn from(e: FetchError) -> Self {
         match e {
             FetchError::Permanent(m) => Failure::Permanent(m),
-            FetchError::Transient(m) => Failure::Transient("fetch", m),
+            // An item loc.gov can't serve just now: the message comes
+            // back later.
+            FetchError::Transient(m) | FetchError::Item(m) => Failure::Transient("fetch", m),
         }
     }
 }

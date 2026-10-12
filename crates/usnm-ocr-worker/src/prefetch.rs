@@ -8,8 +8,18 @@
 //! image requests (shared by every page in flight in this process),
 //! `Retry-After` honoured on 429 and 503 and a 403 held the same way, at
 //! most an hour. Nothing works around a block: after
-//! [`Options::max_failures_in_a_row`] pages fail in a row the run stops.
+//! [`Options::max_failures_in_a_row`] pages from at least
+//! [`Options::stop_min_titles`] titles fail in a row the run stops.
 //! A lock file in the output directory keeps it to one fetching process.
+//!
+//! **Item errors** (#414): when loc.gov answers 503 for one issue's item
+//! while serving others ([`FetchError::Item`], the client's notes say when),
+//! the issue's pages are skipped for [`Options::item_cooloff`] and asked
+//! again after it, in the same run (it waits for them at the end) or the
+//! next. After [`Options::item_max_cooloffs`] cool-offs the issue is
+//! permanent. Each skipped page is a `loc_item_error` failure line; the
+//! issues are kept in `<out>/item-errors.json` ([`ItemError`]) so a restart
+//! keeps their cool-offs.
 //!
 //! **Two sets** (the maintainer's split, #368): the *keep* set, every
 //! non-English page and the worst English batches' pages, is kept for good;
@@ -41,7 +51,7 @@
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,12 +62,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{watch, Semaphore};
 use tokio::time::Instant;
+use usnm_core::ids::PageKey;
 use usnm_ocr_contract::prefetch::{self, ManifestRow};
 // The sets and the fetch order are the contract's, so the seeder (12 Step
 // 11) can queue pages in the order they are fetched.
 pub use usnm_ocr_contract::prefetch::{priority, set_of, Set, WORST_ENGLISH};
 
-use crate::loc::{image_url, FetchError, ImageSize, LocClient, USER_AGENT};
+use crate::loc::{image_url, issue_id, FetchError, ImageSize, LocClient, USER_AGENT};
 
 /// How often a fetcher waiting at the buffer cap counts the buffer again.
 pub const BUFFER_RECHECK: Duration = Duration::from_secs(60);
@@ -85,8 +96,15 @@ pub struct Options {
     pub concurrency: usize,
     /// A status write and log line every this many pages.
     pub progress_every: u64,
-    /// Stop after this many pages fail in a row.
+    /// Stop after this many pages fail in a row...
     pub max_failures_in_a_row: u32,
+    /// ...from at least this many titles, so one title's broken items
+    /// can't stop the run (1: any pages).
+    pub stop_min_titles: usize,
+    /// How long an issue whose item was an item error is skipped.
+    pub item_cooloff: Duration,
+    /// Cool-offs before such an issue is taken as permanent.
+    pub item_max_cooloffs: u32,
     /// The order pages are fetched in.
     pub order: Order,
     /// Stop starting pages once the scans of this run's pages that are
@@ -138,6 +156,9 @@ impl Default for Options {
             concurrency: 4,
             progress_every: 100,
             max_failures_in_a_row: 20,
+            stop_min_titles: 3,
+            item_cooloff: Duration::from_secs(24 * 3600),
+            item_max_cooloffs: 3,
             order: Order::Priority,
             max_total_bytes: None,
             lock_file: None,
@@ -258,8 +279,10 @@ pub struct Sidecar {
 /// `status-<tag>.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Status {
-    /// `running`, `waiting` (the buffer is at its cap), `done`, `budget`
-    /// (`--max-total-bytes` reached), `stopped` (asked to) or `failed`.
+    /// `running`, `waiting` (the buffer is at its cap), `cooling` (every
+    /// page left is in an issue cooling off after an item error), `done`,
+    /// `budget` (`--max-total-bytes` reached), `stopped` (asked to) or
+    /// `failed`.
     pub state: String,
     pub version: String,
     pub pid: u32,
@@ -277,6 +300,16 @@ pub struct Status {
     pub fetched: u64,
     pub failed_permanent: u64,
     pub failed_transient: u64,
+    /// Pages skipped because their issue's item was an item error (#414),
+    /// each time one is skipped.
+    #[serde(default)]
+    pub failed_item_error: u64,
+    /// Issues cooling off after an item error, and issues taken as
+    /// permanent after the last cool-off.
+    #[serde(default)]
+    pub issues_cooling: u64,
+    #[serde(default)]
+    pub issues_item_permanent: u64,
     pub bytes_fetched: u64,
     /// This run's pages on disk: already there plus fetched.
     pub bytes_on_disk: u64,
@@ -443,7 +476,9 @@ impl Lines {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Failure {
     pub doc_id: String,
-    /// `permanent` (LoC said no, or lists no image) or `transient`.
+    /// `permanent` (LoC said no, or lists no image, or an item error
+    /// outlasted its cool-offs), `transient`, or `loc_item_error` (skipped
+    /// while its issue cools off after an item error, #414).
     pub kind: String,
     pub error: String,
     pub at: String,
@@ -466,7 +501,148 @@ struct Counts {
     /// This run's buffer pages found on disk or fetched (for the status and
     /// `--max-total-bytes`; consumed scans aren't taken off).
     run_buffer_bytes: AtomicU64,
-    in_a_row: AtomicU32,
+    failed_item_error: AtomicU64,
+}
+
+/// The failures since the last page that was done, and their titles.
+#[derive(Default)]
+struct Streak {
+    pages: u32,
+    titles: std::collections::BTreeSet<String>,
+}
+
+/// An issue whose item was an item error, in `item-errors.json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemError {
+    /// Item errors seen; past `item_max_cooloffs` the issue is permanent.
+    pub errors: u32,
+    pub first_at: DateTime<Utc>,
+    pub last_at: DateTime<Utc>,
+    /// Asked again after this; none once permanent.
+    pub retry_after: Option<DateTime<Utc>>,
+    pub error: String,
+}
+
+/// What [`Cooling::check`] says of an issue.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Check {
+    Go,
+    Cooling(DateTime<Utc>),
+    Permanent,
+}
+
+/// The issues cooling off after an item error, kept in a file.
+struct Cooling {
+    path: PathBuf,
+    cooloff: chrono::Duration,
+    max: u32,
+    issues: Mutex<BTreeMap<String, ItemError>>,
+}
+
+impl Cooling {
+    fn load(path: PathBuf, cooloff: Duration, max: u32) -> anyhow::Result<Self> {
+        let issues = match std::fs::read(&path) {
+            Ok(b) => {
+                serde_json::from_slice(&b).with_context(|| format!("reading {}", path.display()))?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        Ok(Self {
+            path,
+            cooloff: chrono::Duration::from_std(cooloff).context("--item-cooloff-secs")?,
+            max,
+            issues: Mutex::new(issues),
+        })
+    }
+
+    fn save(&self, issues: &BTreeMap<String, ItemError>) -> anyhow::Result<()> {
+        let mut tmp = self.path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        std::fs::write(&tmp, serde_json::to_vec_pretty(issues)?)?;
+        std::fs::rename(&tmp, &self.path)
+            .with_context(|| format!("writing {}", self.path.display()))
+    }
+
+    fn check_in(issues: &BTreeMap<String, ItemError>, issue: &str) -> Check {
+        match issues.get(issue) {
+            None => Check::Go,
+            Some(e) => match e.retry_after {
+                None => Check::Permanent,
+                Some(t) if t > Utc::now() => Check::Cooling(t),
+                Some(_) => Check::Go,
+            },
+        }
+    }
+
+    fn check(&self, issue: &str) -> Check {
+        Self::check_in(&self.issues.lock().expect("cooling lock"), issue)
+    }
+
+    /// An item error for `issue`: a cool-off, or permanent after the last.
+    /// Pages of one issue in flight together share one cool-off.
+    fn mark(&self, issue: &str, error: &str) -> anyhow::Result<Check> {
+        let mut issues = self.issues.lock().expect("cooling lock");
+        let now = Utc::now();
+        match Self::check_in(&issues, issue) {
+            Check::Go => {}
+            c => return Ok(c),
+        }
+        let e = issues.entry(issue.to_owned()).or_insert(ItemError {
+            errors: 0,
+            first_at: now,
+            last_at: now,
+            retry_after: None,
+            error: String::new(),
+        });
+        e.errors += 1;
+        e.last_at = now;
+        e.error = error.chars().take(300).collect();
+        e.retry_after = (e.errors <= self.max).then(|| now + self.cooloff);
+        let c = e.retry_after.map_or(Check::Permanent, Check::Cooling);
+        tracing::warn!(
+            issue,
+            errors = e.errors,
+            retry_after = ?e.retry_after,
+            "skipping an issue whose item loc.gov can't serve"
+        );
+        self.save(&issues)?;
+        Ok(c)
+    }
+
+    /// The issue's item answered: forget its item errors.
+    fn clear(&self, issue: &str) -> anyhow::Result<()> {
+        let mut issues = self.issues.lock().expect("cooling lock");
+        if issues.remove(issue).is_some() {
+            self.save(&issues)?;
+        }
+        Ok(())
+    }
+
+    /// (cooling, permanent) issues.
+    fn counts(&self) -> (u64, u64) {
+        let issues = self.issues.lock().expect("cooling lock");
+        let now = Utc::now();
+        issues
+            .values()
+            .fold((0, 0), |(c, p), e| match e.retry_after {
+                None => (c, p + 1),
+                Some(t) if t > now => (c + 1, p),
+                Some(_) => (c, p),
+            })
+    }
+}
+
+/// How a page ended.
+#[derive(Debug, PartialEq)]
+enum Outcome {
+    /// Fetched, there already, or failed.
+    Done,
+    /// Left for a later run (stopped while waiting for the buffer).
+    Left,
+    /// Its issue is cooling off: asked again after this.
+    Deferred(DateTime<Utc>),
 }
 
 struct Run {
@@ -487,6 +663,10 @@ struct Run {
     started: Instant,
     /// Set when the run must stop taking pages: (state, error).
     stop: Mutex<Option<(String, Option<String>)>>,
+    streak: Mutex<Streak>,
+    cooling: Cooling,
+    /// Pages whose issue is cooling off, and when it can be asked again.
+    deferred: Mutex<Vec<(DateTime<Utc>, ManifestRow)>>,
 }
 
 impl Run {
@@ -500,6 +680,8 @@ impl Run {
         s.fetched = c.fetched.load(Ordering::SeqCst);
         s.failed_permanent = c.failed_permanent.load(Ordering::SeqCst);
         s.failed_transient = c.failed_transient.load(Ordering::SeqCst);
+        s.failed_item_error = c.failed_item_error.load(Ordering::SeqCst);
+        (s.issues_cooling, s.issues_item_permanent) = self.cooling.counts();
         s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
         s.buffer_bytes = c.buffer_bytes.load(Ordering::SeqCst);
         s.bytes_on_disk = self.on_disk();
@@ -560,6 +742,8 @@ impl Run {
             fetched = s.fetched,
             failed_permanent = s.failed_permanent,
             failed_transient = s.failed_transient,
+            failed_item_error = s.failed_item_error,
+            issues_cooling = s.issues_cooling,
             bytes_fetched = s.bytes_fetched,
             bytes_on_disk = s.bytes_on_disk,
             buffer_bytes = s.buffer_bytes,
@@ -579,6 +763,88 @@ impl Run {
 
     fn stopping(&self) -> bool {
         self.stop.lock().expect("stop lock").is_some()
+    }
+
+    /// A page is done: the run of failures is over.
+    fn streak_ok(&self) {
+        *self.streak.lock().expect("streak lock") = Streak::default();
+    }
+
+    /// A page failed: stop once the run of failures is long enough and
+    /// spans enough titles.
+    fn streak_fail(&self, lccn: &str, msg: &str) {
+        let mut s = self.streak.lock().expect("streak lock");
+        s.pages += 1;
+        s.titles.insert(lccn.to_owned());
+        if s.pages >= self.opts.max_failures_in_a_row
+            && s.titles.len() >= self.opts.stop_min_titles.max(1)
+        {
+            self.stop_with(
+                "failed",
+                Some(format!(
+                    "{} pages from {} titles failed in a row (the last: {msg}); stopping rather than pressing on",
+                    s.pages,
+                    s.titles.len()
+                )),
+            );
+        }
+    }
+
+    /// A page skipped for its issue's item error: a `loc_item_error` line
+    /// and a later try, or a `permanent` line after the last cool-off.
+    fn skip(&self, row: ManifestRow, t: &str, check: Check, why: &str) -> anyhow::Result<Outcome> {
+        let c = &self.counts;
+        let (kind, error, outcome) = match check {
+            Check::Cooling(until) => {
+                c.failed_item_error.fetch_add(1, Ordering::SeqCst);
+                (
+                    "loc_item_error",
+                    format!(
+                        "{why}; asked again after {}",
+                        until.to_rfc3339_opts(SecondsFormat::Secs, true)
+                    ),
+                    Outcome::Deferred(until),
+                )
+            }
+            Check::Permanent | Check::Go => {
+                c.failed_permanent.fetch_add(1, Ordering::SeqCst);
+                (
+                    "permanent",
+                    format!(
+                        "{why}; loc.gov still answered 503 for the issue's item after {} cool-offs",
+                        self.opts.item_max_cooloffs
+                    ),
+                    Outcome::Done,
+                )
+            }
+        };
+        self.failures[t].push(&Failure {
+            doc_id: row.doc_id.clone(),
+            kind: kind.into(),
+            error: error.chars().take(300).collect(),
+            at: now_rfc3339(),
+        })?;
+        if let Outcome::Deferred(until) = outcome {
+            self.deferred
+                .lock()
+                .expect("deferred lock")
+                .push((until, row));
+        }
+        Ok(outcome)
+    }
+
+    /// A deferred page whose issue can be asked again, if any.
+    fn take_due(&self) -> Option<ManifestRow> {
+        let now = Utc::now();
+        let mut d = self.deferred.lock().expect("deferred lock");
+        let i = d.iter().position(|(due, _)| *due <= now)?;
+        Some(d.remove(i).1)
+    }
+
+    /// When the first deferred page can be asked again.
+    fn next_due(&self) -> Option<DateTime<Utc>> {
+        let d = self.deferred.lock().expect("deferred lock");
+        d.iter().map(|(due, _)| *due).min()
     }
 
     /// Count the buffer again. If it can't be counted, it is taken as full,
@@ -621,9 +887,8 @@ impl Run {
         true
     }
 
-    /// One page. False if it was left for a later run (stopped while
-    /// waiting for the buffer).
-    async fn page(&self, row: ManifestRow) -> anyhow::Result<bool> {
+    /// One page.
+    async fn page(&self, row: ManifestRow) -> anyhow::Result<Outcome> {
         let set = set_of(&row);
         let size = match set {
             Set::Keep => self.opts.size,
@@ -638,8 +903,8 @@ impl Run {
                 Set::Buffer => c.run_buffer_bytes.fetch_add(n, Ordering::SeqCst),
             };
             // A page that is done breaks a run of failures too.
-            c.in_a_row.store(0, Ordering::SeqCst);
-            return Ok(true);
+            self.streak_ok();
+            return Ok(Outcome::Done);
         }
         // A buffer page a worker has read and the scan server deleted.
         if set == Set::Buffer
@@ -648,15 +913,29 @@ impl Run {
                 .unwrap_or(false)
         {
             c.already_there.fetch_add(1, Ordering::SeqCst);
-            c.in_a_row.store(0, Ordering::SeqCst);
-            return Ok(true);
-        }
-        // Only a page that needs fetching waits for room in the buffer.
-        if set == Set::Buffer && !self.wait_for_buffer().await {
-            return Ok(false);
+            self.streak_ok();
+            return Ok(Outcome::Done);
         }
         let t = tag(size);
         let key = row.key()?;
+        let issue = issue_id(&key);
+        // An issue cooling off is skipped without asking loc.gov; it says
+        // nothing new about loc.gov, so the run of failures is left as is.
+        match self.cooling.check(&issue) {
+            Check::Go => {}
+            check => {
+                return self.skip(
+                    row,
+                    &t,
+                    check,
+                    "its issue's item answered 503 while loc.gov served others",
+                )
+            }
+        }
+        // Only a page that needs fetching waits for room in the buffer.
+        if set == Set::Buffer && !self.wait_for_buffer().await {
+            return Ok(Outcome::Left);
+        }
         match self.loc.scan_at(&key, size).await {
             Ok(scan) => {
                 let side = Sidecar {
@@ -684,12 +963,22 @@ impl Run {
                         c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst)
                     }
                 };
-                c.in_a_row.store(0, Ordering::SeqCst);
+                self.streak_ok();
+                self.cooling.clear(&issue)?;
+            }
+            Err(FetchError::Item(msg)) => {
+                tracing::warn!(doc_id = row.doc_id, error = msg, "loc.gov item error");
+                let check = self.cooling.mark(&issue, &msg)?;
+                let lccn = row.lccn.clone();
+                let outcome = self.skip(row, &t, check, &msg)?;
+                self.streak_fail(&lccn, &msg);
+                return Ok(outcome);
             }
             Err(e) => {
                 let (kind, msg) = match &e {
                     FetchError::Permanent(m) => ("permanent", m.clone()),
                     FetchError::Transient(m) => ("transient", m.clone()),
+                    FetchError::Item(_) => unreachable!("handled above"),
                 };
                 tracing::warn!(doc_id = row.doc_id, kind, error = msg, "prefetch failed");
                 self.failures[&t].push(&Failure {
@@ -703,18 +992,10 @@ impl Run {
                 } else {
                     c.failed_transient.fetch_add(1, Ordering::SeqCst);
                 }
-                let n = c.in_a_row.fetch_add(1, Ordering::SeqCst) + 1;
-                if n >= self.opts.max_failures_in_a_row {
-                    self.stop_with(
-                        "failed",
-                        Some(format!(
-                            "{n} pages failed in a row (the last: {msg}); stopping rather than pressing on"
-                        )),
-                    );
-                }
+                self.streak_fail(&row.lccn, &msg);
             }
         }
-        Ok(true)
+        Ok(Outcome::Done)
     }
 }
 
@@ -824,6 +1105,29 @@ pub async fn run(
             );
         }
     }
+    let cooling = Cooling::load(
+        opts.out.join("item-errors.json"),
+        opts.item_cooloff,
+        opts.item_max_cooloffs,
+    )?;
+    // The last page fetched, in the index of any set this run fetches,
+    // names an item that answered, to check an item error against before
+    // any item answers in this run.
+    let mut tags = Vec::new();
+    if opts.sets.has(Set::Keep) {
+        tags.push(tag(opts.size));
+    }
+    if opts.sets.has(Set::Buffer) {
+        tags.push(tag(opts.buffer_size));
+    }
+    tags.dedup();
+    if let Some((_, key)) = tags
+        .iter()
+        .filter_map(|t| last_fetched(&opts.out.join(format!("index-{t}.jsonl"))))
+        .max_by_key(|(at, _)| *at)
+    {
+        loc.set_known_good(loc.item_url(&key));
+    }
     let run = Arc::new(Run {
         loc,
         counts: Counts::default(),
@@ -851,6 +1155,9 @@ pub async fn run(
         stop_rx: stop,
         started: Instant::now(),
         stop: Mutex::new(None),
+        streak: Mutex::new(Streak::default()),
+        cooling,
+        deferred: Mutex::new(Vec::new()),
         opts,
     });
     tracing::info!(
@@ -880,10 +1187,41 @@ pub async fn run(
     let slots = Arc::new(Semaphore::new(run.opts.concurrency.max(1)));
     let mut tasks = tokio::task::JoinSet::new();
     let every = run.opts.progress_every.max(1);
-    for row in rows {
+    let mut rows = rows.into_iter();
+    loop {
         if run.stopping() {
             break;
         }
+        // Deferred pages whose cool-off is over go first, then the walk.
+        // Once the walk is done, wait for the pages in flight, then for
+        // the deferred ones' cool-offs.
+        let row = match run.take_due().or_else(|| rows.next()) {
+            Some(r) => r,
+            None if !tasks.is_empty() => {
+                if let Some(r) = tasks.join_next().await {
+                    r?;
+                }
+                continue;
+            }
+            None => {
+                let Some(due) = run.next_due() else { break };
+                run.set_state("cooling");
+                run.write_status();
+                let wait = (due - Utc::now())
+                    .to_std()
+                    .unwrap_or_default()
+                    .min(BUFFER_RECHECK);
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = stop_main.wait_for(|s| *s) => {
+                        run.stop_with("stopped", None);
+                        break;
+                    }
+                }
+                run.set_state("running");
+                continue;
+            }
+        };
         let permit = tokio::select! {
             p = Arc::clone(&slots).acquire_owned() => p.expect("semaphore open"),
             _ = stop_main.wait_for(|s| *s) => {
@@ -904,8 +1242,8 @@ pub async fn run(
         tasks.spawn(async move {
             let doc_id = row.doc_id.clone();
             match run.page(row).await {
-                Ok(true) => {}
-                Ok(false) => return,
+                Ok(Outcome::Done) => {}
+                Ok(Outcome::Left | Outcome::Deferred(_)) => return,
                 Err(e) => run.stop_with("failed", Some(format!("{doc_id}: {e:#}"))),
             }
             let n = run.counts.finished.fetch_add(1, Ordering::SeqCst) + 1;
@@ -940,6 +1278,23 @@ pub async fn run(
         bail!(error.unwrap_or_else(|| "prefetch failed".into()));
     }
     Ok(status)
+}
+
+/// When the last line of an index file was fetched, and its page, read
+/// from the file's end.
+fn last_fetched(path: &Path) -> Option<(DateTime<Utc>, PageKey)> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(64 * 1024)))
+        .ok()?;
+    let mut tail = Vec::new();
+    f.read_to_end(&mut tail).ok()?;
+    String::from_utf8_lossy(&tail)
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Sidecar>(l).ok())
+        .find_map(|s| Some((s.fetched_at, PageKey::from_doc_id(&s.doc_id).ok()?)))
 }
 
 /// What a sample says about the whole manifest.
@@ -1550,6 +1905,7 @@ mod tests {
             out: out.clone(),
             concurrency: 1,
             max_failures_in_a_row: 2,
+            stop_min_titles: 1,
             ..Options::default()
         };
         let (_tx, rx) = watch::channel(false);
@@ -1565,5 +1921,260 @@ mod tests {
             serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap()).unwrap();
         assert_eq!(status.state, "failed");
         assert_eq!(status.failed_transient, 2);
+    }
+
+    fn dated(lccn: &str, date: &str, seq: u16) -> ManifestRow {
+        let key = PageKey::new(lccn, date.parse().unwrap(), 1, seq).unwrap();
+        ManifestRow::new(&key, "batch_x", 1, Some("deu".into()), "detected", 0.5)
+    }
+
+    fn write_manifest(dir: &Path, mut rows: Vec<ManifestRow>) -> PathBuf {
+        prefetch::sort(&mut rows);
+        let p = dir.join("manifest.parquet");
+        std::fs::write(&p, prefetch::encode(&rows).unwrap()).unwrap();
+        p
+    }
+
+    /// A stand-in loc.gov whose items answer 200 (one page each) unless
+    /// their `<lccn>/<date>` is in `bare_503` (503 at once, no
+    /// Retry-After) or `err_500`; counts item requests by `<lccn>/<date>`.
+    async fn titles_loc(
+        bare_503: &'static [&'static str],
+        err_500: &'static [&'static str],
+        hits: Arc<Mutex<BTreeMap<String, u32>>>,
+    ) -> String {
+        use axum::http::StatusCode as S;
+        use axum::response::IntoResponse;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route(
+                "/item/{lccn}/{date}/{ed}/",
+                axum::routing::get(
+                    move |axum::extract::Path((lccn, date, _)): axum::extract::Path<(
+                        String,
+                        String,
+                        String,
+                    )>| {
+                        let hits = hits.clone();
+                        async move {
+                            let k = format!("{lccn}/{date}");
+                            *hits.lock().unwrap().entry(k.clone()).or_default() += 1;
+                            if bare_503.contains(&k.as_str()) {
+                                return S::SERVICE_UNAVAILABLE.into_response();
+                            }
+                            if err_500.contains(&k.as_str()) {
+                                return S::INTERNAL_SERVER_ERROR.into_response();
+                            }
+                            let jp2 = |n: &str| format!("https://tile.loc.gov/storage-services/service/ndnp/x/batch_x/data/{lccn}/1/{date}/{n}.jp2");
+                            axum::Json(serde_json::json!({"resources": [{"files": [
+                                [{"mimetype": "image/jp2", "url": jp2("0001")}],
+                                [{"mimetype": "image/jp2", "url": jp2("0002")}],
+                            ]}]}))
+                            .into_response()
+                        }
+                    },
+                ),
+            )
+            .route(
+                "/iiif/{service}/full/{size}/0/default.jpg",
+                axum::routing::get(|| async { b"jpeg".to_vec() }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        root
+    }
+
+    fn failures_of(out: &Path) -> Vec<Failure> {
+        std::fs::read_to_string(out.join("failures-full.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn one_titles_broken_items_are_skipped_cooled_off_and_dont_stop_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        // sn1 answers, sn2's three issues are broken, sn3 answers.
+        let mut rows = vec![dated("sn1", "1904-07-29", 1), dated("sn1", "1904-07-29", 2)];
+        for d in ["1904-07-30", "1904-07-31", "1904-08-01"] {
+            rows.push(dated("sn2", d, 1));
+            rows.push(dated("sn2", d, 2));
+        }
+        rows.push(dated("sn3", "1904-08-02", 1));
+        let hits: Arc<Mutex<BTreeMap<String, u32>>> = Arc::default();
+        let root = titles_loc(
+            &["sn2/1904-07-30", "sn2/1904-07-31", "sn2/1904-08-01"],
+            &[],
+            hits.clone(),
+        )
+        .await;
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows),
+            out: out.clone(),
+            concurrency: 1,
+            // Without the titles rule, sn2 alone would stop the run.
+            max_failures_in_a_row: 2,
+            item_cooloff: Duration::from_millis(300),
+            item_max_cooloffs: 1,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let t0 = std::time::Instant::now();
+        let s = run(
+            opts.clone(),
+            client(&root, Duration::from_millis(1)),
+            rx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.state, "done");
+        assert_eq!(s.fetched, 3);
+        // Each sn2 page skipped once while cooling (6), then permanent (6).
+        assert_eq!(
+            (s.failed_item_error, s.failed_permanent, s.failed_transient),
+            (6, 6, 0)
+        );
+        assert_eq!((s.issues_cooling, s.issues_item_permanent), (0, 3));
+        // One item request per issue per try, nothing held: the client's
+        // backoff (10 ms) and the cool-off are all the waiting there was.
+        {
+            let h = hits.lock().unwrap();
+            for d in ["1904-07-30", "1904-07-31", "1904-08-01"] {
+                assert_eq!(h[&format!("sn2/{d}")], 2, "{d}");
+            }
+            assert_eq!(h["sn3/1904-08-02"], 1);
+        }
+        assert!(t0.elapsed() < Duration::from_secs(5));
+        let f = failures_of(&out);
+        let kinds = |k: &str| f.iter().filter(|x| x.kind == k).count();
+        assert_eq!((kinds("loc_item_error"), kinds("permanent")), (6, 6));
+        let errs: BTreeMap<String, ItemError> =
+            serde_json::from_slice(&std::fs::read(out.join("item-errors.json")).unwrap()).unwrap();
+        assert_eq!(errs.len(), 3);
+        assert!(errs
+            .values()
+            .all(|e| e.errors == 2 && e.retry_after.is_none()));
+
+        // Again: the permanent issues aren't asked for.
+        let before = hits.lock().unwrap().clone();
+        let s = run(opts, client(&root, Duration::from_millis(1)), rx)
+            .await
+            .unwrap();
+        assert_eq!((s.already_there, s.failed_permanent, s.fetched), (3, 6, 0));
+        assert_eq!(*hits.lock().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn waits_for_cooling_issues_and_keeps_them_across_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = vec![
+            dated("sn1", "1904-07-29", 1),
+            dated("sn2", "1904-07-30", 1),
+            dated("sn2", "1904-07-30", 2),
+        ];
+        let hits: Arc<Mutex<BTreeMap<String, u32>>> = Arc::default();
+        let root = titles_loc(&["sn2/1904-07-30"], &[], hits.clone()).await;
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows),
+            out: out.clone(),
+            concurrency: 1,
+            ..Options::default()
+        };
+        let (tx, rx) = watch::channel(false);
+        let r = tokio::spawn(run(
+            opts.clone(),
+            client(&root, Duration::from_millis(1)),
+            rx,
+        ));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let status: Status =
+            serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap()).unwrap();
+        assert_eq!(status.state, "cooling");
+        assert_eq!(status.issues_cooling, 1);
+        tx.send_replace(true);
+        let s = r.await.unwrap().unwrap();
+        assert_eq!((s.state.as_str(), s.fetched), ("stopped", 1));
+
+        // A new process: the issue is still cooling, so it isn't asked for,
+        // and the known-good item comes from the index.
+        let asked = hits.lock().unwrap()["sn2/1904-07-30"];
+        let (tx, rx) = watch::channel(false);
+        let r = tokio::spawn(run(opts, client(&root, Duration::from_millis(1)), rx));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        tx.send_replace(true);
+        let s = r.await.unwrap().unwrap();
+        assert_eq!((s.already_there, s.failed_item_error), (1, 2));
+        assert_eq!(hits.lock().unwrap()["sn2/1904-07-30"], asked);
+    }
+
+    #[tokio::test]
+    async fn the_stop_guard_needs_failures_from_several_titles() {
+        let dir = tempfile::tempdir().unwrap();
+        // A fails twice, B answers (the run of failures starts again),
+        // then C, D and E fail: 3 pages from 3 titles. F is never reached.
+        let rows = vec![
+            dated("sna", "1890-01-01", 1),
+            dated("sna", "1890-01-02", 1),
+            dated("snb", "1890-01-01", 1),
+            dated("snc", "1890-01-01", 1),
+            dated("snd", "1890-01-01", 1),
+            dated("sne", "1890-01-01", 1),
+            dated("snf", "1890-01-01", 1),
+        ];
+        let hits: Arc<Mutex<BTreeMap<String, u32>>> = Arc::default();
+        let root = titles_loc(
+            &[],
+            &[
+                "sna/1890-01-01",
+                "sna/1890-01-02",
+                "snc/1890-01-01",
+                "snd/1890-01-01",
+                "sne/1890-01-01",
+                "snf/1890-01-01",
+            ],
+            hits.clone(),
+        )
+        .await;
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows),
+            out: out.clone(),
+            concurrency: 1,
+            max_failures_in_a_row: 3,
+            stop_min_titles: 3,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let err = run(opts, client(&root, Duration::from_millis(1)), rx)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("3 pages from 3 titles failed in a row"),
+            "{err}"
+        );
+        let status: Status =
+            serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap()).unwrap();
+        assert_eq!((status.fetched, status.failed_transient), (1, 5));
+        assert!(!hits.lock().unwrap().contains_key("snf/1890-01-01"));
+
+        // Many pages of one title failing don't stop it.
+        let dir = tempfile::tempdir().unwrap();
+        let rows: Vec<ManifestRow> = (1..=6).map(|s| dated("sna", "1890-01-01", s)).collect();
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows),
+            out: dir.path().join("scans"),
+            concurrency: 1,
+            max_failures_in_a_row: 3,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let s = run(opts, client(&root, Duration::from_millis(1)), rx)
+            .await
+            .unwrap();
+        assert_eq!((s.state.as_str(), s.failed_transient), ("done", 6));
     }
 }

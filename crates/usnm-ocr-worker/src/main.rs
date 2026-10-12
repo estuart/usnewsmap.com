@@ -229,8 +229,10 @@ enum Command {
     },
     /// Fetch the scans a prefetch manifest lists onto local disk (#368),
     /// with the worker's LoC client and pacing, until done, stopped,
-    /// `--max-total-bytes` is reached or 20 pages fail in a row. Resumable:
-    /// scans already there and matching their sidecar are skipped.
+    /// `--max-total-bytes` is reached or 20 pages from 3 titles fail in a
+    /// row. Resumable: scans already there and matching their sidecar are
+    /// skipped. An issue whose item loc.gov can't serve while it serves
+    /// others is skipped for a cool-off and asked again after it (#414).
     Prefetch {
         /// The manifest (`manifest.parquet` from `usnm-ingest
         /// ocr-prefetch-manifest`).
@@ -285,6 +287,22 @@ enum Command {
         /// A status write and progress line every N pages.
         #[arg(long, default_value_t = 100)]
         progress_every: u64,
+        /// Stop after this many pages fail in a row...
+        #[arg(long, env = "USNM_PREFETCH_MAX_FAILURES", default_value_t = 20)]
+        max_failures_in_a_row: u32,
+        /// ...from at least this many titles (1: any pages).
+        #[arg(long, env = "USNM_PREFETCH_STOP_MIN_TITLES", default_value_t = 3)]
+        stop_min_titles: usize,
+        /// How long an issue whose item loc.gov can't serve is skipped.
+        #[arg(
+            long,
+            env = "USNM_PREFETCH_ITEM_COOLOFF_SECS",
+            default_value_t = 86_400
+        )]
+        item_cooloff_secs: u64,
+        /// Cool-offs before such an issue is taken as permanent.
+        #[arg(long, env = "USNM_PREFETCH_ITEM_MAX_COOLOFFS", default_value_t = 3)]
+        item_max_cooloffs: u32,
         /// Gap between loc.gov API requests.
         #[arg(long, env = "USNM_OCR_API_GAP_MS", default_value_t = 3500)]
         api_gap_ms: u64,
@@ -617,6 +635,10 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             concurrency,
             lock_file,
             progress_every,
+            max_failures_in_a_row,
+            stop_min_titles,
+            item_cooloff_secs,
+            item_max_cooloffs,
             api_gap_ms,
             tile_gap_ms,
         } => {
@@ -646,7 +668,10 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 },
                 max_total_bytes,
                 lock_file,
-                ..prefetch::Options::default()
+                max_failures_in_a_row: max_failures_in_a_row.max(1),
+                stop_min_titles,
+                item_cooloff: Duration::from_secs(item_cooloff_secs),
+                item_max_cooloffs,
             };
             let status = prefetch::run(opts, loc, stop_signal()).await?;
             println!("{}", serde_json::to_string(&status)?);
