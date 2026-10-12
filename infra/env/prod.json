@@ -19,5 +19,6 @@
   "USNM_OCR_SEED_SOURCE": "fetched",
   "USNM_SEARCHER_APP": true,
   "USNM_SEARCH_BACKEND": "quickwit",
+  "USNM_SERIALSET_JOB": true,
   "USNM_USE_ACR": true
 }
