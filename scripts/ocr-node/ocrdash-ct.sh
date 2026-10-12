@@ -11,6 +11,7 @@
 #   ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7> [--ctid 212]
 #   ocrdash-ct.sh --configure [--allow lan|<range>]
 #     [--worker <name>=http://<host>:<port>]... [--host-push <host>=<its name>]...
+#     [--sset-push <name>=<name of the node running the Serial Set fetch>]...
 #     [--workbook-url URL] [--port 80]
 #     [--https-name ocr.tjg.fyi [--certs /var/lib/usnm-certs]] [--ctid 212]
 #
@@ -39,7 +40,7 @@
 # and checks the address. No address goes into the repository.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,39s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,40s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 CTID=212 NAME=usnm-ocrdash STORAGE=ssd BRIDGE=vmbr0 CORES=1 MEMORY=768 SWAP=256
@@ -47,7 +48,7 @@ TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst DATA=/tank/ocr
 HOSTSTATS=/var/lib/usnm-hoststats
 CREATE=false INSTALL=false CONFIGURE=false RELEASE=""
 ALLOW=lan PORT=80 WORKBOOK_URL="" HTTPS_NAME="" CERTS=/var/lib/usnm-certs
-WORKERS=() PUSHERS=()
+WORKERS=() PUSHERS=() SSET_PUSHERS=()
 REPO=tgoodyear/usnewsmap.com
 DASH_UID=2001
 while [ $# -gt 0 ]; do
@@ -70,6 +71,7 @@ while [ $# -gt 0 ]; do
     --port) PORT=${2:-}; shift 2 ;;
     --worker) WORKERS+=("${2:-}"); shift 2 ;;
     --host-push) PUSHERS+=("${2:-}"); shift 2 ;;
+    --sset-push) SSET_PUSHERS+=("${2:-}"); shift 2 ;;
     --workbook-url) WORKBOOK_URL=${2:-}; shift 2 ;;
     --https-name) HTTPS_NAME=${2:-}; shift 2 ;;
     --certs) CERTS=${2:-}; shift 2 ;;
@@ -148,6 +150,9 @@ if $CONFIGURE; then
   for p in "${PUSHERS[@]}"; do
     [[ $p =~ ^[A-Za-z0-9-]+=[A-Za-z0-9.-]+$ ]] || die "--host-push: <host>=<its name>, not $p"
   done
+  for p in "${SSET_PUSHERS[@]}"; do
+    [[ $p =~ ^[A-Za-z0-9-]+=[A-Za-z0-9.-]+$ ]] || die "--sset-push: <name>=<its host name>, not $p"
+  done
   [ -z "$WORKBOOK_URL" ] || [[ $WORKBOOK_URL =~ ^https://portal\.azure\.com/[^[:space:]\"\'\<\>]+$ ]] ||
     die "--workbook-url: an https://portal.azure.com/ link"
   if [ -n "$HTTPS_NAME" ]; then
@@ -197,6 +202,8 @@ RUST_LOG=info"
 USNM_OCRDASH_WORKER=$(join "${WORKERS[@]}")"
   [ ${#PUSHERS[@]} -eq 0 ] || env+="
 USNM_OCRDASH_HOST_PUSH=$(join "${PUSHERS[@]}")"
+  [ ${#SSET_PUSHERS[@]} -eq 0 ] || env+="
+USNM_OCRDASH_SSET_PUSH=$(join "${SSET_PUSHERS[@]}")"
   [ -z "$WORKBOOK_URL" ] || env+="
 USNM_OCRDASH_WORKBOOK_URL=$WORKBOOK_URL"
   [ -z "$HTTPS_NAME" ] || env+="

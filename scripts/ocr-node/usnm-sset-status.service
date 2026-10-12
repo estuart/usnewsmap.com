@@ -1,10 +1,11 @@
 # Writes /var/lib/usnm-sset/status.json from usnm-sset.service's journal
-# (scripts/ocr-node/sset-status.py, installed as /usr/local/bin/usnm-sset-status).
+# (scripts/ocr-node/sset-status.py, installed as /usr/local/bin/usnm-sset-status)
+# and pushes it to the OCR dashboard (needs its --sset-push usnm-sset=<this node>).
 [Unit]
 Description=usnewsmap Serial Set fetch status file
 ConditionFileIsExecutable=/usr/local/bin/usnm-sset-status
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/usnm-sset-status --unit usnm-sset.service --out /var/lib/usnm-sset/status.json
+ExecStart=/usr/local/bin/usnm-sset-status --unit usnm-sset.service --out /var/lib/usnm-sset/status.json --done /var/lib/usnm-sset/done --push-url http://ocr.tjg.fyi/api/sset/usnm-sset
 StandardOutput=null

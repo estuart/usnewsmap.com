@@ -9,6 +9,7 @@ pub mod hosts;
 pub mod html;
 pub mod net;
 pub mod nodes;
+pub mod sset;
 pub mod tail;
 pub mod view;
 
@@ -30,12 +31,14 @@ use crate::fetch::Fetch;
 use crate::hosts::Hosts;
 use crate::net::Allow;
 use crate::nodes::Nodes;
+use crate::sset::Ssets;
 use crate::view::{Settings, View};
 
 pub struct App {
     pub fetch: Mutex<Fetch>,
     pub nodes: Mutex<Nodes>,
     pub hosts: Mutex<Hosts>,
+    pub ssets: Mutex<Ssets>,
     pub seed_plan_path: Option<PathBuf>,
     pub seed_plan: Mutex<Option<BTreeMap<String, String>>>,
     pub settings: Settings,
@@ -43,6 +46,9 @@ pub struct App {
     pub allow: Allow,
     /// Host → the addresses that may push its stats (its own).
     pub pushers: BTreeMap<String, Allow>,
+    /// Serial Set fetch → the addresses that may push its status (the
+    /// node that runs it).
+    pub sset_pushers: BTreeMap<String, Allow>,
 }
 
 impl App {
@@ -95,8 +101,17 @@ impl App {
         let mut fetch = self.fetch.lock().expect("fetch lock");
         let nodes = self.nodes.lock().expect("nodes lock");
         let hosts = self.hosts.lock().expect("hosts lock");
+        let ssets = self.ssets.lock().expect("ssets lock");
         let seed = self.seed_plan.lock().expect("seed lock").clone();
-        view::build(&mut fetch, &nodes, &hosts, seed, &self.settings, Utc::now())
+        view::build(
+            &mut fetch,
+            &nodes,
+            &hosts,
+            &ssets,
+            seed,
+            &self.settings,
+            Utc::now(),
+        )
     }
 }
 
@@ -146,6 +161,7 @@ async fn api(State(app): State<Arc<App>>, Path(part): Path<String>) -> Response 
         "hosts" => serde_json::to_value(&v.hosts),
         "fetch" => serde_json::to_value(&v.fetch),
         "nodes" => serde_json::to_value(&v.nodes),
+        "serialset" => serde_json::to_value(&v.serial_set),
         "next" => serde_json::to_value(&v.next),
         "ocred" => serde_json::to_value(&v.ocred),
         _ => return StatusCode::NOT_FOUND.into_response(),
@@ -177,12 +193,38 @@ async fn put_host(
     }
 }
 
+/// The node running the Serial Set fetch pushes its progress: only from
+/// its own address.
+async fn put_sset(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let ip = peer.ip().to_canonical();
+    if !app.sset_pushers.get(&name).is_some_and(|a| a.contains(ip)) {
+        tracing::info!(peer = %ip, sset = name, "refused a Serial Set push");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match sset::parse(&body) {
+        Ok(s) => {
+            app.ssets
+                .lock()
+                .expect("ssets lock")
+                .put(&name, s, Utc::now());
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}\n")).into_response(),
+    }
+}
+
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(page))
         .route("/healthz", get(|| async { "ok\n" }))
         .route("/api/{part}", get(api))
         .route("/api/host/{name}", put(put_host))
+        .route("/api/sset/{name}", put(put_sset))
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
         .with_state(app)
@@ -191,7 +233,8 @@ pub fn router(app: Arc<App>) -> Router {
 /// Plain HTTP when the page itself is served over HTTPS: every request is
 /// redirected to `https://<authority>` (the name, and the port unless 443)
 /// with the same path and query, except
-/// the hosts' stats pushes (`PUT /api/host/{name}`), which carry no secret,
+/// the hosts' stats pushes (`PUT /api/host/{name}`) and the Serial Set
+/// status push (`PUT /api/sset/{name}`), which carry no secret,
 /// are checked by address, and come from `curl` that doesn't follow
 /// redirects. The same `--allow` as the page.
 pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
@@ -203,6 +246,7 @@ pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
     Router::new()
         // Any other method on the push path is redirected too, not a 405.
         .route("/api/host/{name}", put(put_host).fallback(redirect.clone()))
+        .route("/api/sset/{name}", put(put_sset).fallback(redirect.clone()))
         .fallback(redirect)
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
@@ -222,6 +266,7 @@ mod tests {
             fetch: Mutex::new(Fetch::new(dir.to_owned(), None)),
             nodes: Mutex::new(Nodes::open(dir.join("state"), &[]).unwrap()),
             hosts: Mutex::new(Hosts::new(Vec::new())),
+            ssets: Mutex::new(Ssets::default()),
             seed_plan_path: None,
             seed_plan: Mutex::new(None),
             settings: Settings {
@@ -234,6 +279,11 @@ mod tests {
             pushers: [(
                 "pve".to_owned(),
                 Allow::new(vec!["198.51.100.12".parse().unwrap()]),
+            )]
+            .into(),
+            sset_pushers: [(
+                "sset".to_owned(),
+                Allow::new(vec!["198.51.100.13".parse().unwrap()]),
             )]
             .into(),
         })
@@ -355,7 +405,26 @@ mod tests {
         let (_, body) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
         assert!(body.contains("&lt;script&gt;"));
         assert!(!body.contains("<code><script>"));
-        let (_, json) = call(a, "198.51.100.50", "GET", "/api/hosts.json", "").await;
+        let (_, json) = call(a.clone(), "198.51.100.50", "GET", "/api/hosts.json", "").await;
         assert!(json.contains("\"name\":\"pve\""));
+        let sset = r#"{"unit":"usnm-sset.service","active":"active","to_fetch":900,"curated":120}"#;
+        let put_sset =
+            |from: &'static str, name: &'static str| call(a.clone(), from, "PUT", name, sset);
+        assert_eq!(
+            put_sset("198.51.100.50", "/api/sset/sset").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            put_sset("198.51.100.13", "/api/sset/other").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            put_sset("198.51.100.13", "/api/sset/sset").await.0,
+            StatusCode::NO_CONTENT
+        );
+        let (_, json) = call(a.clone(), "198.51.100.50", "GET", "/api/serialset.json", "").await;
+        assert!(json.contains("\"curated\":120"));
+        let (_, page) = call(a, "198.51.100.50", "GET", "/", "").await;
+        assert!(page.contains("Serial Set"));
     }
 }

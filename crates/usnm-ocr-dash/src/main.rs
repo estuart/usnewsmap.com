@@ -13,6 +13,7 @@ use usnm_ocr_dash::fetch::Fetch;
 use usnm_ocr_dash::hosts::Hosts;
 use usnm_ocr_dash::net::{Allow, Source};
 use usnm_ocr_dash::nodes::{check_name, Nodes};
+use usnm_ocr_dash::sset::Ssets;
 use usnm_ocr_dash::view::Settings;
 use usnm_ocr_dash::{redirect_router, router, App};
 
@@ -77,6 +78,10 @@ struct Cli {
     /// A host that pushes its stats, as `<name>=<its host name or address>`.
     #[arg(long, env = "USNM_OCRDASH_HOST_PUSH", value_delimiter = ',')]
     host_push: Vec<String>,
+    /// A Serial Set fetch that pushes its progress, as `<name>=<the host
+    /// name or address of the node running it>`.
+    #[arg(long, env = "USNM_OCRDASH_SSET_PUSH", value_delimiter = ',')]
+    sset_push: Vec<String>,
     /// An OCR node's worker status, as `<name>=http://<address>:<port>`.
     #[arg(long, env = "USNM_OCRDASH_WORKER", value_delimiter = ',')]
     worker: Vec<String>,
@@ -140,10 +145,19 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("--host-push {p:?}: {e}"))?;
         pushers.insert(name, Allow::new(vec![source]));
     }
+    let mut sset_pushers = BTreeMap::new();
+    for p in &cli.sset_push {
+        let (name, host) = pair(p, "--sset-push")?;
+        let source: Source = host
+            .parse()
+            .map_err(|e| anyhow::anyhow!("--sset-push {p:?}: {e}"))?;
+        sset_pushers.insert(name, Allow::new(vec![source]));
+    }
     let app = Arc::new(App {
         fetch: Mutex::new(Fetch::new(cli.scans.clone(), cli.manifest.clone())),
         nodes: Mutex::new(Nodes::open(cli.state_dir.clone(), &workers)?),
         hosts: Mutex::new(Hosts::new(cli.host_file.clone())),
+        ssets: Mutex::new(Ssets::default()),
         seed_plan_path: cli.seed_plan.clone(),
         seed_plan: Mutex::new(None),
         settings: Settings {
@@ -154,11 +168,12 @@ async fn main() -> anyhow::Result<()> {
         },
         allow: Allow::new(cli.allow.clone()),
         pushers,
+        sset_pushers,
     });
     // Names and subnets now, then every five minutes.
     let refresh = |app: Arc<App>| async move {
         app.allow.refresh().await;
-        for a in app.pushers.values() {
+        for a in app.pushers.values().chain(app.sset_pushers.values()) {
             a.refresh().await;
         }
     };

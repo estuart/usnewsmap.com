@@ -80,7 +80,7 @@ fn pct(part: u64, whole: u64) -> f64 {
     }
 }
 
-/// A time, in the reader's zone once the page's script runs, UTC before.
+/// A time, in US Eastern once the page's script runs, UTC before.
 fn time(t: DateTime<Utc>) -> String {
     let iso = t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     format!(
@@ -206,7 +206,7 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
 const SCRIPT: &str = r#"
 for (const t of document.querySelectorAll('time[datetime]')) {
   const d = new Date(t.getAttribute('datetime'));
-  if (!isNaN(d)) t.textContent = d.toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short'});
+  if (!isNaN(d)) t.textContent = d.toLocaleString('en-US', {timeZone:'America/New_York', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short'});
 }
 "#;
 
@@ -296,6 +296,28 @@ fn next_table(o: &mut String, label: &str, rows: &[NextRow], with_fetched: bool)
     o.push_str("</table></div>");
 }
 
+fn sset_badge(x: &crate::view::SsetView) -> String {
+    let b = match x.state.as_str() {
+        "finished" => badge("good", "finished"),
+        "running" => badge("good", "running"),
+        other => badge("warning", other),
+    };
+    if x.stale {
+        format!("{b} {}", badge("warning", "stale"))
+    } else {
+        b
+    }
+}
+
+fn sset_eta(x: &crate::view::SsetView) -> String {
+    if x.state == "finished" {
+        return "done".to_owned();
+    }
+    x.status
+        .eta_hours
+        .map_or_else(|| "-".to_owned(), |h| span((h * 3600.0) as u64))
+}
+
 pub fn render(v: &View) -> String {
     let now = v.generated_at;
     let mut o = String::with_capacity(64 * 1024);
@@ -312,6 +334,65 @@ pub fn render(v: &View) -> String {
         time(now),
         v.refresh_secs
     );
+
+    // 0. At a glance.
+    o.push_str("<section><h2>At a glance</h2><table><tr><th>What</th><th>State</th><th>Progress</th><th class=\"r\">Per hour</th><th class=\"r\">Done in</th></tr>");
+    {
+        let f = &v.fetch;
+        let (state, per_hour) = match &f.status {
+            Some(s) => (
+                match s.state.as_str() {
+                    "running" | "done" => badge("good", &s.state),
+                    "waiting" | "budget" | "stopped" => badge("warning", &s.state),
+                    other => badge("critical", other),
+                },
+                if f.last_hour.pages > 0 {
+                    f.last_hour.pages_per_hour
+                } else {
+                    f.last_day.pages_per_hour
+                },
+            ),
+            None => (badge("critical", "no status"), 0.0),
+        };
+        let keep = f.sets.iter().find(|s| s.name == "keep");
+        let _ = write!(
+            o,
+            "<tr><td>Scan fetch, keep set</td><td>{state}</td><td>{}</td><td class=\"r\">{per_hour:.0} pages</td><td class=\"r\">{}</td></tr>",
+            keep.map_or_else(
+                || "-".to_owned(),
+                |k| meter(k.fetched, k.total, &format!("{} of {} pages", int(k.fetched), int(k.total)))
+            ),
+            f.keep_eta_secs.map_or_else(|| "-".to_owned(), span)
+        );
+    }
+    for n in &v.nodes {
+        let state = match n.state {
+            "working" => badge("good", "working"),
+            "idle" => badge("warning", "idle"),
+            other => badge("critical", other),
+        };
+        let _ = write!(
+            o,
+            "<tr><td>OCR {}</td><td>{state}</td><td>{} done in the last day; last page {}; up {}</td><td class=\"r\">{} pages</td><td class=\"r\">-</td></tr>",
+            esc(&n.name),
+            int(n.last_day.done),
+            n.last_page_at.map_or_else(|| "-".to_owned(), |t| ago(now, t)),
+            n.uptime_secs.map_or_else(|| "-".to_owned(), span),
+            int(n.pages_per_hour)
+        );
+    }
+    for x in &v.serial_set {
+        let _ = write!(
+            o,
+            "<tr><td>Serial Set, {}</td><td>{}</td><td>{}</td><td class=\"r\">{:.1} volumes</td><td class=\"r\">{}</td></tr>",
+            esc(&x.name),
+            sset_badge(x),
+            meter(x.done, x.status.to_fetch, &format!("{} of {} volumes", int(x.done), int(x.status.to_fetch))),
+            x.status.volumes_per_hour,
+            sset_eta(x)
+        );
+    }
+    o.push_str("</table></section>");
 
     // 1. Pool and hosts.
     o.push_str("<section><h2>Pool and hosts</h2>");
@@ -569,6 +650,44 @@ pub fn render(v: &View) -> String {
     }
     o.push_str("</section>");
 
+    // 2b. Serial Set.
+    o.push_str("<section><h2>Serial Set</h2>");
+    if v.serial_set.is_empty() {
+        o.push_str("<p class=\"muted\">No Serial Set status pushed yet.</p>");
+    }
+    for x in &v.serial_set {
+        let st = &x.status;
+        let time_opt = |t: Option<DateTime<Utc>>| t.map_or_else(|| "-".to_owned(), time);
+        let _ = write!(
+            o,
+            "<h3>{} {}</h3><table class=\"kv\"><tr><td>Volumes</td><td>{}</td></tr>\
+             <tr><td>Result</td><td>{} curated, {} empty, {} incomplete (some documents unread)</td></tr>\
+             <tr><td>Pages curated</td><td>{}</td></tr>\
+             <tr><td>Current volume</td><td><code>{}</code></td></tr>\
+             <tr><td>Rate</td><td>{:.1} volumes and {:.0} documents an hour since {}</td></tr>\
+             <tr><td>Left</td><td>{} volumes, about {} documents; done in {}</td></tr>\
+             <tr><td>Status</td><td>made {}, received {}{}</td></tr></table>",
+            esc(&x.name),
+            sset_badge(x),
+            meter(x.done, st.to_fetch, &format!("{} of {} volumes", int(x.done), int(st.to_fetch))),
+            int(st.curated),
+            int(st.empty),
+            int(st.incomplete),
+            int(st.pages),
+            esc(st.current_volume.as_deref().unwrap_or("-")),
+            st.volumes_per_hour,
+            st.documents_per_hour,
+            time_opt(st.started),
+            int(st.left),
+            int(st.documents_left_estimate),
+            sset_eta(x),
+            time_opt(st.at),
+            ago(now, x.received),
+            if x.stale { " (stale: pushed every 10 minutes)" } else { "" }
+        );
+    }
+    o.push_str("</section>");
+
     // 3. Nodes.
     o.push_str("<section><h2>Nodes</h2>");
     if v.nodes.is_empty() {
@@ -619,13 +738,18 @@ pub fn render(v: &View) -> String {
         };
         let _ = write!(
             o,
-            "<table class=\"kv\"><tr><td>Worker</td><td>{} (<code>{}</code>)</td></tr>\
+            "<table class=\"kv\"><tr><td>Worker</td><td>{} (<code>{}</code>), {}, up {} since {}</td></tr>\
+             <tr><td>Last page done</td><td>{}</td></tr>\
              <tr><td>Engine</td><td>{} {}; models {}</td></tr>\
              <tr><td>Routes</td><td>{routes}</td></tr>\
              <tr><td>Concurrency</td><td>{}; {} in flight</td></tr>\
              <tr><td>Scans</td><td>{}</td></tr>{}</table>",
             esc(&n.version),
             esc(&n.node_id),
+            n.state,
+            n.uptime_secs.map_or_else(|| "-".to_owned(), span),
+            n.started_at.map_or_else(|| "-".to_owned(), time),
+            n.last_page_at.map_or_else(|| "none yet".to_owned(), |t| format!("{}, {}", time(t), ago(now, t))),
             esc(&n.engine),
             esc(&n.engine_version),
             esc(&n.models.join(", ")),
@@ -647,9 +771,10 @@ pub fn render(v: &View) -> String {
             "<table><tr><th></th><th class=\"r\">Done</th><th class=\"r\">Failed</th><th class=\"r\">Abandoned</th><th class=\"r\">Dead-lettered</th><th>Scans</th></tr>\
              <tr><td>Last hour</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td>{}</td></tr>\
              <tr><td>Last day</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td>{}</td></tr></table>\
-             <p>{:.2} pages a minute over the last hour.</p>",
+             <p>{} pages an hour ({:.2} a minute) over the last hour.</p>",
             n.last_hour.done, n.last_hour.failed, n.last_hour.abandoned, n.last_hour.dead_lettered, cache(&n.last_hour),
             n.last_day.done, n.last_day.failed, n.last_day.abandoned, n.last_day.dead_lettered, cache(&n.last_day),
+            int(n.pages_per_hour),
             n.pages_per_min
         );
         if !n.in_flight.is_empty() {

@@ -522,7 +522,7 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
 
    `/etc/usnm/sset.env` (mode 0640, group `usnm`) sets `USNM_CURATED_URL=https://<lake>.blob.core.windows.net/curated`, `USNM_RAW_URL=/var/lib/usnm-sset/raw`, `USNM_STATE_FILE=/var/lib/usnm-sset/state.json` and `USNM_REFERENCE_URL=/var/lib/usnm-sset/reference` (an empty directory; the fetch reads nothing there). The raw store holds the MODS and page texts, about 20 GB, so a stopped volume resumes without its PDFs. Before the lake is open, `USNM_CURATED_URL` can be a local directory: the fetch then fills the raw store, and a later run against the lake reads every volume back from it without asking GovInfo for the PDFs again.
 
-3. **Run.** `sudo systemctl start usnm-sset` runs the whole fetch, at a request a second, until every volume is written or left (no deadline), and then stops. It runs as `usnm` with the Arc identity. Logs: `journalctl -u usnm-sset`; the report is the JSON at the end. `/var/lib/usnm-sset/status.json` (every 10 minutes) has the volumes to fetch, written, incomplete, the rate per hour and the hours left.
+3. **Run.** `sudo systemctl start usnm-sset` runs the whole fetch, at a request a second, until every volume is written or left (no deadline), and then stops. It runs as `usnm` with the Arc identity. Logs: `journalctl -u usnm-sset`; the report is the JSON at the end. `/var/lib/usnm-sset/status.json` (every 10 minutes) has the volumes to fetch, written, incomplete, the rate per hour and the hours left, and `finished` once `/var/lib/usnm-sset/done` exists. The same timer pushes it to the OCR dashboard (`PUT /api/sset/usnm-sset` over plain HTTP, accepted from this node's address only; the dashboard needs `--sset-push usnm-sset=<this node's name>` in `ocrdash-ct.sh --configure`), which shows it under Serial Set.
 
    The unit is enabled, so it also starts at boot, until the fetch has finished. A run that ends with `"left": 0` and `incomplete` empty writes `/var/lib/usnm-sset/done` (`--done-file`: when, and the volumes and pages), and the unit doesn't start while that file exists (`ConditionPathExists=!`). A run that ends with incomplete volumes (a 404 for a document the sitemap lists, a PDF that couldn't be read) exits 0 without the marker, and stays down until the next boot or `sudo systemctl start usnm-sset`, which fetches those volumes again. If the same volumes stay incomplete run after run (GovInfo answers 404 for good), check them on GovInfo, then write the marker by hand: `sudo -u usnm touch /var/lib/usnm-sset/done`. To fetch again after it's done (new volumes on GovInfo), remove the marker and start it: `sudo rm /var/lib/usnm-sset/done && sudo systemctl start usnm-sset`.
 
@@ -1280,7 +1280,7 @@ scripts/ocr-node/ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
 scripts/ocr-node/ocrdash-ct.sh --configure --allow lan \
   --worker usnm-ocr-node3=http://usnm-ocr-node3-arcs-prod.tjg.fyi:8381 \
   --worker usnm-ocr-node4=http://usnm-ocr-node4-arcs-prod.tjg.fyi:8381 \
-  --host-push pve=pve.tjg.fyi --workbook-url '<the OCR nodes workbook link>' \
+  --host-push pve=pve.tjg.fyi --sset-push usnm-sset=usnm-ocr-node3-arcs-prod.tjg.fyi --workbook-url '<the OCR nodes workbook link>' \
   --https-name ocr.tjg.fyi
 ```
 

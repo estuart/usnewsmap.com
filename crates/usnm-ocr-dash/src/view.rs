@@ -9,6 +9,7 @@ use usnm_ocr_contract::status::{Completion, Dataset, InFlight, Outcomes, Pool, Q
 use crate::fetch::{FailureLine, Fetch, FetchStatus, Tally, GROUPS};
 use crate::hosts::Hosts;
 use crate::nodes::Nodes;
+use crate::sset::{SsetStatus, Ssets};
 
 /// Settings that shape the view.
 #[derive(Debug, Clone, Default)]
@@ -30,6 +31,7 @@ pub struct View {
     pub hosts: Vec<HostView>,
     pub fetch: FetchView,
     pub nodes: Vec<NodeView>,
+    pub serial_set: Vec<SsetView>,
     pub next: NextView,
     pub ocred: OcredView,
     pub azure: AzureView,
@@ -137,6 +139,35 @@ pub struct NodeView {
     pub last_hour: Outcomes,
     pub last_day: Outcomes,
     pub pages_per_min: f64,
+    /// Pages done in the last hour.
+    pub pages_per_hour: u64,
+    /// `working`, `idle` (nothing in flight, no page for [`IDLE_AFTER`])
+    /// or `no status`.
+    pub state: &'static str,
+    pub started_at: Option<DateTime<Utc>>,
+    /// By the worker's own clock.
+    pub uptime_secs: Option<u64>,
+    /// When the latest page finished OK.
+    pub last_page_at: Option<DateTime<Utc>>,
+}
+
+/// A worker with nothing in flight and no page done for this long is idle.
+pub const IDLE_AFTER: Duration = Duration::minutes(10);
+/// A Serial Set status older than this is marked stale (it is pushed every
+/// ten minutes).
+pub const SSET_FRESH: Duration = Duration::minutes(25);
+
+#[derive(Debug, Serialize)]
+pub struct SsetView {
+    pub name: String,
+    pub received: DateTime<Utc>,
+    pub age_secs: i64,
+    pub stale: bool,
+    /// `finished`, `running`, or systemd's word for the unit.
+    pub state: String,
+    pub status: SsetStatus,
+    /// Curated, empty and incomplete volumes.
+    pub done: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -367,6 +398,7 @@ pub fn build(
     fetch: &mut Fetch,
     nodes: &Nodes,
     hosts: &Hosts,
+    ssets: &Ssets,
     seed_plan: Option<BTreeMap<String, String>>,
     s: &Settings,
     now: DateTime<Utc>,
@@ -444,10 +476,34 @@ pub fn build(
         .iter()
         .map(|n| {
             let st = n.status.clone().unwrap_or_default();
+            let ok = n.error.is_none() && n.status.is_some();
+            // The status's recent list is bounded and starts empty after a
+            // restart; the pages copied here (`latest`) outlast both.
+            let last_page_at = st
+                .recent
+                .iter()
+                .chain(n.latest.iter())
+                .filter(|c| c.outcome == "done")
+                .map(|c| c.finished_at)
+                .max();
+            let busy =
+                !st.in_flight.is_empty() || last_page_at.is_some_and(|t| st.now - t <= IDLE_AFTER);
             NodeView {
                 name: n.name.clone(),
                 url: n.url.clone(),
-                ok: n.error.is_none() && n.status.is_some(),
+                ok,
+                state: match (ok, busy) {
+                    (false, _) => "no status",
+                    (true, true) => "working",
+                    (true, false) => "idle",
+                },
+                started_at: n.status.as_ref().map(|s| s.started_at),
+                uptime_secs: n
+                    .status
+                    .as_ref()
+                    .map(|s| (s.now - s.started_at).num_seconds().max(0) as u64),
+                last_page_at,
+                pages_per_hour: st.last_hour.done,
                 last_ok: n.last_ok,
                 error: n.error.clone(),
                 node_id: st.node_id,
@@ -473,6 +529,28 @@ pub fn build(
         hosts: host_views(hosts, s, now),
         fetch: fv,
         nodes: node_views,
+        serial_set: ssets
+            .by_name
+            .iter()
+            .map(|(name, s)| {
+                let st = &s.status;
+                SsetView {
+                    name: name.clone(),
+                    received: s.received,
+                    age_secs: (now - s.received).num_seconds(),
+                    stale: now - s.received > SSET_FRESH,
+                    state: if st.finished {
+                        "finished".to_owned()
+                    } else if st.active == "active" {
+                        "running".to_owned()
+                    } else {
+                        st.active.clone()
+                    },
+                    done: st.curated + st.empty + st.incomplete,
+                    status: st.clone(),
+                }
+            })
+            .collect(),
         next: NextView {
             to_ocr,
             keep_left_to_ocr: keep_left,
