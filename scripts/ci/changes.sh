@@ -50,7 +50,8 @@ if grep -Eq '\.md$' <<< "$files"; then markdown=true; else markdown=false; fi
 files=$(grep -Ev '\.md$|^docs/' <<< "$files" || true)
 matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
 # infra/quickwit/ holds the index configs (read by the ingest image) and the
-# searcher config (applied on deploy).
+# searcher config (applied on deploy). Everything else under infra/ needs a
+# provision, an environment's committed settings (infra/env/) included.
 if [ -n "$files" ] && grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwit/'; then
   provision=true
 fi

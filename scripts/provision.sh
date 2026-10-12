@@ -1,24 +1,31 @@
 #!/usr/bin/env bash
 # Deploy an existing environment's stack from its current settings, without
-# the rest of bootstrap (no CI run, no GitHub or domain steps). Use it after
-# changing a setting:
+# the rest of bootstrap (no CI run, no GitHub or domain steps). Use it once
+# a settings change is merged (docs/operations.md, "Settings"):
 #
 #   scripts/settings.sh --env prod --key USNM_SEARCH_BACKEND --value quickwit
+#   # commit infra/env/prod.json, open a pull request, merge, pull
 #   scripts/provision.sh --env prod
+#
+# It deploys the committed settings (infra/env/<env>.json), the settings
+# vault's private ones and the local file's (scripts/lib/env.sh), and
+# refuses while infra/env/<env>.json or the schema has uncommitted changes;
+# --allow-dirty deploys them anyway (an experiment in dev).
 #
 # Needs az 2.61+, signed in to the environment's subscription with Owner.
 set -euo pipefail
-usage() { echo "usage: scripts/provision.sh --env <env>" >&2; exit 2; }
+usage() { echo "usage: scripts/provision.sh --env <env> [--allow-dirty]" >&2; exit 2; }
 # The positional form (`provision.sh prod`) works for one release, with a
 # warning (#277).
 if [ $# -eq 1 ] && [[ $1 != -* ]]; then
   echo "warning: \`scripts/provision.sh ENV\` is deprecated; use --env (#277)" >&2
   set -- --env "$1"
 fi
-ENV_NAME=""
+ENV_NAME="" ALLOW_DIRTY=false
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
+    --allow-dirty) ALLOW_DIRTY=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -27,6 +34,13 @@ done
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 . scripts/lib/env.sh
+if ! $ALLOW_DIRTY; then
+  rc=0
+  committed_clean || rc=$?
+  [ "$rc" -ne 1 ] ||
+    die "$COMMITTED_FILE has uncommitted changes (above): commit them (through a pull request for a shared environment), or pass --allow-dirty for an experiment"
+  [ "$rc" -eq 0 ] || exit 1
+fi
 need_stack_az
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh --env $ENV_NAME first"
 az account set --subscription "$(aget AZURE_SUBSCRIPTION_ID)" 2> /dev/null ||

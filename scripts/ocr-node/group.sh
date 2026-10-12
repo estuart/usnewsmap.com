@@ -81,8 +81,9 @@ else
       --description "usnewsmap $ENV_NAME on-prem OCR nodes' Arc identities (ADR-0015); roles on the exchange account come from the provision" \
       --query id -o tsv) || die "can't create $GROUP_NAME (you need the right to create security groups)"
     echo "created $GROUP_NAME: $GROUP_ID"
-    # Saved straight away, so a run that stops after this picks the group up.
-    scripts/settings.sh --env "$ENV_NAME" --key USNM_OCR_NODE_GROUP --value "$GROUP_ID"
+    # Saved straight away, so a run that stops after this picks the group up:
+    # in the settings vault once there is one, else the local file (#295).
+    aset USNM_OCR_NODE_GROUP "$GROUP_ID"
     echo "set USNM_OCR_NODE_GROUP to $GROUP_ID"
   fi
 fi

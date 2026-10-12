@@ -5,7 +5,8 @@
 # the archival account (usnm-archive) still assigns it. The data goes with
 # it (a new environment rebuilds it from LoC). Its settings file
 # (scripts/lib/env.sh) is kept, renamed .env.deleted-<time>, without its
-# experiment marker, for scripts/stand-up.sh to start from.
+# experiment marker or its settings vault's name, for scripts/stand-up.sh
+# to start from.
 #
 # An environment that uses the archival account (USNM_ARCHIVE_ACCOUNT) is
 # first detached from it: the account's delete lock is lifted, the
@@ -417,10 +418,13 @@ fi
 # Only now is everything gone; until here a re-run resumes from the list.
 rm -f "$resume"
 
-# The next stand-up names its own experiment.
+# The next stand-up names its own experiment. The settings vault is
+# purged (dev) or soft-deleted (prod, which provision then recovers), so
+# its name goes too: provision mustn't read a vault that isn't there.
 if [ -f "$ENV_FILE" ]; then
   adel USNM_EXPERIMENT
   adel USNM_EXPERIMENT_STARTED
+  adel SETTINGS_KEYVAULT
   mv "$ENV_FILE" "$ENV_FILE.deleted-$(date -u +%Y%m%dT%H%M%SZ)"
 fi
 echo "deleted environment $ENV_NAME"

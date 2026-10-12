@@ -192,6 +192,7 @@ var nameTypes = {
   searchLogRole: 'role'
   searcherApp: 'ca'
   serialSetJob: 'caj'
+  settingsVault: 'kv'
   siteUnavailableAlert: 'alert'
   siteWebtest: 'webtest'
   spotRg: 'rg'
@@ -283,6 +284,8 @@ type Names = {
   searchLogRole: string
   searcherApp: string
   serialSetJob: string
+  @description('The environment\'s settings vault (#295): its private settings.')
+  settingsVault: string
   siteUnavailableAlert: string
   siteWebtest: string
   spotRg: string
@@ -372,6 +375,8 @@ func names(env string, sfx string, pinned bool) Names => {
   searchLogRole: pinned ? 'usnm search log writer' : usnmName('searchlog', 'role', env)
   searcherApp: usnmName('search', 'ca', env)
   serialSetJob: usnmName('sset', 'caj', env)
+  // New with #295: ADR-0017's form everywhere, prod included.
+  settingsVault: usnmCompactName('core', 'kv', env, sfx)
   siteUnavailableAlert: pinned ? 'alert-usnm-site-unavailable-${env}' : usnmName('site-unavailable', 'alert', env)
   siteWebtest: pinned ? 'webtest-usnm-site-${env}' : usnmName('site', 'webtest', env)
   // Removed in Phase 1 (ADR-0017): legacy everywhere until then.

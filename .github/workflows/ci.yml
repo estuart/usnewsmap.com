@@ -411,6 +411,10 @@ jobs:
       # parameters, the settings location and scripts/dev-status.sh (#275).
       - name: The environment scripts' tests pass
         run: python3 -m unittest -v scripts/test_env_scripts.py
+      # Every setting infra/main.bicepparam reads is in the schema, and the
+      # committed files hold only known public ones, typed and sorted (#295).
+      - name: Each environment's committed settings match infra/env/schema.json
+        run: scripts/lib/env_settings.py --check
       # Resource names (ADR-0017): names() in infra/naming.bicep against the
       # rules, infra/names/exceptions.json (which only shrinks against the
       # base branch) and infra/names/prod.json, and no module building a
@@ -551,7 +555,8 @@ jobs:
     # A deploy rolls the API image and applies infra/quickwit/searcher.yaml
     # (scripts/ci/roll-api.sh); CI's identity can't deploy the rest of the
     # stack (08 §8.2). When a merge to main changes it, say so on the run,
-    # so the change isn't taken for deployed.
+    # so the change isn't taken for deployed. That includes a settings
+    # change, which is committed in infra/env/<env>.json (#295).
     needs: [changes]
     if: >-
       needs.changes.outputs.provision == 'true'
@@ -564,7 +569,7 @@ jobs:
           ENVS: ${{ vars.USNM_DEPLOY_ENVIRONMENTS || '[]' }}
         run: |
           envs=$(jq -r '.[]' <<< "$ENVS")
-          msg="This merge changes the Azure stack (infra/), which a deploy doesn't apply. Run scripts/provision.sh for each environment: ${envs//$'\n'/, }."
+          msg="This merge changes the Azure stack or an environment's settings (infra/), which a deploy doesn't apply. Run scripts/provision.sh for each environment: ${envs//$'\n'/, }."
           echo "::warning title=Stack change not deployed::$msg"
           {
             echo "### Stack change not deployed"

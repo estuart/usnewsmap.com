@@ -65,7 +65,7 @@ Prerequisites: `az` (2.61 or later), `gh` and `curl`; **Owner** on the subscript
 What it does:
 
 1. Registers the resource providers.
-2. Writes the environment's settings to `.azure/<env>/.env`.
+2. Writes the environment's settings: the public ones to `infra/env/<env>.json` (commit it), the rest to the local file ([Settings and the deployment stack](#settings-and-the-deployment-stack)).
 3. Deploys the stack `usnm-<env>`: everything except the API, which has no image yet.
 4. Creates the GitHub Environment `prod`, restricted to `main`, with its variables, and adds it to `USNM_DEPLOY_ENVIRONMENTS`.
 5. Runs `ci` on `main` (every time, so the registry holds the current `main`) and waits for that run.
@@ -106,6 +106,7 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `ocrNodeIps`                  | `USNM_OCR_NODE_IPS`                        | empty. Comma-separated public IPv4 addresses or CIDR ranges the nodes connect from (the home IP). Settings only, never committed                                                                                                                                                                                                                                                                     |
 | `ocrNodeGroupId`              | `USNM_OCR_NODE_GROUP`                      | empty. Object id of the nodes' Entra security group, `usnm-ocr-nodes-<env>`, which `scripts/ocr-node/group.sh` creates and records; the provision grants it the node roles and Monitoring Metrics Publisher on the nodes' Application Insights, `usnm-ocr-appi-<env>` (empty: no node grants). `onboard.sh` and `offboard.sh` add and remove nodes without a provision                               |
 | `ocrKeyVaultAdmins`           | `USNM_OCR_KEYVAULT_ADMINS`                 | empty. Comma-separated Entra object ids given Key Vault Secrets Officer on the OCR nodes' Key Vault (they set and read the Red Hat secrets; [operations](../docs/operations.md#on-prem-ocr-nodes)). Settings only, never committed                                                                                                                                                                   |
+| `settingsVaultAdmins`         | `USNM_SETTINGS_VAULT_ADMINS`               | empty. Comma-separated Entra object ids given Key Vault Secrets Officer on the settings vault, besides the account that deploys the stack: every operator who provisions the environment ([operations](../docs/operations.md#settings)). Private, in that vault                                                                                                                                      |
 | `jaOcrJob`                    | `USNM_JA_OCR_JOB`                          | `false`. Deploys `caj-usnm-jaocr-<env>`, the manual Japanese OCR job (04 §4.8), and `caj-usnm-jaone-<env>`, the same image on one replica for one-off measurements (`mixed`, `american-stories`). Turn on once CI has published `usnewsmap-ja-ocr`                                                                                                                                                   |
 | `jaOcrReplicas`               | `USNM_JA_OCR_REPLICAS`                     | `2`. Its parallel replicas (4 vCPU, 8 GiB each); they share loc.gov's request budget                                                                                                                                                                                                                                                                                                                 |
 | `congress`                    | `USNM_CONGRESS`                            | `false`. Each ingest release builds or keeps the Congress index set from `curated/congress/` (#229, the job's `--congress`); clearing it makes the next release publish a version without it                                                                                                                                                                                                         |
@@ -123,19 +124,28 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 
 ### Settings and the deployment stack
 
-An environment's settings are `KEY="value"` lines in one file. That's `~/.config/usnewsmap/<env>/.env` (or `$USNM_SETTINGS_HOME/<env>/.env`) when that directory exists, so every checkout and worktree reads the same settings; otherwise it's the checkout's own `.azure/<env>/.env`, which is git-ignored. Once the shared directory exists, a copy in a checkout is ignored (the scripts say so). To move an environment's settings there:
+An environment's settings live in three places (#295); [`env/schema.json`](env/schema.json) says which setting goes where, and [operations](../docs/operations.md#settings) shows how to change each:
+
+- **Committed:** the public choices (flags, sizes, caps, schedules) in [`env/<env>.json`](env/), so a change goes through a pull request and its history is git's. `scripts/lib/env_settings.py --check` (CI) fails on an unknown setting, a private one, a wrong type or unsorted keys, and on a setting `main.bicepparam` reads that the schema doesn't list.
+- **The settings vault:** the private ones (addresses, principals, resource ids) in the environment's Key Vault, `usnmcorekv<env><suffix>` (saved as `SETTINGS_KEYVAULT`), which `scripts/provision.sh` reads with your sign-in ([ADR-0006](../docs/design/adr/0006-lean-hosting-profile.md)); the operators in `USNM_SETTINGS_VAULT_ADMINS` and the deploying account can read and set them. Until the first provision creates it, they stay in the local file.
+- **Local:** everything else, the stack's outputs, the subscription and tenant, and what the scripts keep (`USNM_EXPERIMENT`, `USNM_IMAGE_TAG`), in the local file below.
+
+A setting in the wrong place, or in two, stops a provision. The local file is `KEY="value"` lines: `~/.config/usnewsmap/<env>/.env` (or `$USNM_SETTINGS_HOME/<env>/.env`) when that directory exists, so every checkout and worktree reads the same settings; otherwise it's the checkout's own `.azure/<env>/.env`, which is git-ignored. Once the shared directory exists, a copy in a checkout is ignored (the scripts say so). To move an environment's settings there:
 
 ```sh
 mkdir -p ~/.config/usnewsmap/dev && mv .azure/dev/.env ~/.config/usnewsmap/dev/.env
 ```
 
-The file uses the layout azd used, so environments created with azd carry over. `infra/main.bicepparam` reads the settings from the environment (bootstrap exports those with a value; the rest take the defaults above), and the template's outputs (`API_URL`, `ACR_NAME`, …) are written back after each deployment.
+The file uses the layout azd used, so environments created with azd carry over. `infra/main.bicepparam` reads the settings from the environment (provision exports those with a value, from all three places; the rest take the defaults above), and the template's outputs (`API_URL`, `ACR_NAME`, …) are written back to the local file after each deployment.
 
 ```sh
-scripts/settings.sh --env prod                      # show all
-scripts/settings.sh --env prod --key USNM_SEARCH_BACKEND --value quickwit
+scripts/settings.sh --env prod                      # show the committed and local ones
+scripts/settings.sh --env prod --key USNM_SEARCH_BACKEND --value quickwit   # edits infra/env/prod.json
+# commit it, open a pull request, merge, pull; then, from main:
 scripts/provision.sh --env prod                     # deploy the stack with the new settings
 ```
+
+`provision.sh` refuses while `infra/env/<env>.json` has uncommitted changes; `--allow-dirty` is for experiments in dev.
 
 Everything is one **deployment stack** at subscription scope, `usnm-<env>` ([ADR-0011](../docs/design/adr/0011-deployment-stacks.md)):
 

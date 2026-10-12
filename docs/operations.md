@@ -4,6 +4,52 @@ Running the ingest pipeline in Azure: the backfill, releases, full rebuilds, and
 
 Every command below uses your own `az` sign-in. CI can only roll the API onto new images, so starting jobs and changing settings is always a person's action.
 
+## Settings
+
+An environment's settings live in three places ([`infra/README.md`](../infra/README.md#settings-and-the-deployment-stack), #295), and [`infra/env/schema.json`](../infra/env/schema.json) says which setting goes where:
+
+- **Public choices** (flags, sizes, caps, schedules, most `USNM_*` settings) are committed in `infra/env/<env>.json`. A change to a shared environment goes through a pull request like code, and `scripts/provision.sh` deploys only committed settings:
+
+  ```sh
+  scripts/settings.sh --env prod --key USNM_JA_LATIN --value true   # edits infra/env/prod.json
+  git switch -c settings/prod-ja-latin && git commit -am "prod: USNM_JA_LATIN on" && git push -u origin HEAD
+  # open the pull request; once it's merged:
+  git switch main && git pull
+  scripts/provision.sh --env prod
+  ```
+
+  CI's "stack change needs a provision" warning on the merge stays until you run that provision. Every `scripts/settings.sh` example below that sets a public setting works this way. In dev, an experiment's settings go in its own pull request; to try one before committing it, `scripts/provision.sh --env dev --allow-dirty`.
+
+- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_SETTINGS_VAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the environment's settings vault, `usnmcorekv<env><suffix>`, which only the operators can reach, with Entra ID; CI never reads it. The secret's name is the setting's with hyphens: `USNM_ALERT_EMAILS` is `USNM-ALERT-EMAILS`. `scripts/settings.sh` reads and sets them with your sign-in (in the vault, removing any local copy), or `az` does directly:
+
+  ```sh
+  scripts/settings.sh --env prod --key USNM_ALERT_EMAILS --value ops@example.org
+  # or: vault=$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)
+  #     az keyvault secret set --vault-name "$vault" --name USNM-ALERT-EMAILS --value ops@example.org -o none
+  scripts/provision.sh --env prod
+  ```
+
+  `scripts/settings.sh --env prod --key K --unset` clears a private setting everywhere, so it takes its default: it deletes the secret from the vault and any local copy. The vault keeps a deleted secret soft-deleted, which reads as unset, and its name stays reserved until it's recovered or, outside prod, purged; setting it again (`settings.sh`, or any script) recovers it first and then writes the new value, so nothing needs a purge, which prod's purge protection refuses. `--unset-local` removes only the local file's entry, so the vault's value applies again (provision suggests it when a key is in both places). Until the first provision creates the vault, private settings stay in the local file, and later provisions list the commands that move them. Once it exists, a script that sets a private setting (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` the nodes' group; `settings.sh` the one you give it) writes it to the vault, only if the value changed, and removes any local copy, so a re-run never leaves it in two places. An empty value stays a local `""`, which hides the vault's value (`teardown.sh` detaches the archive that way). `teardown.sh` deletes the vault with the environment and drops its name from the local file it keeps: dev's is purged, with its private settings; prod's has purge protection and stays soft-deleted, and the next `provision.sh` recovers it, with its secrets, before reading them (creating `rg-usnm-prod` first if the group is gone). The roles on it went with the old group, so that read may be refused until you grant yourself one on the new group, as the provision's message says. A provision forgets a vault name in the local file that the stack doesn't output, unless it just recovered that vault.
+
+  **Who can read the vault.** Key Vault Secrets Officer goes to the Entra object ids in `USNM_SETTINGS_VAULT_ADMINS` (comma separated, kept in the vault itself) and to the account that runs the provision. Any other operator's grant is removed by the next provision someone else runs, so list everyone who provisions the environment; the first provision, before the list exists, gives it to you. A provision reads the vault before it deploys anything, and an operator without access stops there with the commands that fix it. To add someone, one of the operators adds their object id (`az ad signed-in-user show --query id -o tsv`, run by them) and provisions:
+
+  ```sh
+  scripts/settings.sh --env prod --key USNM_SETTINGS_VAULT_ADMINS --value "<id>,<id>"
+  scripts/provision.sh --env prod
+  ```
+
+  With no operator left, an Owner of the subscription grants the role to themselves on the resource group (not on the vault, where it would collide with the stack's assignment), adds themselves to the list as above, provisions, then deletes that grant: `az role assignment create --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "Key Vault Secrets Officer" --scope "/subscriptions/<subscription id>/resourceGroups/rg-usnm-prod"`. That is the current prod's group; a rebuilt prod's, like every other environment's, is `usnm-core-rg-<env>` (ADR-0017). The refusal message names the local file's `AZURE_RESOURCE_GROUP`, or else whichever of the two exists, or both when it can't tell. A local file without `SETTINGS_KEYVAULT` (a new machine) takes the vault's name from the stack and records it, for every script that reads or writes a private setting, not only provision, so none takes a vault it can't name for an unset setting.
+
+- **Everything else** stays in the local file (`~/.config/usnewsmap/<env>/.env` or `.azure/<env>/.env`): the stack's outputs, which every provision rewrites, the subscription and tenant, and what the scripts keep (`USNM_EXPERIMENT`, `USNM_IMAGE_TAG`).
+
+A setting in the wrong place, or in two, stops a provision before it deploys anything. **Moving an environment from before #295** (its public settings are still in the local file) is one command, then a pull request:
+
+```sh
+scripts/settings.sh --env prod --migrate   # moves the public settings into infra/env/prod.json
+git diff infra/env/prod.json               # check, commit, pull request, merge
+scripts/provision.sh --env prod            # creates the settings vault; then move the private settings as it says
+```
+
 ## Deploy the jobs
 
 `scripts/bootstrap.sh --env <env> --ingest` deploys both jobs (or `scripts/settings.sh --env <env> --key USNM_INGEST_JOBS --value true` and `scripts/provision.sh --env <env>` on an environment already on the registry). `USNM_BACKFILL_WORKERS` sets the backfill's workers (default 4), and `USNM_BACKFILL_CRON` an optional schedule for it (a UTC cron such as `"0 9 2-4 10 *"`; empty is manual), which every deployment keeps. The ingest job's Quickwit writer works on an NFS share, `USNM_INGEST_SCRATCH_GIB` in size (default 128; 0 removes it, 08 §8.4). The weekly schedule comes after the first release ([Weekly updates](#weekly-updates)).
@@ -57,7 +103,7 @@ Once a version is published (`current.json` exists in `reference/`): `scripts/se
 
 ## Weekly updates
 
-Poll LoC weekly for new batches: `scripts/settings.sh --env <env> --key USNM_INGEST_CRON --value "17 3 * * 1"` (Mondays 03:17 UTC), then `scripts/provision.sh --env <env>` while no ingest execution is running. The setting lives only in `.azure/<env>/.env`. Each run fetches LoC's listing once, curates and releases what is new, and exits 0 when there is nothing (08 §8.4). It stops curating 6 h in and releases what it has; if its log says `max runtime reached; claiming no more batches` with batches still queued, start the backfill job to curate the rest. A scheduled job can still be started by hand.
+Poll LoC weekly for new batches: `scripts/settings.sh --env <env> --key USNM_INGEST_CRON --value "17 3 * * 1"` (Mondays 03:17 UTC), then `scripts/provision.sh --env <env>` while no ingest execution is running. The schedule is committed in `infra/env/<env>.json` ([Settings](#settings)). Each run fetches LoC's listing once, curates and releases what is new, and exits 0 when there is nothing (08 §8.4). It stops curating 6 h in and releases what it has; if its log says `max runtime reached; claiming no more batches` with batches still queued, start the backfill job to curate the rest. A scheduled job can still be started by hand.
 
 ## Check a release's splits
 
@@ -597,7 +643,8 @@ It runs on the one-replica job and logs `american stories year written` per year
 The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 14 more. To read it:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_SEARCH_LOG_READERS --value "$(az ad signed-in-user show --query id -o tsv)"
+az keyvault secret set --vault-name "$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)" \
+  --name USNM-SEARCH-LOG-READERS --value "$(az ad signed-in-user show --query id -o tsv)" -o none   # private (Settings, above)
 scripts/provision.sh --env prod
 scripts/searches.sh --env prod --days 30      # searches per day, top queries, queries that found nothing, date spans
 ```
@@ -627,7 +674,7 @@ scripts/archive-store.sh deploy --subscription <id>     # prints the account's r
 
 ```sh
 scripts/archive-store.sh unlock
-scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --unset
+scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --unset   # a private setting: deletes it from the settings vault
 scripts/provision.sh --env dev
 scripts/archive-store.sh deploy        # the lock back
 ```
@@ -700,6 +747,8 @@ scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true   # the exp
 scripts/stand-up.sh --env dev --experiment 240 [--archive]
 ```
 
+The experiment's public settings, and the ones `stand-up.sh` and `teardown.sh` write themselves (`USNM_USE_ACR`, `USNM_COSMOS_FREE_TIER`, `USNM_SEARCH_CLUSTER`), land in `infra/env/dev.json` in your checkout ([Settings](#settings)): commit the experiment's in its pull request. Both scripts provision without the uncommitted-changes check; on its own, use `scripts/provision.sh --env dev --allow-dirty`.
+
 `scripts/stand-up.sh` starts from the settings the last teardown kept (`.env.deleted-<time>`, beside the settings file), or new ones. It provisions `dev` without images (registry, data, network, identities: about 7 minutes), copies the pinned Quickwit image into the registry, builds the checkout's API and ingest images there with `az acr build` (tag `exp-<commit>`; the Japanese OCR image too with `USNM_JA_OCR_JOB`), sets `USNM_IMAGE_TAG` and `USNM_USE_ACR`, and provisions again. `--archive` sets `USNM_ARCHIVE_ACCOUNT` from the `usnm-archive` stack. With the archival account and the ingest job on (`USNM_INGEST_JOBS`), it then seeds the title records and catalog from the account's newest `raw/titles/{time}.json` (`scripts/titles-seed.sh`, below). It never creates a GitHub Environment or adds `dev` to `USNM_DEPLOY_ENVIRONMENTS`, so no push to main rolls it: an experiment runs a branch's images. It refuses `prod`, and a checkout with uncommitted changes. To run a newer commit, run it again. `scripts/bootstrap.sh --env dev` would also work, but it wires `dev` to deploy from main.
 
 **Data**, depending on the experiment:
@@ -768,15 +817,17 @@ ARCHIVE_ID=<the id it printed>
 scripts/settings.sh --env dev --key USNM_INGEST_JOBS --value true
 scripts/settings.sh --env dev --key USNM_INGEST_SCRATCH_GIB --value 0            # 1% fits the replica's disk
 scripts/settings.sh --env dev --key USNM_LOG_DAILY_CAP_GB --value 1              # blob write logs; clear afterwards
-scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --value "$ARCHIVE_ID"   # keep every LoC download (Archival storage, above)
-scripts/provision.sh --env dev
+scripts/provision.sh --env dev --allow-dirty    # creates dev's settings vault on a first provision
+az keyvault secret set --vault-name "$(scripts/settings.sh --env dev --key SETTINGS_KEYVAULT)" \
+  --name USNM-ARCHIVE-ACCOUNT --value "$ARCHIVE_ID" -o none   # keep every LoC download (Archival storage, above; private)
+scripts/provision.sh --env dev --allow-dirty    # the experiment's settings, before they're committed
 RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD)
 az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
 az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
 scripts/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
 scripts/settings.sh --env dev --key USNM_USE_ACR --value true
-scripts/provision.sh --env dev
+scripts/provision.sh --env dev --allow-dirty
 
 # The 1%: every 100th batch of LoC's listing by name, from the 40th (offset 39):
 # 30 batches, 238,057 pages of 23,838,683 (0.999%), 26 awardees, 23.8 GB of archives.
@@ -792,7 +843,7 @@ scripts/logs.sh --env dev --query-name release-progress --span 6h    # the singl
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 1
-scripts/provision.sh --env dev
+scripts/provision.sh --env dev --allow-dirty
 J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 J members
 J sample --name dev1pct --pct 100          # dev's whole version is the 1%
@@ -803,12 +854,12 @@ J bench --label n1 --index s1ix --sample dev1pct --expect-searchers 1
 # Two nodes, both indexing.
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 2
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 2
-scripts/provision.sh --env dev
+scripts/provision.sh --env dev --allow-dirty
 J load --sample dev1pct --index s2ix
 J bench --label n2 --index s1ix --sample dev1pct --expect-searchers 2
 # Three nodes; node 2 only searches. Then the restart test.
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 3
-scripts/provision.sh --env dev
+scripts/provision.sh --env dev --allow-dirty
 J bench --label n3 --index s1ix --sample dev1pct --expect-searchers 3
 J members
 az containerapp revision restart -n usnm-qw-2-ca-dev -g "$RG" \
@@ -854,7 +905,7 @@ scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODE_VCPU --value 4
 scripts/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --value "$TAG,$TAG-qw2509"
-scripts/provision.sh --env dev
+scripts/provision.sh --env dev --allow-dirty
 J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 JOB=$(scripts/settings.sh --env dev --key SEARCH_CLUSTER_JOB)
 wait_for() {  # until execution $1 has ended; prints how
@@ -878,11 +929,11 @@ The two `members` lines show each searcher alone in its cluster, with `main_thre
 
 ```sh
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
-scripts/provision.sh --env dev
+scripts/provision.sh --env dev --allow-dirty
 wait_for "$(J load --sample dev1pct --index asdup3k --as-from-text)"
 wait_for "$(J load --sample dev1pct --index asdup30k --split-docs 30000 --as-from-text)"
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
-scripts/provision.sh --env dev
+scripts/provision.sh --env dev --allow-dirty
 bench() { wait_for "$(J bench --label "$1" --cluster "http://usnm-qw-cmp-$2-ca-dev" --index "$3" --sample dev1pct --american-stories --levels 1,4,10)"; }
 # then the same three rounds as above for asdup3k and asdup30k
 ```
@@ -913,13 +964,13 @@ ready() { until [ "$(az containerapp show -n usnm-qw-local-ca-dev -g "$RG" --que
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
 scripts/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --unset
 IX=s1ixb; scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_INDEX --value $IX
-scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value blob; scripts/provision.sh --env dev; ready
+scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value blob; scripts/provision.sh --env dev --allow-dirty; ready
 lbench c-blob-r1 blob --offset 200; lbench c-blob-r2 blob --levels-only --offset 210
-scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value nfs; scripts/provision.sh --env dev; ready
+scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value nfs; scripts/provision.sh --env dev --allow-dirty; ready
 lbench c-nfs-r1 nfs --offset 220; lbench c-nfs-r2 nfs --levels-only --offset 230
 az containerapp logs show -n usnm-qw-local-ca-dev -g "$RG" --container qwnode --tail 300 | grep -E 'data directory disk|local copy disk|index copied'
 scripts/qwcluster-report.py --env dev --since 12h --out qwlocal.md
-scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --unset; scripts/provision.sh --env dev   # removes the searcher and the share
+scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --unset; scripts/provision.sh --env dev --allow-dirty   # removes the searcher and the share
 ```
 
 The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (and `cache`, `copy`) with ratios to blob, and its bench rows name each run's mode. Compare the `r2` runs: if `nfs` cuts the main runtime's busy seconds per search and the probe's warm-up seconds as `copy` was meant to show, the Blob path (HTTP, TLS, the Azure client) is the main runtime's cost and an NFS share is a way around it in production; if it barely moves them, the cost is in decoding what a split needs. The flame graphs show which functions those seconds went to.
@@ -928,20 +979,22 @@ The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (a
 
 Local machines re-read badly OCR'd pages (#296, [ADR-0015](design/adr/0015-onprem-ocr-workers.md)). Each node is an Azure Arc-enabled server running AlmaLinux 9 (RHEL 10 is also accepted), with a managed identity and no stored secret. It takes pages from Storage queues in the exchange account `stusnmo<suffix>` and writes its output to that account's `ocr-out` container, which a cloud job copies into `curated`. This section sets up the account, connects and monitors a node, and starts the worker ([`crates/usnm-ocr-worker`](../crates/usnm-ocr-worker/README.md)).
 
-**The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP lives only in the environment's settings, never in the repository. The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
+**The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP is a private setting, in the settings vault, never in the repository ([Settings](#settings)). The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
 
 ```sh
-scripts/settings.sh --env prod --key USNM_OCR_NODE_IPS --value 203.0.113.7    # the home IP
-scripts/settings.sh --env prod --key USNM_OCR_NODES --value true
+settings_vault=$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)
+az keyvault secret set --vault-name "$settings_vault" --name USNM-OCR-NODE-IPS --value 203.0.113.7 -o none   # the home IP
+scripts/settings.sh --env prod --key USNM_OCR_NODES --value true   # committed: pull request, merge, then provision from main
 scripts/ocr-node/group.sh --env prod --dry-run
-scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP
+scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the settings vault (the local file until the vault exists)
 scripts/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 
 **The nodes' Key Vault.** With `USNM_OCR_NODES` on, the provision also creates `usnmocrkv<env><suffix>` (saved as `OCR_KEYVAULT`) for the secrets you hold for setting up nodes: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation key and organization id a RHEL node registers with, and `rhel-offline-token`, a Red Hat API offline token for the Proxmox hosts to fetch RHEL images through Red Hat's image API (not scripted yet, #339: the image is downloaded by hand for now). Its firewall allows only `USNM_OCR_NODE_IPS`, so run `az` against it from home. Access is Azure RBAC only, and only the object ids in `USNM_OCR_KEYVAULT_ADMINS` get Key Vault Secrets Officer (nodes get nothing). Prod's vault has purge protection: a deleted secret or vault is kept for 90 days and can't be purged. Never paste the secrets into a chat, an issue or a commit, and keep them out of your shell history. The leading space on the `secret set` lines below keeps zsh and bash from saving them when `HIST_IGNORE_SPACE` or `HISTCONTROL=ignorespace` is set; or use `--file` with a file you delete straight after. Grant yourself access, provision, then set the secrets in your own terminal:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_OCR_KEYVAULT_ADMINS --value "$(az ad signed-in-user show --query id -o tsv)"
+az keyvault secret set --vault-name "$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)" \
+  --name USNM-OCR-KEYVAULT-ADMINS --value "$(az ad signed-in-user show --query id -o tsv)" -o none   # private
 scripts/provision.sh --env prod                              # writes OCR_KEYVAULT
 vault=$(scripts/settings.sh --env prod --key OCR_KEYVAULT)   # usnmocrkvprodffapzy
  az keyvault secret set --vault-name "$vault" --name rhel-activation-key --value '<activation key>' -o none

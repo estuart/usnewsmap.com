@@ -1,0 +1,359 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "An environment's committed settings, infra/env/<env>.json (#295)",
+  "description": "The public choices for one environment, which infra/main.bicepparam and the environment scripts read. Every setting infra/main.bicepparam reads is listed here, and x-usnm-visibility says where it lives: public, in the committed file; private, in the environment's settings vault and never in the repository; local, in the environment's local settings file, written by the scripts. A setting left out takes its default in infra/main.bicepparam. Checked by scripts/lib/env_settings.py --check.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "This schema, for editors: ./schema.json."
+    },
+    "AZURE_ENV_NAME": {
+      "x-usnm-visibility": "local",
+      "description": "Local: in the environment's local settings file. The environment's name, which the scripts set from --env.",
+      "not": {}
+    },
+    "AZURE_LOCATION": {
+      "x-usnm-visibility": "local",
+      "description": "Local: in the environment's local settings file. The region, which scripts/bootstrap.sh sets (see its --move).",
+      "not": {}
+    },
+    "USNM_ALERT_EMAILS": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. Alert recipients' email addresses.",
+      "not": {}
+    },
+    "USNM_AMERICAN_STORIES": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_AMERICAN_STORIES_SEARCH": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_API_CERT_ID": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. A managed certificate's resource id, which names the subscription.",
+      "not": {}
+    },
+    "USNM_API_IMAGE": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_ARCHIVE_ACCOUNT": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. The archival account's resource id, which names its subscription.",
+      "not": {}
+    },
+    "USNM_AVAILABILITY_FREQUENCY": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_BACKFILL_CRON": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_BACKFILL_WORKERS": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_BROWSE_PAGES": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_BUDGET_START": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_CONGRESS": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_CONGRESS_JOB": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_CONGRESS_SEARCH": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_COSMOS_FREE_TIER": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_DEDICATED_PROFILE": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_DNS_ZONE": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_EXPERIMENT": {
+      "x-usnm-visibility": "local",
+      "description": "Local: in the environment's local settings file. dev's current experiment (an issue number), which scripts/stand-up.sh sets and scripts/teardown.sh clears.",
+      "not": {}
+    },
+    "USNM_EXPERIMENT_STARTED": {
+      "x-usnm-visibility": "local",
+      "description": "Local: in the environment's local settings file. When dev's experiment started, which every provision of dev sets.",
+      "not": {}
+    },
+    "USNM_GITHUB_REPO": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_GITHUB_REPO_IDS": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. The repository's owner and repository ids, which the CI identity's federated credentials trust.",
+      "not": {}
+    },
+    "USNM_IMAGE_TAG": {
+      "x-usnm-visibility": "local",
+      "description": "Local: in the environment's local settings file. The image tag dev runs, which scripts/stand-up.sh sets to the commit it builds; elsewhere the default (main).",
+      "not": {}
+    },
+    "USNM_INGEST_CRON": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_INGEST_FULL": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_INGEST_JOBS": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_INGEST_ON_DEDICATED": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_INGEST_SCRATCH_GIB": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_JA_LATIN": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_JA_OCR_JOB": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_JA_OCR_REPLICAS": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_LOG_DAILY_CAP_GB": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_MERGE_TIMEOUT_SECS": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_OCR": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_OCR_BULK_REFILL_BELOW": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_BULK_WINDOW": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_KEYVAULT_ADMINS": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. Entra object ids given Key Vault Secrets Officer on the OCR nodes' vault.",
+      "not": {}
+    },
+    "USNM_OCR_LOCAL": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_OCR_NODES": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_OCR_NODE_GROUP": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. The OCR nodes' Entra group's object id.",
+      "not": {}
+    },
+    "USNM_OCR_NODE_IPS": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. The OCR nodes' public IP addresses (the operator's home IP).",
+      "not": {}
+    },
+    "USNM_OCR_SEED_BATCHES": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_LANGUAGES": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_MANIFEST": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_MAX_PAGES": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_MIN_DAMAGE": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_PILOT": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_PLAN": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_SKIP_AMERICAN_STORIES": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_SOURCE": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_YEARS": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SKU": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SYNC_CRON": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_USERS": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. Entra principals given access to Document Intelligence.",
+      "not": {}
+    },
+    "USNM_PAGE_LANGUAGE": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_PAGE_LANGUAGE_FILTER": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_PARTITION_DECADE": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_RETAIN_RAW": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_SEARCHER_APP": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_SEARCH_BACKEND": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_SEARCH_CLUSTER": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_SEARCH_CLUSTER_INDEXERS": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_SEARCH_CLUSTER_NODES": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_SEARCH_CLUSTER_NODE_VCPU": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_SEARCH_CLUSTER_RUNTIME_THREADS": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_SEARCH_CLUSTER_SEARCH_THREADS": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_SEARCH_CLUSTER_SPLIT_SEARCHES": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_SEARCH_COMPARE_TAGS": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_SEARCH_LOCAL_CACHE_GIB": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_SEARCH_LOCAL_INDEX": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_SEARCH_LOCAL_MODE": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_SEARCH_LOG_READERS": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. Entra principals that may read the search log.",
+      "not": {}
+    },
+    "USNM_SEARCH_NFS_GIB": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_SERIALSET_JOB": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_SETTINGS_VAULT_ADMINS": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. Entra object ids given Key Vault Secrets Officer on the settings vault: every operator who provisions the environment.",
+      "not": {}
+    },
+    "USNM_SINGLE_TEXT_FIELD": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_SITE_CERT_ID": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. A managed certificate's resource id, which names the subscription.",
+      "not": {}
+    },
+    "USNM_SPLIT_DOCS": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
+    "USNM_USE_ACR": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_VNET_ADDRESS_PREFIX": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. The VNet's address space, an RFC 1918 block (no private addresses in the repository, #399).",
+      "not": {}
+    },
+    "USNM_WWW_CERT_ID": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. A managed certificate's resource id, which names the subscription.",
+      "not": {}
+    }
+  }
+}
