@@ -322,7 +322,8 @@ pub struct HostStats {
     pub schema: u32,
     pub host: String,
     pub collected_at: DateTime<Utc>,
-    /// `pvesh get /nodes/<host>/status`, as Proxmox gives it.
+    /// `pvesh get /nodes/<host>/status`, as Proxmox gives it, except `cpu`,
+    /// which `hoststats.sh` samples itself (see [`PveNode::cpu`]).
     pub node: PveNode,
     /// `pvesh get /cluster/resources --type vm`: the host's guests.
     pub resources: Vec<PveGuest>,
@@ -333,7 +334,10 @@ pub struct HostStats {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PveNode {
-    /// CPU in use, 0 to 1.
+    /// CPU in use, 0 to 1: the share of a 2 s sample of `/proc/stat` the
+    /// CPUs weren't idle or in I/O wait, guest (VM) time included. Sampled
+    /// by `hoststats.sh`, not Proxmox's own figure, which leaves out guest
+    /// time and reads about 0 on a host whose VMs are busy.
     pub cpu: f64,
     pub cpuinfo: PveCpuInfo,
     /// The load averages, as Proxmox gives them (strings).

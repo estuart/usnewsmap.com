@@ -62,6 +62,23 @@ collect() {
   local host node resources pools="" datasets="" sep
   host=$(hostname)
   node=$(pvesh get "/nodes/$host/status" --output-format json)
+  # pvesh's node "cpu" leaves out guest time, so a host whose VMs are busy
+  # reads about 0 (12 October 2026: 0 at a load of 10). Replace it with the
+  # share of the last 2 s the CPUs weren't idle, from /proc/stat, which
+  # counts guest time as busy (the kernel's user time includes it).
+  node=$(printf '%s' "$node" | python3 -c '
+import json, sys, time
+def sample():
+    with open("/proc/stat") as f:
+        v = [int(x) for x in f.readline().split()[1:9]]
+    return sum(v), v[3] + v[4]  # total; idle + iowait
+t1, i1 = sample(); time.sleep(2); t2, i2 = sample()
+d = json.load(sys.stdin)
+if t2 > t1:
+    # iowait can go backwards, so keep the share inside 0..1.
+    d["cpu"] = round(min(1.0, max(0.0, (t2 - t1 - (i2 - i1)) / (t2 - t1))), 4)
+json.dump(d, sys.stdout, separators=(",", ":"))
+')
   resources=$(pvesh get /cluster/resources --type vm --output-format json)
   sep=""
   for p in "${POOLS[@]}"; do
