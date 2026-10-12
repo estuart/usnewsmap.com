@@ -165,9 +165,28 @@ install -o root -g root -m 0755 "$DIR/usnm-ocr-worker" "$LIB/$RELEASE/usnm-ocr-w
 # AVC is logged). Every release's binary is labelled bin_t, as a program in
 # /usr/local/bin would be, and the rule survives a relabel.
 if command -v selinuxenabled > /dev/null && selinuxenabled; then
+  # semanage takes the policy store's lock, which another package's install
+  # may hold for a few minutes (on a new node, the monitoring agent's
+  # collector loads a policy module): wait for it, up to five minutes.
+  semanage_wait() {
+    local out try
+    for try in $(seq 0 30); do
+      if out=$(semanage "$@" 2>&1); then
+        printf '%s\n' "$out"
+        return 0
+      fi
+      grep -q "transaction lock" <<< "$out" || break
+      [ "$try" -lt 30 ] || break
+      echo "the SELinux policy store is busy; waiting" >&2
+      sleep 10
+    done
+    printf '%s\n' "$out" >&2
+    return 1
+  }
   rule="$LIB/[^/]+/usnm-ocr-worker"
-  if ! semanage fcontext -l -C | grep -qF "$rule"; then
-    semanage fcontext -a -t bin_t "$rule"
+  rules=$(semanage_wait fcontext -l -C)
+  if ! grep -qF "$rule" <<< "$rules"; then
+    semanage_wait fcontext -a -t bin_t "$rule" > /dev/null
   fi
   # Every installed release, so a later --rollback runs bin_t too.
   restorecon -R "$LIB"

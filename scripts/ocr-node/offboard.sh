@@ -125,18 +125,25 @@ EXT=AzureMonitorLinuxAgent
 # A GET; the query's result goes in ARM_OUT. Returns 1 only when the
 # resource doesn't exist, and stops on any other failure.
 ARM_OUT=""
+# Hybrid Compute answers a missing extension with HCRP404 rather than
+# ResourceNotFound, and now and then with HCRP500, so a 5xx is tried again
+# up to three times.
 arm_get() {
-  local out err errf
+  local out err errf try
   ARM_OUT=""
   errf=$(mktemp)
-  if out=$(az rest --method get --url "$1" --query "$2" -o tsv 2> "$errf"); then
-    rm -f "$errf"
-    ARM_OUT=$out
-    return 0
-  fi
-  err=$(cat "$errf")
+  for try in 1 2 3; do
+    if out=$(az rest --method get --url "$1" --query "$2" -o tsv 2> "$errf"); then
+      rm -f "$errf"
+      ARM_OUT=$out
+      return 0
+    fi
+    err=$(cat "$errf")
+    if grep -qE '"code": ?"(ResourceNotFound|HCRP404)"' <<< "$err"; then rm -f "$errf"; return 1; fi
+    grep -qE 'Internal Server Error|Service Unavailable|Bad Gateway|Gateway Timeout|"code": ?"HCRP5[0-9][0-9]"' <<< "$err" || break
+    [ "$try" = 3 ] || sleep 10
+  done
   rm -f "$errf"
-  if grep -qE '"code": ?"ResourceNotFound"' <<< "$err"; then return 1; fi
   die "can't read ${1%%\?*}: $err"
 }
 if [ -z "$MACHINE_ID" ]; then

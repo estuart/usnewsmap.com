@@ -977,7 +977,7 @@ The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (a
 
 ## On-prem OCR nodes
 
-Local machines re-read badly OCR'd pages (#296, [ADR-0015](design/adr/0015-onprem-ocr-workers.md)). Each node is an Azure Arc-enabled server running AlmaLinux 9 (RHEL 10 is also accepted), with a managed identity and no stored secret. It takes pages from Storage queues in the exchange account `stusnmo<suffix>` and writes its output to that account's `ocr-out` container, which a cloud job copies into `curated`. This section sets up the account, connects and monitors a node, and starts the worker ([`crates/usnm-ocr-worker`](../crates/usnm-ocr-worker/README.md)).
+Local machines re-read badly OCR'd pages (#296, [ADR-0015](design/adr/0015-onprem-ocr-workers.md)). Each node is an Azure Arc-enabled server running RHEL 10 (AlmaLinux 9 is also accepted), with a managed identity and no stored secret. It takes pages from Storage queues in the exchange account `stusnmo<suffix>` and writes its output to that account's `ocr-out` container, which a cloud job copies into `curated`. This section sets up the account, connects and monitors a node, and starts the worker ([`crates/usnm-ocr-worker`](../crates/usnm-ocr-worker/README.md)).
 
 **The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP is a private setting, in the settings vault, never in the repository ([Settings](#settings)). The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
 
@@ -990,7 +990,7 @@ scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the setti
 scripts/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 
-**The nodes' Key Vault.** With `USNM_OCR_NODES` on, the provision also creates `usnmocrkv<env><suffix>` (saved as `OCR_KEYVAULT`) for the secrets you hold for setting up nodes: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation key and organization id a RHEL node registers with, and `rhel-offline-token`, a Red Hat API offline token for the Proxmox hosts to fetch RHEL images through Red Hat's image API (not scripted yet, #339: the image is downloaded by hand for now). Its firewall allows only `USNM_OCR_NODE_IPS`, so run `az` against it from home. Access is Azure RBAC only, and only the object ids in `USNM_OCR_KEYVAULT_ADMINS` get Key Vault Secrets Officer (nodes get nothing). Prod's vault has purge protection: a deleted secret or vault is kept for 90 days and can't be purged. Never paste the secrets into a chat, an issue or a commit, and keep them out of your shell history. The leading space on the `secret set` lines below keeps zsh and bash from saving them when `HIST_IGNORE_SPACE` or `HISTCONTROL=ignorespace` is set; or use `--file` with a file you delete straight after. Grant yourself access, provision, then set the secrets in your own terminal:
+**The nodes' Key Vault.** With `USNM_OCR_NODES` on, the provision also creates `usnmocrkv<env><suffix>` (saved as `OCR_KEYVAULT`) for the secrets you hold for setting up nodes: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation key and organization id a RHEL node registers with, and `rhel-offline-token`, a Red Hat API offline token with which `scripts/ocr-node/rhel-image.sh` fetches RHEL images onto the Proxmox hosts through Red Hat's image API (below). Its firewall allows only `USNM_OCR_NODE_IPS`, so run `az` against it from home. Access is Azure RBAC only, and only the object ids in `USNM_OCR_KEYVAULT_ADMINS` get Key Vault Secrets Officer (nodes get nothing). Prod's vault has purge protection: a deleted secret or vault is kept for 90 days and can't be purged. Never paste the secrets into a chat, an issue or a commit, and keep them out of your shell history. The leading space on the `secret set` lines below keeps zsh and bash from saving them when `HIST_IGNORE_SPACE` or `HISTCONTROL=ignorespace` is set; or use `--file` with a file you delete straight after. Grant yourself access, provision, then set the secrets in your own terminal:
 
 ```sh
 az keyvault secret set --vault-name "$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)" \
@@ -1007,15 +1007,23 @@ A new role assignment can take a few minutes to apply; a `Forbidden` right after
 
 **The nodes' group.** The nodes get their roles through an Entra security group, `usnm-ocr-nodes-<env>`: the provision grants the group Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter`, a custom writer role on `ocr-out` (list, read and create blobs, no delete) and Monitoring Metrics Publisher on the nodes' own Application Insights component, `usnm-ocr-appi-<env>` (the worker's telemetry), and nothing else; nothing on the environment's `appi-usnm-<env>`. Each node's Arc identity is a member. `group.sh` creates the group once per environment, saves its object id in `USNM_OCR_NODE_GROUP` and makes you an owner so you can add and remove members. Run again, it uses the saved id and lists the group's owners. It never adopts a group by name: if one named `usnm-ocr-nodes-<env>` exists and no id is saved, it stops, so you can check that group's members and owners (`az ad group member list --group <id>`, `az ad group owner list --group <id>`) before saving its id by hand. The provision grants every member the node roles, and owners can add members. Creating it needs the right to create security groups (the default user setting, or Groups Administrator). The deployment stack can't create it (ADR-0015), and teardown leaves it: delete it by its object id, the value of `USNM_OCR_NODE_GROUP` (`az ad group delete --group <id>`; teardown keeps the settings file, renamed), not by its name.
 
-**Create the VM.** On a Proxmox host, `scripts/ocr-node/proxmox-create-vm.sh` (copy it to the host, run it as root) creates an AlmaLinux 9 VM from AlmaLinux's GenericCloud image, checking its published sha256, or, with `--image-file` and `--image-sha256`, a VM from a qcow2 image already on the host, such as Red Hat's RHEL 10 KVM Guest Image (download it from Red Hat and take its SHA-256 from the download page). `--mac` gives the VM a fixed MAC address, so a DHCP reservation (a fixed IP on the router) still applies after a rebuild. The VM boots UEFI with Secure Boot (Microsoft's keys pre-enrolled; AlmaLinux's shim is signed) and has a vTPM, CPU type `host` (so the OCR engines can use AVX2), the QEMU guest agent, DHCP and start at boot. cloud-init creates an admin user `claude` with key-only SSH and passwordless sudo. On the first try cloud-init left the hostname as `localhost`; the script now sets `fqdn` and runs `hostnamectl set-hostname`. It prints the VM's address once the guest agent reports one.
+**Create the VM.** On a Proxmox host, `scripts/ocr-node/proxmox-create-vm.sh` (copy it to the host, run it as root) creates a VM from a qcow2 image already on the host, with `--image-file` and `--image-sha256`, such as Red Hat's RHEL 10 KVM Guest Image, or, without them, an AlmaLinux 9 VM from AlmaLinux's GenericCloud image, checking its published sha256. `--mac` gives the VM a fixed MAC address, so a DHCP reservation (a fixed IP on the router) still applies after a rebuild. The VM boots UEFI with Secure Boot (Microsoft's keys pre-enrolled; AlmaLinux's and Red Hat's shims are signed) and has a vTPM, CPU type `host` (so the OCR engines can use AVX2), the QEMU guest agent, DHCP and start at boot. cloud-init creates an admin user `claude` with key-only SSH and passwordless sudo. On the first try cloud-init left the hostname as `localhost`; the script now sets `fqdn` and runs `hostnamectl set-hostname`. The first DHCP request still goes out as `localhost`, so the gateway's local DNS learned the name only at the next renewal; cloud-init now brings the wired connection up again after setting the hostname, which sends it at once. The script prints the VM's address once the guest agent reports one.
+
+`scripts/ocr-node/rhel-image.sh` puts the RHEL image on the host (#339). From your machine, it reads `rhel-offline-token` from the nodes' Key Vault with your sign-in and sends it to the host on ssh's stdin. On the host it exchanges the token at Red Hat's SSO for an access token, asks the image API for the download link of the image with that SHA-256 (Red Hat's download page lists it), downloads the image and keeps it only if the SHA-256 matches. The tokens and the signed link go to curl on its stdin, so none of them is on a command line or on the host's disk. An image already there with the right SHA-256 is left alone. Red Hat lets an offline token lapse after 30 days unused.
+
+A rebuilt node gets a new name with the next number (`usnm-ocr-node3-arcs-prod` replaced node 2, `usnm-ocr-node4-arcs-prod` node 1), never a reused one. The name is also the worker's node id, which the ledger, `ocr-sync --report`'s pages by node and revocations by `node` all key on, so a reused name would mix two machines' output. The VMID is the host's choice; the nodes use 203 on pve-big and 124 on the NUC.
 
 ```sh
-bash proxmox-create-vm.sh --vmid 120 --name usnm-ocr-node1 --ssh-key "$(cat ~/.ssh/id_ed25519.pub)"
-# optional: --cores 4 --memory-mib 8192 --disk-gib 64 --storage local-lvm --bridge vmbr0 --snippets-storage local --mac 52:54:00:12:34:56
-# RHEL 10.2, from the KVM Guest Image on the host:
-bash proxmox-create-vm.sh --vmid 120 --name usnm-ocr-node1 --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" \
+# from your machine: the RHEL 10.2 KVM Guest Image onto the host
+scripts/ocr-node/rhel-image.sh --env prod --host root@pve.tjg.fyi --file-name rhel-10.2-x86_64-kvm.qcow2 \
+  --image-sha256 caaacd0b11bbc4206f8c7fec8594b82b4366b3f88ff974dbbf373832ae676f4f [--dest /var/lib/vz/template/cache] [--dry-run]
+# on the host, as root
+bash proxmox-create-vm.sh --vmid 124 --name usnm-ocr-node4-arcs-prod --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" \
+  --cores 4 --memory-mib 8192 --disk-gib 64 \
   --image-file /var/lib/vz/template/cache/rhel-10.2-x86_64-kvm.qcow2 \
   --image-sha256 caaacd0b11bbc4206f8c7fec8594b82b4366b3f88ff974dbbf373832ae676f4f
+# AlmaLinux 9 instead: leave out --image-file and --image-sha256
+# optional: --storage local-lvm --bridge vmbr0 --snippets-storage local --mac 52:54:00:12:34:56
 ```
 
 A RHEL image has no package repositories until it's registered with Red Hat, which `onboard.sh` does, so with `--image-file` cloud-init installs nothing: it creates the user, sets the hostname and starts the guest agent if the image has it (Red Hat's KVM Guest Image ships it). If the image has no guest agent, the script can't print the address; it prints the VM's MAC instead, to find in the router's DHCP leases, and `node-setup.sh` installs the agent after registration.
@@ -1179,7 +1187,7 @@ scripts/provision.sh --env prod
 
 ## The OCR dashboard on the LAN (#296)
 
-`usnm-ocrdash` shows the scan fetch, the OCR nodes and the Proxmox hosts on one page that refreshes itself, at <https://ocr.tjg.fyi/>, from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. `ocr.tjg.fyi` is a static record in the LAN gateway's local DNS, with a DHCP reservation for CT 212; it has no public A record, and internal names never go in the public `tjg.fyi` zone. The commands below name hosts by their LAN DNS names (`pve.tjg.fyi`, `usnm-ocr-node1-arcs-prod.tjg.fyi`), which resolve only through the gateway's local DNS.
+`usnm-ocrdash` shows the scan fetch, the OCR nodes and the Proxmox hosts on one page that refreshes itself, at <https://ocr.tjg.fyi/>, from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. `ocr.tjg.fyi` is a static record in the LAN gateway's local DNS, with a DHCP reservation for CT 212; it has no public A record, and internal names never go in the public `tjg.fyi` zone. The commands below name hosts by their LAN DNS names (`pve.tjg.fyi`, `usnm-ocr-node3-arcs-prod.tjg.fyi`), which resolve only through the gateway's local DNS.
 
 **Host stats.** As root on each Proxmox host, from a checkout of the scripts:
 
@@ -1200,8 +1208,8 @@ Each installs `usnm-hoststats.timer`, which runs every minute.
 scripts/ocr-node/ocrdash-ct.sh --create
 scripts/ocr-node/ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
 scripts/ocr-node/ocrdash-ct.sh --configure --allow lan \
-  --worker usnm-ocr-node1=http://usnm-ocr-node1-arcs-prod.tjg.fyi:8381 \
-  --worker usnm-ocr-node2=http://usnm-ocr-node2-arcs-prod.tjg.fyi:8381 \
+  --worker usnm-ocr-node3=http://usnm-ocr-node3-arcs-prod.tjg.fyi:8381 \
+  --worker usnm-ocr-node4=http://usnm-ocr-node4-arcs-prod.tjg.fyi:8381 \
   --host-push pve=pve.tjg.fyi --workbook-url '<the OCR nodes workbook link>' \
   --https-name ocr.tjg.fyi
 ```

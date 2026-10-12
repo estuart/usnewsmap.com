@@ -140,6 +140,10 @@ $PACKAGES
 runcmd:
   # cloud-init can leave the hostname as localhost on this image; set it explicitly.
   - [hostnamectl, set-hostname, $NAME]
+  # The first DHCP request went out as localhost, so the gateway's DNS
+  # doesn't know the name until a renewal; bring the wired connection up
+  # again to send it now.
+  - [sh, -c, 'nmcli -g UUID,TYPE connection show --active | sed -n "s/:802-3-ethernet\$//p" | while read -r c; do nmcli connection up uuid "\$c"; done || true']
 $AGENT
 EOF
 

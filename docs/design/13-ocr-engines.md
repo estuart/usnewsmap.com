@@ -914,7 +914,7 @@ flowchart TB
 - The survey shares node 1 with the worker, so it runs with the worker stopped, or with instances of its own, so that timings don't compete.
 - **Moving off round 1:**
   1. The Python round finishes unchanged. Its results are kept as indicative only.
-  2. The round-1 images exist only in node 1's local storage under mutable `ocr-survey/<engine>` tags; they are saved with `podman save` by image id before anything is rebuilt.
+  2. The round-1 images lived only in node 1's local storage under mutable `ocr-survey/<engine>` tags. They were saved with `podman save` by image id on 12 October, before node 1 was deleted: seven archives in `/tank/ocr-survey/2026-10-11/images/` on pve-big (the five `ocr-survey/<engine>` images, an earlier untagged Tesseract build and the llama.cpp image), each with its `podman image inspect` output, a `SHA256SUMS` checked on pve-big, and the image lists of both nodes. `podman load` and `podman tag <id> ocr-survey/<engine>` bring one back.
   3. The survey Containerfiles move to `ocr/engines/<family>/`, and their entrypoint changes from `engine_runner.py` to an adapter. Their digests change.
   4. The Tesseract arm is re-run on the production image and profiles before any routing decision. The other engines are re-run as they get adapters.
 

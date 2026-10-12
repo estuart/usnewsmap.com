@@ -50,7 +50,7 @@ MANIFEST="" RESOLUTION=full ORDER=priority MAX_BYTES="" CONCURRENCY=4
 BUFFER_RESOLUTION=full SETS=both BUFFER_CAP=1000000000000
 SERVE=false PORT=8380
 # The scan server's clients, the OCR nodes, by host name (LAN DNS only).
-OCR_NODES=usnm-ocr-node1-arcs-prod.tjg.fyi,usnm-ocr-node2-arcs-prod.tjg.fyi
+OCR_NODES=usnm-ocr-node3-arcs-prod.tjg.fyi,usnm-ocr-node4-arcs-prod.tjg.fyi
 ALLOW=$OCR_NODES
 REPO=tgoodyear/usnewsmap.com
 FETCH_UID=2000
