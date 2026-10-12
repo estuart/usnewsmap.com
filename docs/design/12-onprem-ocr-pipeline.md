@@ -59,7 +59,7 @@ The state on `main` on 11 October 2026, checked against the code, and in product
 
 ### 12.2.1 The nodes
 
-Since 12 October the nodes run RHEL 10.2 from Red Hat's KVM Guest Image, with UEFI Secure Boot, a vTPM and SELinux enforcing, registered with Red Hat through the activation key in the nodes' Key Vault (#296):
+Since 12 October the nodes run RHEL 10.2 from Red Hat's KVM Guest Image, with UEFI Secure Boot, a vTPM and SELinux enforcing, registered with Red Hat through the activation key in the nodes' Key Vault, and reporting to Red Hat Lightspeed (Insights) through insights-client, which `node-setup.sh` registers and `offboard.sh` unregisters (#296):
 
 | Node                               | Host                                   | VM  | vCPUs, memory | Pages at once                    |
 | ---------------------------------- | -------------------------------------- | --- | ------------- | -------------------------------- |

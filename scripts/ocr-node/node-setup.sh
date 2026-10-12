@@ -163,6 +163,26 @@ else
 fi
 RH_ORG="" RH_KEY=""
 
+step "Red Hat Lightspeed (insights-client)"
+# A registered RHEL node also reports to Red Hat Lightspeed (Insights) for
+# its advisories, vulnerabilities and compliance (the maintainer's request,
+# 12 October 2026). insights-client uses the RHSM registration above, so it
+# needs no credentials of its own, and enables its own daily upload timer.
+# A node already registered with Insights is left alone.
+if [ "$OS_ID" != rhel ]; then
+  echo "not RHEL; no insights-client"
+else
+  dnf install -y insights-client
+  if insights-client --status > /dev/null 2>&1; then
+    echo "already registered with Red Hat Lightspeed"
+  else
+    insights-client --register
+  fi
+  # Either way, make sure the daily upload runs: offboard.sh disables it,
+  # and a re-run of this script should leave a registered node reporting.
+  systemctl enable --now insights-client.timer
+fi
+
 step "Installing packages"
 # No OCR engine here. EL9's AppStream has only Tesseract 4.1.1 (with 4.1.0
 # language data) and EPEL 9 has no Tesseract at all; the engines the survey
