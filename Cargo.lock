@@ -2666,6 +2666,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "usnm-ocr-dash"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "chrono",
+ "clap",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "usnm-core",
+ "usnm-ocr-contract",
+ "usnm-ocr-worker",
+]
+
+[[package]]
 name = "usnm-ocr-worker"
 version = "0.1.0"
 dependencies = [

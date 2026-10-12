@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Publishes the OCR worker's GitHub release from CI (12 Step 2): the EL9
-# binary, the Tesseract image it runs (an OCI archive and its image id) and
-# SHA256SUMS, as `ocr-worker-<yyyymmdd>-<sha7>`. The ocr-worker-release job
-# attests every file first; scripts/ocr-node/install-worker.sh verifies
-# them. A release that exists already (a re-run) is left as it is.
-#
+# binary, the LAN dashboard's binary (12 §12.2.5), the Tesseract image the
+# worker runs (an OCI archive and its image id) and SHA256SUMS, as
+# `ocr-worker-<yyyymmdd>-<sha7>`. The ocr-worker-release job attests every
+# file first; scripts/ocr-node/install-worker.sh verifies them. A release
+# that exists already (a re-run) is left as it is.
 #   scripts/ci/ocr-worker-release.sh --dist DIR
 #
 # Needs GH_TOKEN with contents: write, GITHUB_REPOSITORY and GITHUB_SHA.
@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$DIST" ] || { echo "error: missing --dist" >&2; usage; }
-files="usnm-ocr-worker usnm-ocr-tesseract.oci.tar.gz usnm-ocr-tesseract.image-id SHA256SUMS"
+files="usnm-ocr-worker usnm-ocrdash usnm-ocr-tesseract.oci.tar.gz usnm-ocr-tesseract.image-id SHA256SUMS"
 for f in $files; do
   [ -s "$DIST/$f" ] || { echo "error: $DIST/$f is missing" >&2; exit 1; }
 done
@@ -51,6 +51,7 @@ cat > "$notes" <<NOTES
 The on-prem OCR worker (#296) for AlmaLinux 9 and RHEL 10 (x86_64, glibc 2.34 or later), built from $GITHUB_SHA.
 
 - \`usnm-ocr-worker\`: the worker binary.
+- \`usnm-ocrdash\`: the LAN dashboard (\`scripts/ocr-node/ocrdash-ct.sh --install\`).
 - \`usnm-ocr-tesseract.oci.tar.gz\`: the Tesseract image it runs (\`ocr/engines/tesseract/\`), image id \`$image\`.
 - \`usnm-ocr-tesseract.image-id\`: that id.
 - \`SHA256SUMS\`: the sha256 of each file.

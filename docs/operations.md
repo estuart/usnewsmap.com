@@ -1104,3 +1104,40 @@ scripts/provision.sh --env prod
 - Records: `reference/<version>/ocr_local.json` (the rule and metric versions, a parts summary, pages considered, replaced and kept by reason, language and engine, and the revocations applied), `ocr_local_pages.bin` (the pages that hold our text), the manifest's `built_from.ocr_local` and the build record's `features.ocr_local`. The API marks hits on those pages "Our OCR", with a viewer link that has no highlight. On a page the Japanese overlay also has, the Japanese overlay wins.
 - To take a node's or engine's output out, write a create-only `curated/ocr-local/revoked/<stamp>.json` with `reason`, `reference` and at least one of `node`, `engine`, `run`, `from` and `to`; every field given must match. Matching rows are left out from the next release that indexes their batches, so text already published stays until a full rebuild. A file the release can't read stops the release.
 - Clearing the setting stops new replacements. A delta carries the published version's `ocr_local_pages.bin` forward either way; the next full rebuild without the setting goes back to LoC's text everywhere.
+
+## The OCR dashboard on the LAN (#296)
+
+`usnm-ocrdash` shows the scan fetch, the OCR nodes and the Proxmox hosts on one page that refreshes itself, at `http://<CT 212's address>/` (`pct exec 212 -- hostname -I` on pve-big), from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. The address comes from DHCP. There is no DNS name, and internal names never go in the public `tjg.fyi` zone. The commands below name hosts by their LAN DNS names (`pve.tjg.fyi`, `usnm-ocr-node1-arcs-prod.tjg.fyi`), which resolve only through the gateway's local DNS; the dashboard's own address is written only into the hosts' configuration, never into the repository.
+
+**Host stats.** As root on each Proxmox host, from a checkout of the scripts:
+
+```sh
+# pve-big: its file is bind-mounted into the dashboard's container
+scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve-big.json \
+  --pool tank --dataset tank/ocr --dataset tank/ocr/scans --dataset tank/ocr/text
+# the NUC host: pushes its stats to the dashboard
+scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve.json \
+  --push-url http://<CT 212's address>/api/host/pve
+```
+
+Each installs `usnm-hoststats.timer`, which runs every minute.
+
+**The container.** As root on pve-big:
+
+```sh
+scripts/ocr-node/ocrdash-ct.sh --create
+scripts/ocr-node/ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
+scripts/ocr-node/ocrdash-ct.sh --configure --allow lan \
+  --worker usnm-ocr-node1=http://usnm-ocr-node1-arcs-prod.tjg.fyi:8381 \
+  --worker usnm-ocr-node2=http://usnm-ocr-node2-arcs-prod.tjg.fyi:8381 \
+  --host-push pve=pve.tjg.fyi --workbook-url '<the OCR nodes workbook link>'
+```
+
+`--create` makes CT 212 (unprivileged Debian 12, 1 core, 768 MB, onboot) with `tank/ocr/scans`, `tank/ocr/manifests` and `/var/lib/usnm-hoststats` bind-mounted read-only. `--install` takes `usnm-ocrdash` from a worker release; every release since the dashboard was merged has it. `--configure` sets the nftables input policy to drop everything but `--allow` (`lan`: the container's subnet), writes `/etc/usnm/ocrdash.env` and starts `usnm-ocrdash.service`. The worker link is the OCR nodes workbook's portal link, from `az resource list --resource-group rg-usnm-prod --resource-type microsoft.insights/workbooks`.
+
+**When it shows something odd.**
+
+- _A node says "no status"._ The worker isn't answering on its status port: the worker is down, it doesn't have the status endpoint yet, or the node's firewall drops the dashboard's address.
+- _The stats are stale._ `systemctl status usnm-hoststats.timer` on the host. On the NUC, a failed push logs `can't push` in `journalctl -u usnm-hoststats`.
+- _A new manifest._ The dashboard reads the manifest the fetcher's status names, and reads it again when its sha256 changes.
+- _Logs:_ `pct exec 212 -- journalctl -u usnm-ocrdash`. The copies of the workers' journals are in `/var/lib/usnm-ocrdash` in the container; deleting them makes the dashboard copy each worker's journal again from the start.

@@ -243,26 +243,32 @@ jobs:
         with:
           key: el9
       # --version prints the commit (USNM_GIT_SHA at build time).
-      - run: cargo build --release --locked -p usnm-ocr-worker
+      # The LAN dashboard (usnm-ocrdash, 12 §12.2.5) ships in the same
+      # release; its container on pve-big is Debian 12 (glibc 2.36).
+      - run: cargo build --release --locked -p usnm-ocr-worker -p usnm-ocr-dash
         env:
           USNM_GIT_SHA: ${{ github.sha }}
       - name: No glibc symbol newer than EL9's 2.34
         run: |
-          bin=target/release/usnm-ocr-worker
-          newest=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1)
-          echo "newest glibc symbol version: $newest"
-          if [ "$(printf '%s\n2.34\n' "$newest" | sort -V | tail -n 1)" != 2.34 ]; then
-            echo "::error::usnm-ocr-worker needs glibc $newest; EL9 has 2.34"
-            exit 1
-          fi
-          "$bin" --version | grep -F "commit $GITHUB_SHA"
           mkdir -p dist
-          cp "$bin" dist/usnm-ocr-worker
+          for name in usnm-ocr-worker usnm-ocrdash; do
+            bin=target/release/$name
+            newest=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1)
+            echo "$name: newest glibc symbol version: $newest"
+            if [ "$(printf '%s\n2.34\n' "$newest" | sort -V | tail -n 1)" != 2.34 ]; then
+              echo "::error::$name needs glibc $newest; EL9 has 2.34"
+              exit 1
+            fi
+            "$bin" --version | grep -F "commit $GITHUB_SHA"
+            cp "$bin" "dist/$name"
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ocr-worker-el9
           retention-days: 7
-          path: dist/usnm-ocr-worker
+          path: |
+            dist/usnm-ocr-worker
+            dist/usnm-ocrdash
           if-no-files-found: error
 
   # The worker runs on RHEL 10 too, and reads a page with the Tesseract
@@ -281,7 +287,7 @@ jobs:
         with:
           name: ocr-worker-el9
           path: dist
-      - run: chmod +x dist/usnm-ocr-worker
+      - run: chmod +x dist/usnm-ocr-worker dist/usnm-ocrdash
       - name: It runs on AlmaLinux 10 (RHEL 10)
         run: >-
           docker run --rm -v "$PWD/dist:/w:ro"
@@ -309,6 +315,7 @@ jobs:
           retention-days: 7
           path: |
             dist/usnm-ocr-worker
+            dist/usnm-ocrdash
             dist/usnm-ocr-tesseract.oci.tar.gz
             dist/usnm-ocr-tesseract.image-id
           if-no-files-found: error
@@ -347,13 +354,14 @@ jobs:
         if: steps.head.outputs.current == 'true'
         working-directory: dist
         run: |
-          sha256sum usnm-ocr-worker usnm-ocr-tesseract.oci.tar.gz usnm-ocr-tesseract.image-id > SHA256SUMS
+          sha256sum usnm-ocr-worker usnm-ocrdash usnm-ocr-tesseract.oci.tar.gz usnm-ocr-tesseract.image-id > SHA256SUMS
           cat SHA256SUMS
       - if: steps.head.outputs.current == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/usnm-ocr-worker
+            dist/usnm-ocrdash
             dist/usnm-ocr-tesseract.oci.tar.gz
             dist/usnm-ocr-tesseract.image-id
             dist/SHA256SUMS

@@ -5,8 +5,10 @@
 //! those already fetched that a node relays to the seeder (`fetched`). The
 //! worker writes and reads them; `usnm-ingest`'s `ocr-sync`, `ocr-enqueue` and
 //! `ocr-prefetch-manifest` read and write them from the cloud side, so both
-//! sides check them with the same code.
+//! sides check them with the same code. `status` is what the LAN dashboard
+//! reads from a worker and a Proxmox host (12 §12.2.5).
 
 pub mod fetched;
 pub mod message;
 pub mod prefetch;
+pub mod status;

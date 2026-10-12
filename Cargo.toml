@@ -8,6 +8,7 @@ members = [
     "crates/usnm-api",
     "crates/usnm-ingest",
     "crates/usnm-ocr-contract",
+    "crates/usnm-ocr-dash",
     "crates/usnm-ocr-worker",
     "crates/usnm-overlay",
     "crates/usnm-state",
