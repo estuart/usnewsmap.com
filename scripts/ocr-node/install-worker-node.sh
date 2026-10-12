@@ -159,6 +159,20 @@ step "The worker binary ($RELEASE)"
 echo "$BIN_SUM  $DIR/usnm-ocr-worker" | sha256sum --check --quiet || die "the binary's sha256 differs from the release's"
 install -d -o root -g root -m 0755 "$LIB" "$LIB/$RELEASE"
 install -o root -g root -m 0755 "$DIR/usnm-ocr-worker" "$LIB/$RELEASE/usnm-ocr-worker"
+# Under SELinux a file in /usr/local/lib is lib_t, and systemd runs a lib_t
+# program in init_t rather than unconfined_service_t; there the worker can't
+# reach the engine's Podman socket or the Arc agent's port (dontaudit, so no
+# AVC is logged). Every release's binary is labelled bin_t, as a program in
+# /usr/local/bin would be, and the rule survives a relabel.
+if command -v selinuxenabled > /dev/null && selinuxenabled; then
+  rule="$LIB/[^/]+/usnm-ocr-worker"
+  if ! semanage fcontext -l -C | grep -qF "$rule"; then
+    semanage fcontext -a -t bin_t "$rule"
+  fi
+  # Every installed release, so a later --rollback runs bin_t too.
+  restorecon -R "$LIB"
+  ls -Z "$LIB/$RELEASE/usnm-ocr-worker"
+fi
 printf '%s\n' "$IMAGE_ID" > "$LIB/$RELEASE/tesseract.image-id"
 chmod 0644 "$LIB/$RELEASE/tesseract.image-id"
 "$LIB/$RELEASE/usnm-ocr-worker" --version
