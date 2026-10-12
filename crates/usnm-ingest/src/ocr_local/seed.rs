@@ -46,6 +46,12 @@
 //! hold the same lock as the seeder, so the window count never races them;
 //! bulk pages they queue count toward the window but aren't limited by it.
 //!
+//! **Fetched scans.** With [`Source::Fetched`] (Step 11, #368) a plan's new
+//! pages come from the prefetch manifest's keep set instead, in the order
+//! the fetcher takes it, and only pages on the newest list a node relayed
+//! from the scan server (`usnm_ocr_contract::fetched`), so the workers read
+//! cached scans. The list only narrows the manifest's pages.
+//!
 //! **Pilot.** `pilot` limits a plan to one group (one language, or a list
 //! of batches) and a budget of at most [`PILOT_MAX_PAGES`] pages (Step 11).
 //!
@@ -65,7 +71,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::time::Instant;
 use usnm_core::ids::PageKey;
+use usnm_ocr_contract::fetched;
 use usnm_ocr_contract::message::{OcrMessage, Reason};
+use usnm_ocr_contract::prefetch::{self, ManifestRow};
 use usnm_state::state::{JaLatin, RunBatch, State, DUPLICATES_FILE, JA_LATIN_FILE};
 use usnm_store::queue::{Queue, BULK};
 use usnm_store::ObjectStore;
@@ -131,6 +139,35 @@ pub struct Options {
     pub dry_run: bool,
     /// Stop working out ranks after this; the next run goes on.
     pub deadline: Option<Instant>,
+    /// Where new pages come from.
+    pub source: Source,
+    /// With [`Source::Fetched`]: the prefetch manifest's index version
+    /// (`pages-v20261010-2`); empty: the published version.
+    pub manifest: String,
+}
+
+/// Where a plan's new pages come from (`USNM_OCR_SEED_SOURCE`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// Units ranked from the damage tables (Step 10).
+    #[default]
+    Damage,
+    /// The prefetch manifest's keep set, in the fetcher's order, only pages
+    /// whose scans the newest fetched list has (Step 11, #368).
+    Fetched,
+}
+
+impl std::str::FromStr for Source {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s.trim() {
+            "" | "damage" => Ok(Self::Damage),
+            "fetched" => Ok(Self::Fetched),
+            other => bail!("seed source `{other}`: damage or fetched"),
+        }
+    }
 }
 
 impl Default for Options {
@@ -148,6 +185,8 @@ impl Default for Options {
             skip_american_stories: false,
             dry_run: false,
             deadline: None,
+            source: Source::Damage,
+            manifest: String::new(),
         }
     }
 }
@@ -158,12 +197,23 @@ impl Options {
         !self.plan.is_empty()
     }
 
-    /// The languages asked for, or the pilot's.
+    /// The languages asked for, or the pilot's, in ISO 639-3. A MARC code
+    /// (`ger`, the damage tables' and the manifest's) is taken as its ISO
+    /// code (`deu`).
     pub fn language_set(&self) -> BTreeSet<String> {
         if self.languages.is_empty() {
             PILOT_LANGUAGES.iter().map(|l| (*l).to_owned()).collect()
         } else {
-            self.languages.iter().cloned().collect()
+            self.languages
+                .iter()
+                .map(|l| {
+                    if usnm_core::lang::iso3_to_marc(l).is_some() {
+                        l.clone()
+                    } else {
+                        usnm_core::lang::marc_to_iso3(l).map_or_else(|| l.clone(), str::to_owned)
+                    }
+                })
+                .collect()
         }
     }
 
@@ -189,6 +239,9 @@ impl Options {
             if !usnm_store::is_safe_segment(b) {
                 bail!("unsafe seed batch name {b:?}");
             }
+        }
+        if !self.manifest.is_empty() && !usnm_store::is_safe_segment(&self.manifest) {
+            bail!("unsafe seed manifest version {:?}", self.manifest);
         }
         if !(self.min_damage > 0.0 && self.min_damage <= 1.0) {
             bail!("the minimum damage must be above 0 and at most 1");
@@ -675,6 +728,24 @@ pub struct SeedReport {
     pub rank_pending: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger: Option<String>,
+    /// With [`Source::Fetched`]: what the manifest and the list gave.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched: Option<FetchedReport>,
+}
+
+/// The fetched source's counts.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FetchedReport {
+    /// The manifest's index version and path.
+    pub manifest: String,
+    /// The fetched list read (`fetched/<version>/<node>.<stamp>.parquet`).
+    pub list: String,
+    /// Pages on the list.
+    pub listed: u64,
+    /// Keep-set pages in the languages, years and damage asked for.
+    pub keep_pages: u64,
+    /// Of those, the pages whose scans are on the list.
+    pub on_list: u64,
 }
 
 fn skip(r: &mut SeedReport, why: &str, n: u64) {
@@ -694,6 +765,154 @@ async fn ja_overlay_titles(curated: &dyn ObjectStore) -> anyhow::Result<HashSet<
             Some(name.split_once('_')?.0.to_owned())
         })
         .collect())
+}
+
+/// Pages and titles every source skips.
+struct Skips {
+    /// Titles in the `ocr-ja` overlay.
+    ja_titles: HashSet<String>,
+    ja_latin: JaLatin,
+    /// (doc_id, batch) copies the version hides.
+    hidden: HashSet<(String, String)>,
+}
+
+impl Skips {
+    async fn load(
+        curated: &dyn ObjectStore,
+        reference: &dyn ObjectStore,
+        version: &str,
+    ) -> anyhow::Result<Self> {
+        let ja_latin: JaLatin = match reference.get(&format!("{version}/{JA_LATIN_FILE}")).await? {
+            Some(b) => serde_json::from_slice(&b).context("reading ja_latin.json")?,
+            None => JaLatin::default(),
+        };
+        let hidden: HashSet<(String, String)> = match reference
+            .get(&format!("{version}/{DUPLICATES_FILE}"))
+            .await?
+        {
+            Some(b) => serde_json::from_slice::<Vec<crate::dedup::Hidden>>(&b)
+                .context("reading duplicates.json")?
+                .into_iter()
+                .map(|h| (h.doc_id, h.batch))
+                .collect(),
+            None => HashSet::new(),
+        };
+        Ok(Self {
+            ja_titles: ja_overlay_titles(curated).await?,
+            ja_latin,
+            hidden,
+        })
+    }
+}
+
+/// [`Source::Fetched`]'s candidates: the manifest's keep set in the
+/// fetcher's order (`usnm_ocr_contract::prefetch::keep_order`), in the
+/// languages, years and damage asked for, that the newest fetched list in
+/// `ocr-out` has, each with its message language. The manifest comes from
+/// the curated store (the ingest job wrote it); the list came from a node,
+/// so it only narrows the manifest's pages, never adds one.
+async fn fetched_pages(
+    curated: &dyn ObjectStore,
+    out: &dyn ObjectStore,
+    opts: &Options,
+    version: &str,
+    titles: &HashMap<String, Vec<String>>,
+) -> anyhow::Result<(Vec<(ManifestRow, String)>, FetchedReport)> {
+    let mv = if opts.manifest.is_empty() {
+        version
+    } else {
+        opts.manifest.as_str()
+    };
+    let path = format!("{}/manifest.parquet", crate::ocr_prefetch::dir(mv, None));
+    let bytes = curated.get(&path).await?.with_context(|| {
+        format!("no prefetch manifest at {path}: run ocr-prefetch-manifest --version {mv}")
+    })?;
+    let filter = Filter::new(opts);
+    let none = Vec::new();
+    let language = |r: &ManifestRow| -> Option<String> {
+        if let Some((from, to)) = filter.years {
+            if !(from..=to).contains(&r.date.year()) {
+                return None;
+            }
+        }
+        if r.damage_rate < filter.min_damage {
+            return None;
+        }
+        let langs = titles.get(&r.lccn).unwrap_or(&none);
+        let l = message_language(r.lang.as_deref(), langs)?;
+        filter.languages.contains(&l).then_some(l)
+    };
+    let batches = opts.batch_set();
+    let rows = prefetch::decode_where(Bytes::from(bytes), |r| {
+        prefetch::set_of(r) == prefetch::Set::Keep
+            && (batches.is_empty() || batches.contains(&r.batch))
+            && language(r).is_some()
+    })
+    .with_context(|| format!("reading {path}"))?;
+    let rows = prefetch::keep_order(rows);
+
+    // The newest by the store's creation time: a node chose the name.
+    let lists = out.list_info(&fetched::dir(mv)).await?;
+    let newest = lists
+        .iter()
+        .filter(|o| fetched::stamp_of(&o.path).is_some())
+        .filter_map(|o| o.created.map(|c| (c, o)))
+        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.path.cmp(&b.1.path)))
+        .map(|(_, o)| o.clone())
+        .with_context(|| {
+            format!(
+                "no fetched list under ocr-out/{}/: publish one from a node (usnm-ocr-worker publish-fetched)",
+                fetched::dir(mv)
+            )
+        })?;
+    // A node wrote it: check the size before reading it, and read only the
+    // bytes listed.
+    if newest.size > fetched::MAX_BYTES as u64 {
+        bail!(
+            "ocr-out/{} is {} bytes, more than {}",
+            newest.path,
+            newest.size,
+            fetched::MAX_BYTES
+        );
+    }
+    let newest_path = newest.path.clone();
+    let body = out
+        .get_if_match(&newest.path, &newest.etag, fetched::MAX_BYTES as u64)
+        .await?
+        .with_context(|| {
+            format!("ocr-out/{newest_path} changed or went away; the next run reads it again")
+        })?;
+    let newest = newest_path;
+    let list =
+        fetched::decode(Bytes::from(body)).with_context(|| format!("reading ocr-out/{newest}"))?;
+    if list.manifest != mv {
+        bail!(
+            "ocr-out/{newest} lists scans for {}, not {mv}",
+            list.manifest
+        );
+    }
+    let mut report = FetchedReport {
+        manifest: path,
+        list: newest,
+        listed: list.len() as u64,
+        keep_pages: rows.len() as u64,
+        on_list: 0,
+    };
+    let pages: Vec<(ManifestRow, String)> = rows
+        .into_iter()
+        .filter(|r| list.contains(&r.batch, &r.doc_id))
+        .filter_map(|r| language(&r).map(|l| (r, l)))
+        .collect();
+    report.on_list = pages.len() as u64;
+    tracing::info!(
+        manifest = report.manifest,
+        list = report.list,
+        listed = report.listed,
+        keep_pages = report.keep_pages,
+        on_list = report.on_list,
+        "seeding from fetched scans"
+    );
+    Ok((pages, report))
 }
 
 /// A plan's finished units under these filters.
@@ -727,6 +946,8 @@ pub struct Stores<'a> {
     pub curated: &'a dyn ObjectStore,
     pub reference: &'a dyn ObjectStore,
     pub queue: &'a Arc<dyn Queue>,
+    /// The exchange account's `ocr-out`, for [`Source::Fetched`]'s list.
+    pub out: Option<&'a dyn ObjectStore>,
 }
 
 /// `usnm-ingest ocr-seed`: one seeding run, under the `ocr-sync` lock
@@ -940,7 +1161,108 @@ pub(super) async fn seed(
     report.budget_left = opts.max_pages.map(|m| m.saturating_sub(plan_pages));
     let mut slots = free.min(report.budget_left.unwrap_or(u64::MAX));
     let mut done_now: Vec<DoneUnit> = Vec::new();
-    if slots > 0 {
+    if slots > 0 && opts.source == Source::Fetched {
+        let out_store = stores
+            .out
+            .context("the fetched seed source needs ocr-out (--out-url)")?;
+        let (pages, fr) = fetched_pages(curated, out_store, opts, &version, &titles).await?;
+        report.fetched = Some(fr);
+        let skips = Skips::load(curated, stores.reference, &version).await?;
+        let none = Vec::new();
+        let mut ur: Option<UnitReport> = None;
+        // The manifest holds one copy of each page (the copy the version
+        // keeps); a page listed twice is still queued once.
+        let mut seen: HashSet<String> = HashSet::new();
+        for (row, language) in pages {
+            if slots == 0 {
+                break;
+            }
+            let langs = titles.get(&row.lccn).unwrap_or(&none);
+            let doc_id = &row.doc_id;
+            let why = if japanese(langs) || skips.ja_titles.contains(&row.lccn) {
+                Some("japanese_title")
+            } else if ledger.queued.contains_key(doc_id) {
+                Some(if ledger.imported(doc_id) {
+                    "imported"
+                } else if ledger.outstanding(doc_id).is_some() {
+                    "outstanding"
+                } else {
+                    "in_ledger"
+                })
+            } else if skips.ja_latin.pages.contains_key(doc_id) {
+                Some("ja_latin")
+            } else if skips.hidden.contains(&(doc_id.clone(), row.batch.clone()))
+                || !seen.insert(doc_id.clone())
+            {
+                Some("duplicate")
+            } else {
+                match by_name.get(row.batch.as_str()) {
+                    None => Some("not_published"),
+                    Some(b) if b.curated.version != row.batch_version => Some("batch_version"),
+                    Some(_) => None,
+                }
+            };
+            if let Some(why) = why {
+                skip(&mut report, why, 1);
+                continue;
+            }
+            let Ok(key) = PageKey::from_doc_id(doc_id) else {
+                skip(&mut report, "bad_doc_id", 1);
+                continue;
+            };
+            let msg = OcrMessage {
+                v: 1,
+                page: key.to_string(),
+                batch: row.batch.clone(),
+                language: language.clone(),
+                reason: Reason::Bulk,
+                score: Some(row.damage_rate).filter(|s| (0.0..=1.0).contains(s)),
+                queued_at: queued_at.clone(),
+            };
+            if let Err(e) = msg.validate() {
+                skip(&mut report, e.kind(), 1);
+                continue;
+            }
+            // Report by (batch, lccn) as the damage source does.
+            if ur
+                .as_ref()
+                .is_none_or(|u| u.batch != row.batch || u.lccn != row.lccn)
+            {
+                if let Some(u) = ur.take() {
+                    report.units.push(u);
+                }
+                ur = Some(UnitReport {
+                    batch: row.batch.clone(),
+                    lccn: row.lccn.clone(),
+                    ..UnitReport::default()
+                });
+            }
+            let u = ur.as_mut().expect("set above");
+            u.queued += 1;
+            u.score += (row.damage_rate - DAMAGE_FLOOR).max(0.0);
+            if opts.dry_run {
+                u.pages.push(doc_id.clone());
+            }
+            report.queued += 1;
+            out.push((
+                Queued {
+                    doc_id: doc_id.clone(),
+                    batch: row.batch.clone(),
+                    batch_version: row.batch_version,
+                    reason: Reason::Bulk.as_str().to_owned(),
+                    language,
+                    plan: opts.plan.clone(),
+                    attempt: attempt(doc_id),
+                    queued_at: now,
+                },
+                msg,
+            ));
+            slots -= 1;
+        }
+        if let Some(u) = ur.take() {
+            report.units.push(u);
+        }
+    } else if slots > 0 {
         let mut cache = TableCache::new(curated, &tables);
         let ranked = rank(&mut cache, &seeded, &titles, opts, !opts.dry_run).await?;
         report.rank_pending = ranked.pending;
@@ -952,27 +1274,11 @@ pub(super) async fn seed(
             slots = 0;
         }
         let done = load_done(curated, opts).await?;
-        let ja_titles = ja_overlay_titles(curated).await?;
-        let ja_latin: JaLatin = match stores
-            .reference
-            .get(&format!("{version}/{JA_LATIN_FILE}"))
-            .await?
-        {
-            Some(b) => serde_json::from_slice(&b).context("reading ja_latin.json")?,
-            None => JaLatin::default(),
-        };
-        let hidden: HashSet<(String, String)> = match stores
-            .reference
-            .get(&format!("{version}/{DUPLICATES_FILE}"))
-            .await?
-        {
-            Some(b) => serde_json::from_slice::<Vec<crate::dedup::Hidden>>(&b)
-                .context("reading duplicates.json")?
-                .into_iter()
-                .map(|h| (h.doc_id, h.batch))
-                .collect(),
-            None => HashSet::new(),
-        };
+        let Skips {
+            ja_titles,
+            ja_latin,
+            hidden,
+        } = Skips::load(curated, stores.reference, &version).await?;
         let american_stories = if opts.skip_american_stories {
             Some(crate::american_stories::Source::list(curated).await?)
         } else {

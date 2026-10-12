@@ -53,6 +53,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{watch, Semaphore};
 use tokio::time::Instant;
 use usnm_ocr_contract::prefetch::{self, ManifestRow};
+// The sets and the fetch order are the contract's, so the seeder (12 Step
+// 11) can queue pages in the order they are fetched.
+pub use usnm_ocr_contract::prefetch::{priority, set_of, Set, WORST_ENGLISH};
 
 use crate::loc::{image_url, FetchError, ImageSize, LocClient, USER_AGENT};
 
@@ -95,22 +98,6 @@ pub struct Options {
     pub lock_file: Option<PathBuf>,
 }
 
-/// A page's set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Set {
-    Keep,
-    Buffer,
-}
-
-impl Set {
-    pub fn dir(self) -> &'static str {
-        match self {
-            Self::Keep => "keep",
-            Self::Buffer => "buffer",
-        }
-    }
-}
-
 /// Which sets a run fetches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sets {
@@ -128,18 +115,6 @@ impl Sets {
     }
 }
 
-/// The keep set is every page not detected as English, and every page of
-/// the worst English batches; the rest is the buffer set.
-pub fn set_of(r: &ManifestRow) -> Set {
-    let lang = r.lang_or_und();
-    let iso = usnm_core::lang::marc_to_iso3(lang).unwrap_or(lang);
-    if iso != "eng" || WORST_ENGLISH.contains(&r.batch.as_str()) {
-        Set::Keep
-    } else {
-        Set::Buffer
-    }
-}
-
 /// The order pages are fetched in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Order {
@@ -147,33 +122,6 @@ pub enum Order {
     Issue,
     /// By [`priority`] group, then issue order within each.
     Priority,
-}
-
-/// The base names of the worst English batches (ADR-0015).
-pub const WORST_ENGLISH: [&str; 5] = [
-    "nn_kant",
-    "txdn_japan",
-    "nn_bentham",
-    "nn_carson",
-    "kyu_frenchie",
-];
-
-/// A page's fetch group, lowest first: German before the 1920s, the worst
-/// English batches, Czech, Serbian, Russian, then everything else (the
-/// order the maintainer set for a fetch that can't hold every page).
-/// The damage tables give MARC codes (`ger`, `cze`); ISO 639-3 (`deu`,
-/// `ces`) is accepted too.
-pub fn priority(r: &ManifestRow) -> u8 {
-    let lang = r.lang_or_und();
-    let iso = usnm_core::lang::marc_to_iso3(lang).unwrap_or(lang);
-    match iso {
-        "deu" if r.decade() < 1920 => 0,
-        _ if WORST_ENGLISH.contains(&r.batch.as_str()) => 1,
-        "ces" => 2,
-        "srp" => 3,
-        "rus" => 4,
-        _ => 5,
-    }
 }
 
 impl Default for Options {

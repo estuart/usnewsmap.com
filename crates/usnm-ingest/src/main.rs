@@ -85,6 +85,16 @@ struct SeedArgs {
     /// 0: half the window.
     #[arg(long, env = "USNM_OCR_BULK_REFILL_BELOW", default_value_t = 0)]
     bulk_refill_below: u64,
+    /// Where new pages come from: `damage` (units ranked from the damage
+    /// tables) or `fetched` (the prefetch manifest's keep set in the
+    /// fetcher's order, only pages whose scans are on pve-big, from the
+    /// newest list a node published to `ocr-out/fetched/`; 12 Step 11).
+    #[arg(long, env = "USNM_OCR_SEED_SOURCE", default_value = "damage")]
+    seed_source: usnm_ingest::ocr_local::seed::Source,
+    /// With `--seed-source fetched`: the prefetch manifest's index version.
+    /// Default: the published version.
+    #[arg(long, env = "USNM_OCR_SEED_MANIFEST")]
+    seed_manifest: Option<String>,
 }
 
 impl SeedArgs {
@@ -114,6 +124,13 @@ impl SeedArgs {
             skip_american_stories: self.seed_skip_american_stories,
             dry_run,
             deadline: None,
+            source: self.seed_source,
+            manifest: self
+                .seed_manifest
+                .clone()
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
         };
         if opts.on() {
             opts.check()?;
@@ -451,6 +468,9 @@ enum Command {
     OcrSeed {
         #[arg(long, env = "USNM_OCR_QUEUE_URL")]
         queue_url: String,
+        /// The exchange account's `ocr-out`, for `--seed-source fetched`.
+        #[arg(long, env = "USNM_OCR_OUT_URL")]
+        out_url: Option<String>,
         #[command(flatten)]
         seed: SeedArgs,
         /// Print what would be queued; write and send nothing.
@@ -1327,6 +1347,7 @@ async fn command(
         }
         Command::OcrSeed {
             queue_url,
+            out_url,
             seed,
             dry_run,
             max_runtime_secs,
@@ -1338,10 +1359,12 @@ async fn command(
             let curated = usnm_store::open(&cli.stores.curated)?;
             let reference = usnm_store::open(&cli.stores.reference)?;
             let queue = usnm_store::queue::open(queue_url)?;
+            let out = out_url.as_deref().map(usnm_store::open).transpose()?;
             let stores = usnm_ingest::ocr_local::seed::Stores {
                 curated: curated.as_ref(),
                 reference: reference.as_ref(),
                 queue: &queue,
+                out: out.as_deref(),
             };
             let report =
                 usnm_ingest::ocr_local::seed::run(&state, &owner_id(), &stores, &opts).await?;

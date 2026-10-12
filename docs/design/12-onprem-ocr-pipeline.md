@@ -567,6 +567,7 @@ Built in #345, which differs from the plan above in these ways:
 - **Ranks** are worked out per batch version, filter set and title languages, and kept under `curated/ocr-local/seed/rank/`. A run that hits its deadline before every batch is ranked queues no new pages, and the next run continues. Units a plan has finished go under `curated/ocr-local/seed/plans/<plan>/done/`, per filter set. A `name_verNN` batch filter must name the published version.
 - **Skips.** Duplicate copies follow the release's rule: a copy is skipped when a batch sorting first has the page with text, or the version's `duplicates.json` hides it. `ocr-ja` pages are skipped by title.
 - **Retries** cover the plan's own pages. Pages that `ocr-enqueue` queued use its `--include-outstanding`, or `ocr-requeue`.
+- **Fetched scans** (for Step 11, #368). `USNM_OCR_SEED_SOURCE=fetched` takes a plan's new pages from the prefetch manifest's keep set (`usnm_ocr_contract::prefetch::keep_order`, the fetcher's order) instead of the ranked units, and only pages on the newest list a node published to `ocr-out/fetched/<version>/<node>.<stamp>.parquet` (`usnm_ocr_contract::fetched`). The manifest is the curated copy (`USNM_OCR_SEED_MANIFEST`, default the published version). The list comes from a node, so it is size-capped and checked row by row, and it only narrows the manifest's pages. `ocr-sync`'s pickup lists only `pages/` and `alto/`, so it never reads `fetched/`. Languages are as Step 10's, and a MARC code is read as its ISO code.
 
 ### Step 11: Pilot on node 1 (ops and a draft report, S)
 

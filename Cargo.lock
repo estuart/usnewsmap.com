@@ -2662,6 +2662,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "usnm-core",
+ "usnm-overlay",
 ]
 
 [[package]]

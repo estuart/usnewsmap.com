@@ -452,6 +452,38 @@ pub const MAX_NODE_PART_ROWS: i64 = 16;
 /// The most bytes a node's part may say its columns hold once decompressed.
 pub const MAX_NODE_PART_UNCOMPRESSED: i64 = 4 * 1024 * 1024;
 
+/// Refuses a Parquet file from an untrusted writer whose columns would
+/// decompress to more than `max` bytes, by its footer's sizes and by every
+/// page header's (the reader sizes its decompression buffers by the page
+/// headers, which the footer needn't agree with), before any page is
+/// decoded.
+pub fn check_uncompressed(
+    file: &[u8],
+    meta: &parquet::file::metadata::ParquetMetaData,
+    max: i64,
+) -> anyhow::Result<()> {
+    let (mut footer, mut declared) = (0i64, 0i64);
+    for rg in meta.row_groups() {
+        for c in rg.columns() {
+            if c.uncompressed_size() < 0 || c.compressed_size() < 0 {
+                bail!("negative column size");
+            }
+            footer = footer.saturating_add(c.uncompressed_size());
+            let start = c.dictionary_page_offset().unwrap_or(c.data_page_offset());
+            declared = declared.saturating_add(
+                pages::declared_bytes(file, start, c.compressed_size())
+                    .context("reading the page headers")?,
+            );
+        }
+    }
+    for n in [footer, declared] {
+        if n > max {
+            bail!("{n} bytes decompressed, over {max}");
+        }
+    }
+    Ok(())
+}
+
 /// Read a part an OCR node wrote, strictly, for the pickup's checks
 /// (`usnm-ingest ocr-sync`, 12 §12.5 Step 8). Unlike [`read_part`], which
 /// the release uses on parts the cloud wrote, it refuses anything but
@@ -467,28 +499,7 @@ pub fn read_node_part(bytes: Bytes) -> anyhow::Result<Vec<NodeRow>> {
     if meta.num_rows() > MAX_NODE_PART_ROWS || meta.num_rows() < 0 {
         bail!("{} rows, over {MAX_NODE_PART_ROWS}", meta.num_rows());
     }
-    // The footer's sizes and every page header's, since the reader sizes
-    // its decompression buffers by the page headers, which the footer
-    // needn't agree with.
-    let (mut footer, mut declared) = (0i64, 0i64);
-    for rg in builder.metadata().row_groups() {
-        for c in rg.columns() {
-            if c.uncompressed_size() < 0 || c.compressed_size() < 0 {
-                bail!("negative column size");
-            }
-            footer = footer.saturating_add(c.uncompressed_size());
-            let start = c.dictionary_page_offset().unwrap_or(c.data_page_offset());
-            declared = declared.saturating_add(
-                pages::declared_bytes(&file, start, c.compressed_size())
-                    .context("reading the page headers")?,
-            );
-        }
-    }
-    for n in [footer, declared] {
-        if n > MAX_NODE_PART_UNCOMPRESSED {
-            bail!("{n} bytes decompressed, over {MAX_NODE_PART_UNCOMPRESSED}");
-        }
-    }
+    check_uncompressed(&file, builder.metadata(), MAX_NODE_PART_UNCOMPRESSED)?;
     let want = schema();
     let got = builder.schema();
     if got.fields().len() != want.fields().len() {

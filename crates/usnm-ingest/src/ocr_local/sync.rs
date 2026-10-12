@@ -671,6 +671,7 @@ async fn run_locked(
             curated: stores.curated.as_ref(),
             reference: stores.reference.as_ref(),
             queue: &stores.queue,
+            out: Some(stores.out.as_ref()),
         };
         Some(super::seed::seed(state, &seed_stores, &seed_opts, Some(lease)).await)
     };

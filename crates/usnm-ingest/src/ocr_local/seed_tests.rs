@@ -29,6 +29,7 @@ struct Fx {
     curated: Arc<dyn ObjectStore>,
     reference: Arc<dyn ObjectStore>,
     queue: Arc<dyn Queue>,
+    out: Arc<dyn ObjectStore>,
 }
 
 fn open(dir: &std::path::Path, sub: &str) -> Arc<dyn ObjectStore> {
@@ -78,6 +79,7 @@ async fn fixture() -> Fx {
     let curated = open(dir.path(), "curated");
     let reference = open(dir.path(), "reference");
     let queue: Arc<dyn Queue> = Arc::new(LocalQueue::new(dir.path().join("queue")));
+    let out = open(dir.path(), "out");
     let mut tables: Vec<(&str, &str, Vec<PageRow>)> = vec![
         (
             "aa_ger",
@@ -180,6 +182,7 @@ async fn fixture() -> Fx {
         curated,
         reference,
         queue,
+        out,
     }
 }
 
@@ -197,6 +200,7 @@ impl Fx {
             curated: self.curated.as_ref(),
             reference: self.reference.as_ref(),
             queue: &self.queue,
+            out: Some(self.out.as_ref()),
         };
         seed::run(&self.state, "test", &stores, opts).await
     }
@@ -593,6 +597,7 @@ async fn a_failed_put_leaves_the_rest_not_sent_and_they_go_out_next_run() {
         curated: fx.curated.as_ref(),
         reference: fx.reference.as_ref(),
         queue: &flaky,
+        out: None,
     };
     let err = seed::run(&fx.state, "test", &stores, &plan(5))
         .await
@@ -718,4 +723,121 @@ async fn tables_of_another_metric_version_are_refused() {
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("run ocr-damage again"));
+}
+
+/// The prefetch manifest for `v1`: `aa_ger`'s six pages (keep set, German
+/// before the 1920s), `bb_eng`'s (buffer set) and `cc_fre`'s (keep set,
+/// not asked for).
+async fn manifest(fx: &Fx) {
+    use usnm_ocr_contract::prefetch::{encode, sort, ManifestRow};
+    let mut rows: Vec<ManifestRow> = Vec::new();
+    let row = |batch: &str, lccn: &str, day: u32, seq: u16, lang: &str, rate: f64| {
+        let key = PageKey::from_doc_id(&doc(lccn, day, seq)).unwrap();
+        ManifestRow::new(&key, batch, 1, Some(lang.into()), "detected", rate)
+    };
+    for (d, s) in [(4, 1), (4, 2), (4, 3), (3, 1), (3, 2), (3, 3)] {
+        rows.push(row("aa_ger", GER, d, s, "ger", 0.5));
+    }
+    for s in 1..=4 {
+        rows.push(row("bb_eng", ENG, 7, s, "eng", 0.3));
+    }
+    rows.push(row("cc_fre", FRE, 8, 1, "fre", 0.9));
+    sort(&mut rows);
+    fx.curated
+        .put_new(
+            &format!("{}/manifest.parquet", crate::ocr_prefetch::dir("v1", None)),
+            encode(&rows).unwrap(),
+            "x",
+        )
+        .await
+        .unwrap();
+}
+
+async fn fetched_list(fx: &Fx, stamp: &str, pages: &[(&str, String)]) {
+    use usnm_ocr_contract::fetched::{encode, path, Fetched};
+    let set = pages
+        .iter()
+        .map(|(b, d)| Fetched {
+            batch: (*b).into(),
+            doc_id: d.clone(),
+        })
+        .collect();
+    fx.out
+        .put_new(
+            &path("v1", "node2", stamp),
+            encode("v1", &set).unwrap(),
+            "x",
+        )
+        .await
+        .unwrap();
+}
+
+fn fetched_plan() -> Options {
+    Options {
+        plan: "pilot-german-frak2021".into(),
+        languages: vec!["ger".into()],
+        max_pages: Some(3),
+        window: 100,
+        source: seed::Source::Fetched,
+        ..Options::default()
+    }
+}
+
+#[tokio::test]
+async fn the_fetched_source_queues_keep_pages_on_the_newest_list_in_fetch_order() {
+    let fx = fixture().await;
+    manifest(&fx).await;
+    // No list yet: nothing is queued, and the error says what to run.
+    let err = fx.seed(&fetched_plan()).await.unwrap_err();
+    assert!(format!("{err:#}").contains("publish-fetched"), "{err:#}");
+
+    // An older list has every page; the newest lacks issue 3's seq 2, and
+    // has an English (buffer) page and one that isn't in the manifest.
+    let all: Vec<(&str, String)> = [(3, 1), (3, 2), (3, 3), (4, 1), (4, 2), (4, 3)]
+        .iter()
+        .map(|&(d, s)| ("aa_ger", doc(GER, d, s)))
+        .collect();
+    fetched_list(&fx, "20261012T000000Z", &all).await;
+    let mut newest: Vec<(&str, String)> = all
+        .iter()
+        .filter(|(_, d)| *d != doc(GER, 3, 2))
+        .cloned()
+        .collect();
+    newest.push(("bb_eng", doc(ENG, 7, 1)));
+    newest.push(("aa_ger", doc(GER, 9, 9)));
+    fetched_list(&fx, "20261012T010000Z", &newest).await;
+
+    let r = fx.seed(&fetched_plan()).await.unwrap();
+    let f = r.fetched.as_ref().unwrap();
+    assert_eq!((f.listed, f.keep_pages, f.on_list), (7, 6, 5));
+    assert!(f.list.ends_with("node2.20261012T010000Z.parquet"));
+    assert_eq!(r.queued, 3, "{r:?}");
+    let msgs = fx.drain().await;
+    let pages: Vec<String> = msgs
+        .iter()
+        .map(|m| m.page.parse::<PageKey>().unwrap().doc_id())
+        .collect();
+    assert_eq!(pages, [doc(GER, 3, 1), doc(GER, 3, 3), doc(GER, 4, 1)]);
+    assert!(msgs
+        .iter()
+        .all(|m| m.language == "deu" && m.batch == "aa_ger"));
+
+    // The budget is spent.
+    let r = fx.seed(&fetched_plan()).await.unwrap();
+    assert_eq!(r.queued, 0);
+    assert_eq!(r.budget_left, Some(0));
+}
+
+#[test]
+fn marc_codes_are_taken_as_iso() {
+    let o = Options {
+        languages: vec!["ger".into(), "cze".into(), "eng".into()],
+        ..Options::default()
+    };
+    assert_eq!(
+        o.language_set().into_iter().collect::<Vec<_>>(),
+        ["ces", "deu", "eng"]
+    );
+    assert!("fetched".parse::<seed::Source>().unwrap() == seed::Source::Fetched);
+    assert!("nope".parse::<seed::Source>().is_err());
 }

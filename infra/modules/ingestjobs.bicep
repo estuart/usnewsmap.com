@@ -122,7 +122,7 @@ param ocrQueueEndpoint string = ''
 param ocrBlobEndpoint string = ''
 @description('Schedule for the OCR pickup job (UTC cron). Empty: manual only.')
 param ocrSyncCron string = '17 * * * *'
-@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name: USNM_OCR_SEED_PLAN (empty: no seeding), USNM_OCR_SEED_BATCHES, USNM_OCR_SEED_LANGUAGES, USNM_OCR_SEED_YEARS, USNM_OCR_SEED_MIN_DAMAGE, USNM_OCR_SEED_MAX_PAGES, USNM_OCR_SEED_PILOT, USNM_OCR_SEED_SKIP_AMERICAN_STORIES, USNM_OCR_BULK_WINDOW, USNM_OCR_BULK_REFILL_BELOW. Empty values are left out, so the job\'s defaults apply.')
+@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name: USNM_OCR_SEED_PLAN (empty: no seeding), USNM_OCR_SEED_BATCHES, USNM_OCR_SEED_LANGUAGES, USNM_OCR_SEED_YEARS, USNM_OCR_SEED_MIN_DAMAGE, USNM_OCR_SEED_MAX_PAGES, USNM_OCR_SEED_PILOT, USNM_OCR_SEED_SKIP_AMERICAN_STORIES, USNM_OCR_SEED_SOURCE (damage or fetched), USNM_OCR_SEED_MANIFEST, USNM_OCR_BULK_WINDOW, USNM_OCR_BULK_REFILL_BELOW. Empty values are left out, so the job\'s defaults apply.')
 param ocrSeed object = {}
 
 // Both jobs: the platform kills a replica after replicaTimeout, which the

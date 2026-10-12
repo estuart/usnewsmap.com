@@ -283,6 +283,85 @@ fn safe_batch(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
+/// A page's set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Set {
+    Keep,
+    Buffer,
+}
+
+impl Set {
+    pub fn dir(self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Buffer => "buffer",
+        }
+    }
+}
+
+/// The keep set is every page not detected as English, and every page of
+/// the worst English batches; the rest is the buffer set.
+pub fn set_of(r: &ManifestRow) -> Set {
+    let lang = r.lang_or_und();
+    let iso = usnm_core::lang::marc_to_iso3(lang).unwrap_or(lang);
+    if iso != "eng" || WORST_ENGLISH.contains(&r.batch.as_str()) {
+        Set::Keep
+    } else {
+        Set::Buffer
+    }
+}
+
+/// The base names of the worst English batches (ADR-0015).
+pub const WORST_ENGLISH: [&str; 5] = [
+    "nn_kant",
+    "txdn_japan",
+    "nn_bentham",
+    "nn_carson",
+    "kyu_frenchie",
+];
+
+/// A page's fetch group, lowest first: German before the 1920s, the worst
+/// English batches, Czech, Serbian, Russian, then everything else (the
+/// order the maintainer set for a fetch that can't hold every page).
+/// The damage tables give MARC codes (`ger`, `cze`); ISO 639-3 (`deu`,
+/// `ces`) is accepted too.
+pub fn priority(r: &ManifestRow) -> u8 {
+    let lang = r.lang_or_und();
+    let iso = usnm_core::lang::marc_to_iso3(lang).unwrap_or(lang);
+    match iso {
+        "deu" if r.decade() < 1920 => 0,
+        _ if WORST_ENGLISH.contains(&r.batch.as_str()) => 1,
+        "ces" => 2,
+        "srp" => 3,
+        "rus" => 4,
+        _ => 5,
+    }
+}
+
+/// The keep set's pages in the order the fetcher takes them (its
+/// `--order priority`): by issue, each issue in its best page's
+/// [`priority`] group, then (lccn, date, edition, seq). The seeder queues
+/// fetched pages in this order (12 Step 11).
+pub fn keep_order(rows: Vec<ManifestRow>) -> Vec<ManifestRow> {
+    type Issue = (String, NaiveDate, u16);
+    let mut rows: Vec<ManifestRow> = rows
+        .into_iter()
+        .filter(|r| set_of(r) == Set::Keep)
+        .collect();
+    let mut best: std::collections::HashMap<Issue, u8> = std::collections::HashMap::new();
+    for r in &rows {
+        let e = best
+            .entry((r.lccn.clone(), r.date, r.edition))
+            .or_insert(u8::MAX);
+        *e = (*e).min(priority(r));
+    }
+    rows.sort_by_cached_key(|r| {
+        let issue = (r.lccn.clone(), r.date, r.edition);
+        (best[&issue], issue, r.seq)
+    });
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +429,29 @@ mod tests {
         w.write(&RecordBatch::new_empty(schema())).unwrap();
         let other = w.into_inner().unwrap();
         assert!(decode(Bytes::from(other)).is_err());
+    }
+
+    #[test]
+    fn keep_order_is_the_fetchers() {
+        let mut rows = vec![
+            row("sn2_1925-01-01_ed-1_seq-1", "nbu_gage", 0.5),
+            row("sn1_1890-05-03_ed-1_seq-2", "nbu_gage", 0.5),
+            row("sn3_1890-05-03_ed-1_seq-1", "nn_kant", 0.5),
+            row("sn1_1890-05-03_ed-1_seq-1", "nbu_gage", 0.3),
+            row("sn4_1890-05-03_ed-1_seq-1", "nbu_gage", 0.3),
+        ];
+        rows[0].lang = Some("ger".into());
+        rows[2].lang = Some("eng".into());
+        rows[4].lang = Some("eng".into());
+        let ids: Vec<String> = keep_order(rows).into_iter().map(|r| r.doc_id).collect();
+        assert_eq!(
+            ids,
+            [
+                "sn1_1890-05-03_ed-1_seq-1",
+                "sn1_1890-05-03_ed-1_seq-2",
+                "sn3_1890-05-03_ed-1_seq-1",
+                "sn2_1925-01-01_ed-1_seq-1",
+            ]
+        );
     }
 }
