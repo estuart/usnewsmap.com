@@ -378,7 +378,7 @@ scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}" --delete
 scripts/logs.sh --env prod --query-name prune --span 2h    # a "deleted index" line for each, then "pruned"
 ```
 
-A large index can take minutes to delete: Quickwit deletes each split file before it answers. A failed delete stops the run with the error; the indexes already deleted stay deleted, and running it again carries on. Afterwards the rollback is still there, but the versions before it are gone and can't be rolled back to. The bill drops later than the delete: the deleted split files become previous blob versions, which the `qw-index/` lifecycle rule deletes after a day, and then sit in the 14-day soft delete (08 §8.1).
+A large index can take minutes to delete: Quickwit deletes each split file before it answers. A failed delete stops the run with the error; the indexes already deleted stay deleted, and running it again carries on. Afterwards the rollback is still there, but the versions before it are gone and can't be rolled back to. The bill drops later than the delete: the deleted split files become previous blob versions, which the `qw-index/` lifecycle rule deletes after a day, and then sit in the 3-day soft delete (08 §8.1).
 
 ## American Stories' text
 
@@ -646,7 +646,7 @@ It runs on the one-replica job and logs `american stories year written` per year
 
 ## Search log
 
-The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 14 more. To read it:
+The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 3 more. To read it:
 
 ```sh
 scripts/settings.sh --env prod --key USNM_SEARCH_LOG_READERS \
