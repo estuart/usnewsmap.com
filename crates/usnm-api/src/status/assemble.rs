@@ -968,7 +968,7 @@ mod tests {
                 ),
                 batch(
                     json!({"batch": "batch_f", "version": 1, "status": "failed", "attempts": 5,
-                         "last_error": "put https://stusnmdata.blob.core.windows.net/curated/x: 403 from 10.0.0.4",
+                         "last_error": "put https://stusnmdata.blob.core.windows.net/curated/x: 403 from 192.0.2.4",
                          "updated_at": at() - Duration::hours(2)}),
                 ),
             ],

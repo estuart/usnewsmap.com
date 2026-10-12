@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn picks_the_entry_the_trusted_proxies_added() {
-        let peer = Some("10.0.0.9".parse().unwrap());
+        let peer = Some("192.0.2.9".parse().unwrap());
         let h = xff(&["6.6.6.6, 1.2.3.4"]);
         assert_eq!(client_ip(&h, peer, 1), Some("1.2.3.4".parse().unwrap()));
         assert_eq!(client_ip(&h, peer, 2), Some("6.6.6.6".parse().unwrap()));

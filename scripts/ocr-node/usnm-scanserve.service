@@ -2,8 +2,9 @@
 # pve-big (scripts/ocr-node/scanfetch-ct.sh --serve installs it):
 # `usnm-ocr-worker serve-scans` gives the OCR nodes the prefetched scans over
 # HTTP, deletes buffer-set scans the nodes have read, and takes manifests
-# from them. Only the --allow addresses are served; the container's
-# nftables rule says the same. Settings in /etc/usnm/scanserve.env.
+# from them. Only the --allow hosts (the nodes, by name, resolved again
+# every 5 minutes) are served; the container's nftables rule lets in only
+# its LAN. Settings in /etc/usnm/scanserve.env.
 [Unit]
 Description=usnewsmap scan server
 Wants=network-online.target

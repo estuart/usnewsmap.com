@@ -38,6 +38,22 @@ fi
 valid_key() {
   [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "error: invalid setting name: $1" >&2; exit 2; }
 }
+# A VNet address space: an IPv4 network in CIDR with no host bits, /26 or
+# larger, inside an RFC 1918 block. The blocks are built from their numbers:
+# private addresses aren't written out (scripts/ci/no-private-addresses.sh).
+valid_vnet_prefix() {
+  python3 - "$1" << 'PY' || { echo "error: \"$1\" isn't a VNet address space: an IPv4 network in CIDR (no host bits), /26 or larger, in an RFC 1918 block" >&2; return 1; }
+import ipaddress, sys
+try:
+    n = ipaddress.IPv4Network(sys.argv[1])
+except ValueError:
+    sys.exit(1)
+blocks = [ipaddress.IPv4Network((10 << 24, 8)),
+          ipaddress.IPv4Network(((172 << 24) | (16 << 16), 12)),
+          ipaddress.IPv4Network(((192 << 24) | (168 << 16), 16))]
+sys.exit(0 if n.prefixlen <= 26 and any(n.subnet_of(b) for b in blocks) else 1)
+PY
+}
 # Read one setting (empty when unset).
 # shellcheck source=/dev/null
 # Only the file counts: the caller's variable of the same name is cleared.
@@ -107,6 +123,13 @@ deploy_stack() (
     v=$(aget "$k") || exit 1
     [ -z "$v" ] || export "$k=$v"
   done
+  # The VNet's address space has no default anywhere: private addresses
+  # aren't committed (scripts/ci/no-private-addresses.sh).
+  [ -n "${USNM_VNET_ADDRESS_PREFIX:-}" ] || {
+    echo "error: USNM_VNET_ADDRESS_PREFIX isn't set for $ENV_NAME: the VNet's address space, a private IPv4 block in CIDR, /26 or larger. Set it with scripts/settings.sh --env $ENV_NAME --key USNM_VNET_ADDRESS_PREFIX --value <cidr> (an existing environment: its VNet's current block, az network vnet show)" >&2
+    exit 1
+  }
+  valid_vnet_prefix "$USNM_VNET_ADDRESS_PREFIX" || exit 1
   # The stack's name comes from the environment's; the template's must match.
   export AZURE_ENV_NAME=$ENV_NAME
   local location

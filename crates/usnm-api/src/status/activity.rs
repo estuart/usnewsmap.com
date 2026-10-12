@@ -425,7 +425,7 @@ mod tests {
             "index_version": version, "full": true, "status": status,
             "started_at": started, "new_index": "i",
             "published_at": (status == "published").then(|| started + Duration::hours(1)),
-            "last_error": (status == "failed").then_some("tcp connect error: Connection refused (os error 111) to 10.0.0.4"),
+            "last_error": (status == "failed").then_some("tcp connect error: Connection refused (os error 111) to 192.0.2.4"),
         }))
         .unwrap()
     }
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(last.ended_at, at() - Duration::minutes(90));
         s.ops.release_progress = None;
         // Sanitized.
-        assert!(!last.error.unwrap().contains("10.0.0.4"));
+        assert!(!last.error.unwrap().contains("192.0.2.4"));
 
         // Reported: titles left, as the job recorded it.
         let mut j = job(Step::Indexing);

@@ -20,15 +20,19 @@
 //!   prefetch manifest from a node (`pull-manifest.sh`), through a temporary
 //!   file and a rename.
 //!
-//! Every request must come from an address on `--allow` (the nodes); the
-//! container's nftables rule says the same. Plain HTTP: the scans are LoC's
+//! Every request must come from a host on `--allow` (the nodes, by host
+//! name: no private address is written into the repository). The names are
+//! resolved at startup and again every `--allow-refresh-secs`; the
+//! container's nftables rule lets in only its own LAN. Plain HTTP: the scans are LoC's
 //! public images, and a worker checks each one's size and sha256 against
 //! its sidecar and the sidecar's URL against tile.loc.gov before use. Each
 //! request is logged (method, path, status, peer); no page text exists here.
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as UrlPath, Request, State};
@@ -47,8 +51,84 @@ pub struct ServeOptions {
     pub scans: PathBuf,
     /// `/tank/ocr/manifests`.
     pub manifests: PathBuf,
-    /// The addresses allowed to ask anything.
-    pub allow: Vec<IpAddr>,
+    /// The hosts allowed to ask anything.
+    pub allow: Arc<AllowList>,
+}
+
+/// The clients allowed, by host name (an address works too), and what each
+/// name resolved to last.
+#[derive(Debug)]
+pub struct AllowList {
+    addrs: RwLock<BTreeMap<String, Vec<IpAddr>>>,
+}
+
+/// `name`'s addresses, canonical (an IPv4-mapped IPv6 address as IPv4),
+/// sorted.
+async fn lookup(name: &str) -> std::io::Result<Vec<IpAddr>> {
+    let mut ips: Vec<IpAddr> = tokio::net::lookup_host((name, 0))
+        .await?
+        .map(|a| a.ip().to_canonical())
+        .collect();
+    ips.sort();
+    ips.dedup();
+    if ips.is_empty() {
+        return Err(std::io::Error::other("no addresses"));
+    }
+    Ok(ips)
+}
+
+impl AllowList {
+    /// Resolves every name; fails if any doesn't resolve, so a server never
+    /// starts without one of its clients.
+    pub async fn resolve(names: &[String]) -> anyhow::Result<Self> {
+        anyhow::ensure!(!names.is_empty(), "no hosts to allow");
+        let mut addrs = BTreeMap::new();
+        for name in names {
+            let name = name.trim();
+            anyhow::ensure!(!name.is_empty(), "an empty host name in --allow");
+            let ips = lookup(name)
+                .await
+                .map_err(|e| anyhow::anyhow!("--allow {name}: doesn't resolve: {e}"))?;
+            addrs.insert(name.to_owned(), ips);
+        }
+        Ok(Self {
+            addrs: RwLock::new(addrs),
+        })
+    }
+
+    /// Resolves every name again. A name that doesn't resolve now keeps its
+    /// last addresses, so a resolver that's away locks no node out.
+    pub async fn refresh(&self) {
+        let names: Vec<String> = self.addrs.read().unwrap().keys().cloned().collect();
+        for name in names {
+            match lookup(&name).await {
+                Ok(ips) => {
+                    let mut addrs = self.addrs.write().unwrap();
+                    let old = addrs.insert(name.clone(), ips.clone());
+                    if old.as_ref() != Some(&ips) {
+                        tracing::info!(host = name, addrs = ?ips, "allowed host's addresses changed");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(host = name, error = %e, "allowed host doesn't resolve; keeping its last addresses");
+                }
+            }
+        }
+    }
+
+    pub fn contains(&self, ip: &IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        self.addrs
+            .read()
+            .unwrap()
+            .values()
+            .any(|ips| ips.contains(&ip))
+    }
+
+    /// Each host and its addresses, for the log.
+    pub fn snapshot(&self) -> BTreeMap<String, Vec<IpAddr>> {
+        self.addrs.read().unwrap().clone()
+    }
 }
 
 /// A path under `/scans/`: `keep` or `buffer`, then safe segments, ending
@@ -270,14 +350,30 @@ pub fn router(opts: ServeOptions) -> Router {
         .with_state(opts)
 }
 
-/// Serve until `stop` turns true.
+/// Serve until `stop` turns true, resolving the allowed hosts again every
+/// `allow_refresh`.
 pub async fn serve(
     listen: SocketAddr,
     opts: ServeOptions,
+    allow_refresh: Duration,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(listen).await?;
-    tracing::info!(%listen, allow = ?opts.allow, scans = %opts.scans.display(), "scan server listening");
+    tracing::info!(%listen, allow = ?opts.allow.snapshot(), scans = %opts.scans.display(), "scan server listening");
+    let allow = Arc::clone(&opts.allow);
+    let mut refresh_stop = stop.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(allow_refresh.max(Duration::from_secs(1)));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await;
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = async { let _ = refresh_stop.wait_for(|s| *s).await; } => break,
+            }
+            allow.refresh().await;
+        }
+    });
     axum::serve(
         listener,
         router(opts).into_make_service_with_connect_info::<SocketAddr>(),
@@ -316,7 +412,9 @@ mod tests {
         }
     }
 
-    async fn server(allow: Vec<IpAddr>) -> (tempfile::TempDir, String) {
+    async fn server(allow: &[&str]) -> (tempfile::TempDir, String) {
+        let allow: Vec<String> = allow.iter().map(|s| s.to_string()).collect();
+        let allow = Arc::new(AllowList::resolve(&allow).await.unwrap());
         let dir = tempfile::tempdir().unwrap();
         let scans = dir.path().join("scans");
         for set in ["keep", "buffer"] {
@@ -345,7 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn serves_scans_deletes_only_buffer_and_takes_manifests() {
-        let (dir, root) = server(vec!["127.0.0.1".parse().unwrap()]).await;
+        let (dir, root) = server(&["127.0.0.1"]).await;
         let http = reqwest::Client::new();
         let url = |p: &str| format!("{root}{p}");
         let r = http
@@ -461,10 +559,43 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_addresses_not_allowed() {
-        let (_dir, root) = server(vec!["192.168.0.243".parse().unwrap()]).await;
+        // An RFC 5737 documentation address: never this test's client.
+        let (_dir, root) = server(&["192.0.2.243"]).await;
         let r = reqwest::get(format!("{root}/scans/keep/b/sn1/1890-05-03/1/1.jpg"))
             .await
             .unwrap();
         assert_eq!(r.status(), 403);
+    }
+
+    #[tokio::test]
+    async fn allows_hosts_by_name() {
+        let (_dir, root) = server(&["localhost"]).await;
+        let r = reqwest::get(format!("{root}/scans/keep/b/sn1/1890-05-03/1/1.jpg"))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn refuses_to_start_with_a_name_that_doesnt_resolve() {
+        let names = vec!["localhost".to_string(), "nothing.invalid".to_string()];
+        assert!(AllowList::resolve(&names).await.is_err());
+        assert!(AllowList::resolve(&[]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_refresh_keeps_a_name_that_stops_resolving() {
+        let list = AllowList::resolve(&["127.0.0.1".to_string()])
+            .await
+            .unwrap();
+        // As if this name had resolved at startup and its resolver were away now.
+        list.addrs
+            .write()
+            .unwrap()
+            .insert("nothing.invalid".into(), vec!["192.0.2.7".parse().unwrap()]);
+        list.refresh().await;
+        assert!(list.contains(&"192.0.2.7".parse().unwrap()));
+        assert!(list.contains(&"::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!list.contains(&"198.51.100.1".parse().unwrap()));
     }
 }

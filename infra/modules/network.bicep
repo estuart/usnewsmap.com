@@ -4,9 +4,10 @@
 param location string
 param tags object
 param name string
-param addressPrefix string = '10.40.0.0/24'
-param caeSubnetPrefix string = '10.40.0.0/27'
-param peSubnetPrefix string = '10.40.0.32/28'
+@description('The VNet\'s address space: a private IPv4 block, /26 or larger. snet-cae is its first /27 and snet-pe the /28 after that. No default: private addresses aren\'t committed.')
+param addressPrefix string
+var caeSubnetPrefix = cidrSubnet(addressPrefix, 27, 0)
+var peSubnetPrefix = cidrSubnet(addressPrefix, 28, 2)
 @description('A Microsoft.Storage service endpoint on snet-cae, for the OCR exchange account\'s firewall rule (ocr-exchange.bicep).')
 param storageServiceEndpoint bool = false
 

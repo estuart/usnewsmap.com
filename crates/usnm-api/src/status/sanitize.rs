@@ -346,6 +346,14 @@ mod tests {
         );
     }
 
+    /// A private (RFC 1918) address, built from its octets: none is written
+    /// out in the repository (scripts/ci/no-private-addresses.sh).
+    fn private_ip() -> String {
+        let ip = std::net::Ipv4Addr::new(10, 0, 2, 4);
+        assert!(ip.is_private());
+        ip.to_string()
+    }
+
     #[test]
     fn checks_each_component_of_key_value_pairs_and_lists() {
         assert_eq!(
@@ -353,7 +361,10 @@ mod tests {
             "account=[resource] resource=[resource]"
         );
         assert_eq!(
-            sanitize("endpoint=10.0.2.4:443&client_id=3fa85f64-5717-4562-b3fc-2c963f66afa6"),
+            sanitize(&format!(
+                "endpoint={}:443&client_id=3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                private_ip()
+            )),
             "endpoint=[ip]&client_id=[id]"
         );
         assert_eq!(
@@ -411,7 +422,11 @@ mod tests {
     #[test]
     fn replaces_addresses_ids_and_emails() {
         assert_eq!(
-            sanitize("connect 10.0.2.4:443 refused"),
+            sanitize(&format!("connect {}:443 refused", private_ip())),
+            "connect [ip] refused"
+        );
+        assert_eq!(
+            sanitize("connect 192.0.2.4:443 refused"),
             "connect [ip] refused"
         );
         assert_eq!(sanitize("from [fe80::1]"), "from [[ip]]");

@@ -695,7 +695,7 @@ mod tests {
             ("PATH", "/usr/bin"),
             ("QW_LISTEN_ADDRESS", "0.0.0.0"),
             ("QW_CONFIG", "/quickwit/config/quickwit.yaml"),
-            ("QW_PEER_SEEDS", "10.0.0.9:7280"),
+            ("QW_PEER_SEEDS", "192.0.2.9:7280"),
             ("AZURE_CLIENT_ID", "abc"),
         ]
         .map(|(k, v)| (k.to_owned(), v.to_owned()));

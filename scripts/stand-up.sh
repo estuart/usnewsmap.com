@@ -18,6 +18,9 @@
 #   --subscription ID    for an environment with no settings yet (default:
 #                        az's current subscription)
 #   --location REGION    the same (default eastus2)
+#   --vnet-address-prefix CIDR  the VNet's address space, a private IPv4
+#                        block, /26 or larger (USNM_VNET_ADDRESS_PREFIX);
+#                        needed when the settings don't have it
 #
 # Settings: the environment's settings file (scripts/lib/env.sh) if there is
 # one; otherwise the newest one a teardown kept beside it (.env.deleted-<time>),
@@ -31,7 +34,7 @@
 # tag names what was built. A first stand-up takes about 40 to 60 minutes.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
-TARGET="" EXPERIMENT="" ARCHIVE=false SUBSCRIPTION="" LOCATION=eastus2
+TARGET="" EXPERIMENT="" ARCHIVE=false SUBSCRIPTION="" LOCATION=eastus2 VNET=""
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; TARGET=$2; shift 2 ;;
@@ -39,6 +42,7 @@ while [ $# -gt 0 ]; do
     --archive) ARCHIVE=true; shift ;;
     --subscription) [ $# -ge 2 ] || usage; SUBSCRIPTION=$2; shift 2 ;;
     --location) [ $# -ge 2 ] || usage; LOCATION=$2; shift 2 ;;
+    --vnet-address-prefix) [ $# -ge 2 ] || usage; VNET=$2; shift 2 ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -83,6 +87,9 @@ recorded=$(aget AZURE_SUBSCRIPTION_ID)
   die "$ENV_NAME's settings are for subscription $recorded; moving is bootstrap's (--move)"
 az account set --subscription "$recorded" ||
   die "can't select subscription $recorded (az login to its tenant?)"
+[ -z "$VNET" ] || { valid_vnet_prefix "$VNET" || exit 2; aset USNM_VNET_ADDRESS_PREFIX "$VNET"; }
+[ -n "$(aget USNM_VNET_ADDRESS_PREFIX)" ] ||
+  die "no VNet address space for $ENV_NAME: pass --vnet-address-prefix CIDR (a private IPv4 block, /26 or larger)"
 aset USNM_EXPERIMENT "$EXPERIMENT"
 # One Cosmos DB free-tier account per subscription, as bootstrap decides.
 if [ -z "$(aget USNM_COSMOS_FREE_TIER)" ]; then

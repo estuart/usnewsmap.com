@@ -371,6 +371,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: scripts/ci/ocr-worker-release.sh --dist dist
 
+  # Every change, documentation included: no private (RFC 1918) address
+  # may be committed anywhere.
+  private-addresses:
+    name: no private addresses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/ci/no-private-addresses.sh
+
   infra:
     name: infra (bicep lint, build)
     # Also the shared-key scan and the named-arguments check (#277), so every
@@ -428,10 +439,12 @@ jobs:
       - run: bicep build infra/guardrails.bicep --stdout > /dev/null
       - run: bicep build infra/archive/main.bicep --stdout > /dev/null
       # The parameters bootstrap deploys the stack with (settings from the
-      # environment; unset ones take their defaults).
+      # environment; unset ones take their defaults). The VNet block has no
+      # default; this sample is from RFC 5737's documentation range.
       - run: bicep build-params infra/main.bicepparam --stdout > /dev/null
         env:
           AZURE_ENV_NAME: dev
+          USNM_VNET_ADDRESS_PREFIX: 192.0.2.0/24
 
   web:
     name: web (lint, typecheck, test, build)
@@ -570,7 +583,7 @@ jobs:
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
     # Environment holds its own variables, written by scripts/bootstrap.sh.
-    needs: [changes, rust, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e]
+    needs: [changes, rust, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e, private-addresses]
     # Only when the images changed, and every check that ran passed: a job
     # skipped as irrelevant must not block the deploy, and a failed one must.
     if: >-

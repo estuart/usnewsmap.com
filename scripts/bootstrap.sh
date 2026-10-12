@@ -8,6 +8,9 @@
 #   --env NAME            the environment (1-16 lowercase letters and digits)
 #   --subscription ID     Azure subscription (default: az's current one)
 #   --location REGION     default eastus2 (new environments only)
+#   --vnet-address-prefix CIDR  the VNet's address space, a private IPv4
+#                         block, /26 or larger (USNM_VNET_ADDRESS_PREFIX;
+#                         needed once, for a new environment)
 #   --repo OWNER/NAME     GitHub repository that deploys it (default: this clone's)
 #   --domain NAME         create the public DNS zone for NAME (e.g. usnewsmap.com)
 #   --alert-email ADDR    alerts and the $80 budget go to ADDR
@@ -35,12 +38,13 @@ if [ $# -ge 1 ] && [[ $1 != -* ]]; then
   echo "warning: \`scripts/bootstrap.sh ENV [options]\` is deprecated; use --env (#277)" >&2
   set -- --env "$@"
 fi
-ENV_NAME="" SUBSCRIPTION="" LOCATION="eastus2" REPO="" DOMAIN="" EMAIL="" INGEST=false CLEANUP=false MOVE=false
+ENV_NAME="" SUBSCRIPTION="" LOCATION="eastus2" REPO="" DOMAIN="" EMAIL="" INGEST=false CLEANUP=false MOVE=false VNET=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --subscription) [ $# -ge 2 ] || usage; SUBSCRIPTION=$2; shift 2 ;;
     --location) [ $# -ge 2 ] || usage; LOCATION=$2; shift 2 ;;
+    --vnet-address-prefix) [ $# -ge 2 ] || usage; VNET=$2; shift 2 ;;
     --repo) [ $# -ge 2 ] || usage; REPO=$2; shift 2 ;;
     --domain) [ $# -ge 2 ] || usage; DOMAIN=$2; shift 2 ;;
     --alert-email) [ $# -ge 2 ] || usage; EMAIL=$2; shift 2 ;;
@@ -113,6 +117,9 @@ aset USNM_GITHUB_REPO "$REPO"
 aset USNM_GITHUB_REPO_IDS \
   "$(gh api "repos/$REPO" --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"')"
 [ -n "$DOMAIN" ] && aset USNM_DNS_ZONE "$DOMAIN"
+[ -z "$VNET" ] || { valid_vnet_prefix "$VNET" || exit 2; aset USNM_VNET_ADDRESS_PREFIX "$VNET"; }
+[ -n "$(aget USNM_VNET_ADDRESS_PREFIX)" ] ||
+  die "no VNet address space for $ENV_NAME: pass --vnet-address-prefix CIDR (a private IPv4 block, /26 or larger)"
 if [ -n "$EMAIL" ]; then
   aset USNM_ALERT_EMAILS "$EMAIL"
   # A budget's start date can never change: set it once.

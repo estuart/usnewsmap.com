@@ -15,7 +15,7 @@
 #     [--resolution full] [--buffer-resolution full] [--sets both]
 #     [--buffer-cap BYTES] [--order priority] [--max-total-bytes N]
 #     [--concurrency 4] [--enable] [--ctid 211]
-#   scanfetch-ct.sh --serve --allow 192.168.0.192,192.168.0.243 [--port 8380]
+#   scanfetch-ct.sh --serve [--allow HOST,HOST] [--port 8380]
 #     [--ctid 211]
 #
 # --create makes the container (onboot, one NIC on --bridge with DHCP,
@@ -30,13 +30,17 @@
 # (usnm-scanfetch.service, beside this script), and with --enable starts it
 # (restarts it if it was running, which goes on where it stopped).
 # --serve installs nftables in the container with a rule that drops the
-# scan server's port from anyone but --allow, writes
-# /etc/usnm/scanserve.env and the unit usnm-scanserve.service, and starts
-# it. The manifests mount must be read-write for the server's PUT; a
-# container made before that is switched over and rebooted.
+# scan server's port from anyone outside the container's own LAN (its eth0
+# subnet, read when it runs), writes /etc/usnm/scanserve.env and the unit
+# usnm-scanserve.service, and starts it. The server itself answers only the
+# --allow hosts (default: the two OCR nodes), by name: it resolves them at
+# startup and every 5 minutes. The names resolve only through the UniFi
+# gateway's local DNS. No address is written into this script. The
+# manifests mount must be read-write for the server's PUT; a container made
+# before that is switched over and rebooted.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,36s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,40s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 CTID=211 NAME=usnm-scanfetch STORAGE=ssd BRIDGE=vmbr0 CORES=2 MEMORY=4096 SWAP=512
@@ -44,7 +48,10 @@ TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst DATA=/tank/ocr
 CREATE=false INSTALL=false CONFIGURE=false ENABLE=false RELEASE=""
 MANIFEST="" RESOLUTION=full ORDER=priority MAX_BYTES="" CONCURRENCY=4
 BUFFER_RESOLUTION=full SETS=both BUFFER_CAP=1000000000000
-SERVE=false ALLOW="" PORT=8380
+SERVE=false PORT=8380
+# The scan server's clients, the OCR nodes, by host name (LAN DNS only).
+OCR_NODES=usnm-ocr-node1-arcs-prod.tjg.fyi,usnm-ocr-node2-arcs-prod.tjg.fyi
+ALLOW=$OCR_NODES
 REPO=tgoodyear/usnewsmap.com
 FETCH_UID=2000
 while [ $# -gt 0 ]; do
@@ -170,15 +177,18 @@ fi
 
 if $SERVE; then
   [[ $PORT =~ ^[0-9]{2,5}$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "--port: 1 to 65535"
-  IFS=, read -r -a IPS <<< "$ALLOW"
-  [ "${#IPS[@]}" -gt 0 ] || die "--serve needs --allow"
-  for ip in "${IPS[@]}"; do
-    [[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--allow: $ip isn't an IPv4 address"
-    IFS=. read -r -a octets <<< "$ip"
-    for o in "${octets[@]}"; do
-      [ "$((10#$o))" -le 255 ] || die "--allow: $ip isn't an IPv4 address"
-    done
+  IFS=, read -r -a HOSTS <<< "$ALLOW"
+  [ "${#HOSTS[@]}" -gt 0 ] || die "--allow: no hosts"
+  for h in "${HOSTS[@]}"; do
+    [[ $h =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "--allow: $h isn't a host name"
+    in_ct getent ahostsv4 "$h" > /dev/null || die "--allow: $h doesn't resolve in CT $CTID"
   done
+  # A release from before host names took addresses only.
+  in_ct /usr/local/bin/usnm-ocr-worker serve-scans --help | grep -q -- --allow-refresh-secs ||
+    die "CT $CTID's usnm-ocr-worker takes addresses only in --allow: --install a newer release first"
+  # The container's LAN, for the nftables rule: its eth0 subnet.
+  LAN=$(in_ct ip -4 route show dev eth0 scope link proto kernel | awk 'NR == 1 { print $1 }')
+  [[ $LAN =~ ^[0-9.]+/[0-9]+$ ]] || die "CT $CTID: no IPv4 subnet on eth0"
   # The manifests mount read-write, for PUT /manifests.
   # The mount changes only when the container starts again, so it is
   # rebooted here (a fetch in it stops and goes on where it stopped).
@@ -193,24 +203,24 @@ if $SERVE; then
     in_ct su -s /bin/sh scanfetch -c 'touch /tank/ocr/manifests/.write-check && rm /tank/ocr/manifests/.write-check' ||
       die "the manifests mount still isn't writable in CT $CTID"
   fi
-  set_list=$(IFS=,; echo "${IPS[*]}")
+  allow_list=$(IFS=,; echo "${HOSTS[*]}")
   in_ct bash -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables > /dev/null'
   in_ct bash -c "cat > /etc/nftables.conf.tmp <<NFT
 #!/usr/sbin/nft -f
 # Written by scripts/ocr-node/scanfetch-ct.sh --serve: the scan server's
-# port only from the OCR nodes.
+# port only from this container's LAN; the server answers only the nodes.
 flush ruleset
 table inet usnm {
   chain input {
     type filter hook input priority 0; policy accept;
-    tcp dport $PORT ip saddr != { ${set_list} } drop
+    tcp dport $PORT ip saddr != $LAN drop
     tcp dport $PORT ip6 saddr ::/0 drop
   }
 }
 NFT
 mv /etc/nftables.conf.tmp /etc/nftables.conf && nft -f /etc/nftables.conf && systemctl enable nftables > /dev/null"
   printf '%s\n' "# Written by scripts/ocr-node/scanfetch-ct.sh --serve." \
-    "USNM_SCANSERVE_LISTEN=0.0.0.0:$PORT" "USNM_SCANSERVE_ALLOW=$set_list" "RUST_LOG=info" |
+    "USNM_SCANSERVE_LISTEN=0.0.0.0:$PORT" "USNM_SCANSERVE_ALLOW=$allow_list" "RUST_LOG=info" |
     in_ct bash -c 'cat > /etc/usnm/scanserve.env.tmp && mv /etc/usnm/scanserve.env.tmp /etc/usnm/scanserve.env'
   in_ct install -d -o scanfetch -g scanfetch -m 2775 /tank/ocr/scans/buffer /tank/ocr/scans/keep
   pct push "$CTID" "$HERE/usnm-scanserve.service" /etc/systemd/system/usnm-scanserve.service

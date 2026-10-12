@@ -279,7 +279,7 @@ enum Command {
     },
     /// Serve the prefetched scans to the OCR nodes over HTTP (#368): GET
     /// scans and sidecars, DELETE buffer-set scans, PUT manifests, from the
-    /// --allow addresses only. Runs in the scan-fetch container on pve-big.
+    /// --allow hosts only. Runs in the scan-fetch container on pve-big.
     ServeScans {
         /// `/tank/ocr/scans`, holding `keep/` and `buffer/`.
         #[arg(long, env = "USNM_SCANSERVE_SCANS", default_value = "/tank/ocr/scans")]
@@ -294,14 +294,19 @@ enum Command {
         /// Address and port to listen on.
         #[arg(long, env = "USNM_SCANSERVE_LISTEN", default_value = "0.0.0.0:8380")]
         listen: std::net::SocketAddr,
-        /// The only client addresses served (the OCR nodes), comma-separated.
+        /// The only clients served (the OCR nodes), by host name,
+        /// comma-separated. Resolved at startup, which fails if one doesn't
+        /// resolve, and again every --allow-refresh-secs.
         #[arg(
             long,
             env = "USNM_SCANSERVE_ALLOW",
             value_delimiter = ',',
             required = true
         )]
-        allow: Vec<std::net::IpAddr>,
+        allow: Vec<String>,
+        /// How often the --allow names are resolved again.
+        #[arg(long, env = "USNM_SCANSERVE_ALLOW_REFRESH_SECS", default_value_t = 300)]
+        allow_refresh_secs: u64,
     },
     /// Project a manifest's size and fetch time from a sample's index
     /// (`index-<tag>.jsonl` from `prefetch --sample`). Prints JSON.
@@ -589,14 +594,17 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             manifests,
             listen,
             allow,
+            allow_refresh_secs,
         } => {
+            let allow = usnm_ocr_worker::serve::AllowList::resolve(&allow).await?;
             usnm_ocr_worker::serve::serve(
                 listen,
                 usnm_ocr_worker::serve::ServeOptions {
                     scans,
                     manifests,
-                    allow,
+                    allow: Arc::new(allow),
                 },
+                std::time::Duration::from_secs(allow_refresh_secs),
                 stop_signal(),
             )
             .await

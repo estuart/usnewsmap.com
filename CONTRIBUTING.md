@@ -37,8 +37,10 @@ scripts/ci/check-names.py --base origin/main
 python3 -m unittest scripts/ci/test_check_names.py
 bicep build infra/main.bicep --stdout > /dev/null
 bicep build infra/guardrails.bicep --stdout > /dev/null
-AZURE_ENV_NAME=dev bicep build-params infra/main.bicepparam --stdout > /dev/null
+AZURE_ENV_NAME=dev USNM_VNET_ADDRESS_PREFIX=192.0.2.0/24 bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
+
+`scripts/ci/no-private-addresses.sh` runs on every pull request, documentation included.
 
 `scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
 
@@ -47,6 +49,7 @@ AZURE_ENV_NAME=dev bicep build-params infra/main.bicepparam --stdout > /dev/null
 - **Entra ID only.** Every service signs in with a managed identity. Don't add account keys, SAS tokens, connection strings with keys or instrumentation keys ([ADR-0009](docs/design/adr/0009-entra-identity-only.md)). `scripts/ci/no-shared-keys.sh` fails the build if one appears.
 - **No real data from production.** Never commit search log content or real search queries ([ADR-0012](docs/design/adr/0012-anonymous-search-log.md)), production logs, traces or data dumps. Tests use the synthetic corpus in `fixtures/`. `python3 fixtures/generate.py` rebuilds it, and CI checks that the result matches what is committed.
 - **No secrets.** The repository holds none, and pull requests never get Azure access. Only `main` deploys, through its GitHub Environment.
+- **No private addresses.** Never commit an RFC 1918 address (the 10/8, 172.16/12 and 192.168/16 blocks), in code, scripts, Bicep, docs or tests. Refer to a private host by its host name, by a constant or environment variable, or best a constant that holds the host name, resolved at run time. Tests use the RFC 5737 documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), or build a private address from its octets when the test is about private addresses. A private value an environment needs, such as its VNet block, is a setting. `scripts/ci/no-private-addresses.sh` fails the build on one, with no exceptions.
 - **Named arguments only.** Scripts and command-line tools take named arguments (`scripts/settings.sh --env prod --key USNM_X --value true`), never positional ones: a positional interface breaks silently when its order changes, a named one fails loudly. Each parses its flags, fails on an unknown or missing one and prints its usage. A subcommand (`usnm-ingest enqueue`, `jaocr.py run`) is a name too. `scripts/ci/no-positional-args.py` fails the build on a script that reads `$1` or `sys.argv` outside its flag parser, a positional argparse argument, or a clap field that isn't `long` (#277).
 
 ## Pull requests

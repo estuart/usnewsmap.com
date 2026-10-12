@@ -231,7 +231,7 @@ impl ScanSource for CachedScans {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serve::{router, ServeOptions};
+    use crate::serve::{router, AllowList, ServeOptions};
     use chrono::Utc;
     use std::net::SocketAddr;
     use std::path::Path;
@@ -297,7 +297,11 @@ mod tests {
         let opts = ServeOptions {
             scans: scans.to_owned(),
             manifests: scans.join("m"),
-            allow: vec!["127.0.0.1".parse().unwrap()],
+            allow: Arc::new(
+                AllowList::resolve(&["127.0.0.1".to_string()])
+                    .await
+                    .unwrap(),
+            ),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -368,7 +372,14 @@ mod tests {
                 "{bad}"
             );
         }
-        assert!(CachedScans::new("http://192.168.0.5:8380", ROOT.into(), loc).is_ok());
+        // A scan server by host name, and by an RFC 5737 documentation
+        // address.
+        for good in ["http://scans.example.org:8380", "http://192.0.2.5:8380"] {
+            assert!(
+                CachedScans::new(good, ROOT.into(), Arc::clone(&loc)).is_ok(),
+                "{good}"
+            );
+        }
     }
 
     #[tokio::test]

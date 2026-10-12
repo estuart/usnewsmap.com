@@ -1042,7 +1042,7 @@ The scans of the damaged pages are fetched into pve-big's `tank/ocr/scans` by th
 pve-ocr-storage.sh                                   # datasets, ocrdata, no NFS export
 scanfetch-ct.sh --create                             # CT 211 with scans and manifests mounted
 scanfetch-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
-scanfetch-ct.sh --serve --allow 192.168.0.192,192.168.0.243   # the scan server, port 8380
+scanfetch-ct.sh --serve                              # the scan server, port 8380, for the OCR nodes by name
 ```
 
 To get a manifest in, build it in Azure (`scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-prefetch-manifest --version <v> --exchange-url <OCR_BLOB_ENDPOINT>ocr-out`, with no other ingest or backfill execution running), then on a node: `sudo pull-manifest.sh --account <OCR_EXCHANGE_ACCOUNT> --index-version <v> --scan-server http://<CT 211>:8380`. Start or move the fetch with `scanfetch-ct.sh --configure --manifest /tank/ocr/manifests/<v>/manifest.parquet [--buffer-cap BYTES] [--buffer-resolution ...] --enable`; it goes on where it stopped.

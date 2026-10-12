@@ -18,6 +18,9 @@ param environmentName string
 @description('Region; East US 2 has ACI Spot (preview).')
 param location string = 'eastus2'
 
+@description('The VNet\'s address space (USNM_VNET_ADDRESS_PREFIX in the environment\'s settings): a private IPv4 block in CIDR, /26 or larger, holding snet-cae (its first /27) and snet-pe (the /28 after that). No default: private addresses aren\'t committed (scripts/ci/no-private-addresses.sh).')
+param vnetAddressPrefix string
+
 @description('A public API image, used only while useAcr is off. Empty (the default) skips the API until CI has pushed to the registry and useAcr is on.')
 param apiImage string = ''
 
@@ -345,6 +348,7 @@ module network 'modules/network.bicep' = {
     location: location
     tags: tags
     name: n.vnet
+    addressPrefix: vnetAddressPrefix
     storageServiceEndpoint: ocrNodes
   }
 }
