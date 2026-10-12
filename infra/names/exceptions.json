@@ -149,11 +149,6 @@
     "adr": "ADR-0017, Exceptions",
     "reason": "Scheduled for Phase 3, during #283 preparation, with no execution running and the writer's lease free."
   },
-  "jaocrJobFailedAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
   "jaoneJob": {
     "until": "phase-3",
     "adr": "ADR-0017, Exceptions",

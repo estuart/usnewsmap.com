@@ -160,7 +160,6 @@ var nameTypes = {
   ingestJobFailedAlert: 'alert'
   ingestNotProgressingAlert: 'alert'
   jaocrJob: 'caj'
-  jaocrJobFailedAlert: 'alert'
   jaoneJob: 'caj'
   logCapAlert: 'alert'
   ocrAppInsights: 'appi'
@@ -172,7 +171,6 @@ var nameTypes = {
   ocrNodeWriterRole: 'role'
   ocrNodesWorkbookTitle: 'title'
   ocrSyncBacklogAlert: 'alert'
-  ocrSyncFailedAlert: 'alert'
   ocrSyncJob: 'caj'
   ocrVault: 'kv'
   ocrWorkspace: 'log'
@@ -250,7 +248,6 @@ type Names = {
   ingestJobFailedAlert: string
   ingestNotProgressingAlert: string
   jaocrJob: string
-  jaocrJobFailedAlert: string
   jaoneJob: string
   logCapAlert: string
   ocrAppInsights: string
@@ -262,7 +259,6 @@ type Names = {
   ocrNodeWriterRole: string
   ocrNodesWorkbookTitle: string
   ocrSyncBacklogAlert: string
-  ocrSyncFailedAlert: string
   ocrSyncJob: string
   ocrVault: string
   ocrWorkspace: string
@@ -337,7 +333,6 @@ func names(env string, sfx string, pinned bool) Names => {
     ? 'alert-usnm-ingest-not-progressing-${env}'
     : usnmName('ingest-not-progressing', 'alert', env)
   jaocrJob: pinned ? 'caj-usnm-jaocr-${env}' : usnmName('jaocr', 'caj', env)
-  jaocrJobFailedAlert: pinned ? 'alert-usnm-jaocr-job-failed-${env}' : usnmName('jaocr-job-failed', 'alert', env)
   jaoneJob: pinned ? 'caj-usnm-jaone-${env}' : usnmName('jaone', 'caj', env)
   logCapAlert: pinned ? 'alert-usnm-log-cap-${env}' : usnmName('core-log-cap', 'alert', env)
   ocrAppInsights: usnmName('ocr', 'appi', env)
@@ -350,7 +345,6 @@ func names(env string, sfx string, pinned bool) Names => {
   ocrNodesWorkbookTitle: 'usnm OCR nodes (${env})'
   // 'ocrs', not 'ocrsync', the pickup job's first name (#386, ADR-0017).
   ocrSyncBacklogAlert: usnmName('ocrs-backlog', 'alert', env)
-  ocrSyncFailedAlert: usnmName('ocrs-failed', 'alert', env)
   ocrSyncJob: usnmName('ocrs', 'caj', env)
   ocrVault: usnmCompactName('ocr', 'kv', env, sfx)
   ocrWorkspace: usnmName('ocr', 'log', env)

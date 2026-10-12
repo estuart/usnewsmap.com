@@ -7,6 +7,13 @@
 // output on disk at once, about twice `split_num_docs_target` pages
 // (infra/quickwit/pages-index.yaml): about 60 GB at 23 KB a page.
 //
+// It exists only while a full rebuild needs it (#308): USNM_INGEST_SCRATCH_GIB
+// is set for the rebuild's provision and cleared afterwards, and the
+// deployment stack then deletes the share, the account, its private
+// endpoint and its DNS zone. Nothing on it outlives a release (a release
+// empties the writer's data first), so nothing is lost. Weekly deltas run
+// on the replica's own disk.
+//
 // NFS uses no keys, but no identity either: access is by network, through
 // the private endpoint in the VNet, so anything in the Container Apps
 // subnet can reach the share. That is an exception to ADR-0009, recorded

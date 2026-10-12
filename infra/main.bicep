@@ -167,8 +167,8 @@ param archiveAccountId string = ''
 @description('Backfill schedule, UTC cron (e.g. "0 9 2-4 10 *" while a backfill lasts). Empty: run the job manually.')
 param backfillCron string = ''
 
-@description('Size in GiB of the NFS share the ingest job\'s Quickwit writer works on (08 §8.4): 128 or more for the merge settings in pages-index.yaml; 0: the replica\'s own disk, too small to merge large indexes.')
-param ingestScratchGiB int = 128
+@description('Size in GiB of the NFS share the ingest job\'s Quickwit writer works on (08 §8.4), with its account, private endpoint and DNS zone: 128 or more for a full rebuild, set for the rebuild and cleared afterwards (docs/operations.md, "Full rebuild"); 0 (the default): none, and the writer works on the replica\'s own disk, which holds a weekly delta but not a full base.')
+param ingestScratchGiB int = 0
 
 @description('Seconds an ingest release waits for its new index\'s merges before failing without publishing (08 §8.4).')
 param ingestMergeTimeoutSecs int = 14400
@@ -808,16 +808,17 @@ module ingestAlerts 'modules/ingest-alerts.bicep' = if (!empty(emails) && ingest
     jaOcrJobName: n.jaocrJob
     jaAuditJobName: n.jaoneJob
     alertNames: {
-      ingestJobFailed: n.ingestJobFailedAlert
-      jaOcrJobFailed: n.jaocrJobFailedAlert
+      // Every job's failures, under the ingest rule's name (#308).
+      jobFailed: n.ingestJobFailedAlert
       ingestNotProgressing: n.ingestNotProgressingAlert
       releaseStalled: n.releaseStalledAlert
       backfillStalled: n.backfillStalledAlert
       backfillReplicaSilent: n.backfillReplicaSilentAlert
-      ocrSyncFailed: n.ocrSyncFailedAlert
       ocrSyncBacklog: n.ocrSyncBacklogAlert
     }
     ocrSync: ocrNodes
+    // While a backfill lasts, it runs on USNM_BACKFILL_CRON.
+    backfill: !empty(backfillCron)
   }
 }
 

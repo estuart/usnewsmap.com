@@ -7,7 +7,6 @@
   "USNM_DNS_ZONE": "usnewsmap.com",
   "USNM_GITHUB_REPO": "tgoodyear/usnewsmap.com",
   "USNM_INGEST_JOBS": true,
-  "USNM_INGEST_SCRATCH_GIB": 128,
   "USNM_JA_LATIN": true,
   "USNM_JA_OCR_JOB": true,
   "USNM_OCR": false,

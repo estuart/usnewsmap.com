@@ -1,8 +1,11 @@
-// Log search alerts on the ingest and backfill jobs (09 §9.2), and one on the
-// Japanese OCR jobs (jaocr-job-failed), evaluated on
-// the Log Analytics workspace against the resource-specific Container Apps
-// tables (ContainerAppConsoleLogs, ContainerAppSystemLogs). Severity 2
-// (the progress check and the Japanese OCR jobs 3), email through the environment's action group.
+// Log search alerts on the pipeline's jobs (09 §9.2): the ingest and backfill
+// jobs, the Japanese OCR jobs and the OCR pickup job, evaluated on the Log
+// Analytics workspace against the resource-specific Container Apps tables
+// (ContainerAppConsoleLogs, ContainerAppSystemLogs). Severity 2 (the
+// progress check and the OCR backlog 3), email through the environment's
+// action group. Every rule is checked every 15 minutes or less often (#308:
+// a log alert costs $1.50 a month at 5 minutes, $0.50 at 15), and one rule
+// reports every job's failures.
 // Stateful: one notification when a condition starts, resolved when it
 // clears.
 //
@@ -27,10 +30,12 @@ param ingestJobName string
 param backfillJobName string
 param jaOcrJobName string
 param jaAuditJobName string
-@description('The alert rules\' names (infra/naming.bicep): ingestJobFailed, jaOcrJobFailed, ingestNotProgressing, releaseStalled, backfillStalled, backfillReplicaSilent, ocrSyncFailed and ocrSyncBacklog.')
+@description('The alert rules\' names (infra/naming.bicep): jobFailed, ingestNotProgressing, releaseStalled, backfillStalled, backfillReplicaSilent and ocrSyncBacklog.')
 param alertNames object
-@description('Alert on the OCR pickup job, usnm-ocrs-caj-<env> (with the on-prem OCR nodes, 12 §12.5 Step 8).')
+@description('Alert on the OCR pickup job\'s backlog, usnm-ocrs-caj-<env> (with the on-prem OCR nodes, 12 §12.5 Step 8). Its failures are in the job-failed rule either way.')
 param ocrSync bool = false
+@description('Deploy the backfill rules (stalled, replica silent): while a backfill lasts, which is while USNM_BACKFILL_CRON schedules it (docs/operations.md). The backfill job\'s failures are in the job-failed rule either way.')
+param backfill bool = false
 
 // Every error exit of usnm-ingest ends with one "command failed" line: the
 // reliable signal, with the error text. A replica killed without writing it
@@ -46,12 +51,9 @@ param ocrSync bool = false
 // The platform's events for a replica that wrote its own line, and the
 // job's backoff event right after one, only repeat it and are left out too.
 //
-// Split by Execution (the job execution, from the replica's name; the job
-// for a job-level event that names none) and Reason: the error, cut to 180
-// characters, with URL query strings, key=value secrets and long opaque
-// tokens masked. The window is 30 minutes so that the line a platform event
-// repeats is still in it; only the last 15 minutes are reported.
-var jobFailed = '''
+// The ingest and backfill jobs' failures, as rows of TimeGenerated, Job,
+// Replica and Detail, for jobFailed below.
+var ingestFailures = '''
 let lines = ContainerAppConsoleLogs
     | where ContainerName in ("ingest", "curate")
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
@@ -83,24 +85,16 @@ let jobEvents = platform
         by TimeGenerated, Job, Replica, Detail, Backoff
     | where not(Backoff and Explained > 0);
 union (lines | where not(Expected)), replicaEvents, jobEvents
-| where TimeGenerated > ago(15m)
-| extend Execution = iff(isempty(Replica), Job, extract(@"^(.+)-[a-z0-9]+$", 1, Replica))
-| extend Reason = replace_regex(Detail, @"\?[^\s'\x22]+", "?…")
-| extend Reason = replace_regex(Reason, @"(?i)(sig|signature|token|secret|password|key|code)=[^\s&,;]+", @"\1=***")
-| extend Reason = replace_regex(Reason, @"[A-Za-z0-9+/_=-]{40,}", "***")
-| extend Reason = iff(strlen(Reason) > 180, strcat(substring(Reason, 0, 179), "…"), Reason)
-| project TimeGenerated, Execution, Reason
+| project TimeGenerated, Job, Replica, Detail
 '''
 
 // The Japanese OCR jobs (caj-usnm-jaocr-*, and caj-usnm-jaone-* for its
-// one-off measurements) are watched apart, at severity 3: a failed OCR or
-// audit run is retried by starting it again and touches no published index,
-// so it mustn't read as an ingest failure. A replica that died (non-zero
-// exit: out of memory, a crash; not one the platform stopped because another
-// replica failed), the job's backoff or deadline, and the first line of any
-// Python traceback the job printed (the job's own JSON lines with an "error"
-// field are reported, not failures); split by Execution and Reason as above.
-var jaOcrJobFailed = '''
+// one-off measurements): a replica that died (non-zero exit: out of memory,
+// a crash; not one the platform stopped because another replica failed),
+// the job's backoff or deadline, and the first line of any Python traceback
+// the job printed (the job's own JSON lines with an "error" field are
+// reported, not failures). The same columns as ingestFailures.
+var jaOcrFailures = '''
 let platform = ContainerAppSystemLogs
     | where JobName startswith "__JAOCR_JOB__" or JobName startswith "__JAONE_JOB__"
         or ContainerAppName startswith "__JAOCR_JOB__" or ContainerAppName startswith "__JAONE_JOB__"
@@ -115,7 +109,32 @@ let crashes = ContainerAppConsoleLogs
     | where Log startswith_cs "Traceback"
     | project TimeGenerated, Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName, Detail = Log;
 union platform, crashes
-| where TimeGenerated > ago(15m)
+| project TimeGenerated, Job, Replica, Detail
+'''
+
+// One rule for every job's failures (#308; three rules until then, each
+// checked every 5 minutes): the ingest and backfill jobs, the Japanese OCR
+// and audit jobs, and the OCR pickup job. A Japanese OCR, audit or pickup
+// run touches no published index and is retried by starting it again, so
+// the email's Execution says which job it was before anything else.
+//
+// Split by Execution (the job execution, from the replica's name; the job
+// for a job-level event that names none) and Reason: the error, cut to 180
+// characters, with URL query strings, key=value secrets and long opaque
+// tokens masked. Checked every 15 minutes; the last 30 minutes are
+// reported, so a line that reaches the workspace a few minutes late is
+// still seen by the next check (a condition seen twice is one alert, since
+// the rule is stateful), and the window is 45 minutes so that the line a
+// platform event repeats, up to 5 minutes before it, is still in view.
+var jobFailedTemplate = '''
+let ingestEvents = () {
+__INGEST_FAILURES__};
+let jaocrEvents = () {
+__JAOCR_FAILURES__};
+let ocrsEvents = () {
+__OCRS_FAILURES__};
+union ingestEvents(), jaocrEvents(), ocrsEvents()
+| where TimeGenerated > ago(30m)
 | extend Execution = iff(isempty(Replica), Job, extract(@"^(.+)-[a-z0-9]+$", 1, Replica))
 | extend Reason = replace_regex(Detail, @"\?[^\s'\x22]+", "?…")
 | extend Reason = replace_regex(Reason, @"(?i)(sig|signature|token|secret|password|key|code)=[^\s&,;]+", @"\1=***")
@@ -123,6 +142,12 @@ union platform, crashes
 | extend Reason = iff(strlen(Reason) > 180, strcat(substring(Reason, 0, 179), "…"), Reason)
 | project TimeGenerated, Execution, Reason
 '''
+
+var jobFailed = replace(
+  replace(replace(jobFailedTemplate, '__INGEST_FAILURES__', ingestFailures), '__JAOCR_FAILURES__', jaOcrFailures),
+  '__OCRS_FAILURES__',
+  ocrSyncFailures
+)
 
 // The safety net for the stop left out above. Over the last 2 days (the
 // longest window a log alert reads), the ingest job's titles-sync stops
@@ -280,25 +305,15 @@ replicas
 
 var rules = [
   {
-    name: alertNames.ingestJobFailed
-    displayName: 'Ingest or backfill job failed'
-    description: 'An ingest or backfill replica exited with an error in the last 15 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Next: scripts/logs.sh --env <env> --query-name job-executions --span 1d for how each replica ended, and errors-by-batch 1d for the warnings before it. Fix the cause, then start the job again; the next run picks up where this one stopped.'
+    name: alertNames.jobFailed
+    displayName: 'Pipeline job failed'
+    description: 'A replica of the ingest or backfill job, the Japanese OCR or audit job (caj-usnm-jaocr, caj-usnm-jaone) or the OCR pickup job (usnm-ocrs-caj) failed in the last 30 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Japanese OCR, audit and pickup runs touch no published index. Next: scripts/logs.sh --env <env> --query-name job-executions --span 1d for how each replica ended, and errors-by-batch 1d for the warnings before it (for a Japanese OCR run, scripts/ja-ocr/quality-rows.sh --env <env> --execution <execution>). Fix the cause, then start the job again (or wait for the pickup\'s hourly run); the next run picks up where this one stopped.'
     severity: 2
-    frequency: 'PT5M'
-    // Azure accepts only 5, 10, 15, 30, 45, 60 min and up; the query itself reports the last 15 min,
-    // and the extra lookback lets it see the 5 minutes before an event.
-    window: 'PT30M'
+    frequency: 'PT15M'
+    // Azure accepts only 5, 10, 15, 30, 45, 60 min and up; the query reports the last 30 min
+    // (two checks), and the extra lookback lets it see the 5 minutes before an event.
+    window: 'PT45M'
     query: jobFailed
-    dimensions: ['Execution', 'Reason']
-  }
-  {
-    name: alertNames.jaOcrJobFailed
-    displayName: 'Japanese OCR or audit job failed'
-    description: 'A replica of the Japanese OCR job (caj-usnm-jaocr) or its one-off audit job (caj-usnm-jaone) died or printed a traceback in the last 15 minutes; Execution and Reason say which and why. It touches no published index. Next: scripts/ja-ocr/quality-rows.sh --env <env> --execution <execution> or the job\'s console logs for its last lines; fix the cause and start the run again (OCR resumes from its claims; audits rerun).'
-    severity: 3
-    frequency: 'PT5M'
-    window: 'PT30M'
-    query: jaOcrJobFailed
     dimensions: ['Execution', 'Reason']
   }
   {
@@ -321,6 +336,11 @@ var rules = [
     query: releaseStalled
     dimensions: ['Execution', 'Detail']
   }
+]
+
+// Only while a backfill lasts (`backfill`, #308): the job is idle otherwise,
+// and each rule costs a few dollars a year for nothing.
+var backfillRules = [
   {
     name: alertNames.backfillStalled
     displayName: 'Backfill stalled'
@@ -336,20 +356,18 @@ var rules = [
     displayName: 'Backfill replica silent'
     description: 'A backfill replica that is still running has logged nothing for 15 minutes; a working one logs curate progress every minute. Replica and Detail say which and its last line. Next: scripts/logs.sh --env <env> --query-name curate-replicas for each replica\'s last stage and heartbeat; stop the execution if it is stuck (its batch lease expires and another worker retries it).'
     severity: 2
-    frequency: 'PT5M'
+    frequency: 'PT15M'
     window: 'P1D'
     query: backfillReplicaSilent
     dimensions: ['Replica', 'Detail']
   }
 ]
 
-// The OCR pickup job (usnm-ocrs-caj-*, 12 §12.5 Step 8), at severity 3:
-// a failed pickup touches no published index, and the next hourly run
-// continues it. Its "command failed" line, or the platform's events for a
-// replica that died without one. Split by Execution and Reason as above.
-// The container is still called ocrsync (the job was usnm-ocrsync-caj-{env}
+// The OCR pickup job (usnm-ocrs-caj-*, 12 §12.5 Step 8): its "command
+// failed" line, or the platform's events for a replica that died without
+// one. The same columns as ingestFailures. The container is still called ocrsync (the job was usnm-ocrsync-caj-{env}
 // until the October 2026 rename, #309), so the console queries match both.
-var ocrSyncFailed = '''
+var ocrSyncFailures = '''
 let lines = ContainerAppConsoleLogs
     | where ContainerName == "ocrsync"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
@@ -367,13 +385,7 @@ let platform = ContainerAppSystemLogs
         Detail = strcat(Reason, ": ", Log)
     | join kind=leftanti lines on Replica;
 union lines, platform
-| where TimeGenerated > ago(15m)
-| extend Execution = iff(isempty(Replica), Job, extract(@"^(.+)-[a-z0-9]+$", 1, Replica))
-| extend Reason = replace_regex(Detail, @"\?[^\s'\x22]+", "?…")
-| extend Reason = replace_regex(Reason, @"(?i)(sig|signature|token|secret|password|key|code)=[^\s&,;]+", @"\1=***")
-| extend Reason = replace_regex(Reason, @"[A-Za-z0-9+/_=-]{40,}", "***")
-| extend Reason = iff(strlen(Reason) > 180, strcat(substring(Reason, 0, 179), "…"), Reason)
-| project TimeGenerated, Execution, Reason
+| project TimeGenerated, Job, Replica, Detail
 '''
 
 // Node output waiting in ocr-out for more than 72 hours: the pickup's
@@ -397,16 +409,6 @@ ContainerAppConsoleLogs
 '''
 
 var ocrSyncRules = [
-  {
-    name: alertNames.ocrSyncFailed
-    displayName: 'OCR pickup failed'
-    description: 'An execution of the OCR pickup job (usnm-ocrs-caj) failed in the last 15 minutes; Execution and Reason say which and why. Nothing published changes, and the next hourly run continues. Next: the job\'s console logs for its last lines (scripts/logs.sh --env <env> --query-name job-executions --span 1d); fix the cause, then start the job again or wait for the schedule.'
-    severity: 3
-    frequency: 'PT5M'
-    window: 'PT30M'
-    query: ocrSyncFailed
-    dimensions: ['Execution', 'Reason']
-  }
   {
     name: alertNames.ocrSyncBacklog
     displayName: 'OCR output waiting over 72 hours'
@@ -456,7 +458,7 @@ resource ocrSyncAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
 ]
 
 resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
-  for r in rules: {
+  for r in concat(rules, backfill ? backfillRules : []): {
     name: r.name
     location: location
     tags: tags

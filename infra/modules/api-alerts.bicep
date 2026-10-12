@@ -69,14 +69,15 @@ param siteUrl string = ''
 @allowed(['300', '600', '900'])
 param availabilityFrequency string = '900'
 
-// At least 5 server errors in 10 minutes that are also more than 2% of the
-// requests. The count floor keeps one or two failures on a quiet site from
+// At least 8 server errors in 15 minutes that are also more than 2% of the
+// requests (5 in 10 minutes until #308 moved the rule from every 5 minutes
+// to every 15, at the same rate). The count floor keeps one or two failures on a quiet site from
 // paging; the ratio keeps a handful among many requests from paging. Slow
 // searches are left out: a search longer than a visitor waits gets a 202
 // and carries on (06 §6.3.5), and the 503s for a search that ran past its
 // 2-minute limit (/errors/backend-timeout) or found every computation slot
 // taken (/errors/busy) are counted apart. The request span names the
-// problem type in usnm.problem. Ten or more of those in 10 minutes still
+// problem type in usnm.problem. Fifteen or more of those in 15 minutes still
 // raise this alert: a searcher that accepts searches but never answers
 // shows up only as timeouts and busy refusals. Fewer are left to the slow
 // search alert below. One row for each of the two conditions met, split by
@@ -99,9 +100,9 @@ let totals = requests
         Errors = sumif(ItemCount, Error and not(Slow)),
         SlowErrors = sumif(ItemCount, Error and Slow);
 union
-    (totals | where Errors >= 5 and Errors * 50 > Requests
+    (totals | where Errors >= 8 and Errors * 50 > Requests
         | extend Kind = "server errors", TopRoute = top(false)),
-    (totals | where SlowErrors >= 10
+    (totals | where SlowErrors >= 15
         | extend Kind = "search timeouts and busy refusals", TopRoute = top(true))
 | project Kind, TopRoute
 '''
@@ -171,10 +172,13 @@ var rules = [
   {
     name: alertNames.serverErrors
     displayName: 'API server errors'
-    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests (search timeouts and busy refusals not counted), or at least 10 search timeouts and busy refusals. Kind says which, TopRoute the route and status with the most. Next: scripts/logs.sh --env <env> --query-name api-errors --span 1h for the routes, codes and the API\'s error lines; for timeouts and busy refusals, check the Quickwit sidecar (container quickwit) and whether a new index version was just published.'
+    description: 'usnm-api answered at least 8 requests with a 5xx in 15 minutes, more than 2% of its requests (search timeouts and busy refusals not counted), or at least 15 search timeouts and busy refusals. Kind says which, TopRoute the route and status with the most. Next: scripts/logs.sh --env <env> --query-name api-errors --span 1h for the routes, codes and the API\'s error lines; for timeouts and busy refusals, check the Quickwit sidecar (container quickwit) and whether a new index version was just published.'
     severity: 2
-    frequency: 'PT5M'
-    window: 'PT10M'
+    // Every 15 minutes, not 5 (#308, $1 a month less): nobody acts on an
+    // email within minutes, and a whole outage also trips the availability
+    // alert below.
+    frequency: 'PT15M'
+    window: 'PT15M'
     query: serverErrors
     dimensions: ['Kind', 'TopRoute']
     autoMitigate: true
@@ -184,7 +188,7 @@ var rules = [
     displayName: 'Slow aggregate searches'
     description: 'p95 of /v1/aggregate was over 3 s in the last 15 minutes (at least 20 requests, 3 of them over 3 s). Right after a new index version is published every search is cold, so this can fire and clear on its own. Next: scripts/logs.sh --env <env> --query-name api-requests --span 1h for latency by route, and the API workbook for cache hits and backend time.'
     severity: 3
-    frequency: 'PT5M'
+    frequency: 'PT15M'
     window: 'PT15M'
     query: slowAggregate
     dimensions: []
