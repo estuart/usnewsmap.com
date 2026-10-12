@@ -1,7 +1,10 @@
 # The on-prem Serial Set fetch (#229; ADR-0008, amendment of October 2026):
 # `usnm-ingest congress-serialset` on an OCR node, as the node's Arc
-# identity, in place of the Azure job usnm-sset-caj-<env>. Not enabled: it
-# runs when started, until every volume is written or left, and stops
+# identity, in place of the Azure job usnm-sset-caj-<env>. Enabled: it
+# starts at boot and runs until every volume is written or left out for
+# good, then writes /var/lib/usnm-sset/done and stops; with that marker it
+# no longer starts. To run the fetch again (new volumes on GovInfo):
+# `sudo rm /var/lib/usnm-sset/done && sudo systemctl start usnm-sset`
 # (docs/operations.md, "The Serial Set on-prem").
 #
 # Settings in /etc/usnm/sset.env (never committed):
@@ -11,9 +14,11 @@
 #   USNM_STATE_FILE    the local state file holding the fetch's lock
 [Unit]
 Description=usnewsmap Serial Set fetch (on-prem)
-Wants=network-online.target
+Wants=network-online.target himdsd.service
 After=network-online.target himdsd.service
 ConditionFileIsExecutable=/usr/local/bin/usnm-ingest
+# Written by the fetch when a run finishes everything (--done-file).
+ConditionPathExists=!/var/lib/usnm-sset/done
 
 [Service]
 Type=simple
@@ -28,17 +33,28 @@ Environment=USNM_PDFTOTEXT=/usr/bin/pdftotext
 # deleted once read.
 Environment=USNM_WORK_DIR=/var/lib/usnm-sset/work
 EnvironmentFile=/etc/usnm/sset.env
-# A PDF a stopped run was reading stays in the scratch directory (SIGTERM
+# A PDF a killed run was reading stays in the scratch directory (SIGKILL
 # skips its cleanup): remove any before each start, so restarts can't fill
 # the disk.
 ExecStartPre=/bin/sh -c 'rm -f /var/lib/usnm-sset/work/serialset/serialset-*.pdf'
-# The report (JSON) goes to the journal with the log lines.
-ExecStart=/usr/local/bin/usnm-ingest congress-serialset
-# A failure (GovInfo down past the retries, a write refused) starts it
-# again after 31 minutes, once the lock it held (30 minutes, renewed every
-# 5) has run out; what was read is in the raw store.
+# The report (JSON) goes to the journal with the log lines. A run that
+# finishes everything (none left, none incomplete) writes the marker; one
+# with incomplete volumes (a 404, an unreadable PDF) exits 0 without it,
+# and the next start (or boot) fetches those again.
+ExecStart=/usr/local/bin/usnm-ingest congress-serialset --done-file /var/lib/usnm-sset/done
+# The lock's holder names this host, boot and process, so a start after a
+# kill or a reboot takes over the lock of the run that's gone at once; a
+# failure releases it, and so does SIGTERM, after which the fetch exits 143.
 Restart=on-failure
-RestartSec=1860
+SuccessExitStatus=143
+# A failure (GovInfo down past the fetch's own retries, a write refused)
+# starts it again after 60 s, then about 2, 4 and 8 minutes, and 15 minutes
+# from the fifth on; the count starts again at boot or with
+# `systemctl reset-failed usnm-sset`.
+# What was read is in the raw store.
+RestartSec=60
+RestartSteps=4
+RestartMaxDelaySec=900
 TimeoutStopSec=60
 SyslogIdentifier=usnm-sset
 StateDirectory=usnm-sset
@@ -53,3 +69,6 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

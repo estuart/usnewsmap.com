@@ -372,8 +372,29 @@ pub async fn locked<T>(
     body: impl std::future::Future<Output = anyhow::Result<T>>,
     lost: Arc<AtomicBool>,
 ) -> anyhow::Result<T> {
+    locked_taking_over(state, name, owner, &|_| false, body, lost).await
+}
+
+/// [`locked`], taking the lock over at once from a holder that `gone` says
+/// has stopped ([`crate::state::State::lock_or_take_over`]) rather than
+/// waiting out its lease. Renewals are plain: the holder is this run.
+pub async fn locked_taking_over<T>(
+    state: &crate::state::State,
+    name: &'static str,
+    owner: &str,
+    gone: &(dyn Fn(&str) -> bool + Send + Sync),
+    body: impl std::future::Future<Output = anyhow::Result<T>>,
+    lost: Arc<AtomicBool>,
+) -> anyhow::Result<T> {
     let ttl = chrono::Duration::minutes(30);
-    state.lock(name, owner, ttl).await?;
+    if let Some(holder) = state.lock_or_take_over(name, owner, ttl, gone).await? {
+        tracing::warn!(
+            lock = name,
+            holder,
+            owner,
+            "took over the lock of a run that is gone"
+        );
+    }
     let (s, o, flag) = (state.clone(), owner.to_owned(), lost.clone());
     let (stop, mut stopped) = tokio::sync::watch::channel(false);
     let renewer = tokio::spawn(async move {
@@ -400,10 +421,75 @@ pub async fn locked<T>(
     Ok(out)
 }
 
+/// A run stopped by `stop` ([`or_stopped`]): with SIGTERM, `systemctl stop`.
+#[derive(Debug)]
+pub struct Stopped;
+
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stopped by SIGTERM before finishing; the next run resumes")
+    }
+}
+
+impl std::error::Error for Stopped {}
+
+/// `body`, or [`Stopped`] as soon as `stop` completes, dropping `body` at
+/// whichever await it is in. Inside [`locked`], the lock is then released as
+/// on any other end. Dropping the body is no worse than the signal's default
+/// (the process ends wherever it is): a volume stopped mid-way writes nothing,
+/// and the next run resumes it from the raw store.
+pub async fn or_stopped<T>(
+    body: impl std::future::Future<Output = anyhow::Result<T>>,
+    stop: impl std::future::Future<Output = ()>,
+) -> anyhow::Result<T> {
+    tokio::select! {
+        r = body => r,
+        () = stop => Err(Stopped.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    /// A gone holder's lock is taken over; a stopped body still releases it.
+    #[tokio::test]
+    async fn a_stopped_run_takes_over_and_releases_its_lock() {
+        let state = crate::state::State::new(Arc::new(crate::docs::MemoryDocs::default()));
+        let ttl = chrono::Duration::minutes(30);
+        state.lock("congress-serialset", "dead", ttl).await.unwrap();
+        let gone = |h: &str| h == "dead";
+        let lost = Arc::new(AtomicBool::new(false));
+        // Without `gone`, the lease holds.
+        let held = locked(
+            &state,
+            "congress-serialset",
+            "me",
+            async { Ok(()) },
+            lost.clone(),
+        )
+        .await;
+        assert!(held.unwrap_err().to_string().contains("held by `dead`"));
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let body = or_stopped(std::future::pending::<anyhow::Result<()>>(), async {
+            let _ = rx.await;
+        });
+        let run = locked_taking_over(&state, "congress-serialset", "me", &gone, body, lost);
+        let stop = async {
+            tokio::task::yield_now().await;
+            tx.send(()).unwrap();
+        };
+        let (err, ()) = tokio::join!(run, stop);
+        let err = err.unwrap_err();
+        assert!(err.is::<Stopped>(), "{err:#}");
+        // Released: anyone takes it now, with no takeover.
+        let next = state
+            .lock_or_take_over("congress-serialset", "next", ttl, &|_| false)
+            .await
+            .unwrap();
+        assert_eq!(next, None);
+    }
 
     /// A download streams to the file, retries a 503, and leaves an empty
     /// file on a 404.

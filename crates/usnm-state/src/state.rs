@@ -504,6 +504,22 @@ impl State {
 
     /// Take the single-writer lock (08 §8.4.1). Fails if another live holder has it.
     pub async fn lock(&self, name: &str, owner: &str, ttl: Duration) -> anyhow::Result<()> {
+        self.lock_or_take_over(name, owner, ttl, &|_| false)
+            .await
+            .map(drop)
+    }
+
+    /// [`State::lock`], but a holder that `gone` says has stopped is taken
+    /// over at once instead of when its lease runs out; returns that holder.
+    /// `gone` is the caller's to make safe: [`State::lock`] passes one that
+    /// never says so, which every Cosmos lock uses.
+    pub async fn lock_or_take_over(
+        &self,
+        name: &str,
+        owner: &str,
+        ttl: Duration,
+        gone: &(dyn Fn(&str) -> bool + Send + Sync),
+    ) -> anyhow::Result<Option<String>> {
         check_lock_name(name)?;
         // A lost ETag race just means re-reading: it may have been this
         // owner's own concurrent renewal, which is fine.
@@ -513,26 +529,28 @@ impl State {
             });
             let Some(held) = self.docs.get(OPS, name, name).await? else {
                 if self.docs.create(OPS, name, &doc).await?.is_some() {
-                    return Ok(());
+                    return Ok(None);
                 }
                 continue;
             };
             let until: Option<DateTime<Utc>> =
                 serde_json::from_value(held.doc["until"].clone()).ok();
             let holder = held.doc["owner"].as_str().unwrap_or("?");
-            if holder != owner && until.is_some_and(|u| u > Utc::now()) {
+            let live = holder != owner && until.is_some_and(|u| u > Utc::now());
+            if live && !gone(holder) {
                 bail!(
                     "lock `{name}` is held by `{holder}` until {}",
                     until.expect("checked")
                 );
             }
+            let taken = live.then(|| holder.to_owned());
             if self
                 .docs
                 .replace(OPS, name, &doc, &held.etag)
                 .await?
                 .is_some()
             {
-                return Ok(());
+                return Ok(taken);
             }
         }
         bail!("lock `{name}` kept changing concurrently")
@@ -829,6 +847,49 @@ mod tests {
         s.lock("quickwit-writer", "c", Duration::hours(1))
             .await
             .unwrap();
+    }
+
+    /// A live holder is taken over only when `gone` says so; the plain
+    /// lock never does.
+    #[tokio::test]
+    async fn a_gone_holder_is_taken_over_before_its_lease_runs_out() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        let ttl = Duration::minutes(30);
+        s.lock("congress-serialset", "a", ttl).await.unwrap();
+        let gone_a = |holder: &str| holder == "a";
+        assert!(s.lock("congress-serialset", "b", ttl).await.is_err());
+        let err = s
+            .lock_or_take_over("congress-serialset", "b", ttl, &|_| false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("held by `a`"), "{err}");
+        let taken = s
+            .lock_or_take_over("congress-serialset", "b", ttl, &gone_a)
+            .await
+            .unwrap();
+        assert_eq!(taken.as_deref(), Some("a"));
+        // `b` holds it now, and `gone` says nothing about it.
+        assert!(s
+            .lock_or_take_over("congress-serialset", "c", ttl, &gone_a)
+            .await
+            .is_err());
+        // Its own renewal, a free lock and an expired one take nothing over.
+        let renewed = s
+            .lock_or_take_over("congress-serialset", "b", ttl, &gone_a)
+            .await
+            .unwrap();
+        assert_eq!(renewed, None);
+        s.unlock("congress-serialset", "b").await.unwrap();
+        let free = s
+            .lock_or_take_over("congress-serialset", "c", Duration::seconds(-1), &|_| true)
+            .await
+            .unwrap();
+        assert_eq!(free, None);
+        let expired = s
+            .lock_or_take_over("congress-serialset", "d", ttl, &|_| true)
+            .await
+            .unwrap();
+        assert_eq!(expired, None);
     }
 
     fn activity(owner: &str, at: DateTime<Utc>) -> Activity {

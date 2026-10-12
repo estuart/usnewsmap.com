@@ -599,6 +599,13 @@ enum Command {
         /// The pdftotext binary (poppler-utils).
         #[arg(long, env = "USNM_PDFTOTEXT", default_value = "pdftotext")]
         pdftotext: PathBuf,
+        /// Write this file (a small JSON record) when the run finishes the
+        /// whole fetch: every volume written or left out for good, none
+        /// left or incomplete. The on-prem unit doesn't start while it
+        /// exists. Refused with `--years` or `--serials`, which fetch only
+        /// part.
+        #[arg(long, conflicts_with_all = ["years", "serials"])]
+        done_file: Option<PathBuf>,
     },
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
@@ -1071,6 +1078,45 @@ fn root(t: &IndexTarget) -> anyhow::Result<&str> {
         .context("Quickwit targets need --quickwit-index-root")
 }
 
+/// SIGTERM, as a stream (`systemctl stop`).
+#[cfg(unix)]
+fn sigterm() -> anyhow::Result<Sigterm> {
+    Ok(Sigterm(tokio::signal::unix::signal(
+        tokio::signal::unix::SignalKind::terminate(),
+    )?))
+}
+
+#[cfg(unix)]
+struct Sigterm(tokio::signal::unix::Signal);
+
+#[cfg(unix)]
+impl Sigterm {
+    async fn recv(&mut self) {
+        self.0.recv().await;
+    }
+}
+
+/// Elsewhere SIGTERM isn't caught.
+#[cfg(not(unix))]
+fn sigterm() -> anyhow::Result<Sigterm> {
+    Ok(Sigterm)
+}
+
+#[cfg(not(unix))]
+struct Sigterm;
+
+#[cfg(not(unix))]
+impl Sigterm {
+    async fn recv(&mut self) {
+        std::future::pending().await
+    }
+}
+
+/// The exit code of a run stopped by SIGTERM (128 + 15), which the on-prem
+/// unit counts as a clean stop (`SuccessExitStatus=143`), as it does a
+/// process the signal kills.
+const EXIT_SIGTERM: u8 = 143;
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
@@ -1086,6 +1132,10 @@ async fn main() -> std::process::ExitCode {
     // it again as plain text after that line.
     let code = match &result {
         Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) if e.is::<usnm_ingest::congress::fetch::Stopped>() => {
+            tracing::info!(command = cli.command.name(), "{e}");
+            std::process::ExitCode::from(EXIT_SIGTERM)
+        }
         Err(e) => {
             tracing::error!(
                 command = cli.command.name(),
@@ -1533,8 +1583,10 @@ async fn command(
             delay_secs,
             govinfo_url,
             pdftotext,
+            done_file,
         } => {
-            use usnm_ingest::congress::serialset;
+            use usnm_ingest::congress::{fetch::or_stopped, serialset};
+            use usnm_ingest::local_holder::LocalHolder;
             let curated = usnm_store::open(&cli.stores.curated)?;
             let raw = cli
                 .stores
@@ -1572,21 +1624,57 @@ async fn command(
                 scratch,
             };
             let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let report = serialset::locked(
-                &state,
-                &owner_id(),
-                serialset::run(
-                    &fetch,
-                    &pdf,
-                    curated.as_ref(),
-                    raw.as_deref(),
-                    &opts,
-                    lost.as_ref(),
-                ),
-                lost.clone(),
-            )
-            .await?;
+            // With a local state file (the on-prem runner) the lock's holder
+            // names this host, boot and process, so a later run here takes
+            // over the lock of one that is gone without waiting out its
+            // lease, and SIGTERM releases it. A Cosmos lock (the Azure job)
+            // is held as before.
+            let local = match &cli.stores.cosmos {
+                None => LocalHolder::current(),
+                Some(_) => None,
+            };
+            let owner = local.as_ref().map_or_else(owner_id, LocalHolder::id);
+            let gone = |holder: &str| {
+                local
+                    .as_ref()
+                    .is_some_and(|me| me.is_gone(holder, LocalHolder::running))
+            };
+            // Registered before the lock is taken, so a SIGTERM from then on
+            // is caught.
+            let mut term = match local {
+                Some(_) => Some(sigterm()?),
+                None => None,
+            };
+            let stop = async {
+                match term.as_mut() {
+                    Some(t) => t.recv().await,
+                    None => std::future::pending().await,
+                }
+            };
+            let body = serialset::run(
+                &fetch,
+                &pdf,
+                curated.as_ref(),
+                raw.as_deref(),
+                &opts,
+                lost.as_ref(),
+            );
+            let report =
+                serialset::locked(&state, &owner, &gone, or_stopped(body, stop), lost.clone())
+                    .await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
+            if let Some(path) = done_file {
+                if report.finished() {
+                    serialset::write_done(path, &report)?;
+                    tracing::info!(marker = %path.display(), "the Serial Set fetch is finished; marker written");
+                } else {
+                    tracing::warn!(
+                        left = report.left,
+                        incomplete = report.incomplete.len(),
+                        "the Serial Set fetch isn't finished; no marker, and the next start fetches what's left"
+                    );
+                }
+            }
             Ok(None)
         }
         Command::Duplicates => {
@@ -2058,6 +2146,17 @@ mod tests {
         assert!(parse(&["--delay-secs", "0"]).is_err());
         assert!(parse(&["--delay-secs", "2"]).is_ok());
         assert!(parse(&["1820"]).is_err(), "named arguments only");
+        // The marker is for a run over every volume.
+        let Command::CongressSerialset { done_file, .. } =
+            parse(&["--done-file", "/var/lib/usnm-sset/done"])
+                .unwrap()
+                .command
+        else {
+            panic!("not congress-serialset");
+        };
+        assert_eq!(done_file, Some(PathBuf::from("/var/lib/usnm-sset/done")));
+        assert!(parse(&["--done-file", "d", "--years", "1820"]).is_err());
+        assert!(parse(&["--done-file", "d", "--serials", "33"]).is_err());
     }
 
     #[test]

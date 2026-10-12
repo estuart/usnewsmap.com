@@ -1299,14 +1299,47 @@ pub async fn run(
     Ok(report)
 }
 
-/// Hold [`LOCK`] while `body` runs, renewing it; `lost` is set if a renewal fails.
+/// Hold [`LOCK`] while `body` runs, renewing it; `lost` is set if a renewal
+/// fails. A holder that `gone` says has stopped is taken over at once
+/// (the on-prem runner's [`crate::local_holder`]; `|_| false` otherwise).
 pub async fn locked<T>(
     state: &crate::state::State,
     owner: &str,
+    gone: &(dyn Fn(&str) -> bool + Send + Sync),
     body: impl std::future::Future<Output = anyhow::Result<T>>,
     lost: Arc<AtomicBool>,
 ) -> anyhow::Result<T> {
-    fetch::locked(state, LOCK, owner, body, lost).await
+    fetch::locked_taking_over(state, LOCK, owner, gone, body, lost).await
+}
+
+impl Report {
+    /// Whether the whole fetch is done: no volume left (by a deadline,
+    /// `--max-volumes` or a lost lock) and none incomplete (a 404 or an
+    /// unreadable document, which a later run fetches again). Every volume
+    /// is then written, or left out for good (an empty attempt). Only
+    /// meaningful for a run over every volume (no `--years` or `--serials`).
+    pub fn finished(&self) -> bool {
+        self.left == 0 && self.incomplete.is_empty()
+    }
+}
+
+/// Write the completion marker `path` (`--done-file`): a small JSON record
+/// of the run that finished, written to a temporary file and renamed, so
+/// the marker is either whole or absent.
+pub fn write_done(path: &Path, report: &Report) -> anyhow::Result<()> {
+    let record = serde_json::json!({
+        "finished_at": Utc::now(),
+        "volumes": report.volumes,
+        "already": report.already,
+        "written": report.written.len(),
+        "empty_volumes": report.empty_volumes.len(),
+        "pages": report.pages,
+    });
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&record)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("renaming to {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1777,6 +1810,65 @@ mod tests {
             c3.source_lastmod.as_deref(),
             Some("2026-10-01T00:00:00.000Z")
         );
+    }
+
+    /// Finished only with nothing left and nothing incomplete; the marker
+    /// is written whole.
+    #[tokio::test]
+    async fn finished_means_nothing_left_or_incomplete() {
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::LocalStore::new(dir.path().join("curated"));
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        // Serial 25's MODS is a 404: incomplete, so not finished.
+        let r = run(
+            &Recorded::default(),
+            &text,
+            &curated,
+            None,
+            &options(dir.path()),
+            &lost,
+        )
+        .await
+        .unwrap();
+        assert_eq!((r.left, r.incomplete.len()), (0, 1));
+        assert!(!r.finished());
+        // Stopped by --max-volumes: left, so not finished.
+        let one = Options {
+            serials: vec![33],
+            refetch: true,
+            max_volumes: Some(0),
+            ..options(dir.path())
+        };
+        let r = run(&Recorded::default(), &text, &curated, None, &one, &lost)
+            .await
+            .unwrap();
+        assert_eq!((r.left, r.incomplete.len()), (1, 0));
+        assert!(!r.finished());
+        // Serial 33 alone: written (and on the next run, already there).
+        let opts = Options {
+            serials: vec![33],
+            ..options(dir.path())
+        };
+        for _ in 0..2 {
+            let r = run(&Recorded::default(), &text, &curated, None, &opts, &lost)
+                .await
+                .unwrap();
+            assert!(r.finished(), "{r:?}");
+        }
+        let done = dir.path().join("done");
+        write_done(&done, &r_with(1)).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&done).unwrap()).unwrap();
+        assert_eq!(v["volumes"], 1);
+        assert!(v["finished_at"].is_string());
+        assert!(!dir.path().join("done.tmp").exists());
+    }
+
+    fn r_with(volumes: usize) -> Report {
+        Report {
+            volumes,
+            ..Report::default()
+        }
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@ pub mod curated;
 pub mod decade_order;
 pub mod dedup;
 pub mod heartbeat;
+pub mod local_holder;
 pub mod merges;
 pub mod ocr_damage;
 pub mod ocr_ja;

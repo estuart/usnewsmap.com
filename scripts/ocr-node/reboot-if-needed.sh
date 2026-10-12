@@ -14,12 +14,13 @@
 # usnm-ocr-worker.service, and usnm-sset.service (the on-prem Serial Set
 # fetch, #229) if it's running, and waits for them to exit, up to
 # --drain-timeout (default 1260 s: the 1200 s page timeout and a minute),
-# then reboots. The worker is enabled and starts at boot; the Serial Set
-# fetch isn't, so the units it stopped are listed in $RESUME and
+# then reboots. Both are enabled and start at boot by themselves (the
+# Serial Set fetch until it has finished: its unit has a completion
+# marker); the fetch resumes from its raw store and takes over its own
+# lock at once. A stopped unit that isn't enabled (an older install of
+# the fetch's unit) is listed in $RESUME, and
 # usnm-ocr-reboot-resume.service runs this with --resume at boot, which
-# starts them again. The fetch resumes from its raw store; its lock (30
-# minutes) outlives the reboot, so its first start fails on it and
-# systemd tries again after 31 minutes (its RestartSec).
+# starts it again.
 #
 # On SIGTERM the worker stops taking pages, gives those in flight 60 s (its
 # --shutdown-grace-secs) to finish, then abandons the rest without output;
@@ -120,8 +121,15 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 if [ -n "$running" ]; then
-  mkdir -p "$(dirname "$RESUME")"
-  tr ' ' '\n' <<< "$running" > "$RESUME"
+  # Only what won't start at boot by itself needs starting again.
+  resume=""
+  for unit in $running; do
+    systemctl is-enabled --quiet "$unit" 2> /dev/null || resume="${resume:+$resume }$unit"
+  done
+  if [ -n "$resume" ]; then
+    mkdir -p "$(dirname "$RESUME")"
+    tr ' ' '\n' <<< "$resume" > "$RESUME"
+  fi
   log "stopping $running (the worker's in-flight pages get its grace; up to $DRAIN_TIMEOUT s in all)"
   start=$(date +%s)
   # shellcheck disable=SC2086 # a list of unit names

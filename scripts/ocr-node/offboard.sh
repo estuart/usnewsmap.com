@@ -34,7 +34,7 @@
 #   4. deletes the Arc machine with your own az sign-in, which deletes its
 #      identity.
 # The on-prem Serial Set fetch (usnm-sset.service, #229) is left alone;
-# stop it first on a node that runs it (docs/operations.md).
+# stop and disable it first on a node that runs it (docs/operations.md).
 # Tokens the node already holds stay valid until they expire: up to about
 # 24 hours for a managed identity (ADR-0015). Run again, it skips what's done.
 #
