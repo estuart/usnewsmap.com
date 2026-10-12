@@ -1,0 +1,10 @@
+# Every 10 minutes while the node runs the Serial Set fetch.
+[Unit]
+Description=usnewsmap Serial Set fetch status file, every 10 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

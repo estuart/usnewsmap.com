@@ -66,6 +66,7 @@ FROZEN_SEEDS = {
     "usnm-archive-writer",
     "usnm-ocr-node-writer",
     "usnm-search-log-writer",
+    "usnm-sset-writer",
     "usnm-swa-deployer",
     "usnm-workbook-api",
     "usnm-workbook-ocr-nodes",

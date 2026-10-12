@@ -487,6 +487,43 @@ Clearing `USNM_CONGRESS` makes the next release publish a version without the Co
 3. **Updates.** GPO is still adding volumes. Run the job again monthly: it rereads the sitemaps and fetches only new or changed volumes. The next release with `USNM_CONGRESS` rebuilds the Congress set.
 4. **Check.** After the release, `current.json`'s `congress.series` has `serialset` with its pages and dates (1817 to 1998), and `source=congress&series=serialset` searches only its pages. A hit links to the page in the document's PDF (`…/content/pkg/{id}/pdf/{id}.pdf#page={seq}`).
 
+### The Serial Set on-prem
+
+The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to spend no Azure compute ([ADR-0008, amendment of October 2026](design/adr/0008-private-networking.md#amendment-october-2026-the-on-prem-serial-set-runner-229), [08 §8.3.2](design/08-azure-infrastructure.md#832-on-prem-serial-set-runner)). Don't start the Azure job while the node runs it: the node's lock is in a local file, which the job's Cosmos lock doesn't see.
+
+1. **Settings.** `USNM_SERIALSET_ONPREM=true` in `infra/env/<env>.json` (through a pull request), and the node's Arc identity's object id in the private setting `USNM_SERIALSET_RUNNER`. The lake's firewall takes its addresses from `USNM_OCR_NODE_IPS`, which the exchange account already uses; check it still holds the home IP (`curl -s https://api.ipify.org` on a node).
+
+   ```sh
+   az resource show -g rg-usnm-prod -n usnm-ocr-node3-arcs-prod --resource-type Microsoft.HybridCompute/machines --query identity.principalId -o tsv
+   scripts/settings.sh --env prod --key USNM_SERIALSET_RUNNER --value <object id>
+   scripts/provision.sh --env prod --what-if   # the policy step adds the lake; the stack adds the IP rule and the grant
+   scripts/provision.sh --env prod
+   ```
+
+   A role assignment can take a few minutes to apply.
+
+2. **The node.** Build `usnm-ingest` from source in a container, so the node gets no toolchain, and install it with poppler-utils and the units in `scripts/ocr-node/` (`usnm-sset.service`, `usnm-sset-status.service`, `usnm-sset-status.timer`, `sset-status.py` as `/usr/local/bin/usnm-sset-status`):
+
+   ```sh
+   mkdir -p src
+   curl -sL https://codeload.github.com/tgoodyear/usnewsmap.com/tar.gz/<commit> | tar xz -C src --strip-components=1
+   nice -n 19 podman run --rm --cpus 3 -v "$PWD/src:/src:Z" -w /src docker.io/library/rust:1-bookworm \
+     cargo build --release --locked -p usnm-ingest --bin usnm-ingest
+   sudo dnf install -y poppler-utils
+   sudo install -m 0755 src/target/release/usnm-ingest /usr/local/bin/
+   sudo install -m 0755 src/scripts/ocr-node/sset-status.py /usr/local/bin/usnm-sset-status
+   sudo install -m 0644 src/scripts/ocr-node/usnm-sset.service src/scripts/ocr-node/usnm-sset-status.service \
+     src/scripts/ocr-node/usnm-sset-status.timer /etc/systemd/system/
+   sudo install -d -o usnm -g usnm -m 0750 /var/lib/usnm-sset /var/lib/usnm-sset/raw /var/lib/usnm-sset/reference
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now usnm-sset-status.timer
+   ```
+
+   `/etc/usnm/sset.env` (mode 0640, group `usnm`) sets `USNM_CURATED_URL=https://<lake>.blob.core.windows.net/curated`, `USNM_RAW_URL=/var/lib/usnm-sset/raw`, `USNM_STATE_FILE=/var/lib/usnm-sset/state.json` and `USNM_REFERENCE_URL=/var/lib/usnm-sset/reference` (an empty directory; the fetch reads nothing there). The raw store holds the MODS and page texts, about 20 GB, so a stopped volume resumes without its PDFs. Before the lake is open, `USNM_CURATED_URL` can be a local directory: the fetch then fills the raw store, and a later run against the lake reads every volume back from it without asking GovInfo for the PDFs again.
+
+3. **Run.** `sudo systemctl start usnm-sset` runs the whole fetch, at a request a second, until every volume is written or left (no deadline), and then stops. It runs as `usnm` with the Arc identity. Logs: `journalctl -u usnm-sset`; the report is the JSON at the end. `/var/lib/usnm-sset/status.json` (every 10 minutes) has the volumes to fetch, written, incomplete, the rate per hour and the hours left. Start it again until the report has `"left": 0` and `incomplete` empty, as for the job.
+4. **Close.** When it's done, set `USNM_SERIALSET_ONPREM` to false and provision: the lake closes, the grant goes and the policy drops the exemption. Remove the private setting with `scripts/settings.sh --env prod --key USNM_SERIALSET_RUNNER --unset`.
+
 ## OCR quality audit
 
 `jaocr.py quality` (`ja-ocr/quality.py`) measures how good LoC's OCR text is, by language and decade, to show where reading pages again would pay off, and how often a page's language differs from its title's first catalog language. It runs in the Japanese OCR job's image because the curated store is reachable only from the VNet. It reads every curated part of every batch in the published version once, keeps a fixed sample of pages (2% by default; a page is in it when a hash of its `doc_id` falls under the cut, so a rerun takes the same pages) and scores each sampled page's stored text. Word tokens are letters only (surrounding punctuation stripped, a word hyphenated across a line break joined), at least 2, case-folded.

@@ -323,6 +323,15 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_SERIALSET_ONPREM": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_SERIALSET_RUNNER": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The on-prem Serial Set runner's identity's object id (an OCR node's Arc machine identity).",
+      "not": {}
+    },
     "USNM_SINGLE_TEXT_FIELD": {
       "x-usnm-visibility": "public",
       "type": "boolean"

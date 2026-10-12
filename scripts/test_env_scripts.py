@@ -21,7 +21,11 @@ message), STUB_DELETED_VAULTS (soft-deleted vaults, one per line: the name,
 a tab and the vault id) and
 STUB_GROUP_EXISTS (`az group exists`, for any group; unset: false) or
 STUB_EXISTING_GROUPS (when set, the only groups `az group exists` finds,
-one per line).
+one per line). For the public-network policy's assignment (#336):
+STUB_ASSIGNMENT_GROUP (the one group that holds it; unset: none),
+STUB_ASSIGNED_IDS (its publicAccountIds, JSON), STUB_ASSIGNMENT_ERROR
+(reading it fails with that message) and STUB_EXEMPTIONS_WHATIF (the
+policy step's what-if, JSON).
 `az account set` selects a subscription (STUB_ACCOUNTS: the ones az is
 signed in to, one per line; unset: any), and each store call is logged
 with the selected one, the operation and the label to STUB_LOG.store, and
@@ -86,6 +90,21 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
   "deployment sub") echo "what-if: no changes" ;;
+  "policy assignment")
+    if [ -n "${STUB_ASSIGNMENT_ERROR:-}" ]; then echo "$STUB_ASSIGNMENT_ERROR" >&2; exit 1; fi
+    if [ -n "${STUB_ASSIGNMENT_GROUP:-}" ] && [[ "$*" == *"/resourceGroups/$STUB_ASSIGNMENT_GROUP "* ]]; then
+      case "$*" in *publicAccountIds*) echo "${STUB_ASSIGNED_IDS:-[]}" ;; *) echo usnm-audit-data-public-network ;; esac
+    else
+      echo "ERROR: (PolicyAssignmentNotFound) The policy assignment 'usnm-audit-data-public-network' is not found." >&2; exit 3
+    fi ;;
+  "deployment group")
+    case "$*" in
+      *what-if*--no-pretty-print*)
+        if [ -n "${STUB_EXEMPTIONS_WHATIF:-}" ]; then printf '%s\n' "$STUB_EXEMPTIONS_WHATIF"; else echo '{"changes": []}'; fi ;;
+      *what-if*) echo "what-if: the policy step" ;;
+      "deployment group create"*) ;;
+      *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
+    esac ;;
   "group list") [ -z "${STUB_GROUPS:-}" ] || printf '%s\n' "$STUB_GROUPS" ;;
   "group exists")
     if [ -n "${STUB_EXISTING_GROUPS+x}" ]; then
@@ -558,6 +577,83 @@ class TitlesSeed(Stubbed):
         self.assertEqual(r.returncode, 2)
 
 
+class PolicyExemptions(Stubbed):
+    """The public-network policy's assignment, written before the stack (#336)."""
+
+    LAKE = "/subscriptions/sub-1/resourceGroups/rg-usnm-dev/providers/Microsoft.Storage/storageAccounts/stusnmd1"
+    TILES = "/subscriptions/sub-1/resourceGroups/rg-usnm-dev/providers/Microsoft.Storage/storageAccounts/stusnmt1"
+
+    def setUp(self):
+        super().setUp()
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n')
+
+    def test_provision_writes_it_before_the_stack(self):
+        r = self.lib("deploy_env_guardrails() { echo guardrails; }; deploy_policy_exemptions() { echo exemptions; }\n"
+                     "deploy_stack() { echo stack; }; save_outputs() { :; }\n"
+                     "settings_check() { :; }; vaults_recover() { :; }; settings_store_ensure() { :; }\n"
+                     "load_store_after_create() { :; }; experiment_marker() { :; }; provision")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), ["guardrails", "exemptions", "stack"])
+
+    def test_nothing_before_the_first_provision(self):
+        r = self.lib("deploy_policy_exemptions")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no policy assignment usnm-audit-data-public-network yet", r.stderr)
+        self.assertFalse(any(c.startswith("deployment group") for c in self.calls()))
+
+    def test_writes_the_group_that_holds_it(self):
+        r = self.lib("deploy_policy_exemptions", STUB_ASSIGNMENT_GROUP="rg-usnm-dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("deployment group create --resource-group rg-usnm-dev --name usnm-dev-policy-exemptions "
+                      "--parameters infra/policy-exemptions.bicepparam --only-show-errors -o none", self.calls())
+
+    def test_a_failed_read_stops(self):
+        r = self.lib("deploy_policy_exemptions", STUB_ASSIGNMENT_ERROR="ERROR: (AuthorizationFailed) no")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't read the policy assignment", r.stderr)
+
+    def test_what_if_names_the_ids_it_adds_and_writes_nothing(self):
+        after = {"changes": [{"after": {"properties": {"parameters": {
+            "publicAccountIds": {"value": [self.TILES, self.LAKE]}}}}}]}
+        r = self.lib("deploy_policy_exemptions --what-if", STUB_ASSIGNMENT_GROUP="rg-usnm-dev",
+                     STUB_ASSIGNED_IDS=json.dumps([self.TILES]), STUB_EXEMPTIONS_WHATIF=json.dumps(after))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), [self.LAKE])
+        self.assertIn("what-if: the policy step", r.stderr)
+        self.assertFalse(any(c.startswith("deployment group create") for c in self.calls()))
+
+    REFUSED = ("ERROR: InvalidTemplateDeployment - The template deployment failed because of policy violation.\n"
+               "RequestDisallowedByPolicy - Resource '{}' was disallowed by policy. Policy identifiers: '[]'.")
+
+    def pending(self, err, ids):
+        return self.lib('only_pending_refusals "$ERR" "$IDS"', ERR=err, IDS=ids).returncode
+
+    def test_a_refusal_of_what_the_step_adds_is_expected(self):
+        self.assertEqual(self.pending(self.REFUSED.format("stusnmd1"), self.LAKE), 0)
+
+    def test_any_other_refusal_or_error_fails(self):
+        self.assertEqual(self.pending(self.REFUSED.format("stusnmt1"), self.LAKE), 1)
+        self.assertEqual(self.pending(self.REFUSED.format("stusnmd1"), ""), 1)
+        self.assertEqual(self.pending(self.REFUSED.format("stusnmd1") + "\nERROR: (InvalidTemplate) bad", self.LAKE), 1)
+        self.assertEqual(self.pending("ERROR: (AuthorizationFailed) no", self.LAKE), 1)
+        self.assertEqual(self.pending(self.REFUSED.format("stusnmd1") + "\nERROR: AuthorizationFailed - no", self.LAKE), 1)
+
+    def test_the_stacks_what_if_accepts_only_those(self):
+        script = 'deploy_stack --what-if --exempting "$IDS"'
+        # A private block, built from its parts (scripts/ci/no-private-addresses.sh).
+        vnet = ".".join(str(n) for n in (10, 99, 0, 0)) + "/24"
+        self.settings_file(f'AZURE_SUBSCRIPTION_ID="sub-1"\nUSNM_VNET_ADDRESS_PREFIX="{vnet}"\n')
+        r = self.lib(script, IDS=self.LAKE, STUB_STACK="3",
+                     STUB_VALIDATE_ERROR=self.REFUSED.format("stusnmd1"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("preflight refuses only what the policy step exempts first", r.stdout)
+        self.assertTrue(any(c.startswith("deployment sub what-if") and "--validation-level Template" in c
+                            for c in self.calls()))
+        r = self.lib(script, IDS=self.LAKE, STUB_STACK="3",
+                     STUB_VALIDATE_ERROR=self.REFUSED.format("stusnmt1"))
+        self.assertEqual(r.returncode, 1)
+
+
 class CommittedSettings(Stubbed):
     """infra/env/<env>.json, the settings store and the local file (#295)."""
 
@@ -790,7 +886,8 @@ class CommittedSettings(Stubbed):
 
     # Provision up to the deployment, which the stub can't answer; the
     # store's script is the stub's too.
-    PROVISION = ("deploy_env_guardrails() { :; }; deploy_stack() { :; }; save_outputs() { :; }\n"
+    PROVISION = ("deploy_env_guardrails() { :; }; deploy_policy_exemptions() { :; }; deploy_stack() { :; }\n"
+                 "save_outputs() { :; }\n"
                  'settings_store_script() { echo "settings-store.sh $*"; }\nprovision')
 
     def test_the_first_provision_creates_the_store(self):

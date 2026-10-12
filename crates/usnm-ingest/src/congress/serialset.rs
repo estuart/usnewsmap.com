@@ -1157,7 +1157,9 @@ pub async fn run(
     }
     report.volumes = p.volumes.len();
     report.documents = p.volumes.iter().map(|v| v.documents.len()).sum();
-    let finished: BTreeMap<String, curated::Finished> = curated::finished(curated)
+    // Only `congress/serialset/` is listed: the on-prem runner's grant
+    // reads nothing else (ADR-0008).
+    let finished: BTreeMap<String, curated::Finished> = curated::finished_in(curated, SERIES)
         .await?
         .into_iter()
         .filter(|f| f.series == SERIES)
@@ -1165,7 +1167,7 @@ pub async fn run(
         .collect();
     // A volume whose documents were all left out has an empty attempt:
     // the newer of it and the finished one says which packages were read.
-    let empties: BTreeMap<String, curated::Empty> = curated::empties(curated)
+    let empties: BTreeMap<String, curated::Empty> = curated::empties_in(curated, SERIES)
         .await?
         .into_iter()
         .filter(|((series, _), _)| series == SERIES)
@@ -2307,6 +2309,92 @@ mod tests {
         assert_eq!(reordered.fingerprint(), after.fingerprint());
         reordered.documents.retain(|d| d.id.id != D42);
         assert_ne!(reordered.fingerprint(), after.fingerprint());
+    }
+
+    /// A curated store that records every path and prefix it is asked
+    /// for, so a test can check the fetch stays under `congress/serialset/`
+    /// (the on-prem runner's grant, ADR-0008).
+    #[derive(Debug)]
+    struct Fenced {
+        inner: usnm_store::LocalStore,
+        touched: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Fenced {
+        fn note(&self, p: &str) {
+            self.touched.lock().unwrap().push(p.to_owned());
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for Fenced {
+        async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+            self.note(path);
+            self.inner.get(path).await
+        }
+        async fn put_new(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> Result<bool, usnm_store::StoreError> {
+            self.note(path);
+            self.inner.put_new(path, body, content_type).await
+        }
+        async fn put(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> Result<(), usnm_store::StoreError> {
+            self.note(path);
+            self.inner.put(path, body, content_type).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+            self.note(prefix);
+            self.inner.list(prefix).await
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_and_writes_only_its_own_series() {
+        let dir = tempfile::tempdir().unwrap();
+        let curated = Fenced {
+            inner: usnm_store::LocalStore::new(dir.path().join("curated")),
+            touched: std::sync::Mutex::new(Vec::new()),
+        };
+        // Another series' attempt, which the fetch must not list or read.
+        curated
+            .inner
+            .put_new(
+                "congress/globe/x/0001/counts.json",
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let scratch = dir.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let lost = AtomicBool::new(false);
+        let opts = options(&scratch);
+        let gi = Recorded::default();
+        let report = run(&gi, &RecordedText::default(), &curated, None, &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!(report.written.len(), 1);
+        // And again, now that a finished attempt is there to read.
+        let again = run(&gi, &RecordedText::default(), &curated, None, &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!(again.already, 1);
+        let touched = curated.touched.lock().unwrap();
+        assert!(!touched.is_empty());
+        for p in touched.iter() {
+            assert!(
+                p.starts_with("congress/serialset/") || p == "congress/serialset",
+                "touched `{p}`"
+            );
+        }
     }
 
     #[test]

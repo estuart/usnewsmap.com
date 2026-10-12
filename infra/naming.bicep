@@ -190,6 +190,7 @@ var nameTypes = {
   searchLogRole: 'role'
   searcherApp: 'ca'
   serialSetJob: 'caj'
+  serialSetWriterRole: 'role'
   siteUnavailableAlert: 'alert'
   siteWebtest: 'webtest'
   spotRg: 'rg'
@@ -279,6 +280,7 @@ type Names = {
   searchLogRole: string
   searcherApp: string
   serialSetJob: string
+  serialSetWriterRole: string
   siteUnavailableAlert: string
   siteWebtest: string
   spotRg: string
@@ -366,6 +368,7 @@ func names(env string, sfx string, pinned bool) Names => {
   searchLogRole: pinned ? 'usnm search log writer' : usnmName('searchlog', 'role', env)
   searcherApp: usnmName('search', 'ca', env)
   serialSetJob: usnmName('sset', 'caj', env)
+  serialSetWriterRole: usnmName('sset-writer', 'role', env)
   siteUnavailableAlert: pinned ? 'alert-usnm-site-unavailable-${env}' : usnmName('site-unavailable', 'alert', env)
   siteWebtest: pinned ? 'webtest-usnm-site-${env}' : usnmName('site', 'webtest', env)
   // Removed in Phase 1 (ADR-0017): legacy everywhere until then.

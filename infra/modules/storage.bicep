@@ -1,9 +1,19 @@
 // Data lake account (08 §8.1): flat namespace so versioning and soft delete
 // work, Entra ID only (no keys or SAS), private endpoint only in steady state.
+//
+// With allowedIps (the on-prem Serial Set runner, ADR-0008 amendment of
+// October 2026), public network access is on, and the firewall denies
+// everything but those addresses: the operator's home IP, from
+// USNM_OCR_NODE_IPS, never in the repository. The private endpoint stays,
+// and the Container Apps keep using it. No trusted-service bypass. The
+// public-network policy exempts the account by resource id only while it is
+// open (main.bicep, public-accounts.bicep).
 
 param location string
 param tags object
 param name string
+@description('Public IPv4 addresses or CIDR ranges allowed through the firewall. Empty (the default) keeps public network access off. Storage rejects /31 and /32 ranges, so a /32 is written as the bare address.')
+param allowedIps array = []
 
 @description('Blob containers. Access is granted per container in rbac.bicep.')
 var containers = ['curated', 'reference', 'cache', 'qw-index', 'searches']
@@ -23,10 +33,16 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowCrossTenantReplication: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: empty(allowedIps) ? 'Disabled' : 'Enabled'
     networkAcls: {
       defaultAction: 'Deny'
       bypass: 'None'
+      ipRules: [
+        for ip in allowedIps: {
+          value: endsWith(ip, '/32') ? replace(ip, '/32', '') : ip
+          action: 'Allow'
+        }
+      ]
     }
   }
 }

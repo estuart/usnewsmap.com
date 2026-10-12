@@ -81,5 +81,6 @@
   "stateEndpointNic": "",
   "tiles": "stusnmtffapzy",
   "vnet": "vnet-usnm-prod",
-  "workspace": "log-usnm-prod"
+  "workspace": "log-usnm-prod",
+  "serialSetWriterRole": "usnm-sset-writer-role-prod"
 }

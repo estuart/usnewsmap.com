@@ -35,3 +35,16 @@ Every app/job → storage/Cosmos path already used managed identities, with keys
 - The **2 vCPU search lever no longer fits under $80** without dropping private endpoints or raising the ceiling. This is flagged as a maintainer decision in [10 §10.4](../10-roadmap-and-risks.md#104-open-questions-for-the-maintainer).
 - The Azure portal's Data Explorer and Storage Browser can't reach the data from the internet in steady state. Maintainers use the in-VNet `usnm-ingest admin` job, or open a short recorded window.
 - The environment must be created with VNet integration from the start.
+
+## Amendment, October 2026: the on-prem Serial Set runner (#229)
+
+The Serial Set fetch (`usnm-ingest congress-serialset`) runs on an OCR node at home instead of as the Azure job `usnm-sset-caj-<env>`, so it costs no Azure compute. The subscription is over its budget, and the fetch spends most of its time waiting on GovInfo, at one request a second. Its output still goes to the data lake, which the node can't reach through the private endpoint. With `USNM_SERIALSET_ONPREM` on:
+
+- **The data lake allows public network access from the node IPs only.** `publicNetworkAccess: Enabled`, `defaultAction: Deny`, `bypass: None`, and one IP rule per address in `USNM_OCR_NODE_IPS` (the operator's home IP, a private setting, never committed). Nothing needs a trusted-service bypass: every Azure caller uses the private endpoint, which stays. Keys stay off, so a request from that IP still needs an Entra token with a data role. With no node IPs, the account stays closed.
+- **One grant, scoped by path.** The runner's identity (`USNM_SERIALSET_RUNNER`, the node's Arc machine identity, a private setting) gets a custom role, `usnm-sset-writer-role-<env>`, on the `curated` container with an ABAC condition. The role has blob read, write and create data actions and no control-plane actions, so it can't delete or reconfigure the container either. The condition allows list, read and create only under `congress/serialset/`, and no delete or move anywhere (`infra/modules/serialset-runner.bicep`). The fetch lists only its own series, so it needs nothing else.
+- **No Cosmos access.** The fetch's lock (`congress-serialset`) is held in a local state file (`--state-file`) on the node, so Cosmos stays private and the node gets no Cosmos role. That lock doesn't see the Azure job's, so the Azure job must not run while the node does. If both run, attempts are create-only, so the second writer of a volume's attempt fails instead of overwriting it.
+- **The policy exempts the lake by resource id** while it is open (`publicAccountIds`, `infra/public-accounts.bicep`), the same way it exempts the exchange account and the nodes' Key Vault. Provision writes the assignment before the stack (#336, 08 §8.5).
+
+Turning `USNM_SERIALSET_ONPREM` off closes the lake, removes the grant and drops the exemption at the next provision. Turn it off once the fetch is done. Monthly updates can run the same way, or as the Azure job.
+
+Considered and not chosen: a VPN gateway into the VNet (a new paid resource); running the job in Azure (the compute this avoids); staging the output in the exchange account, which the node can already reach, and copying it into the lake from Azure (a copy job is Azure compute again, and the copy step is new code).

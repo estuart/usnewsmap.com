@@ -9,6 +9,7 @@ targetScope = 'subscription'
 
 import { guardrailPolicyNames } from 'guardrails.bicep'
 import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
+import { lakeOpen, nodeIpList, publicAccountIds } from 'public-accounts.bicep'
 
 @minLength(2)
 @maxLength(5)
@@ -85,6 +86,12 @@ param congressJob bool = false
 
 @description('Deploy the Serial Set fetch job, usnm-sset-caj-<env> (#229 phase 2): manual, one replica of `usnm-ingest congress-serialset`, which fetches the Serial Set from GovInfo (MODS and PDFs, about a request a second; the PDFs are read and deleted) into curated/congress/. Set archiveAccountId first so the MODS and page texts are kept (docs/operations.md, "Congress pages").')
 param serialSetJob bool = false
+
+@description('Run the Serial Set fetch on-prem instead of as the Azure job (#229; ADR-0008, amendment of October 2026): the data lake allows public network access from ocrNodeIps only (its firewall denies everything else; the private endpoint stays), the public-network policy exempts it, and serialSetRunner gets a grant on curated/congress/serialset/ alone. Off closes the lake again and removes the grant (docs/operations.md, "The Serial Set on-prem").')
+param serialSetOnPrem bool = false
+
+@description('Object id of the on-prem Serial Set runner\'s identity: the OCR node\'s Arc machine identity (with serialSetOnPrem). Settings only, never in the repository.')
+param serialSetRunner string = ''
 
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
@@ -368,20 +375,38 @@ module identities 'modules/identities.bicep' = {
   }
 }
 
+// The data lake opens to the node IPs only for the on-prem Serial Set
+// runner (serialSetOnPrem); the public-network policy then exempts it by
+// resource id, like the accounts below. Provision writes the policy's
+// exemptions before the stack (policy-exemptions.bicep, #336).
+var dataLakeOpen = lakeOpen(serialSetOnPrem, ocrNodeIps)
+
 module storage 'modules/storage.bicep' = {
   scope: rg
   name: 'storage'
+  dependsOn: [policies]
   params: {
     location: location
     tags: tags
     name: n.dataLake
+    allowedIps: dataLakeOpen ? nodeIpList(ocrNodeIps) : []
+  }
+}
+
+// The on-prem Serial Set runner's grant: curated/congress/serialset/ only.
+module serialSetRunnerGrant 'modules/serialset-runner.bicep' = if (serialSetOnPrem && !empty(trim(serialSetRunner))) {
+  scope: rg
+  name: 'serialset-runner'
+  params: {
+    storageName: storage.outputs.name
+    principalId: trim(serialSetRunner)
+    roleLabel: n.serialSetWriterRole
   }
 }
 
 // The tiles account serves public map data. The public-network policy exempts it
-// by resource id, so its assignment must be in place before the account is written.
+// by resource id; provision writes its assignment before the stack (#336).
 var tilesName = n.tiles
-var tilesId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.Storage/storageAccounts', tilesName)
 
 module tiles 'modules/tiles.bicep' = {
   scope: rg
@@ -399,7 +424,6 @@ module tiles 'modules/tiles.bicep' = {
 // access behind a firewall, so the public-network policy exempts it by
 // resource id like the tiles account, and its assignment goes first.
 var exchangeName = n.ocrExchange
-var exchangeId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.Storage/storageAccounts', exchangeName)
 
 module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
   scope: rg
@@ -409,7 +433,7 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
     location: location
     tags: tags
     name: exchangeName
-    nodeIps: filter(map(split(ocrNodeIps, ','), ip => trim(ip)), ip => !empty(ip))
+    nodeIps: nodeIpList(ocrNodeIps)
     subnetId: network.outputs.caeSubnetId
     nodeGroupId: trim(ocrNodeGroupId)
     ingestPrincipalId: identities.outputs.ingestPrincipalId
@@ -424,7 +448,6 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
 // by resource id like the exchange account, and its assignment goes first.
 // Compact name (ADR-0017): usnm{fn}{abbr}{env}{sfx}, at most 24 characters.
 var ocrVaultName = n.ocrVault
-var ocrVaultId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.KeyVault/vaults', ocrVaultName)
 
 module ocrVault 'modules/ocr-vault.bicep' = if (ocrNodes) {
   scope: rg
@@ -435,7 +458,7 @@ module ocrVault 'modules/ocr-vault.bicep' = if (ocrNodes) {
     tags: tags
     name: ocrVaultName
     purgeProtection: env == 'prod'
-    allowedIps: filter(map(split(ocrNodeIps, ','), ip => trim(ip)), ip => !empty(ip))
+    allowedIps: nodeIpList(ocrNodeIps)
     admins: filter(map(split(ocrKeyVaultAdmins, ','), a => trim(a)), a => !empty(a))
   }
 }
@@ -890,11 +913,14 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   params: {
     definitionIds: guardrailPolicyIds
     definitionParameters: {
-      // Deny and the exemption arrive together, in the same assignment update.
+      // Deny and the exemptions arrive together, in the same assignment
+      // update. Provision writes the same value first, on its own
+      // (policy-exemptions.bicep), since preflight checks the stack against
+      // the assignment as it is before the stack runs (#336).
       '${guardrailPolicyNames.auditPublicAccess}': {
         effect: { value: 'deny' }
         publicAccountIds: {
-          value: ocrNodes ? [tilesId, exchangeId, ocrVaultId] : [tilesId]
+          value: publicAccountIds(subscription().subscriptionId, n, ocrNodes, dataLakeOpen)
         }
       }
     }

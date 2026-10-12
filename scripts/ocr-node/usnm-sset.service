@@ -1,0 +1,55 @@
+# The on-prem Serial Set fetch (#229; ADR-0008, amendment of October 2026):
+# `usnm-ingest congress-serialset` on an OCR node, as the node's Arc
+# identity, in place of the Azure job usnm-sset-caj-<env>. Not enabled: it
+# runs when started, until every volume is written or left, and stops
+# (docs/operations.md, "The Serial Set on-prem").
+#
+# Settings in /etc/usnm/sset.env (never committed):
+#   USNM_CURATED_URL   the lake's curated container URL, or a directory
+#   USNM_REFERENCE_URL a directory (the fetch reads nothing there)
+#   USNM_RAW_URL       a directory: the MODS and page texts, kept
+#   USNM_STATE_FILE    the local state file holding the fetch's lock
+[Unit]
+Description=usnewsmap Serial Set fetch (on-prem)
+Wants=network-online.target
+After=network-online.target himdsd.service
+ConditionFileIsExecutable=/usr/local/bin/usnm-ingest
+
+[Service]
+Type=simple
+User=usnm
+Group=usnm
+# himds: the Arc agent's token challenge.
+SupplementaryGroups=himds
+Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
+Environment=IMDS_ENDPOINT=http://localhost:40342
+Environment=USNM_PDFTOTEXT=/usr/bin/pdftotext
+# PDFs are streamed to $USNM_WORK_DIR/serialset on the node's disk and
+# deleted once read.
+Environment=USNM_WORK_DIR=/var/lib/usnm-sset/work
+EnvironmentFile=/etc/usnm/sset.env
+# A PDF a stopped run was reading stays in the scratch directory (SIGTERM
+# skips its cleanup): remove any before each start, so restarts can't fill
+# the disk.
+ExecStartPre=/bin/sh -c 'rm -f /var/lib/usnm-sset/work/serialset/serialset-*.pdf'
+# The report (JSON) goes to the journal with the log lines.
+ExecStart=/usr/local/bin/usnm-ingest congress-serialset
+# A failure (GovInfo down past the retries, a write refused) starts it
+# again after 31 minutes, once the lock it held (30 minutes, renewed every
+# 5) has run out; what was read is in the raw store.
+Restart=on-failure
+RestartSec=1860
+TimeoutStopSec=60
+SyslogIdentifier=usnm-sset
+StateDirectory=usnm-sset
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

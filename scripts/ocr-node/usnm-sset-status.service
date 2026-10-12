@@ -1,0 +1,10 @@
+# Writes /var/lib/usnm-sset/status.json from usnm-sset.service's journal
+# (scripts/ocr-node/sset-status.py, installed as /usr/local/bin/usnm-sset-status).
+[Unit]
+Description=usnewsmap Serial Set fetch status file
+ConditionFileIsExecutable=/usr/local/bin/usnm-sset-status
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/usnm-sset-status --unit usnm-sset.service --out /var/lib/usnm-sset/status.json
+StandardOutput=null

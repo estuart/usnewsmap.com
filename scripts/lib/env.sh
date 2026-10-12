@@ -516,20 +516,88 @@ LEGACY_INFRA_GROUP="ME_cae-usnm-${ENV_NAME}_"
 STACK="usnm-$ENV_NAME"
 # The region, with the same default as infra/main.bicepparam.
 stack_location() { local l; l=$(aget AZURE_LOCATION) || return 1; echo "${l:-eastus2}"; }
-# deploy_stack [--what-if]: create or update the environment's stack, or
-# with --what-if validate it and show its changes, deploying nothing.
-deploy_stack() (
-  # Export exactly the settings infra/main.bicepparam reads, when they have
-  # a value; an unset one takes its default there. Each is read on its own
-  # (aget), so the settings file never sets this script's own variables
-  # (STACK, ENV_NAME, ...), and a variable left in the caller's shell can't
-  # stand in for a setting the file doesn't have.
+# Export exactly the settings infra/main.bicepparam reads, when they have
+# a value; an unset one takes its default there. Each is read on its own
+# (aget), so the settings file never sets this script's own variables
+# (STACK, ENV_NAME, ...), and a variable left in the caller's shell can't
+# stand in for a setting the file doesn't have. infra/policy-exemptions.bicepparam
+# reads a few of the same. Call it in a subshell: it exports.
+export_stack_settings() {
   local k v
   for k in $(grep -o "readEnvironmentVariable('[A-Za-z0-9_]*'" infra/main.bicepparam | cut -d"'" -f2); do
     unset "$k"
-    v=$(aget "$k") || exit 1
+    v=$(aget "$k") || return 1
     [ -z "$v" ] || export "$k=$v"
   done
+  # The stack's name comes from the environment's; the template's must match.
+  export AZURE_ENV_NAME=$ENV_NAME
+}
+# The public-network policy's assignment, written on its own before the
+# stack (#336): preflight checks the stack against the assignment as it is
+# then, so an account the stack both opens and exempts would be refused.
+# infra/policy-exemptions.bicep writes the same publicAccountIds the stack
+# then writes (infra/public-accounts.bicep). Nothing to do before the first
+# provision, when no assignment exists yet to refuse anything.
+POLICY_EXEMPTIONS=usnm-audit-data-public-network
+# The project group that holds the assignment, in either name form; nothing
+# when none does.
+policy_exemptions_group() {
+  local g out sub
+  sub=$(aget AZURE_SUBSCRIPTION_ID) || return 1
+  for g in $PROJECT_GROUPS; do
+    if out=$(az policy assignment show --name "$POLICY_EXEMPTIONS" \
+      --scope "/subscriptions/$sub/resourceGroups/$g" --query name -o tsv 2>&1); then
+      echo "$g"
+      return 0
+    elif ! grep -qiE 'NotFound|could not be found|does not exist' <<< "$out"; then
+      echo "error: can't read the policy assignment $POLICY_EXEMPTIONS in $g: $out" >&2
+      return 1
+    fi
+  done
+}
+# deploy_policy_exemptions [--what-if]: write the assignment's next
+# publicAccountIds, or with --what-if show the change and, on stdout, the
+# ids it adds (one per line), writing nothing.
+deploy_policy_exemptions() (
+  local g current
+  export_stack_settings || exit 1
+  g=$(policy_exemptions_group) || exit 1
+  if [ -z "$g" ]; then
+    echo "no policy assignment $POLICY_EXEMPTIONS yet: the stack creates it" >&2
+    exit 0
+  fi
+  local args=(--resource-group "$g" --name "usnm-$ENV_NAME-policy-exemptions"
+    --parameters infra/policy-exemptions.bicepparam --only-show-errors)
+  if [ "${1:-}" = --what-if ]; then
+    current=$(az policy assignment show --name "$POLICY_EXEMPTIONS" \
+      --scope "/subscriptions/$(aget AZURE_SUBSCRIPTION_ID)/resourceGroups/$g" \
+      --query "parameters.publicAccountIds.value" -o json) || exit 1
+    local out
+    az deployment group what-if "${args[@]}" >&2 || exit 1
+    out=$(az deployment group what-if "${args[@]}" --no-pretty-print -o json) || exit 1
+    # The ids the next value has and the current one doesn't.
+    python3 -c '
+import json, sys
+current = {i.lower() for i in json.loads(sys.argv[1] or "[]")}
+for c in json.loads(sys.stdin.read()).get("changes", []):
+    after = (c.get("after") or {}).get("properties", {}).get("parameters", {})
+    for i in after.get("publicAccountIds", {}).get("value", []):
+        if i.lower() not in current:
+            print(i)
+' "$current" <<< "$out"
+    exit
+  fi
+  echo "writing the exemptions of $POLICY_EXEMPTIONS in $g (#336)"
+  az deployment group create "${args[@]}" -o none
+)
+# deploy_stack [--what-if [--exempting IDS]]: create or update the
+# environment's stack, or with --what-if validate it and show its changes,
+# deploying nothing. IDS (newline separated) are the resources the policy
+# step (deploy_policy_exemptions) is about to exempt: a what-if can't write
+# that step first, so preflight refuses them, and those refusals alone are
+# expected.
+deploy_stack() (
+  export_stack_settings || exit 1
   # The VNet's address space has no default anywhere: private addresses
   # aren't committed (scripts/ci/no-private-addresses.sh).
   [ -n "${USNM_VNET_ADDRESS_PREFIX:-}" ] || {
@@ -538,8 +606,6 @@ deploy_stack() (
   }
   valid_vnet_prefix "$USNM_VNET_ADDRESS_PREFIX" || exit 1
   [ -z "$EXPERIMENT_STARTED_DRY_RUN" ] || export USNM_EXPERIMENT_STARTED=$EXPERIMENT_STARTED_DRY_RUN
-  # The stack's name comes from the environment's; the template's must match.
-  export AZURE_ENV_NAME=$ENV_NAME
   local location
   location=$(stack_location) || exit 1
   local stack_args=(--name "$STACK" --location "$location" --parameters infra/main.bicepparam
@@ -549,14 +615,40 @@ deploy_stack() (
     # Azure's preflight validation of the stack, as a create runs it first
     # (policy denials included), then the template's changes: stacks have no
     # what-if, a deployment's shows the same template's.
+    local exempting="" err what_if_args=()
+    [ "${2:-}" != --exempting ] || exempting=${3:-}
     echo "validating stack $STACK (preflight)"
-    az stack sub validate "${stack_args[@]}" --only-show-errors -o none || exit 1
+    if ! err=$(az stack sub validate "${stack_args[@]}" --only-show-errors -o none 2>&1); then
+      only_pending_refusals "$err" "$exempting" || { echo "$err" >&2; exit 1; }
+      echo "preflight refuses only what the policy step exempts first (#336), which a provision writes before the stack:"
+      while IFS= read -r err; do echo "  $err"; done <<< "$exempting"
+      # The what-if's own preflight would refuse the same resources, so it
+      # checks the template alone; the validation above checked the rest.
+      what_if_args=(--validation-level Template)
+    fi
     echo "stack $STACK passes preflight; its changes (a deployment's what-if: it doesn't list what the stack deletes because the template dropped it):"
-    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam --only-show-errors
+    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam ${what_if_args[@]+"${what_if_args[@]}"} --only-show-errors
     exit
   fi
   az stack sub create "${stack_args[@]}" --yes --only-show-errors -o none
 )
+# only_pending_refusals ERR IDS: whether ERR, a failed preflight, is
+# policy refusals alone (RequestDisallowedByPolicy), each of a resource
+# named in IDS, the ids the policy step is about to exempt.
+only_pending_refusals() {
+  [ -n "$2" ] || return 1
+  python3 -c '
+import re, sys
+err, ids = sys.argv[1], sys.argv[2].split()
+names = {i.rstrip("/").rsplit("/", 1)[-1].lower() for i in ids}
+refused = re.findall(r"Resource \x27([^\x27]+)\x27 was disallowed by policy", err)
+codes = (set(re.findall(r"\"code\":\s*\"([A-Za-z]+)\"", err)) | set(re.findall(r"\(([A-Za-z]+)\)", err))
+         | set(re.findall(r"^(?:ERROR: )?([A-Za-z]+) - ", err, re.M)))
+wrappers = {"InvalidTemplateDeployment", "DeploymentStackValidationFailed", "RequestDisallowedByPolicy"}
+ok = refused and all(r.lower() in names for r in refused) and codes <= wrappers
+sys.exit(0 if ok else 1)
+' "$1" "$2"
+}
 # The template's outputs become settings (API_URL, ACR_NAME, ...). One
 # query reads the names and the values from the same object, so they pair
 # up in order; tsv prints them as two rows, which awk splits keeping empty
@@ -757,7 +849,7 @@ provision() {
   experiment_marker || die "not provisioning $ENV_NAME"
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
-    deploy_env_guardrails && deploy_stack && save_outputs && return 0
+    deploy_env_guardrails && deploy_policy_exemptions && deploy_stack && save_outputs && return 0
     [ "$attempt" = 3 ] && die "provisioning failed three times"
     echo "retrying in 60s"
     sleep 60
@@ -793,5 +885,8 @@ provision_what_if() {
     echo "the stack $STACK assigns its definitions, so its preflight runs once they exist"
     return 0
   fi
-  deploy_stack --what-if || die "the what-if of $STACK failed"
+  local exempting
+  echo "the policy step's changes (it runs before the stack, #336):"
+  exempting=$(deploy_policy_exemptions --what-if) || die "the what-if of the policy step failed"
+  deploy_stack --what-if --exempting "$exempting" || die "the what-if of $STACK failed"
 }

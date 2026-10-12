@@ -495,9 +495,25 @@ fn attempt_files(paths: &[String]) -> impl Iterator<Item = (&str, &str, u32, &st
     })
 }
 
+/// `congress/{series}`: what a fetch of one series lists, so it reads
+/// nothing outside its own series (the on-prem Serial Set runner's grant
+/// covers `congress/serialset/` alone, ADR-0008).
+pub fn series_dir(series: &str) -> String {
+    format!("{PREFIX}/{series}")
+}
+
 /// Each unit's newest finished attempt, by series then unit.
 pub async fn finished(store: &dyn ObjectStore) -> anyhow::Result<Vec<Finished>> {
-    let paths = store.list(PREFIX).await?;
+    finished_under(store, PREFIX).await
+}
+
+/// [`finished`], for one series: lists `congress/{series}/` only.
+pub async fn finished_in(store: &dyn ObjectStore, series: &str) -> anyhow::Result<Vec<Finished>> {
+    finished_under(store, &series_dir(series)).await
+}
+
+async fn finished_under(store: &dyn ObjectStore, prefix: &str) -> anyhow::Result<Vec<Finished>> {
+    let paths = store.list(prefix).await?;
     let mut newest: BTreeMap<(String, String), Finished> = BTreeMap::new();
     for (series, unit, attempt, file) in attempt_files(&paths) {
         if file != COUNTS {
@@ -659,7 +675,22 @@ pub async fn write_empty(
 
 /// Each unit's newest empty attempt, by (series, unit).
 pub async fn empties(store: &dyn ObjectStore) -> anyhow::Result<BTreeMap<(String, String), Empty>> {
-    let paths = store.list(PREFIX).await?;
+    empties_under(store, PREFIX).await
+}
+
+/// [`empties`], for one series: lists `congress/{series}/` only.
+pub async fn empties_in(
+    store: &dyn ObjectStore,
+    series: &str,
+) -> anyhow::Result<BTreeMap<(String, String), Empty>> {
+    empties_under(store, &series_dir(series)).await
+}
+
+async fn empties_under(
+    store: &dyn ObjectStore,
+    prefix: &str,
+) -> anyhow::Result<BTreeMap<(String, String), Empty>> {
+    let paths = store.list(prefix).await?;
     let mut newest: BTreeMap<(String, String), u32> = BTreeMap::new();
     for (series, unit, attempt, file) in attempt_files(&paths) {
         if file == EMPTY {
