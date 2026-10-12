@@ -102,6 +102,16 @@ fn ago(now: DateTime<Utc>, t: DateTime<Utc>) -> String {
     format!("{} ago", span(s))
 }
 
+/// A short form that opens, by click, tap or keyboard, to the whole of it.
+fn more(short: &str, whole: &str) -> String {
+    format!("<details class=\"more\"><summary>{short}</summary><div>{whole}</div></details>")
+}
+
+/// Text cut to one line with an ellipsis, opening to the whole of it.
+fn clip(s: &str) -> String {
+    more(&format!("<span class=\"clip\">{}</span>", esc(s)), &esc(s))
+}
+
 /// A progress track with its label beside it.
 fn meter(part: u64, whole: u64, label: &str) -> String {
     let p = pct(part, whole);
@@ -136,9 +146,25 @@ body { margin:0; padding:16px 20px 40px; background:var(--plane); color:var(--in
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:16px; margin:0 0 10px; } h3 { font-size:14px; margin:14px 0 6px; }
 .sub { color:var(--ink2); margin-bottom:16px; }
-.grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap:16px; }
-.grid > section { min-width:0; }
-section { background:var(--surface); border:1px solid var(--ring); border-radius:8px; padding:14px 16px; overflow-x:auto; }
+/* Panels flow down columns at least 560px wide, each as tall as its own
+   content, so a short panel never stretches beside a tall one. */
+.grid { columns:560px; column-gap:16px; }
+section { background:var(--surface); border:1px solid var(--ring); border-radius:8px; padding:14px 16px; overflow-x:auto;
+  break-inside:avoid; margin:0 0 16px; }
+section > :last-child { margin-bottom:0; }
+/* Long lists scroll inside their panel, under a header that stays put. */
+.scroll { max-height:360px; overflow:auto; border-bottom:1px solid var(--grid); }
+.scroll th { position:sticky; top:0; background:var(--surface); box-shadow:inset 0 -1px var(--grid); z-index:1; }
+.scroll tr:last-child td { border-bottom:none; }
+/* Cut text opens to the whole of it: an error in a list is two lines at most. */
+.more > summary { cursor:pointer; list-style:none; }
+.more > summary::-webkit-details-marker { display:none; }
+.more[open] > summary > * { display:none; }
+.more[open] > summary::after { content:"Show less"; color:var(--fill); }
+.more > div { white-space:normal; overflow-wrap:anywhere; max-width:40em; }
+td.msg { width:100%; max-width:0; white-space:normal; color:var(--ink2); font-size:13px; }
+.clamp { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden;
+  overflow-wrap:anywhere; }
 table { border-collapse:collapse; width:100%; font-variant-numeric: tabular-nums; }
 th, td { text-align:left; padding:3px 8px 3px 0; border-bottom:1px solid var(--grid); vertical-align:top; white-space:nowrap; }
 th { color:var(--ink2); font-weight:600; }
@@ -151,6 +177,8 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
 .badge { display:inline-block; padding:0 6px; border-radius:4px; border:1px solid var(--ring); font-weight:600; }
 .badge.good > span { color:var(--good); } .badge.warning > span { color:var(--warning); } .badge.critical > span { color:var(--critical); }
 .kv td:first-child { color:var(--ink2); width:1%; }
+.kv td + td { white-space:normal; }
+.clip { display:inline-block; max-width:16em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
 .err { color:var(--critical); white-space:normal; overflow-wrap:anywhere; }
 /* Phones: one column, no page-wide scroll. Two-column tables become
    label-over-value cards; wider tables wrap, and scroll inside their panel
@@ -158,7 +186,11 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
 @media (max-width: 640px) {
   body { padding:10px 10px 32px; }
   section { padding:10px 12px; }
-  .grid { gap:10px; }
+  section { margin-bottom:10px; }
+  /* Lists keep a row a line or two tall and scroll sideways in their box. */
+  .scroll { max-height:320px; }
+  .scroll td { white-space:nowrap; } .scroll td code { word-break:normal; }
+  .scroll td.msg { white-space:normal; width:auto; max-width:none; min-width:15em; }
   th { white-space:nowrap; padding-right:6px; }
   td { white-space:normal; overflow-wrap:break-word; padding-right:6px; }
   td code { word-break:break-all; }
@@ -178,11 +210,62 @@ for (const t of document.querySelectorAll('time[datetime]')) {
 }
 "#;
 
-fn next_table(o: &mut String, rows: &[NextRow], with_fetched: bool) {
+/// A list that scrolls inside its panel once it is long.
+fn scroll(label: &str) -> String {
+    format!(
+        "<div class=\"scroll\" tabindex=\"0\" role=\"region\" aria-label=\"{}\">",
+        esc(label)
+    )
+}
+
+/// `https://www.loc.gov/item/...` → `/item/...`: the host adds nothing in a
+/// list where every address is LoC's.
+fn short_urls(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("https://") {
+        o.push_str(&rest[..i]);
+        let url = &rest[i + "https://".len()..];
+        let host_end = url.find('/').unwrap_or(url.len());
+        let host = &url[..host_end];
+        if host == "loc.gov" || host.ends_with(".loc.gov") {
+            rest = &url[host_end..];
+            // Every scan is under this on tile.loc.gov.
+            if let Some(r) = rest.strip_prefix("/storage-services/service/ndnp/") {
+                o.push_str("…/");
+                rest = r;
+            }
+        } else {
+            o.push_str("https://");
+            rest = url;
+        }
+    }
+    o.push_str(rest);
+    o
+}
+
+/// An error cell: two lines at most, opening to the whole message (and
+/// when, if the row shows only how long ago).
+fn msg(e: &str, at: Option<DateTime<Utc>>) -> String {
+    let whole = match at {
+        Some(t) => format!("{}: {}", time(t), esc(e)),
+        None => esc(e),
+    };
+    format!(
+        "<td class=\"msg\">{}</td>",
+        more(
+            &format!("<span class=\"clamp\">{}</span>", esc(&short_urls(e))),
+            &whole
+        )
+    )
+}
+
+fn next_table(o: &mut String, label: &str, rows: &[NextRow], with_fetched: bool) {
     if rows.is_empty() {
         o.push_str("<p class=\"muted\">None.</p>");
         return;
     }
+    o.push_str(&scroll(label));
     o.push_str("<table><tr><th>#</th><th>doc_id</th><th>Lang</th><th>Group</th>");
     if with_fetched {
         o.push_str("<th>Scan</th>");
@@ -210,7 +293,7 @@ fn next_table(o: &mut String, rows: &[NextRow], with_fetched: bool) {
             if r.in_flight { "in flight" } else { "" }
         );
     }
-    o.push_str("</table>");
+    o.push_str("</table></div>");
 }
 
 pub fn render(v: &View) -> String {
@@ -460,23 +543,29 @@ pub fn render(v: &View) -> String {
     }
     let _ = write!(
         o,
-        "<h3>Failures</h3><p>{} pages LoC can't serve (permanent failures). {} pages skipped for now because loc.gov answers 503 for their issue while serving others (<code>loc_item_error</code>); the fetcher asks again after a cool-off.</p>",
+        "<h3>Failures{}</h3><p>{} pages LoC can't serve (permanent failures). {} pages skipped for now because loc.gov answers 503 for their issue while serving others (<code>loc_item_error</code>); the fetcher asks again after a cool-off.</p>",
+        if f.recent_failures.is_empty() {
+            String::new()
+        } else {
+            format!(" ({} latest)", f.recent_failures.len())
+        },
         int(f.dead_pages as u64),
         int(f.cooling_pages as u64)
     );
     if !f.recent_failures.is_empty() {
+        o.push_str(&scroll("Latest failures"));
         o.push_str("<table><tr><th>When</th><th>doc_id</th><th>Kind</th><th>Error</th></tr>");
         for e in &f.recent_failures {
             let _ = write!(
                 o,
-                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td class=\"note\">{}</td></tr>",
-                time(e.at),
+                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td>{}</tr>",
+                ago(now, e.at),
                 esc(&e.doc_id),
                 esc(&e.kind),
-                esc(&e.error)
+                msg(&e.error, Some(e.at))
             );
         }
-        o.push_str("</table>");
+        o.push_str("</table></div>");
     }
     o.push_str("</section>");
 
@@ -564,7 +653,14 @@ pub fn render(v: &View) -> String {
             n.pages_per_min
         );
         if !n.in_flight.is_empty() {
-            o.push_str("<table><tr><th>In flight</th><th>Lang</th><th>Queue</th><th>Stage</th><th>Started</th></tr>");
+            let _ = write!(
+                o,
+                "<h3>In flight on {} ({})</h3>{}",
+                esc(&n.name),
+                n.in_flight.len(),
+                scroll(&format!("In flight on {}", n.name))
+            );
+            o.push_str("<table><tr><th>doc_id</th><th>Lang</th><th>Queue</th><th>Stage</th><th>Started</th></tr>");
             for p in &n.in_flight {
                 let _ = write!(
                     o,
@@ -576,7 +672,7 @@ pub fn render(v: &View) -> String {
                     ago(now, p.started_at)
                 );
             }
-            o.push_str("</table>");
+            o.push_str("</table></div>");
         }
     }
     o.push_str("</section>");
@@ -586,14 +682,15 @@ pub fn render(v: &View) -> String {
     o.push_str("<section><h2>What's next</h2>");
     let _ = write!(
         o,
-        "<h3>To OCR: keep set in fetch order, not yet OCRed ({} left)</h3>",
+        "<h3>To OCR ({} of {} left): keep set in fetch order, not yet OCRed</h3>",
+        x.to_ocr.len(),
         int(x.keep_left_to_ocr)
     );
-    next_table(&mut o, &x.to_ocr, true);
+    next_table(&mut o, "To OCR", &x.to_ocr, true);
     o.push_str("<p class=\"note\">The queues decide what a node takes; this list is the keep set in the fetcher's order. \
                 A page counts as OCRed once a node's journal says so.</p>");
-    o.push_str("<h3>To fetch</h3>");
-    next_table(&mut o, &x.to_fetch, false);
+    let _ = write!(o, "<h3>To fetch (next {})</h3>", x.to_fetch.len());
+    next_table(&mut o, "To fetch", &x.to_fetch, false);
     o.push_str("<h3>Seed plan</h3>");
     match &x.seed_plan {
         Some(p) => {
@@ -624,7 +721,11 @@ pub fn render(v: &View) -> String {
             let _ = write!(
                 o,
                 "<tr><td>{}</td><td class=\"r\">{}</td></tr>",
-                if k.is_empty() { "-".to_owned() } else { esc(k) },
+                if k.is_empty() {
+                    "-".to_owned()
+                } else {
+                    clip(k)
+                },
                 int(*n)
             );
         }
@@ -633,11 +734,12 @@ pub fn render(v: &View) -> String {
     pairs(&mut o, "By language", &d.by_language);
     pairs(&mut o, "By engine", &d.by_engine);
     for l in &d.latest {
-        let _ = write!(o, "<h3>Latest on {}</h3>", esc(&l.node));
+        let _ = write!(o, "<h3>Latest on {} ({})</h3>", esc(&l.node), l.rows.len());
         if l.rows.is_empty() {
             o.push_str("<p class=\"muted\">None yet.</p>");
             continue;
         }
+        o.push_str(&scroll(&format!("Latest on {}", l.node)));
         o.push_str("<table><tr><th>doc_id</th><th>Lang</th><th>Engine</th><th>Outcome</th><th>Uploaded</th><th>Scan</th><th class=\"r\">Secs</th><th>Finished</th></tr>");
         for c in &l.rows {
             let _ = write!(
@@ -645,7 +747,7 @@ pub fn render(v: &View) -> String {
                 "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"r\">{:.0}</td><td>{}</td></tr>",
                 esc(&c.doc_id),
                 esc(&c.language),
-                esc(&c.engine),
+                clip(&c.engine),
                 match c.outcome.as_str() {
                     "done" => badge("good", "done"),
                     other => badge(
@@ -662,7 +764,7 @@ pub fn render(v: &View) -> String {
                 time(c.finished_at)
             );
         }
-        o.push_str("</table>");
+        o.push_str("</table></div>");
     }
     let _ = write!(
         o,
@@ -705,7 +807,13 @@ pub fn render(v: &View) -> String {
             if q.dead_letters.is_empty() {
                 o.push_str("<p class=\"muted\">No dead letters visible.</p>");
             } else {
-                o.push_str("<h3>Dead letters, oldest first</h3><table><tr><th>doc_id</th><th>From</th><th>Cause</th><th class=\"r\">Received</th><th>Node</th><th>When</th><th>Error</th></tr>");
+                let _ = write!(
+                    o,
+                    "<h3>Dead letters, oldest first ({})</h3>{}",
+                    q.dead_letters.len(),
+                    scroll("Dead letters")
+                );
+                o.push_str("<table><tr><th>doc_id</th><th>From</th><th>Cause</th><th class=\"r\">Received</th><th>Node</th><th>When</th><th>Error</th></tr>");
                 for d in &q.dead_letters {
                     let cause = match &d.kind {
                         Some(k) => format!("{} ({k})", d.cause),
@@ -713,17 +821,17 @@ pub fn render(v: &View) -> String {
                     };
                     let _ = write!(
                         o,
-                        "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td class=\"r\">{}</td><td>{}</td><td>{}</td><td class=\"note\">{}</td></tr>",
+                        "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td class=\"r\">{}</td><td>{}</td><td>{}</td>{}</tr>",
                         if d.doc_id.is_empty() { "-".to_owned() } else { esc(&d.doc_id) },
                         esc(&d.from),
                         esc(&cause),
                         d.dequeue_count,
                         esc(&d.node),
                         time_str(&d.at),
-                        esc(&d.error)
+                        msg(&d.error, None)
                     );
                 }
-                o.push_str("</table>");
+                o.push_str("</table></div>");
             }
         }
         _ => o.push_str("<p class=\"muted\">No node has reported the queues yet.</p>"),
@@ -757,5 +865,28 @@ mod tests {
         assert_eq!(int(224_848), "224,848");
         assert_eq!(int(5), "5");
         assert_eq!(pct(1, 0), 0.0);
+    }
+
+    #[test]
+    fn loc_addresses_lose_their_host() {
+        assert_eq!(
+            short_urls("https://www.loc.gov/item/sn1/1904-09-08/ed-1/?fo=json returned HTTP 503"),
+            "/item/sn1/1904-09-08/ed-1/?fo=json returned HTTP 503"
+        );
+        assert_eq!(
+            short_urls(
+                "https://tile.loc.gov/storage-services/service/ndnp/ga/batch_x/data/0123.jp2: 404"
+            ),
+            "…/ga/batch_x/data/0123.jp2: 404"
+        );
+        assert_eq!(
+            short_urls("https://example.com/x and https://loc.gov"),
+            "https://example.com/x and "
+        );
+        assert_eq!(
+            msg("a <b> https://www.loc.gov/item/x/", None),
+            "<td class=\"msg\"><details class=\"more\"><summary><span class=\"clamp\">a &lt;b&gt; /item/x/</span></summary>\
+             <div>a &lt;b&gt; https://www.loc.gov/item/x/</div></details></td>"
+        );
     }
 }
