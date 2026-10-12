@@ -56,6 +56,54 @@ pub struct Report {
     pub kept: BTreeMap<String, u64>,
     pub by_language: BTreeMap<String, Tally>,
     pub by_engine: BTreeMap<String, Tally>,
+    /// Pages by the node that read the chosen row.
+    pub by_node: BTreeMap<String, Tally>,
+    /// The stored damage scores of the pages both texts have a rate for.
+    pub damage: Damage,
+}
+
+/// Quartiles of a set of values.
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+pub struct Quartiles {
+    pub p25: f64,
+    pub median: f64,
+    pub p75: f64,
+}
+
+impl Quartiles {
+    fn of(mut v: Vec<f64>) -> Option<Self> {
+        if v.is_empty() {
+            return None;
+        }
+        v.sort_by(f64::total_cmp);
+        // Linear interpolation between the closest ranks, so the median of
+        // an even set is the mean of the middle pair, as `ocr_damage`'s.
+        let q = |f: f64| {
+            let x = (v.len() - 1) as f64 * f;
+            let (lo, hi) = (x.floor() as usize, x.ceil() as usize);
+            v[lo] + (v[hi] - v[lo]) * (x - lo as f64)
+        };
+        Some(Self {
+            p25: q(0.25),
+            median: q(0.5),
+            p75: q(0.75),
+        })
+    }
+}
+
+/// Our damage against LoC's on the same pages (12 Step 11's pilot report).
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+pub struct Damage {
+    /// Pages where both texts have a damage rate.
+    pub pages: u64,
+    pub ours: Option<Quartiles>,
+    pub loc: Option<Quartiles>,
+    /// Our rate minus LoC's, per page.
+    pub change: Option<Quartiles>,
+    /// Pages where ours is lower.
+    pub ours_lower: u64,
+    /// Our head count over LoC's, per page with a LoC head count.
+    pub head_ratio: Option<Quartiles>,
 }
 
 /// Choose each page's row and apply the rule.
@@ -83,7 +131,29 @@ pub fn tally(rows: Vec<StoredRow>, run: &str, parts: usize) -> Report {
         kept: BTreeMap::new(),
         by_language: BTreeMap::new(),
         by_engine: BTreeMap::new(),
+        by_node: BTreeMap::new(),
+        damage: Damage::default(),
     };
+    let (mut ours, mut loc, mut change, mut head) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for r in best.values() {
+        if let (Some(o), Some(l)) = (r.ours.damage_rate, r.loc.damage_rate) {
+            ours.push(o);
+            loc.push(l);
+            change.push(o - l);
+            report.damage.ours_lower += u64::from(o < l);
+        }
+        if let (Some(o), Some(l)) = (r.ours.head, r.loc.head) {
+            if l > 0 {
+                head.push(f64::from(o) / f64::from(l));
+            }
+        }
+    }
+    report.damage.pages = ours.len() as u64;
+    report.damage.ours = Quartiles::of(ours);
+    report.damage.loc = Quartiles::of(loc);
+    report.damage.change = Quartiles::of(change);
+    report.damage.head_ratio = Quartiles::of(head);
     for r in best.values() {
         let lang = r.ours.lang.clone().unwrap_or_else(|| "none".into());
         let engine = engine_key(&r.ocr_engine);
@@ -92,6 +162,7 @@ pub fn tally(rows: Vec<StoredRow>, run: &str, parts: usize) -> Report {
             &mut report.pages,
             report.by_language.entry(lang).or_default(),
             report.by_engine.entry(engine).or_default(),
+            report.by_node.entry(r.node.clone()).or_default(),
         ] {
             t.considered += 1;
             t.replaced += u64::from(replaced.is_ok());
@@ -133,7 +204,25 @@ pub async fn run(curated: &dyn ObjectStore) -> anyhow::Result<Report> {
         pages = report.pages.considered,
         replaced = report.pages.replaced,
         kept = ?report.kept,
+        by_node = ?report.by_node,
+        damage = ?report.damage,
         "ocr-local report written"
     );
     Ok(report)
+}
+
+#[cfg(test)]
+mod quartile_tests {
+    use super::Quartiles;
+
+    #[test]
+    fn quartiles_of_a_small_set() {
+        let q = Quartiles::of(vec![0.4, 0.1, 0.3, 0.2, 0.5]).unwrap();
+        assert_eq!((q.p25, q.median, q.p75), (0.2, 0.3, 0.4));
+        assert!(Quartiles::of(Vec::new()).is_none());
+        let q = Quartiles::of(vec![0.1, 0.2]).unwrap();
+        assert!((q.median - 0.15).abs() < 1e-12);
+        let q = Quartiles::of(vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        assert_eq!((q.p25, q.median, q.p75), (1.75, 2.5, 3.25));
+    }
 }
