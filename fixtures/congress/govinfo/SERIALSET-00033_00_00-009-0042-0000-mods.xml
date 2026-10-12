@@ -1,0 +1,177 @@
+<mods xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:mods="http://www.loc.gov/mods/v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.loc.gov/mods/v3" version="3.3" xsi:schemaLocation="http://www.loc.gov/mods/v3 http://www.loc.gov/standards/mods/v3/mods-3-3.xsd" ID="P0b002ee1b00ad8cc">
+    <name type="corporate">
+         <namePart>United States Government Publishing Office</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">publisher</roleTerm>
+              <roleTerm authority="marcrelator" type="code">pbl</roleTerm>
+        </role>
+         <role>
+              <roleTerm authority="marcrelator" type="text">distributor</roleTerm>
+              <roleTerm authority="marcrelator" type="code">dst</roleTerm>
+        </role>
+    </name>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>Congress</namePart>
+         <namePart>House of Representatives</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">author</roleTerm>
+              <roleTerm authority="marcrelator" type="code">aut</roleTerm>
+        </role>
+         <description>Government Organization</description>
+    </name>
+    <typeOfResource>text</typeOfResource>
+    <genre authority="marcgt">government publication</genre>
+    <language>
+         <languageTerm type="code" authority="iso639-2b">eng</languageTerm>
+    </language>
+    <extension>
+         <collectionCode>SERIALSET</collectionCode>
+         <category>Congressional Committee Materials</category>
+         <branch>legislative</branch>
+         <dateIngested>2021-08-25</dateIngested>
+    </extension>
+    <originInfo>
+         <publisher>U.S. Government Printing Office</publisher>
+         <dateIssued encoding="w3cdtf">1820-01-13</dateIssued>
+         <issuance>monographic</issuance>
+         <frequency authority="marcfrequency">Completely irregular</frequency>
+    </originInfo>
+    <physicalDescription>
+         <note type="source content type">converted</note>
+         <digitalOrigin>reformatted digital</digitalOrigin>
+         <extent>12 p.</extent>
+    </physicalDescription>
+    <classification authority="sudocs">16-1:H.DOC.42</classification>
+    <classification authority="sudocs">Y 1.1/2:33</classification>
+    <identifier type="uri">https://www.govinfo.gov/app/details/SERIALSET-00033_00_00-009-0042-0000</identifier>
+    <identifier type="local">P0b002ee1b00ad8cc</identifier>
+    <identifier type="ILS system id">001139684</identifier>
+    <identifier type="OCLC">(OCoLC)1065562874</identifier>
+    <recordInfo>
+         <recordContentSource authority="marcorg">DGPO</recordContentSource>
+         <recordCreationDate encoding="w3cdtf">2021-08-25</recordCreationDate>
+         <recordChangeDate encoding="w3cdtf">2024-11-06</recordChangeDate>
+         <recordIdentifier source="DGPO">SERIALSET-00033_00_00-009-0042-0000</recordIdentifier>
+         <recordOrigin>machine generated</recordOrigin>
+         <languageOfCataloging>
+              <languageTerm type="code" authority="iso639-2b">eng</languageTerm>
+        </languageOfCataloging>
+    </recordInfo>
+    <accessCondition type="GPO scope determination">fdlp</accessCondition>
+    <extension>
+         <docClass>HDOC</docClass>
+         <accessId>SERIALSET-00033_00_00-009-0042-0000</accessId>
+         <docId>00033_00_00-009-0042-0000</docId>
+         <bagId>00033_00_00</bagId>
+         <isGLP>true</isGLP>
+         <parentId>SERIALSET-00033_00_00</parentId>
+         <serialSetNumber>33</serialSetNumber>
+         <sequenceNumber>9</sequenceNumber>
+         <documentNumber>42</documentNumber>
+         <dateIssued>1820-01-13</dateIssued>
+         <congress years="1819-1821">16</congress>
+         <session>1</session>
+         <sessionYear>1820</sessionYear>
+         <chamber>HOUSE</chamber>
+         <volume>3</volume>
+         <serialTitle>U.S. Congressional Serial Set No. 33 - House Documents, Vol. 3</serialTitle>
+         <citation>H. Doc. 16-42</citation>
+         <ACCode>SERIALSET;CDOC</ACCode>
+         <partnership>This content was digitized by the Law Library of Congress and is made publicly available through a partnership between the U.S. Government Publishing Office and the Law Library of Congress.</partnership>
+         <thumbnail>SERIALSET-00033_00_00-009-0042-0000-0123.gif</thumbnail>
+         <agency>
+              <name>United States Congress</name>
+              <publication>Serial Set (bound) 105th Congress and forward (regionals only)</publication>
+        </agency>
+         <browseCongress>016;1819-1821;25 to 57</browseCongress>
+         <browseSerial>00033_00_00;Serial No. 33 - House Documents, Vol. 3;House Documents 34-54</browseSerial>
+    </extension>
+    <location>
+         <url displayLabel="Content Detail" access="object in context">https://www.govinfo.gov/app/details/SERIALSET-00033_00_00-009-0042-0000</url>
+         <url displayLabel="PDF rendition" access="raw object">https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-009-0042-0000/pdf/SERIALSET-00033_00_00-009-0042-0000.pdf</url>
+    </location>
+    <titleInfo>
+         <title>Letter from the Secretary of the Treasury, transmitting, in obedience to a resolution of the House of Representatives of the 31st ultimo, information in relation to the illicit introduction of slaves into the United States, with a statement of the measures which have been taken to prevent the same. January 13, 1820. Read, and ordered to lie on the table</title>
+    </titleInfo>
+    <subject>
+         <topic>Seizure of vessels and cargoes</topic>
+         <topic>Slave trade</topic>
+         <topic>Slave traders</topic>
+         <topic>Slaves</topic>
+         <topic>Smuggling</topic>
+         <topic>Territories and possessions</topic>
+         <geographic>Spain</geographic>
+    </subject>
+    <identifier type="preferred citation">H. Doc. 16-42</identifier>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>Congress.</namePart>
+         <namePart>House.</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">creator</roleTerm>
+        </role>
+    </name>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>Department of the Treasury.</namePart>
+    </name>
+    <originInfo>
+         <place>
+              <placeTerm authority="marccountry" type="code">dcu</placeTerm>
+        </place>
+         <place>
+              <placeTerm type="text">Washington, DC</placeTerm>
+        </place>
+         <dateIssued>1820</dateIssued>
+         <issuance>monographic</issuance>
+    </originInfo>
+    <physicalDescription>
+         <extent>1 online resource (12 pages).</extent>
+    </physicalDescription>
+    <classification authority="sudocs">16-1:H.DOC.42</classification>
+    <classification authority="sudocs">Y 1.1/2:33</classification>
+    <typeOfResource>text</typeOfResource>
+    <genre authority="lcgft">Legislative materials.</genre>
+    <language>
+         <languageTerm authority="iso639-2b" type="code">eng</languageTerm>
+    </language>
+    <note>Batch processed record: Metadata reviewed, not verified. Some fields updated by batch processes.</note>
+    <subject authority="lcsh">
+         <topic>Seizure of vessels and cargoes</topic>
+    </subject>
+    <subject authority="lcsh">
+         <topic>Slave trade</topic>
+    </subject>
+    <subject authority="lcsh">
+         <topic>Smuggling</topic>
+    </subject>
+    <subject authority="lcsh">
+         <topic>Territories and possessions</topic>
+    </subject>
+    <subject authority="lcsh">
+         <topic>Slave traders</topic>
+    </subject>
+    <subject authority="lcsh">
+         <topic>Slaves</topic>
+    </subject>
+    <subject authority="lcsh">
+         <geographic>Spain</geographic>
+         <topic>Territories and possessions</topic>
+    </subject>
+    <relatedItem type="series">
+         <titleInfo>
+              <title>United States congressional serial set ; serial set no. 33</title>
+        </titleInfo>
+    </relatedItem>
+    <relatedItem type="series">
+         <titleInfo>
+              <title>House document (United States. Congress. House) ; 16th Congress, 1st session, no. 42</title>
+        </titleInfo>
+    </relatedItem>
+    <extension>
+         <searchTitle>
+              <title>Letter from the Secretary of the Treasury, transmitting, in obedience to a resolution of the House of Representatives of the 31st ultimo, information in relation to the illicit introduction of slaves into the United States, with a statement of the measures which have been taken to prevent the same. January 13, 1820. Read, and ordered to lie on the table</title>
+        </searchTitle>
+    </extension>
+</mods>

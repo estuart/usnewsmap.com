@@ -21,3 +21,5 @@ docker run --rm "$image" --version
 docker run --rm --entrypoint quickwit "$image" --version
 # The search cluster's commands (#239).
 docker run --rm --entrypoint usnm-qwcluster "$image" --version
+# pdftotext, which congress-serialset reads GovInfo's PDFs with (#229).
+docker run --rm --entrypoint pdftotext "$image" -v

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- LOCKSS system has permission to collect, preserve, and serve this Archival Unit -->
+
+<urlset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd" xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url>  <loc>https://www.govinfo.gov/app/details/SERIALSET-13993_00_00-021-0183-0000</loc>  <lastmod>2026-07-16T08:55:00.048Z</lastmod>  <changefreq>monthly</changefreq>  <priority>1.0</priority>
+  </url><url>  <loc>https://www.govinfo.gov/app/details/SERIALSET-13993_00_00</loc>  <lastmod>2026-07-16T08:46:00.049Z</lastmod>  <changefreq>monthly</changefreq>  <priority>1.0</priority>
+  </url>
+</urlset>

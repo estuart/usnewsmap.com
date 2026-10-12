@@ -23,6 +23,7 @@ param congressSearch = bool(readEnvironmentVariable('USNM_CONGRESS_SEARCH', 'tru
 param pageLanguageFilter = readEnvironmentVariable('USNM_PAGE_LANGUAGE_FILTER', '')
 param congress = bool(readEnvironmentVariable('USNM_CONGRESS', 'false'))
 param congressJob = bool(readEnvironmentVariable('USNM_CONGRESS_JOB', 'false'))
+param serialSetJob = bool(readEnvironmentVariable('USNM_SERIALSET_JOB', 'false'))
 param jaLatin = bool(readEnvironmentVariable('USNM_JA_LATIN', 'false'))
 param ocrLocal = bool(readEnvironmentVariable('USNM_OCR_LOCAL', 'false'))
 param partitionDecade = bool(readEnvironmentVariable('USNM_PARTITION_DECADE', 'false'))

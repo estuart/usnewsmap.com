@@ -5914,6 +5914,38 @@ async fn put_globe(e: &Env, seqs: &[u32]) -> usnm_ingest::congress::curated::Cou
         .unwrap()
 }
 
+/// Serial Set pages curated from the recorded GovInfo responses (#229
+/// phase 2), as `congress-serialset` writes them: volume 33's two
+/// documents, their MODS and the page texts pdftotext gave.
+async fn put_serialset(e: &Env) -> usnm_ingest::congress::curated::Counts {
+    use usnm_ingest::congress::{curated, serialset};
+    let dir = fixtures().join("../congress/govinfo");
+    let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
+    let urls = serialset::parse_urlset(&read("SERIALSET_1820_sitemap.xml")).unwrap();
+    let plan = serialset::plan(urls);
+    let volume = plan.volumes.iter().find(|v| v.serial == 33).unwrap();
+    let at = Utc.with_ymd_and_hms(2026, 10, 11, 0, 0, 0).unwrap();
+    let mut rows = Vec::new();
+    for d in &volume.documents {
+        let mods = serialset::parse_mods(&read(&format!("{}-mods.xml", d.id.id))).unwrap();
+        let text = String::from_utf8(read(&format!("{}-pages.txt", d.id.id))).unwrap();
+        let pages = serialset::split_pages(&text);
+        rows.extend(serialset::document_rows(&d.id, &mods, &pages, at).unwrap());
+    }
+    curated::write_attempt_from(
+        e.curated.as_ref(),
+        serialset::SERIES,
+        serialset::SOURCE,
+        &volume.volume,
+        &rows,
+        at,
+        volume.lastmod(),
+        Some(volume.fingerprint()),
+    )
+    .await
+    .unwrap()
+}
+
 impl Env {
     /// A release with or without `--congress` (#229).
     async fn release_congress(&self, day: u32, full: bool, congress: bool) -> Option<Published> {
@@ -6062,6 +6094,109 @@ async fn congress_pages_get_an_index_set_of_their_own() {
         .is_none());
 }
 
+/// The Serial Set (#229 phase 2) joins the Globe in the one Congress set:
+/// its own series in the documents, the baselines and `current.json`, so
+/// `series=serialset` finds its pages alone; a new Serial Set attempt
+/// rebuilds the set with the Globe's pages kept.
+#[tokio::test]
+async fn serial_set_pages_join_the_globe_in_the_congress_set() {
+    use usnm_ingest::congress;
+    let e = env().await;
+    let pages = fixture_pages();
+    let early: Vec<&Page> = pages
+        .iter()
+        .filter(|p| p.date < NaiveDate::from_ymd_opt(1897, 7, 1).unwrap())
+        .collect();
+    let a = e.root.join("batch_fx_early_ver01.tar.gz");
+    write_archive(&a, &early, true, true);
+    curate(&e, vec![listed("batch_fx_early_ver01", &a, None)]).await;
+    let globe = put_globe(&e, &[1, 2, 3, 300, 301]).await;
+    let serial = put_serialset(&e).await;
+    assert_eq!((serial.pages, serial.indexable), (6, 4));
+    assert_eq!(
+        serial.source_lastmod.as_deref(),
+        Some("2024-11-06T03:15:00.159Z")
+    );
+    let day = |y, m, d| usnm_core::time::day_number(NaiveDate::from_ymd_opt(y, m, d).unwrap());
+
+    let p1 = e.release_congress(1, false, true).await.unwrap();
+    let v1 = &p1.index_version;
+    let id1 = "congress-20261001-1";
+    let current = e.reference_json("current.json").await;
+    assert_eq!(current["congress"]["indexes"], serde_json::json!([id1]));
+    assert_eq!(
+        current["congress"]["series"],
+        serde_json::json!([
+            {"series": "globe", "pages": 5, "from": "1837-12-04", "to": "1838-03-29"},
+            {"series": "serialset", "pages": 6, "from": "1820-01-13", "to": "1820-01-20"},
+        ])
+    );
+    let docs = e.index(id1);
+    assert_eq!(docs.len() as u64, globe.indexable + serial.indexable);
+    let p3 = &docs["SERIALSET-00033_00_00-009-0042-0000_p3"];
+    assert_eq!(p3["series"], "serialset");
+    assert_eq!(p3["place_id"], congress::PLACE_ID);
+    assert_eq!(p3["date"], "1820-01-13");
+    assert_eq!(p3["chamber"], "house");
+    assert_eq!(p3["citation"], "H. Doc. 16-42");
+    assert_eq!(p3["package_id"], "SERIALSET-00033_00_00-009-0042-0000");
+    assert_eq!(p3["ocr_source"], "govinfo");
+    assert!(p3["link"].as_str().unwrap().ends_with(".pdf#page=3"));
+    assert!(p3["text"]
+        .as_str()
+        .unwrap()
+        .contains("in relation to the illicit introduction"));
+    // Same-day documents keep their order in the volume, under the Globe's.
+    let key = |id: &str| docs[id]["sort_key"].as_u64().unwrap();
+    assert!(
+        key("SERIALSET-00033_00_00-009-0042-0000_p3") > key("unt-metadc29274_p300"),
+        "series order"
+    );
+    let serialset_docs = docs.values().filter(|d| d["series"] == "serialset").count();
+    assert_eq!(serialset_docs as u64, serial.indexable);
+    let baselines = e
+        .reference_json(&format!("{v1}/{}", congress::release::BASELINES_FILE))
+        .await;
+    assert_eq!(
+        baselines["serialset"],
+        serde_json::json!([[day(1820, 1, 13), 3], [day(1820, 1, 20), 3]])
+    );
+    let record = e
+        .reference_json(&format!("{v1}/{}", congress::release::FILE))
+        .await;
+    let units: Vec<(&str, &str)> = record["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| (u["series"].as_str().unwrap(), u["unit"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        units,
+        [("globe", "metadc29274"), ("serialset", "00033_00_00")]
+    );
+    let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(
+        refdata.congress_bounds(),
+        Some((
+            NaiveDate::from_ymd_opt(1820, 1, 13).unwrap(),
+            NaiveDate::from_ymd_opt(1838, 3, 29).unwrap()
+        ))
+    );
+
+    // Nothing new: nothing to release.
+    assert!(e.release_congress(2, false, true).await.is_none());
+    // The fetch writes the volume again: the set is rebuilt, the Globe kept.
+    let again = put_serialset(&e).await;
+    assert_eq!(again.attempt, 2);
+    e.release_congress(8, false, true).await.unwrap();
+    let current = e.reference_json("current.json").await;
+    let id2 = "congress-20261008-1";
+    assert_eq!(current["congress"]["indexes"], serde_json::json!([id2]));
+    assert_eq!(e.index(id2).len(), docs.len());
+}
+
 /// Leaving out a published Congress set (#229) is a change to publish,
 /// even with no new batches: with `--congress` off, and with no curated
 /// Congress page with text left. The version keeps the main indexes, has
@@ -6182,6 +6317,7 @@ async fn congress_pages_are_indexed_in_a_quickwit_writer_node() {
     write_archive(&a, &all, true, true);
     curate(&e, vec![listed("batch_fx_all_ver01", &a, None)]).await;
     let counts = put_globe(&e, &[1, 2, 3, 300, 301, 541, 800]).await;
+    let serial = put_serialset(&e).await;
 
     let qw = e.root.join("qw");
     std::fs::create_dir_all(&qw).unwrap();
@@ -6208,7 +6344,10 @@ async fn congress_pages_are_indexed_in_a_quickwit_writer_node() {
         .iter()
         .find(|l| l["index_id"] == id)
         .expect("laid out");
-    assert_eq!(c["docs"].as_u64(), Some(counts.indexable));
+    assert_eq!(
+        c["docs"].as_u64(),
+        Some(counts.indexable + serial.indexable)
+    );
 
     let http = reqwest::Client::new();
     let count = |q: &'static str| {
@@ -6227,9 +6366,28 @@ async fn congress_pages_are_indexed_in_a_quickwit_writer_node() {
             v["num_hits"].as_u64().unwrap()
         }
     };
-    assert_eq!(count("*").await, counts.indexable);
+    assert_eq!(count("*").await, counts.indexable + serial.indexable);
     assert_eq!(count("series:globe").await, counts.indexable);
+    assert_eq!(count("series:serialset").await, serial.indexable);
+    assert_eq!(
+        count("series:IN [globe serialset]").await,
+        counts.indexable + serial.indexable
+    );
     assert_eq!(count("series:annals").await, 0);
+    // The Serial Set's text, `¬` line-end hyphens joined (`compa¬` / `rative`,
+    // `APPROPRIA¬` / `TIONS`), and its chamber. The title page names the
+    // subject too.
+    assert_eq!(
+        count("series:serialset AND text:\"illicit introduction of slaves\"").await,
+        2
+    );
+    assert_eq!(count("series:serialset AND text:comparative").await, 1);
+    assert_eq!(count("series:serialset AND text:appropriations").await, 1);
+    assert_eq!(count("text:appropria").await, 0);
+    assert_eq!(
+        count("series:serialset AND chamber:house").await,
+        serial.indexable
+    );
     assert_eq!(count("text:\"price of public lands\"").await, 1);
     assert_eq!(count("chamber:house AND text:duel").await, 1);
     node.stop().await.unwrap();

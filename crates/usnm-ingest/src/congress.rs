@@ -11,11 +11,17 @@
 //! - [`release`]: what a release with `--congress` builds from the curated
 //!   units: the index, `congress.json`, `congress/baselines.json` and the
 //!   `current.json` block.
+//! - [`serialset`]: the Serial Set from GovInfo's sitemaps, MODS and PDFs,
+//!   the second source (`usnm-ingest congress-serialset`).
+//! - [`fetch`]: the paced HTTP client, raw-store cache and lock both
+//!   fetches share.
 
 pub mod curated;
+pub mod fetch;
 pub mod globe;
 pub mod parse;
 pub mod release;
+pub mod serialset;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -60,8 +66,10 @@ pub struct CongressPage {
     pub doc_id: String,
     /// One of [`SERIES`].
     pub series: String,
-    /// The page's place among its series' bound units (serial number,
-    /// UNT item, volume), for a stable order of hits on one day.
+    /// The page's place among its series' bound units, for a stable order
+    /// of hits on one day: a UNT item's Congress, session and part, or a
+    /// Serial Set document's serial number and place in its volume
+    /// (`serialset::ordinal`).
     pub unit_ordinal: u32,
     /// The page's place in its PDF or item.
     pub seq: u32,
@@ -104,9 +112,8 @@ pub fn sort_key(page: &CongressPage) -> u64 {
         .iter()
         .position(|s| *s == page.series)
         .unwrap_or(SERIES.len()) as u64;
-    (series << 56)
-        | (u64::from(page.unit_ordinal & 0xF_FFFF) << 24)
-        | u64::from(page.seq & 0xFF_FFFF)
+    // The series in the top 8 bits, the unit in the next 32, the page in 24.
+    (series << 56) | (u64::from(page.unit_ordinal) << 24) | u64::from(page.seq & 0xFF_FFFF)
 }
 
 /// The engine document for a Congress page: the newspaper fields the shared
@@ -304,6 +311,16 @@ mod tests {
         assert!(sort_key(&a) < sort_key(&b));
         a.series = "serialset".into();
         assert!(sort_key(&b) < sort_key(&a));
+        // A Serial Set ordinal (serial 14277, the 300th document of its
+        // volume) orders documents before pages, under the series.
+        let mut c = a.clone();
+        c.unit_ordinal = (14_277 << 12) | 300;
+        c.seq = 900;
+        let mut d = c.clone();
+        d.unit_ordinal = (14_277 << 12) | 301;
+        d.seq = 1;
+        assert!(sort_key(&c) < sort_key(&d));
+        assert_eq!(sort_key(&d) >> 56, 3);
         assert_eq!(index_id("pages-v20261010-1"), "congress-20261010-1");
     }
 }

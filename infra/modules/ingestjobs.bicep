@@ -39,6 +39,14 @@
 //   runtime resumes from those copies. About 105,000 pages, about 4 days:
 //   started again until it reports nothing left. Named by ADR-0017. The
 //   ingest job's release indexes what it wrote once `congress` is on.
+// - `usnm-sset-caj-{env}` (when `serialSetJob`, named in main.bicep): manual,
+//   one replica of `usnm-ingest congress-serialset` as id-usnm-ingest (#229
+//   phase 2): reads GovInfo's Serial Set sitemaps, then each document's MODS
+//   and PDF about a second apart, reads the PDF with pdftotext (the image's
+//   poppler-utils) and deletes it, and writes a curated attempt per volume.
+//   The MODS and page texts go to the raw store, so a stopped volume resumes
+//   from them. About 222,000 documents and 444,000 requests, about 5 days:
+//   started again until it reports nothing left.
 // - `caj-usnm-jaone-{env}` (with the jaocr job): manual, one replica, the
 //   same image and settings, for jaocr.py's one-off measurements (`mixed`,
 //   `american-stories`) that one replica does anyway; a second replica only
@@ -90,6 +98,11 @@ param congressJob bool = false
 @description('The Congress fetch job\'s name (with congressJob), usnm-cong-caj-<env>; a Container Apps job name is under 32 characters (ADR-0017).')
 @maxLength(31)
 param congressJobName string = ''
+@description('Deploy the Serial Set fetch job, `serialSetJobName` (#229 phase 2): manual, one replica of `usnm-ingest congress-serialset`.')
+param serialSetJob bool = false
+@description('The Serial Set fetch job\'s name (with serialSetJob), usnm-sset-caj-<env>; a Container Apps job name is under 32 characters (ADR-0017).')
+@maxLength(31)
+param serialSetJobName string = ''
 @description('Lay a full rebuild\'s base out by decade (#123, 05 §5.5.5), so date-limited searches skip the other decades\' splits. Only a full base takes it; deltas follow the published version.')
 param partitionDecade bool = false
 @description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.7). Only a full base takes it; deltas follow the published version.')
@@ -454,6 +467,51 @@ resource congressFetch 'Microsoft.App/jobs@2025-01-01' = if (congressJob) {
   }
 }
 
+// congress-serialset stops between documents at 22 h, like congress-globe:
+// a volume it stops writes nothing, and the next execution reads that
+// volume's MODS and page texts back from the raw store instead of GovInfo.
+var serialSetMaxRuntimeSecs = 79200
+
+resource serialSetFetch 'Microsoft.App/jobs@2025-01-01' = if (serialSetJob) {
+  name: serialSetJobName
+  location: location
+  tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${ingestIdentityId}': {} }
+  }
+  properties: {
+    environmentId: environmentId
+    workloadProfileName: 'Consumption'
+    configuration: {
+      registries: [{ server: registryServer, identity: ingestIdentityId }]
+      triggerType: 'Manual'
+      // One replica: about one request a second to GovInfo, and the Cosmos
+      // lock `congress-serialset` refuses a second execution anyway.
+      manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
+      replicaTimeout: replicaTimeoutSecs
+      // Started again by hand; a retry would only repeat a failure.
+      replicaRetryLimit: 0
+    }
+    template: {
+      containers: [
+        {
+          name: 'serialset'
+          image: image
+          args: ['congress-serialset', '--max-runtime-secs', string(serialSetMaxRuntimeSecs)]
+          // Each PDF is streamed to /work (USNM_WORK_DIR) and deleted once
+          // pdftotext has read it: a document's PDF is 18.5 MB on average
+          // and a few hundred MB at most, within the 4 GiB of ephemeral
+          // storage a 1-vCPU replica gets. A volume's pages are held in
+          // memory until it is written.
+          resources: { cpu: json('1.0'), memory: '2Gi' }
+          env: concat(env, rawEnv)
+        }
+      ]
+    }
+  }
+}
+
 // ocr-sync stops starting imports at 3000 s, leaving 10 minutes of its
 // 3600 s replica timeout for the import in hand, the status file and the
 // telemetry flush. An hourly run normally takes a few minutes.
@@ -535,3 +593,4 @@ output jaOcrJobName string = empty(jaOcrImage) ? '' : jaOcr.name
 output jaAuditJobName string = empty(jaOcrImage) ? '' : jaAudit.name
 output ocrSyncJobName string = ocrSync ? ocrSyncJob.name : ''
 output congressJobName string = congressJob ? congressFetch.name : ''
+output serialSetJobName string = serialSetJob ? serialSetFetch.name : ''

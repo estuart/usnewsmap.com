@@ -44,8 +44,10 @@ pub struct UnitRef {
 #[derive(Debug, Default)]
 pub struct Listing {
     pub units: Vec<(UnitRef, Counts)>,
-    /// Units left out: superseded by another unit (`globe::SUPERSEDED`), or
-    /// of a series this code doesn't know.
+    /// Units left out: superseded by another unit (`globe::SUPERSEDED`) or
+    /// by a later empty attempt of their own (`curated::Empty`: a Serial Set
+    /// volume whose documents are now all left out), or of a series this
+    /// code doesn't know. A unit with only empty attempts isn't listed.
     pub left_out: Vec<String>,
 }
 
@@ -53,10 +55,14 @@ impl Listing {
     /// Each unit's newest finished attempt.
     pub async fn load(store: &dyn ObjectStore) -> anyhow::Result<Self> {
         let mut out = Listing::default();
+        let empties = curated::empties(store).await?;
         for f in curated::finished(store).await? {
             let superseded = f.series == globe::SERIES
                 && globe::SUPERSEDED.iter().any(|(id, _, _)| *id == f.unit);
-            if superseded || !super::SERIES.contains(&f.series.as_str()) {
+            if superseded
+                || curated::superseded_by_empty(&empties, &f)
+                || !super::SERIES.contains(&f.series.as_str())
+            {
                 out.left_out.push(format!("{}/{}", f.series, f.unit));
                 continue;
             }

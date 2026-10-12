@@ -1,0 +1,167 @@
+<mods xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:mods="http://www.loc.gov/mods/v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.loc.gov/mods/v3" version="3.3" xsi:schemaLocation="http://www.loc.gov/mods/v3 http://www.loc.gov/standards/mods/v3/mods-3-3.xsd" ID="P0b002ee1dfa0e3a2">
+    <name type="corporate">
+         <namePart>United States Government Publishing Office</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">publisher</roleTerm>
+              <roleTerm authority="marcrelator" type="code">pbl</roleTerm>
+        </role>
+         <role>
+              <roleTerm authority="marcrelator" type="text">distributor</roleTerm>
+              <roleTerm authority="marcrelator" type="code">dst</roleTerm>
+        </role>
+    </name>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>Congress</namePart>
+         <namePart>House of Representatives</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">author</roleTerm>
+              <roleTerm authority="marcrelator" type="code">aut</roleTerm>
+        </role>
+         <description>Government Organization</description>
+    </name>
+    <typeOfResource>text</typeOfResource>
+    <genre authority="marcgt">government publication</genre>
+    <language>
+         <languageTerm type="code" authority="iso639-2b">eng</languageTerm>
+    </language>
+    <extension>
+         <collectionCode>SERIALSET</collectionCode>
+         <category>Congressional Committee Materials</category>
+         <branch>legislative</branch>
+         <dateIngested>2026-03-24</dateIngested>
+    </extension>
+    <originInfo>
+         <publisher>U.S. Government Printing Office</publisher>
+         <dateIssued encoding="w3cdtf">1990-05-01</dateIssued>
+         <issuance>monographic</issuance>
+         <frequency authority="marcfrequency">Completely irregular</frequency>
+    </originInfo>
+    <physicalDescription>
+         <note type="source content type">converted</note>
+         <digitalOrigin>reformatted digital</digitalOrigin>
+         <extent>16 p.</extent>
+    </physicalDescription>
+    <classification authority="sudocs">Y 1.1/2:13993</classification>
+    <classification authority="sudocs">Y 1.1/7:183</classification>
+    <identifier type="uri">https://www.govinfo.gov/app/details/SERIALSET-13993_00_00-021-0183-0000</identifier>
+    <identifier type="local">P0b002ee1dfa0e3a2</identifier>
+    <identifier type="ILS system id">001439565</identifier>
+    <identifier type="OCLC">(OCoLC)1063958331</identifier>
+    <recordInfo>
+         <recordContentSource authority="marcorg">DGPO</recordContentSource>
+         <recordCreationDate encoding="w3cdtf">2026-03-24</recordCreationDate>
+         <recordChangeDate encoding="w3cdtf">2026-07-16</recordChangeDate>
+         <recordIdentifier source="DGPO">SERIALSET-13993_00_00-021-0183-0000</recordIdentifier>
+         <recordOrigin>machine generated</recordOrigin>
+         <languageOfCataloging>
+              <languageTerm type="code" authority="iso639-2b">eng</languageTerm>
+        </languageOfCataloging>
+    </recordInfo>
+    <accessCondition type="GPO scope determination">fdlp</accessCondition>
+    <extension>
+         <docClass>HDOC</docClass>
+         <accessId>SERIALSET-13993_00_00-021-0183-0000</accessId>
+         <docId>13993_00_00-021-0183-0000</docId>
+         <bagId>13993_00_00</bagId>
+         <isGLP>true</isGLP>
+         <parentId>SERIALSET-13993_00_00</parentId>
+         <serialSetNumber>13993</serialSetNumber>
+         <sequenceNumber>21</sequenceNumber>
+         <documentNumber>183</documentNumber>
+         <dateIssued>1990-05-01</dateIssued>
+         <congress years="1989-1990">101</congress>
+         <session>2</session>
+         <sessionYear>1990</sessionYear>
+         <chamber>HOUSE</chamber>
+         <serialTitle>U.S. Congressional Serial Set No. 13993 - House Documents</serialTitle>
+         <citation>H. Doc. 101-183</citation>
+         <ACCode>SERIALSET;CDOC</ACCode>
+         <partnership>This content was digitized by the Law Library of Congress and is made publicly available through a partnership between the U.S. Government Publishing Office and the Law Library of Congress.</partnership>
+         <thumbnail>SERIALSET-13993_00_00-021-0183-0000-1027.gif</thumbnail>
+         <agency>
+              <name>United States House of Representatives</name>
+              <publication>House Documents</publication>
+        </agency>
+         <agency>
+              <name>United States Congress</name>
+              <publication>Serial Set (bound) 105th Congress and forward (regionals only)</publication>
+        </agency>
+         <browseCongress>101;1989-1990;13910 to 14031</browseCongress>
+         <browseSerial>13993_00_00;Serial No. 13993 - House Documents;House Documents</browseSerial>
+         <congCommittee authorityId="hsfa00" chamber="H" congress="101" type="S">
+              <name type="authority-standard">Committee on Foreign Affairs</name>
+              <name type="authority-short">Foreign Affairs</name>
+        </congCommittee>
+    </extension>
+    <location>
+         <url displayLabel="Content Detail" access="object in context">https://www.govinfo.gov/app/details/SERIALSET-13993_00_00-021-0183-0000</url>
+         <url displayLabel="PDF rendition" access="raw object">https://www.govinfo.gov/content/pkg/SERIALSET-13993_00_00-021-0183-0000/pdf/SERIALSET-13993_00_00-021-0183-0000.pdf</url>
+    </location>
+    <titleInfo>
+         <title>Developments concerning national emergency with respect to Panama. Message from the President of the United States transmitting a report on developments since his last report of October 19, 1989, concerning the national emergency with respect to Panama, pursuant to 50 U.S.C. 1641(c) and 1703(c). May 1, 1990. -- Message and accompanying papers referred to the Committee on Foreign Affairs and ordered to be printed</title>
+    </titleInfo>
+    <subject>
+         <topic>Alien property</topic>
+         <topic>Sanctions (International law)</topic>
+    </subject>
+    <identifier type="preferred citation">H. Doc. 101-183</identifier>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>Congress.</namePart>
+         <namePart>House.</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">creator</roleTerm>
+        </role>
+    </name>
+    <name type="personal">
+         <namePart>Bush, George</namePart>
+         <namePart type="date">1924-2018</namePart>
+    </name>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>President (1989-1993 : Bush)</namePart>
+    </name>
+    <originInfo>
+         <place>
+              <placeTerm authority="marccountry" type="code">dcu</placeTerm>
+        </place>
+         <publisher>[U.S. Government Printing Office]</publisher>
+         <dateIssued>1990.</dateIssued>
+         <issuance>monographic</issuance>
+    </originInfo>
+    <physicalDescription>
+         <extent>1 online resource (11 pages) : tables.</extent>
+    </physicalDescription>
+    <classification authority="sudocs">Y 1.1/2:13993</classification>
+    <classification authority="sudocs">Y 1.1/7:183</classification>
+    <typeOfResource>text</typeOfResource>
+    <genre authority="lcgft">Legislative materials.</genre>
+    <language>
+         <languageTerm authority="iso639-2b" type="code">eng</languageTerm>
+    </language>
+    <note>Batch processed record: Metadata reviewed, not verified. Some fields updated by batch processes.</note>
+    <note>FDLP item number not assigned.</note>
+    <note>Government Publishing Office Cataloging and Indexing Program (C&amp;I) and Federal Depository Library Program (FDLP).</note>
+    <subject authority="lcsh">
+         <topic>Alien property</topic>
+    </subject>
+    <subject authority="lcsh">
+         <topic>Sanctions (International law)</topic>
+    </subject>
+    <relatedItem type="series">
+         <titleInfo>
+              <title>House document (United States. Congress. House) ; 101st Congress, 2nd session, no. 183</title>
+        </titleInfo>
+    </relatedItem>
+    <relatedItem type="series">
+         <titleInfo>
+              <title>United States congressional serial set ; serial no. 13993</title>
+        </titleInfo>
+    </relatedItem>
+    <extension>
+         <searchTitle>
+              <title>Developments concerning national emergency with respect to Panama. Message from the President of the United States transmitting a report on developments since his last report of October 19, 1989, concerning the national emergency with respect to Panama, pursuant to 50 U.S.C. 1641(c) and 1703(c). May 1, 1990. -- Message and accompanying papers referred to the Committee on Foreign Affairs and ordered to be printed</title>
+        </searchTitle>
+    </extension>
+</mods>

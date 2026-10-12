@@ -1,7 +1,9 @@
 //! Curated Congress pages (#229 design §7): one Parquet row per page under
 //! `congress/{series}/{unit}/{attempt}/part-{nnnn}.parquet` in the curated
 //! store, and a `counts.json` beside them, written last, that marks the
-//! attempt finished and holds the pages per day for the baselines.
+//! attempt finished and holds the pages per day for the baselines. An
+//! attempt that read its unit in full and found nothing to keep writes
+//! `empty.json` instead ([`Empty`]).
 //!
 //! A unit is what a source is fetched by: a UNT item for the Globe, a
 //! Serial Set volume, an Annals or Register volume. Attempts are numbered
@@ -404,6 +406,18 @@ pub struct Counts {
     pub days: Vec<(u32, u32)>,
     pub parts: Vec<PartRef>,
     pub finished_at: DateTime<Utc>,
+    /// The latest date the source gave for what the attempt read (GovInfo's
+    /// sitemap `lastmod`, the newest of the volume's packages), so a later
+    /// fetch knows the unit changed. None for sources without one (UNT).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_lastmod: Option<String>,
+    /// A fingerprint of every package the attempt read with its `lastmod`
+    /// (the Serial Set's `Volume::fingerprint`), so a later fetch sees a
+    /// package added, dropped or changed even when the newest `lastmod`
+    /// didn't move. None for sources without one, and for attempts written
+    /// before it was recorded (the Serial Set fetches those again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_packages: Option<String>,
 }
 
 impl Counts {
@@ -444,6 +458,8 @@ impl Counts {
             days: days.into_iter().collect(),
             parts,
             finished_at,
+            source_lastmod: None,
+            source_packages: None,
         }
     }
 }
@@ -526,6 +542,23 @@ pub async fn write_attempt(
     rows: &[CuratedPage],
     now: DateTime<Utc>,
 ) -> anyhow::Result<Counts> {
+    write_attempt_from(store, series, source, unit, rows, now, None, None).await
+}
+
+/// [`write_attempt`], recording the source's `lastmod` and package
+/// fingerprint for what it read ([`Counts::source_lastmod`],
+/// [`Counts::source_packages`]).
+#[allow(clippy::too_many_arguments)]
+pub async fn write_attempt_from(
+    store: &dyn ObjectStore,
+    series: &str,
+    source: &str,
+    unit: &str,
+    rows: &[CuratedPage],
+    now: DateTime<Utc>,
+    source_lastmod: Option<String>,
+    source_packages: Option<String>,
+) -> anyhow::Result<Counts> {
     let attempt = next_attempt(store, series, unit).await?;
     let dir = attempt_dir(series, unit, attempt);
     let body = write_part(rows)?;
@@ -542,7 +575,11 @@ pub async fn write_attempt(
     {
         anyhow::bail!("`{path}` already exists: another fetch wrote this attempt");
     }
-    let counts = Counts::of(series, source, unit, attempt, rows, vec![part], now);
+    let counts = Counts {
+        source_lastmod,
+        source_packages,
+        ..Counts::of(series, source, unit, attempt, rows, vec![part], now)
+    };
     let counts_path = format!("{dir}/{COUNTS}");
     if !store
         .put_new(
@@ -555,6 +592,109 @@ pub async fn write_attempt(
         anyhow::bail!("`{counts_path}` already exists");
     }
     Ok(counts)
+}
+
+/// The file that marks an attempt finished with nothing to keep, in place
+/// of `counts.json` and parts: `congress/{series}/{unit}/{attempt}/empty.json`.
+pub const EMPTY: &str = "empty.json";
+
+/// `empty.json`: a unit whose source was read in full and gave no pages (a
+/// Serial Set volume all of whose documents are left out for good). It
+/// takes an attempt number like any attempt, so whichever of a unit's
+/// newest empty attempt and newest finished one has the higher number is
+/// the unit's state: the fetch skips the unit until its packages change
+/// (`source_packages`), and the release leaves out a finished attempt an
+/// empty one came after ([`superseded_by_empty`]). [`finished`] doesn't
+/// list it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Empty {
+    pub schema: u32,
+    pub series: String,
+    pub unit: String,
+    pub attempt: u32,
+    pub finished_at: DateTime<Utc>,
+    /// As in [`Counts::source_lastmod`].
+    pub source_lastmod: Option<String>,
+    /// As in [`Counts::source_packages`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_packages: Option<String>,
+    /// What was left out, with why (`{id}: undated`, `{id}: no_pdf`).
+    pub left_out: Vec<String>,
+}
+
+/// Write an empty attempt of a unit (create-only, as [`write_attempt`]).
+pub async fn write_empty(
+    store: &dyn ObjectStore,
+    series: &str,
+    unit: &str,
+    now: DateTime<Utc>,
+    source_lastmod: Option<String>,
+    source_packages: Option<String>,
+    left_out: Vec<String>,
+) -> anyhow::Result<Empty> {
+    let attempt = next_attempt(store, series, unit).await?;
+    let empty = Empty {
+        schema: SCHEMA_VERSION,
+        series: series.to_owned(),
+        unit: unit.to_owned(),
+        attempt,
+        finished_at: now,
+        source_lastmod,
+        source_packages,
+        left_out,
+    };
+    let path = format!("{}/{EMPTY}", attempt_dir(series, unit, attempt));
+    if !store
+        .put_new(
+            &path,
+            serde_json::to_vec_pretty(&empty)?,
+            "application/json",
+        )
+        .await?
+    {
+        anyhow::bail!("`{path}` already exists: another fetch wrote this attempt");
+    }
+    Ok(empty)
+}
+
+/// Each unit's newest empty attempt, by (series, unit).
+pub async fn empties(store: &dyn ObjectStore) -> anyhow::Result<BTreeMap<(String, String), Empty>> {
+    let paths = store.list(PREFIX).await?;
+    let mut newest: BTreeMap<(String, String), u32> = BTreeMap::new();
+    for (series, unit, attempt, file) in attempt_files(&paths) {
+        if file == EMPTY {
+            let slot = newest
+                .entry((series.to_owned(), unit.to_owned()))
+                .or_default();
+            *slot = (*slot).max(attempt);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for ((series, unit), attempt) in newest {
+        let path = format!("{}/{EMPTY}", attempt_dir(&series, &unit, attempt));
+        let bytes = store
+            .get(&path)
+            .await?
+            .with_context(|| format!("`{path}` vanished"))?;
+        let e: Empty = serde_json::from_slice(&bytes).context(path.clone())?;
+        anyhow::ensure!(
+            e.schema == SCHEMA_VERSION
+                && e.series == series
+                && e.unit == unit
+                && e.attempt == attempt,
+            "`{path}` describes another attempt, or has schema {}",
+            e.schema
+        );
+        out.insert((series, unit), e);
+    }
+    Ok(out)
+}
+
+/// Whether the unit of finished attempt `f` has a later empty attempt.
+pub fn superseded_by_empty(empties: &BTreeMap<(String, String), Empty>, f: &Finished) -> bool {
+    empties
+        .get(&(f.series.clone(), f.unit.clone()))
+        .is_some_and(|e| e.attempt > f.attempt)
 }
 
 /// A finished attempt's `counts.json`, with its sha256.

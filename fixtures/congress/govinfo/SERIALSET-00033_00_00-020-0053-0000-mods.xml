@@ -1,0 +1,176 @@
+<mods xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:mods="http://www.loc.gov/mods/v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.loc.gov/mods/v3" version="3.3" xsi:schemaLocation="http://www.loc.gov/mods/v3 http://www.loc.gov/standards/mods/v3/mods-3-3.xsd" ID="P0b002ee1b00ad6fc">
+    <name type="corporate">
+         <namePart>United States Government Publishing Office</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">publisher</roleTerm>
+              <roleTerm authority="marcrelator" type="code">pbl</roleTerm>
+        </role>
+         <role>
+              <roleTerm authority="marcrelator" type="text">distributor</roleTerm>
+              <roleTerm authority="marcrelator" type="code">dst</roleTerm>
+        </role>
+    </name>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>Congress</namePart>
+         <namePart>House of Representatives</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">author</roleTerm>
+              <roleTerm authority="marcrelator" type="code">aut</roleTerm>
+        </role>
+         <description>Government Organization</description>
+    </name>
+    <typeOfResource>text</typeOfResource>
+    <genre authority="marcgt">government publication</genre>
+    <language>
+         <languageTerm type="code" authority="iso639-2b">eng</languageTerm>
+    </language>
+    <extension>
+         <collectionCode>SERIALSET</collectionCode>
+         <category>Congressional Committee Materials</category>
+         <branch>legislative</branch>
+         <dateIngested>2021-08-25</dateIngested>
+    </extension>
+    <originInfo>
+         <publisher>U.S. Government Printing Office</publisher>
+         <dateIssued encoding="w3cdtf">1820-01-20</dateIssued>
+         <issuance>monographic</issuance>
+         <frequency authority="marcfrequency">Completely irregular</frequency>
+    </originInfo>
+    <physicalDescription>
+         <note type="source content type">converted</note>
+         <digitalOrigin>reformatted digital</digitalOrigin>
+         <extent>6 p.</extent>
+    </physicalDescription>
+    <classification authority="sudocs">16-1:H.DOC.53</classification>
+    <classification authority="sudocs">Y 1.1/2:33</classification>
+    <identifier type="uri">https://www.govinfo.gov/app/details/SERIALSET-00033_00_00-020-0053-0000</identifier>
+    <identifier type="local">P0b002ee1b00ad6fc</identifier>
+    <identifier type="ILS system id">001139514</identifier>
+    <identifier type="OCLC">(OCoLC)1065546736</identifier>
+    <recordInfo>
+         <recordContentSource authority="marcorg">DGPO</recordContentSource>
+         <recordCreationDate encoding="w3cdtf">2021-08-25</recordCreationDate>
+         <recordChangeDate encoding="w3cdtf">2024-11-06</recordChangeDate>
+         <recordIdentifier source="DGPO">SERIALSET-00033_00_00-020-0053-0000</recordIdentifier>
+         <recordOrigin>machine generated</recordOrigin>
+         <languageOfCataloging>
+              <languageTerm type="code" authority="iso639-2b">eng</languageTerm>
+        </languageOfCataloging>
+    </recordInfo>
+    <accessCondition type="GPO scope determination">fdlp</accessCondition>
+    <extension>
+         <docClass>HDOC</docClass>
+         <accessId>SERIALSET-00033_00_00-020-0053-0000</accessId>
+         <docId>00033_00_00-020-0053-0000</docId>
+         <bagId>00033_00_00</bagId>
+         <isGLP>true</isGLP>
+         <parentId>SERIALSET-00033_00_00</parentId>
+         <serialSetNumber>33</serialSetNumber>
+         <sequenceNumber>20</sequenceNumber>
+         <documentNumber>53</documentNumber>
+         <dateIssued>1820-01-20</dateIssued>
+         <congress years="1819-1821">16</congress>
+         <session>1</session>
+         <sessionYear>1820</sessionYear>
+         <chamber>HOUSE</chamber>
+         <volume>3</volume>
+         <serialTitle>U.S. Congressional Serial Set No. 33 - House Documents, Vol. 3</serialTitle>
+         <citation>H. Doc. 16-53</citation>
+         <ACCode>SERIALSET;CDOC</ACCode>
+         <partnership>This content was digitized by the Law Library of Congress and is made publicly available through a partnership between the U.S. Government Publishing Office and the Law Library of Congress.</partnership>
+         <thumbnail>SERIALSET-00033_00_00-020-0053-0000-0264.gif</thumbnail>
+         <agency>
+              <name>United States Congress</name>
+              <publication>Serial Set (bound) 105th Congress and forward (regionals only)</publication>
+        </agency>
+         <browseCongress>016;1819-1821;25 to 57</browseCongress>
+         <browseSerial>00033_00_00;Serial No. 33 - House Documents, Vol. 3;House Documents 34-54</browseSerial>
+         <congCommittee authorityId="hswm00" chamber="H" congress="16" type="S">
+              <name type="authority-standard">Committee on Ways and Means</name>
+              <name type="authority-short">Ways and Means</name>
+        </congCommittee>
+    </extension>
+    <location>
+         <url displayLabel="Content Detail" access="object in context">https://www.govinfo.gov/app/details/SERIALSET-00033_00_00-020-0053-0000</url>
+         <url displayLabel="PDF rendition" access="raw object">https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-020-0053-0000/pdf/SERIALSET-00033_00_00-020-0053-0000.pdf</url>
+    </location>
+    <titleInfo>
+         <title>Report of the Adjutant and Inspector General of the Army of the United States: exhibiting a comparative view of the Army expenditures before the late war, and the estimated appropriations for the service of the year 1820. January 20, 1820. Laid before the House by the Chairman of the Committee of Ways and Means, and ordered to be printed</title>
+    </titleInfo>
+    <subject>
+         <topic>Armed Forces</topic>
+         <topic>Armed Forces - Appropriations and expenditures</topic>
+         <topic>Factory and trade waste</topic>
+         <topic>Financial statements</topic>
+         <topic>Revenue</topic>
+         <geographic>United States</geographic>
+    </subject>
+    <identifier type="preferred citation">H. Doc. 16-53</identifier>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>Congress.</namePart>
+         <namePart>House.</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">creator</roleTerm>
+        </role>
+    </name>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>War Department.</namePart>
+    </name>
+    <originInfo>
+         <place>
+              <placeTerm authority="marccountry" type="code">dcu</placeTerm>
+        </place>
+         <place>
+              <placeTerm type="text">Washington, DC</placeTerm>
+        </place>
+         <dateIssued>1820</dateIssued>
+         <issuance>monographic</issuance>
+    </originInfo>
+    <physicalDescription>
+         <extent>1 online resource (4 pages) : tables.</extent>
+    </physicalDescription>
+    <classification authority="sudocs">16-1:H.DOC.53</classification>
+    <classification authority="sudocs">Y 1.1/2:33</classification>
+    <typeOfResource>text</typeOfResource>
+    <genre authority="lcgft">Legislative materials.</genre>
+    <language>
+         <languageTerm authority="iso639-2b" type="code">eng</languageTerm>
+    </language>
+    <note>Batch processed record: Metadata reviewed, not verified. Some fields updated by batch processes.</note>
+    <subject authority="lcsh">
+         <topic>Armed Forces</topic>
+         <topic>Appropriations and expenditures</topic>
+    </subject>
+    <subject authority="lcsh">
+         <topic>Revenue</topic>
+    </subject>
+    <subject authority="lcsh">
+         <topic>Factory and trade waste</topic>
+    </subject>
+    <subject authority="lcsh">
+         <topic>Financial statements</topic>
+    </subject>
+    <subject authority="lcsh">
+         <geographic>United States</geographic>
+         <topic>Armed Forces</topic>
+         <topic>Appropriations and expenditures</topic>
+    </subject>
+    <relatedItem type="series">
+         <titleInfo>
+              <title>United States congressional serial set ; serial set no. 33</title>
+        </titleInfo>
+    </relatedItem>
+    <relatedItem type="series">
+         <titleInfo>
+              <title>House document (United States. Congress. House) ; 16th Congress, 1st session, no. 53</title>
+        </titleInfo>
+    </relatedItem>
+    <extension>
+         <searchTitle>
+              <title>Report of the Adjutant and Inspector General of the Army of the United States: exhibiting a comparative view of the Army expenditures before the late war, and the estimated appropriations for the service of the year 1820. January 20, 1820. Laid before the House by the Chairman of the Committee of Ways and Means, and ordered to be printed</title>
+        </searchTitle>
+    </extension>
+</mods>

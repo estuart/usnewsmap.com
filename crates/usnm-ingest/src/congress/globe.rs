@@ -12,7 +12,8 @@
 //!    catalogued under one title (their page extents differ), so they stay.
 //! 3. **Fetch.** Each remaining item's IIIF manifest (its pages), then each
 //!    page's OCR (`/ark:/67531/{id}/m1/{seq}/annotations/ocr/`), one request
-//!    at a time at UNT's `Crawl-delay: 3` ([`Http`]), backing off on 429 and
+//!    at a time at UNT's `Crawl-delay: 3` ([`Http`], shared with the Serial
+//!    Set in [`super::fetch`]), backing off on 429 and
 //!    5xx. With a raw store (`USNM_RAW_URL`, the archive), every response is
 //!    kept there zstd-compressed under `congress/unt/`, and read back
 //!    instead of UNT when it is there, so a stopped item resumes where it
@@ -39,6 +40,10 @@ use sha2::{Digest, Sha256};
 use usnm_store::ObjectStore;
 
 use super::curated::{self, CuratedPage};
+use super::fetch::cached;
+#[cfg(test)]
+use super::fetch::{retry_wait, MAX_RETRY_WAIT};
+pub use super::fetch::{Fetch, Http};
 use super::parse::{self, Chamber};
 use super::StateRef;
 
@@ -563,109 +568,6 @@ pub fn page_row(
     }
 }
 
-/// Fetches a URL: its body, or `None` when the server has no such page (404).
-#[async_trait::async_trait]
-pub trait Fetch: Send + Sync {
-    async fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>>;
-}
-
-/// UNT over HTTPS: one request at a time, `delay` apart, retrying 429, 5xx
-/// and transport errors with a growing wait (`Retry-After` when given).
-pub struct Http {
-    client: reqwest::Client,
-    delay: Duration,
-    retries: u32,
-    last: tokio::sync::Mutex<Option<tokio::time::Instant>>,
-}
-
-impl Http {
-    pub fn new(delay: Duration) -> anyhow::Result<Self> {
-        Ok(Self {
-            client: reqwest::Client::builder()
-                .user_agent(USER_AGENT)
-                .timeout(Duration::from_secs(120))
-                .build()?,
-            delay,
-            retries: 6,
-            last: tokio::sync::Mutex::new(None),
-        })
-    }
-}
-
-#[async_trait::async_trait]
-impl Fetch for Http {
-    async fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        let mut wait = self.delay;
-        for attempt in 0..=self.retries {
-            {
-                // Paced from the end of the last request, across retries too.
-                let mut last = self.last.lock().await;
-                if let Some(t) = *last {
-                    tokio::time::sleep_until(t + wait).await;
-                }
-                let sent = self.client.get(url).send().await;
-                *last = Some(tokio::time::Instant::now());
-                let retry_after = match sent {
-                    // The body can fail after the headers (a dropped
-                    // connection): an attempt like a failed send.
-                    Ok(r) if r.status().is_success() => {
-                        let body = r.bytes().await;
-                        *last = Some(tokio::time::Instant::now());
-                        match body {
-                            Ok(b) => return Ok(Some(b.to_vec())),
-                            Err(e) => {
-                                tracing::warn!(url, error = %e, attempt, "reading the response failed");
-                                None
-                            }
-                        }
-                    }
-                    Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => return Ok(None),
-                    Ok(r)
-                        if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-                            || r.status().is_server_error() =>
-                    {
-                        tracing::warn!(
-                            url,
-                            status = r.status().as_u16(),
-                            attempt,
-                            "UNT asked us to wait"
-                        );
-                        r.headers()
-                            .get(reqwest::header::RETRY_AFTER)
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|v| {
-                                usnm_core::retry_after::parse(v, std::time::SystemTime::now())
-                            })
-                    }
-                    Ok(r) => bail!("`{url}` answered {}", r.status()),
-                    Err(e) => {
-                        tracing::warn!(url, error = %e, attempt, "request failed");
-                        None
-                    }
-                };
-                wait = retry_wait(self.delay, attempt, retry_after);
-            }
-        }
-        bail!("`{url}` failed {} times", self.retries + 1)
-    }
-}
-
-/// The longest wait before a retry, whatever the server asks.
-const MAX_RETRY_WAIT: Duration = Duration::from_secs(600);
-
-/// The wait before the try after `attempt`: doubling from the pacing delay, at
-/// least what the server asked (`Retry-After`), and at most
-/// [`MAX_RETRY_WAIT`], so a long hint can't keep the job asleep past its
-/// deadline margin.
-fn retry_wait(delay: Duration, attempt: u32, retry_after: Option<Duration>) -> Duration {
-    let doubled = delay
-        .max(Duration::from_secs(1))
-        .saturating_mul(2u32.saturating_pow(attempt + 1));
-    doubled
-        .max(retry_after.unwrap_or_default())
-        .min(MAX_RETRY_WAIT)
-}
-
 /// The URLs of one item's manifest and page OCR, under `base`.
 fn manifest_url(base: &str, id: &str) -> String {
     format!("{base}/{ARK}/{id}/manifest/")
@@ -682,44 +584,6 @@ fn raw_manifest(id: &str) -> String {
 
 fn raw_ocr(id: &str, seq: u32) -> String {
     format!("congress/unt/{id}/ocr/{seq:05}.json.zst")
-}
-
-/// A page with no OCR (UNT answered 404), kept so a resumed fetch doesn't ask again.
-const RAW_MISSING: &[u8] = b"";
-
-/// A response, from the raw store when it holds it, else fetched (and kept
-/// there). `None` when UNT has no such page. Only a response `valid` accepts
-/// is kept, since the raw store is create-only: a bad answer kept there would
-/// be read back on every resumed fetch. A kept copy `valid` refuses (one kept
-/// before the check) is passed over and the page fetched again.
-async fn cached(
-    fetch: &dyn Fetch,
-    raw: Option<&dyn ObjectStore>,
-    path: &str,
-    url: &str,
-    valid: fn(&[u8]) -> bool,
-) -> anyhow::Result<Option<Vec<u8>>> {
-    if let Some(raw) = raw {
-        if let Some(z) = raw.get(path).await? {
-            let body = zstd::decode_all(&z[..]).with_context(|| path.to_owned())?;
-            if body == RAW_MISSING {
-                return Ok(None);
-            }
-            if valid(&body) {
-                return Ok(Some(body));
-            }
-            tracing::warn!(path, "a kept response isn't usable; fetching it again");
-        }
-    }
-    let body = fetch.get(url).await?;
-    if let Some(raw) = raw {
-        if body.as_deref().is_none_or(valid) {
-            let z = zstd::encode_all(body.as_deref().unwrap_or(RAW_MISSING), 9)?;
-            // Create-only: a copy already there (a racing run) is the same response.
-            raw.put_new(path, z, "application/zstd").await?;
-        }
-    }
-    Ok(body)
 }
 
 /// What the command is asked to do.
@@ -1003,32 +867,7 @@ pub async fn locked<T>(
     body: impl std::future::Future<Output = anyhow::Result<T>>,
     lost: Arc<AtomicBool>,
 ) -> anyhow::Result<T> {
-    let ttl = chrono::Duration::minutes(30);
-    state.lock(LOCK, owner, ttl).await?;
-    let (s, o, flag) = (state.clone(), owner.to_owned(), lost.clone());
-    let (stop, mut stopped) = tokio::sync::watch::channel(false);
-    let renewer = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(300)) => {}
-                _ = stopped.changed() => break,
-            }
-            if let Err(e) = s.lock(LOCK, &o, ttl).await {
-                tracing::error!(error = %format!("{e:#}"), "congress-globe lock renewal failed");
-                flag.store(true, Ordering::SeqCst);
-                break;
-            }
-        }
-    });
-    let result = body.await;
-    // Stopped between renewals, not aborted: a renewal under way when the
-    // body ends would otherwise land after the unlock and hold the lock.
-    let _ = stop.send(true);
-    let _ = renewer.await;
-    let unlocked = state.unlock(LOCK, owner).await;
-    let out = result?;
-    unlocked?;
-    Ok(out)
+    super::fetch::locked(state, LOCK, owner, body, lost).await
 }
 
 #[cfg(test)]
@@ -1627,7 +1466,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let http = Http::new(Duration::from_millis(200)).unwrap();
+        let http = Http::new(Duration::from_millis(200), USER_AGENT, "UNT").unwrap();
         let base = format!("http://{addr}");
         assert_eq!(
             http.get(&format!("{base}/a")).await.unwrap().unwrap(),
@@ -1683,7 +1522,7 @@ mod tests {
                 let _ = sock.shutdown().await;
             }
         });
-        let http = Http::new(Duration::from_millis(10)).unwrap();
+        let http = Http::new(Duration::from_millis(10), USER_AGENT, "UNT").unwrap();
         let got = http.get(&format!("http://{addr}/p")).await.unwrap();
         assert_eq!(got.unwrap(), b"ok");
         let v = hits.lock().unwrap();

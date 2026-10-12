@@ -35,6 +35,12 @@ COPY catalog ./catalog
 RUN cargo build --release --locked -p usnm-ingest
 
 FROM ${QUICKWIT_IMAGE}
+# pdftotext for `congress-serialset` (#229): GovInfo's Serial Set PDFs carry
+# an OCR text layer, read page by page.
+# Installed first, so the binaries and commit below don't invalidate it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/usnm-ingest /usr/local/bin/usnm-ingest
 # The experimental search cluster's nodes and bench job (#239).
 COPY --from=build /src/target/release/usnm-qwcluster /usr/local/bin/usnm-qwcluster
