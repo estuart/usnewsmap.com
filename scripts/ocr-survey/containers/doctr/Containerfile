@@ -1,0 +1,22 @@
+# docTR on CPU for the engine survey (#296): the db_resnet50 detector and the multilingual PARSeq
+# recognizer, both from models/ (fetch-models.sh). Build from scripts/ocr-survey:
+#
+#   ./fetch-models.sh --dest models --only doctr/
+#   podman build -f containers/doctr/Containerfile -t ocr-survey/doctr .
+FROM mirror.gcr.io/library/python:3.12-slim-trixie@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+      torch==2.12.1+cpu torchvision==0.27.1+cpu \
+ && pip install --no-cache-dir python-doctr==1.1.0 \
+ && pip freeze > /opt/pip-freeze.txt
+
+ENV DOCTR_CACHE_DIR=/opt/doctr-cache DOCTR_MULTILINGUAL=/opt/doctr-cache/parseq-multilingual-v1
+COPY models/doctr/ /opt/doctr-cache/
+COPY models.lock /opt/survey/models.lock
+RUN cd /opt/doctr-cache && grep '^doctr/' /opt/survey/models.lock | awk '{sub("^doctr/", "", $1); print $3 "  " $1}' \
+    | sha256sum --check --quiet
+COPY engine_runner.py altotext.py /opt/survey/
+ENTRYPOINT ["python3", "/opt/survey/engine_runner.py", "--engine", "doctr"]

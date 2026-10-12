@@ -1,0 +1,38 @@
+# American Stories' OCR pipeline (Dell Research Harvard: layout model, legibility classifier, line model and
+# EfficientOCR word and character recognizers, all ONNX) at a pinned commit, on CPU, for the engine survey
+# (#296). It runs the project's own src/run_img2txt_yolo_pipeline.py with the settings of its
+# process_scans.sh. Models: the project's published model archive (models.lock, ndnp/), hash checked; the
+# archive also holds an older copy of itself as a nested zip, which is not extracted.
+# The repository has no license file: this image is built and used locally only, not published.
+# Build from scripts/ocr-survey:
+#
+#   ./fetch-models.sh --dest models --only ndnp/american_stories_models.zip
+#   podman build -f containers/americanstories/Containerfile -t ocr-survey/americanstories .
+FROM mirror.gcr.io/library/python:3.9-slim-bookworm@sha256:03dee9ce00747bb5390e7b4ad00307b4dbc7790f7da77cc3581f93cfa99a6363
+
+ARG AMERICANSTORIES_COMMIT=f307e5cec224fed5977b080c4f170d89c93ae3ba
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates unzip libgl1 \
+      libglib2.0-0 libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/dell-research-harvard/AmericanStories.git /opt/AmericanStories \
+ && git -C /opt/AmericanStories checkout --quiet "$AMERICANSTORIES_COMMIT" && rm -rf /opt/AmericanStories/.git
+# The project's requirements.txt, with torch and torchvision as CPU wheels, without the packages the OCR
+# pipeline does not import (umap, sentence_transformers, seaborn, memory_profiler), and with nltk, which
+# utils/spell_check_utils.py imports but the file does not list.
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch==1.11.0+cpu torchvision==0.12.0+cpu \
+ && grep -v -E '^(umap|sentence_transformers|seaborn|memory_profiler)==' /opt/AmericanStories/requirements.txt \
+      > /tmp/req.txt \
+ && pip install --no-cache-dir -r /tmp/req.txt nltk==3.8.1 \
+ && pip freeze > /opt/pip-freeze.txt
+COPY models/ndnp/american_stories_models.zip /opt/
+COPY models.lock /opt/survey/models.lock
+RUN cd /opt && grep '^ndnp/american_stories_models.zip' /opt/survey/models.lock | awk '{sub("^ndnp/", "", $1); print $3 "  " $1}' \
+      | sha256sum --check --quiet \
+ && python3 -c "import zipfile; z = zipfile.ZipFile('american_stories_models.zip'); \
+      z.extractall('/opt/american_stories_models', [n for n in z.namelist() if n != '/' and not n.endswith('.zip')])" \
+ && rm american_stories_models.zip
+ENV AMERICANSTORIES_DIR=/opt/AmericanStories AMERICANSTORIES_MODELS=/opt/american_stories_models \
+    AMERICANSTORIES_COMMIT=${AMERICANSTORIES_COMMIT}
+COPY engine_runner.py altotext.py /opt/survey/
+ENTRYPOINT ["python3", "/opt/survey/engine_runner.py", "--engine", "americanstories"]

@@ -1,0 +1,64 @@
+# NDNP Open OCR (Library of Congress) at a pinned commit, for the engine survey (#296). It follows the
+# project's own packages/ndnp_open_ocr/Dockerfile: Tesseract 5.4.1 built from source, tessdata_best eng and
+# osd (the same files as its 4.1.0 tag), the AmericanStories code and layout model for its "advanced
+# segmentation" setting, and its requirements.txt. Differences: torch and torchvision are the CPU wheels,
+# the layout model comes from models/ with its hash checked, and no PDF tools are needed for ALTO only.
+# Build from scripts/ocr-survey:
+#
+#   ./fetch-models.sh --dest models --only ndnp/
+#   ./fetch-models.sh --dest models --only tessdata/
+#   podman build -f containers/ndnp-open-ocr/Containerfile -t ocr-survey/ndnp-open-ocr .
+ARG BASE=mirror.gcr.io/library/python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+
+FROM ${BASE} AS builder
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      make g++ autoconf automake libtool pkg-config autoconf-archive \
+      libleptonica-dev libpng-dev libjpeg62-turbo-dev libtiff-dev libicu-dev libpango1.0-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY models/ndnp/tesseract-5.4.1.tar.gz /opt/
+RUN cd /opt && echo "c4bc2a81c12a472f445b7c2fb4705a08bd643ef467f51ec84f0e148bd368051b  tesseract-5.4.1.tar.gz" \
+      | sha256sum --check --quiet \
+ && tar xzf tesseract-5.4.1.tar.gz && cd tesseract-5.4.1 && ./autogen.sh && ./configure && make -j"$(nproc)" \
+ && make install
+
+FROM ${BASE} AS sources
+ARG NDNP_OPEN_OCR_COMMIT=cbe0ca5321a5f61c2b664ebba3cf8faf7ac1f494
+ARG AMERICANSTORIES_COMMIT=f307e5cec224fed5977b080c4f170d89c93ae3ba
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates \
+      unzip && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/LibraryOfCongress/ndnp-open-ocr.git /opt/ndnp-open-ocr \
+ && git -C /opt/ndnp-open-ocr checkout --quiet "$NDNP_OPEN_OCR_COMMIT" \
+ && git clone https://github.com/dell-research-harvard/AmericanStories.git /opt/AmericanStories \
+ && git -C /opt/AmericanStories checkout --quiet "$AMERICANSTORIES_COMMIT" \
+ && rm -rf /opt/ndnp-open-ocr/.git /opt/AmericanStories/.git
+COPY models/ndnp/american_stories_models.zip /opt/
+RUN cd /opt && echo "53d46ba7173c06e907d222b1bebbd22689df15b7064b51f7a79cc962a18c9933  american_stories_models.zip" \
+      | sha256sum --check --quiet \
+ && mkdir -p AmericanStories/american_stories_models \
+ && unzip -q -j american_stories_models.zip layout_model_new.onnx -d AmericanStories/american_stories_models \
+ && echo "045b2e5588e53c700490730244bdc3e8ff21e903aff1c2af9b169dcdb1d9155e  AmericanStories/american_stories_models/layout_model_new.onnx" \
+      | sha256sum --check --quiet
+
+FROM ${BASE}
+ARG NDNP_OPEN_OCR_COMMIT=cbe0ca5321a5f61c2b664ebba3cf8faf7ac1f494
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libimage-exiftool-perl liblept5 libjpeg62-turbo libtiff6 libpng16-16 libpango-1.0-0 libicu72 libgomp1 \
+      libarchive13 libcurl4 libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/local/bin/tesseract /usr/local/bin/tesseract
+COPY --from=builder /usr/local/lib/ /usr/local/lib/
+ENV LD_LIBRARY_PATH=/usr/local/lib TESSDATA_PREFIX=/usr/local/share/tessdata NDNP_OPEN_OCR_COMMIT=${NDNP_OPEN_OCR_COMMIT}
+COPY models/tessdata/eng.traineddata models/tessdata/osd.traineddata /usr/local/share/tessdata/
+RUN cd /usr/local/share/tessdata \
+ && printf '%s\n' "8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba  eng.traineddata" \
+      "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff  osd.traineddata" | sha256sum --check --quiet
+COPY --from=sources /opt/ndnp-open-ocr/packages/ndnp_open_ocr /app/ndnp_open_ocr
+COPY --from=sources /opt/AmericanStories /app/ndnp_open_ocr/vendor/AmericanStories
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 PYTHONPATH=/app/packages:/app
+RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.12.1+cpu torchvision==0.27.1+cpu \
+ && pip install -r /app/ndnp_open_ocr/requirements.txt \
+ && pip freeze > /opt/pip-freeze.txt
+COPY engine_runner.py altotext.py /opt/survey/
+ENTRYPOINT ["python3", "/opt/survey/engine_runner.py", "--engine", "ndnp-open-ocr"]

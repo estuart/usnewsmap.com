@@ -1,0 +1,20 @@
+# Tesseract 5.5 (Debian trixie) with tessdata_best models and the frak2021 Fraktur model, for the engine
+# survey (#296). Build from scripts/ocr-survey with the models fetched into ./models first:
+#
+#   ./fetch-models.sh --dest models --only tessdata/
+#   podman build -f containers/tesseract/Containerfile -t ocr-survey/tesseract .
+FROM mirror.gcr.io/library/debian:trixie-slim@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      tesseract-ocr=5.5.0-1+b1 libtesseract5=5.5.0-1+b1 python3 python3-pil \
+ && rm -rf /var/lib/apt/lists/* /usr/share/tesseract-ocr/5/tessdata/*.traineddata
+
+ENV TESSDATA_PREFIX=/opt/tessdata OMP_THREAD_LIMIT=1
+COPY models/tessdata/ /opt/tessdata/
+COPY models.lock /opt/survey/models.lock
+RUN cd /opt && grep '^tessdata/' /opt/survey/models.lock | awk '{print $3 "  " $1}' | sha256sum --check --quiet
+# The output configs (txt, alto) live beside the models: without them Tesseract writes text only.
+RUN cp -r /usr/share/tesseract-ocr/5/tessdata/configs /usr/share/tesseract-ocr/5/tessdata/tessconfigs /opt/tessdata/
+COPY engine_runner.py altotext.py /opt/survey/
+ENTRYPOINT ["python3", "/opt/survey/engine_runner.py", "--engine", "tesseract"]

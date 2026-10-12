@@ -1,0 +1,31 @@
+# Surya 2 (surya-ocr 0.22.1) on CPU for the engine survey (#296). Surya 2 reads with a vision-language
+# model; on a machine without a GPU it runs the model's GGUF build in llama.cpp's llama-server, which this
+# image takes from llama.cpp's own server image (CPU build, pinned by digest). The model files come from
+# models/ (fetch-models.sh) with their hashes checked; the container runs with no network.
+# Build from scripts/ocr-survey:
+#
+#   ./fetch-models.sh --dest models --only surya/
+#   podman build -f containers/surya/Containerfile -t ocr-survey/surya .
+FROM ghcr.io/ggml-org/llama.cpp:server@sha256:bf3da52e92c083472b3d1c9f9da081f423ab9def95a87ec4bba51940382d75fd
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-venv libgl1 \
+      libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv \
+ && /opt/venv/bin/pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+      torch==2.12.1+cpu torchvision==0.27.1+cpu \
+ && /opt/venv/bin/pip install --no-cache-dir surya-ocr==0.22.1 \
+ && /opt/venv/bin/pip freeze > /opt/pip-freeze.txt
+COPY models/surya/ /opt/surya-models/
+COPY models.lock /opt/survey/models.lock
+RUN cd /opt/surya-models && grep '^surya/' /opt/survey/models.lock | awk '{sub("^surya/", "", $1); print $3 "  " $1}' \
+    | sha256sum --check --quiet
+ENV PATH=/opt/venv/bin:/app:$PATH LLAMA_CPP_BINARY=/app/llama-server \
+    SURYA_GGUF_LOCAL_MODEL_PATH=/opt/surya-models/surya-2.gguf \
+    SURYA_GGUF_LOCAL_MMPROJ_PATH=/opt/surya-models/surya-2-mmproj.gguf \
+    SURYA_INFERENCE_BACKEND=llamacpp SURYA_INFERENCE_PARALLEL=1 \
+    FAST_LAYOUT_MODEL_CHECKPOINT=/opt/surya-models/layout2 FAST_ORDER_MODEL_CHECKPOINT=/opt/surya-models/layout2/order \
+    HF_HUB_OFFLINE=1 DISABLE_TQDM=true SURYA_INFERENCE_TIMEOUT_SECONDS=3600
+COPY engine_runner.py altotext.py /opt/survey/
+ENTRYPOINT ["python3", "/opt/survey/engine_runner.py", "--engine", "surya"]

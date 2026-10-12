@@ -1,0 +1,36 @@
+# Model files for the engine survey: file name, URL, sha256. fetch-models.sh downloads and checks them;
+# the Containerfiles copy them from the models/ build directory and check the hashes again.
+# Tesseract tessdata_best, pinned to commit e12c65a915945e4c28e237a9b52bc4a8f39a0cec (2024-03-09).
+tessdata/eng.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/eng.traineddata 8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba
+tessdata/deu.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/deu.traineddata 8407331d6aa0229dc927685c01a7938fc5a641d1a9524f74838cdac599f0d06e
+tessdata/deu_latf.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/deu_latf.traineddata 429b8c33d37e1a4823a2bb082a644ff13e252f735b7945e08a518d22ddcc459e
+tessdata/srp.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/srp.traineddata b090f9bb22366d9b4b0cb6baa2136c4f75e992ddba01ecb78240896e359e4072
+tessdata/srp_latn.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/srp_latn.traineddata 9bc6caa2ad9daf1706bf4c21741992dd5a334e9ff64cfc1ecd32aa43dd7a150c
+tessdata/rus.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/rus.traineddata b617eb6830ffabaaa795dd87ea7fd251adfe9cf0efe05eb9a2e8128b7728d6b6
+tessdata/ces.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/ces.traineddata d821773116d3c4e0360ea750066436c60ae45af02c39da3a840a543d761b3f41
+tessdata/pol.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/pol.traineddata e80cc4cefbdface06e9223f43f089556b9dcf104020fbc0a200f6863c57d4405
+tessdata/osd.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/osd.traineddata 9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff
+# UB Mannheim's frak2021 Fraktur model, the one OCR-D's ocrd_tesserocr lists and recommends for Fraktur.
+tessdata/frak2021.traineddata https://ub-backup.bib.uni-mannheim.de/~stweil/tesstrain/frak2021/tessdata_best/frak2021-0.905.traineddata 1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a
+# docTR: its db_resnet50 text detector (docTR checks the hash in the file name too), and the multilingual
+# PARSeq recognizer from docTR's maintainer on Hugging Face (Apache-2.0; en, da, fr, it, es, de, pt, cs, pl,
+# nl, no, fi), pinned to revision 8bde31c864bcfa47489140b9dddb25ec70f4fd54.
+doctr/models/db_resnet50-79bd7d70.pt https://doctr-static.mindee.com/models?id=v0.7.0/db_resnet50-79bd7d70.pt&src=0 79bd7d702506703b89cf11afa42d12aebf5cf25c3618e6ffd5f85772240ca483
+doctr/parseq-multilingual-v1/pytorch_model.bin https://huggingface.co/Felix92/doctr-torch-parseq-multilingual-v1/resolve/8bde31c864bcfa47489140b9dddb25ec70f4fd54/pytorch_model.bin d5b1d3f3b9d8ab994e94c671c47828b9a4079f20b4288eb5f0ba3c6dacf6c237
+doctr/parseq-multilingual-v1/config.json https://huggingface.co/Felix92/doctr-torch-parseq-multilingual-v1/resolve/8bde31c864bcfa47489140b9dddb25ec70f4fd54/config.json d318cf17826726d56a7e12e8bf4e0f864df6ab259da6c6e35975a6184a081413
+# NDNP Open OCR's advanced segmentation: the AmericanStories model archive its Dockerfile downloads
+# (a Dropbox folder link, so not immutable: the hash is of the copy fetched on 2026-10-10). Only
+# layout_model_new.onnx (sha256 045b2e5588e53c700490730244bdc3e8ff21e903aff1c2af9b169dcdb1d9155e) is used.
+ndnp/american_stories_models.zip https://www.dropbox.com/sh/sfaf1nmuji9yhu6/AAAj1UGrPmCWFJUiTSP41ihpa?dl=1 53d46ba7173c06e907d222b1bebbd22689df15b7064b51f7a79cc962a18c9933
+# Tesseract 5.4.1 source, the version NDNP Open OCR's Dockerfile builds.
+ndnp/tesseract-5.4.1.tar.gz https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.4.1.tar.gz c4bc2a81c12a472f445b7c2fb4705a08bd643ef467f51ec84f0e148bd368051b
+# Surya 2 (surya-ocr 0.22.1): the GGUF build of its OCR model and its vision projector, run by llama-server,
+# pinned to revision 6a3a4c30e5e74446d4f8b6afd05b2f2da970f470 of datalab-to/surya-ocr-2-gguf.
+surya/surya-2.gguf https://huggingface.co/datalab-to/surya-ocr-2-gguf/resolve/6a3a4c30e5e74446d4f8b6afd05b2f2da970f470/surya-2.gguf 1f18abe17b1ed8b4e47ee9b1ad0e274c93daf5efbb6b29a04ff1712e37051e05
+surya/surya-2-mmproj.gguf https://huggingface.co/datalab-to/surya-ocr-2-gguf/resolve/6a3a4c30e5e74446d4f8b6afd05b2f2da970f470/surya-2-mmproj.gguf 98c0563673b1657ff6d021d1e5f04af06cbf61bb40c63ac613e8bb71b42fb2c0
+# Surya's layout model (datalab-to/surya_layout2 at revision 0aee81d5fd9275c0582e545bf3a56944b1e75679), used only
+# when a full-page read fails and Surya falls back to reading block by block.
+surya/layout2/config.json https://huggingface.co/datalab-to/surya_layout2/resolve/0aee81d5fd9275c0582e545bf3a56944b1e75679/config.json bd2db9bcc338841fc4496b10a69f07ccc544b0c80e94d94482295197b23d5605
+surya/layout2/rfdetr_layout.pth https://huggingface.co/datalab-to/surya_layout2/resolve/0aee81d5fd9275c0582e545bf3a56944b1e75679/rfdetr_layout.pth e01b79f858778cdad8a1384e644ac2b35f9c095fbfd102a34942e23f2f179fe7
+surya/layout2/order/config.json https://huggingface.co/datalab-to/surya_layout2/resolve/0aee81d5fd9275c0582e545bf3a56944b1e75679/order/config.json 83e687c922ce1915adb212af882f54ba52dca17c5d556526af9d57c41b6e0124
+surya/layout2/order/order_ar.pt https://huggingface.co/datalab-to/surya_layout2/resolve/0aee81d5fd9275c0582e545bf3a56944b1e75679/order/order_ar.pt f381c38548015cbbe962611cbd2c80c59e88c3c25543ac20df9db16f84923ad8
