@@ -11,8 +11,9 @@
 //   own series, congress/curated.rs finished_in and empties_in);
 // - read, write and create blobs whose path is under congress/serialset/
 //   (counts.json, the parquet parts and empty.json, all create-only);
-// - no delete and no move, anywhere (the role has neither; the condition
-//   says so again).
+// - no delete and no move, anywhere: the role has neither data action. (A
+//   condition can't say so again: Azure refuses a condition that names an
+//   action the role doesn't grant, InvalidRoleAssignmentCondition.)
 // Nothing on the other containers, and nothing on Cosmos: the runner holds
 // its lock in a local state file (docs/operations.md, "The Serial Set
 // on-prem").
@@ -47,7 +48,7 @@ resource writer 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
 }
 
 // ABAC (condition version 2.0). Each clause either doesn't apply to the
-// request's action or holds for it; all three must hold.
+// request's action or holds for it; both must hold.
 var condition = join(
   [
     '('
@@ -64,11 +65,6 @@ var condition = join(
     ' (!(ActionMatches{\'${blobs}/read\'} AND SubOperationMatches{\'Blob.List\'}))'
     ' OR'
     ' (@Request[${blobs}:prefix] StringStartsWith \'${path}\')'
-    ')'
-    'AND'
-    '('
-    ' !(ActionMatches{\'${blobs}/delete\'})'
-    ' AND !(ActionMatches{\'${blobs}/move/action\'})'
     ')'
   ],
   '\n'
