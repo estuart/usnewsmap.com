@@ -697,7 +697,13 @@ scripts/logs.sh --env dev --query-name titles-archive --span 1h
 
 **Cost of standing up:** two provisions and two or three `az acr build` runs, a few cents. Reading the 1% set back from Cold is about $0.71 ($0.03 per GB retrieved) plus about $0.24 of private endpoint processing. Then the idle floor (about $2 a day) and whatever the experiment runs. **Time:** about 40 to 60 minutes to a running environment with images. Data takes minutes for a set, about an hour to curate the 1% from the archive, and a few minutes to seed the titles from the archive (up to 8 hours for a titles-sync when there is no copy yet, or the catalog needs titles the copy lacks).
 
-**Tear it down** once the results are saved (reports copied out of `qw-bench/runs/`, logs queried, and, if titles-sync ran, its copy in the archive: the `titles-archive` query shows `title records in the raw store`, or run `scripts/start-job.sh --env dev --job INGEST_JOB -- titles-archive`):
+**Tear it down** once the results are saved: reports copied out of `qw-bench/runs/`, logs queried, and, if titles-sync ran with the archival account, its copy in the archive. Save that copy first, and don't start the teardown until the command below exits 0:
+
+```sh
+scripts/start-job.sh --env dev --job INGEST_JOB --wait-mins 20 -- titles-archive
+```
+
+Without `--wait-mins`, `start-job.sh` returns as soon as Azure accepts the execution, before anything is written, and a teardown started then would delete the record cache before the copy is made. With it, the script waits for the execution and exits 0 only once it has `Succeeded`, so the copy is in `raw/titles/` (or the newest copy there already held the same records, and nothing was written). It exits 1 if the execution ends `Failed`, `Stopped` or `Degraded` or is still running after 20 minutes: then don't tear down. Check the job's log (`scripts/logs.sh --env dev --query-name job-executions`; without `USNM_ARCHIVE_ACCOUNT` the job has no raw store, and the command fails with `titles-archive needs USNM_RAW_URL`), fix it and run it again. The command is create-only and skips a copy the archive already has, so running it when titles-sync's own copy succeeded costs one short execution. Then:
 
 ```sh
 scripts/teardown.sh --env dev

@@ -7,8 +7,8 @@ resource count; unset: not found), STUB_GROUPS (group names, one per line),
 STUB_TAGS (the project group's "experiment<TAB>started"; unset: no group),
 STUB_PARAMS (the guard-rail stack's parameters as two tsv rows) and
 STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
-message). For a job execution (scripts/titles-seed.sh through
-scripts/start-job.sh): STUB_EXECUTION (the started execution's name) and
+message). For a job execution (scripts/start-job.sh, and
+scripts/titles-seed.sh through it): STUB_EXECUTION (the started execution's name) and
 STUB_EXEC_STATUS (its status). It logs each call to STUB_LOG."""
 
 import json
@@ -251,6 +251,65 @@ class DevStatus(Stubbed):
                         STUB_COST_ERROR="ERROR: (TooManyRequests) throttled")
         self.assertEqual(r.returncode, 1)
         self.assertIn("can't read the cost", r.stderr)
+
+
+class StartJobWait(Stubbed):
+    """scripts/start-job.sh --wait-mins: the teardown runbook's titles-archive
+    step must not return before the copy is written (#275)."""
+    SETTINGS = ('AZURE_SUBSCRIPTION_ID="sub-1"\nAZURE_RESOURCE_GROUP="rg-usnm-dev"\n'
+                'INGEST_JOB="caj-usnm-ingest-dev"\n')
+
+    def start(self, *args, **extra):
+        self.settings_file(self.SETTINGS)
+        return subprocess.run([os.path.join(HERE, "start-job.sh"), "--env", "dev", "--job", "INGEST_JOB",
+                               *args, "--", "titles-archive"], cwd=ROOT,
+                              env={**self.env, "STUB_EXECUTION": "caj-usnm-ingest-dev-xyz34", **extra},
+                              capture_output=True, text=True)
+
+    def polled(self):
+        return [c for c in self.calls() if "execution show" in c]
+
+    def test_without_it_returns_once_started(self):
+        r = self.start(STUB_EXEC_STATUS="Running")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "caj-usnm-ingest-dev-xyz34\n")
+        self.assertEqual(self.polled(), [])
+
+    def test_waits_for_success(self):
+        r = self.start("--wait-mins", "20")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "caj-usnm-ingest-dev-xyz34\n")
+        self.assertEqual(len(self.polled()), 1)
+        self.assertIn("--job-execution-name caj-usnm-ingest-dev-xyz34", self.polled()[0])
+        body = json.loads([c for c in self.calls() if c.startswith("rest --method post")][0]
+                          .split("--body ", 1)[1].split(" --query", 1)[0])
+        self.assertEqual(body["containers"][0]["args"], ["titles-archive"])
+
+    def test_a_failed_execution_fails(self):
+        for status in ("Failed", "Stopped", "Degraded"):
+            r = self.start("--wait-mins", "20", STUB_EXEC_STATUS=status)
+            self.assertEqual(r.returncode, 1, status)
+            self.assertIn(f"ended {status}", r.stderr)
+            self.assertEqual(r.stdout, "")
+
+    def test_still_running_at_the_deadline_fails(self):
+        r = self.start("--wait-mins", "00", STUB_EXEC_STATUS="Running")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("still Running after 0 minutes", r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_no_execution_fails(self):
+        r = self.start("--wait-mins", "20", STUB_EXECUTION="")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("started no execution", r.stderr)
+
+    def test_wait_mins_is_a_number(self):
+        # An empty value (an unset variable) is refused, not read as no wait.
+        for value in ("soon", "", "-5"):
+            r = self.start("--wait-mins", value)
+            self.assertEqual(r.returncode, 2, repr(value))
+            self.assertIn("--wait-mins is a number of minutes", r.stderr)
+            self.assertFalse(os.path.exists(self.log))
 
 
 class TitlesSeed(Stubbed):
