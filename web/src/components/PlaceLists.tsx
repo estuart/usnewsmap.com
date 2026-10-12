@@ -1,6 +1,7 @@
 import { useId, useState, type ReactNode } from "react";
 import { dateFromDay, formatDate } from "../lib/time";
-import { LIST_LENGTH, ShownList, type ListLengths } from "./ListLength";
+import { LIST_LENGTH, MOST_SHOWN, ShownList, type ListLengths } from "./ListLength";
+import type { DaysResponse } from "../api/types";
 
 /** The Median date lists leave out places with fewer matching pages than this: one page has a date, not a median. */
 export const MIN_MEDIAN_PAGES = 5;
@@ -42,49 +43,99 @@ export function statePages(rows: ListRow[]): StateRow[] {
   return [...by.values()].sort((a, b) => b.pages - a.pages || a.state.localeCompare(b.state));
 }
 
-/**
- * The places whose matching pages fall earliest and latest, by median date,
- * among those with at least MIN_MEDIAN_PAGES pages. Ties go to the place
- * with more pages.
- */
-export function medianExtremes<R extends ListRow>(rows: R[]): { earliest: R[]; latest: R[]; eligible: number } {
-  const usable = rows.filter((r) => r.value >= MIN_MEDIAN_PAGES && r.when !== undefined && !Number.isNaN(r.when));
-  const by = (dir: 1 | -1) => (a: R, b: R) =>
-    dir * (a.when! - b.when!) || b.value - a.value || a.name.localeCompare(b.name);
-  // With fewer than two lists' worth, split them so no place is in both,
-  // even when places share a median.
-  const n = Math.min(LIST_LENGTH, Math.ceil(usable.length / 2));
-  const earliest = [...usable].sort(by(1)).slice(0, n);
-  const taken = new Set(earliest.map((r) => r.id));
-  return {
-    earliest,
-    latest: usable
-      .filter((r) => !taken.has(r.id))
-      .sort(by(-1))
-      .slice(0, LIST_LENGTH),
-    eligible: usable.length,
-  };
+/** Places with enough matching pages for a median, and a median to rank by. */
+function eligiblePlaces<R extends ListRow>(rows: R[]): R[] {
+  return rows.filter((r) => r.value >= MIN_MEDIAN_PAGES && r.when !== undefined && !Number.isNaN(r.when));
 }
 
-/** The most places one /v1/days request takes. */
-const MAX_CANDIDATES = 20;
+/**
+ * Splits places into the earlier half (one more when odd), earliest first,
+ * and the later half, latest first, by `at`: a pair compared by its first
+ * number, then its second. Ties go to the place with more pages, then by
+ * name. No place is in both, however many each list shows, even when places
+ * share a median.
+ */
+function halves<R extends ListRow>(
+  usable: R[],
+  at: (r: R) => readonly [number, number],
+): { earliest: R[]; latest: R[]; eligible: number } {
+  const by = (dir: 1 | -1) => (a: R, b: R) => {
+    const [a0, a1] = at(a);
+    const [b0, b1] = at(b);
+    return dir * (a0 - b0 || a1 - b1) || b.value - a.value || a.name.localeCompare(b.name);
+  };
+  const ascending = [...usable].sort(by(1));
+  const n = Math.ceil(ascending.length / 2);
+  return { earliest: ascending.slice(0, n), latest: ascending.slice(n).sort(by(-1)), eligible: usable.length };
+}
 
 /**
- * The places that could be among the five earliest or latest once medians
- * are known to the day: those ranked by bucket up to the fifth, and every
- * place sharing the fifth's bucket. Empty when that is more than one
- * request takes: an incomplete set could leave out the true earliest, so the
- * lists keep the bucket instead.
+ * The places whose matching pages fall earliest and latest, by median date,
+ * among those with at least MIN_MEDIAN_PAGES pages: every one of them, the
+ * earlier half in `earliest` and the later half in `latest`, so none is in
+ * both. The lists choose how many to show.
  */
-export function medianCandidates(rows: ListRow[]): string[] {
-  const usable = rows.filter((r) => r.value >= MIN_MEDIAN_PAGES && r.when !== undefined && !Number.isNaN(r.when));
-  const end = (dir: 1 | -1) => {
+export function medianExtremes<R extends ListRow>(rows: R[]): { earliest: R[]; latest: R[]; eligible: number } {
+  return halves(eligiblePlaces(rows), (r) => [0, r.when!]);
+}
+
+/** The most places one /v1/days request takes (`MAX_PLACES` in the API). */
+export const DAYS_PER_REQUEST = 20;
+
+/** The two Median date lists, as `useListLengths` names them. */
+export type MedianListName = "earliest" | "latest";
+
+/**
+ * The places that could be among those the Earliest and Latest lists show
+ * once medians are known to the day: at each end, those ranked by bucket up
+ * to the last one shown, and every place sharing that one's bucket. Each list
+ * holds half the places, so with few places this is all of them.
+ *
+ * Null when that is more than one request's worth (20 places) for every five
+ * places the two lists show between them: 20 while each shows five, as
+ * before the lists could grow, up to 100 with 25 in each. An incomplete set
+ * could leave out the true earliest, so the lists keep the bucket instead.
+ */
+export function medianCandidates(
+  rows: ListRow[],
+  shown: ListLengths<MedianListName> = { earliest: LIST_LENGTH, latest: LIST_LENGTH },
+): string[] | null {
+  const usable = eligiblePlaces(rows);
+  const half = Math.ceil(usable.length / 2);
+  const end = (dir: 1 | -1, n: number) => {
     const sorted = [...usable].sort((a, b) => dir * (a.when! - b.when!));
-    const edge = sorted[Math.min(LIST_LENGTH, sorted.length) - 1];
+    const edge = sorted[Math.min(n, sorted.length) - 1];
     return edge ? sorted.filter((r) => dir * (r.when! - edge.when!) <= 0) : [];
   };
-  const ids = [...new Set([...end(1), ...end(-1)].map((r) => r.id))].sort();
-  return ids.length > MAX_CANDIDATES ? [] : ids;
+  const ends = [...end(1, Math.min(shown.earliest, half)), ...end(-1, Math.min(shown.latest, usable.length - half))];
+  const ids = [...new Set(ends.map((r) => r.id))].sort();
+  const budget = (DAYS_PER_REQUEST * (shown.earliest + shown.latest)) / (2 * LIST_LENGTH);
+  return ids.length > budget ? null : ids;
+}
+
+/** One place's matching pages per day, as `/v1/days` gives them. */
+export type PlaceDays = DaysResponse["places"][number];
+
+/**
+ * The pages per day of `ids`: from `known` (a search's answers so far) where
+ * it has them, asking `ask` for the rest at most DAYS_PER_REQUEST at a time,
+ * one request after another. Answers are added to `known`, a place the API
+ * left out as one with no days, so a longer list, or the same places at a
+ * new date, asks only for places not asked for before.
+ */
+export async function daysFor(
+  ids: string[],
+  known: Map<string, PlaceDays>,
+  ask: (ids: string[]) => Promise<DaysResponse>,
+): Promise<PlaceDays[]> {
+  const missing = ids.filter((id) => !known.has(id));
+  for (let i = 0; i < missing.length; i += DAYS_PER_REQUEST) {
+    const part = missing.slice(i, i + DAYS_PER_REQUEST);
+    const answer = await ask(part);
+    const got = new Map(answer.places.map((p) => [p.id, p]));
+    for (const id of part) known.set(id, got.get(id) ?? { id, days: [], hits: [] });
+  }
+  return ids.map((id) => known.get(id)!);
 }
 
 /**
@@ -268,29 +319,66 @@ interface Ranked {
   earliest: ListRow[];
   latest: ListRow[];
   eligible: number;
-  /** What the lists show, to tell one ranking from the next. */
+  /** What the lists can show, to tell one ranking from the next. */
   key: string;
 }
 
-/** The two Median date lists, by exact day when `exact` is given, else by bucket. */
+/**
+ * The two Median date lists, every eligible place in one or the other, by
+ * exact day where `exact` has it, else by bucket.
+ *
+ * Exact days come for the places at each end (`medianCandidates`): ranked by
+ * bucket, a run from the earliest and a run from the latest, each made of
+ * whole buckets. Those runs are ranked by day, and the places between them
+ * keep their bucket's order: every day in a run's buckets comes before (or,
+ * at the latest end, after) every bucket between, so the order holds across
+ * the seams. With days for every place, all are ranked by day.
+ */
 export function medianLists(rows: ListRow[], exact: Map<string, number> | null | undefined): Ranked {
-  const { eligible } = medianExtremes(rows);
-  const ranked = exact
-    ? rows
-        .filter((r) => exact.has(r.id) && !Number.isNaN(exact.get(r.id)!))
-        .map((r) => ({ ...r, when: exact.get(r.id)!, whenLabel: formatDate(dateFromDay(exact.get(r.id)!)) }))
-    : rows;
-  const { earliest, latest } = medianExtremes(ranked);
-  const key = JSON.stringify([eligible, ...[...earliest, ...latest].map((r) => [r.id, r.whenLabel, r.value])]);
+  const usable = eligiblePlaces(rows);
+  let ranked: { earliest: ListRow[]; latest: ListRow[]; eligible: number };
+  if (!exact) {
+    ranked = medianExtremes(usable);
+  } else {
+    const known = (r: ListRow) => exact.has(r.id) && !Number.isNaN(exact.get(r.id)!);
+    const byBucket = [...usable].sort((a, b) => a.when! - b.when!);
+    // How many places from the start of `list` have exact days, cut back to
+    // whole buckets: a place without one, sharing the last one's bucket, could
+    // fall on an earlier day.
+    const run = (list: ListRow[]) => {
+      let k = 0;
+      while (k < list.length && known(list[k]!)) k++;
+      if (k < list.length) while (k > 0 && list[k - 1]!.when === list[k]!.when) k--;
+      return k;
+    };
+    const head = run(byBucket);
+    const tail = head === byBucket.length ? 0 : run([...byBucket].reverse());
+    // 0: the earliest run, by day; 1: between the runs, by bucket; 2: the latest run, by day.
+    const group = new Map<string, number>();
+    const placed = byBucket.map((r, i) => {
+      const g = i < head ? 0 : i >= byBucket.length - tail ? 2 : 1;
+      group.set(r.id, g);
+      if (g === 1) return r;
+      const day = exact.get(r.id)!;
+      return { ...r, when: day, whenLabel: formatDate(dateFromDay(day)) };
+    });
+    ranked = halves(placed, (r) => [group.get(r.id)!, r.when!]);
+  }
+  const { earliest, latest, eligible } = ranked;
+  // Only what can show changes the lists: the first MOST_SHOWN of each, and how many places there are.
+  const key = JSON.stringify([
+    eligible,
+    ...[...earliest.slice(0, MOST_SHOWN), ...latest.slice(0, MOST_SHOWN)].map((r) => [r.id, r.whenLabel, r.value]),
+  ]);
   return { earliest, latest, eligible, key };
 }
 
 /**
  * Where the Median date lists stand: `exact` (ranked by day), `updating`
- * (the last exact lists while the next set loads), `loading` (no exact
- * answer for this search yet: nothing is listed), or `bucket` (ranked by the
- * search's bucket for good: a search by day, more ties than one request
- * takes, or the day counts failed).
+ * (the last lists, exact or by bucket, while the next set loads), `loading`
+ * (no answer for this search yet and no lists shown: nothing is listed), or `bucket` (ranked by the
+ * search's bucket for good: a search by day, more tied places than the
+ * lists' lengths allow requests for, or the day counts failed).
  */
 export type MedianStatus = "exact" | "updating" | "loading" | "bucket";
 
@@ -300,17 +388,35 @@ export function WhenLists({
   trailing,
   exact,
   status = exact ? "exact" : "bucket",
+  shown,
+  onShown,
+  tied,
 }: ListsProps & {
   /** Exact median day numbers for the places that could be listed (`exact` and `updating`). */
   exact?: Map<string, number> | null;
   status?: MedianStatus;
+  /** How many places each list shows, from `useListLengths`. */
+  shown: ListLengths<MedianListName>;
+  onShown: (list: MedianListName, n: number) => void;
+  /**
+   * The bucket ("month", "year") the lists rank by because too many places
+   * share one to ask for their days; absent otherwise.
+   */
+  tied?: string;
 }) {
-  // The lists last shown from exact days. While the next set loads
-  // ("updating") they stay exactly as they were, not recomputed against the
-  // new window from the old answer, until the fresh answer replaces them.
-  const [shown, setShown] = useState<Ranked | null>(null);
-  const current = status === "updating" && shown ? null : medianLists(rows, status === "bucket" ? null : exact);
-  if (status === "exact" && current && current.key !== shown?.key) setShown(current);
+  // The lists last shown from exact days, and how long the lists were then.
+  // While the next set loads ("updating") they stay exactly as they were, not
+  // recomputed against the new window from the old answer, until the fresh
+  // answer replaces them. After lists by bucket (or none) `ranked` is null:
+  // an "updating" then shows them by bucket, not exact lists from before
+  // them, maybe another search's.
+  const lengths = `${shown.earliest},${shown.latest}`;
+  const [last, setLast] = useState<{ ranked: Ranked | null; lengths: string } | null>(null);
+  const current = status === "updating" && last?.ranked ? null : medianLists(rows, status === "bucket" ? null : exact);
+  if (status === "exact" && current && (current.key !== last?.ranked?.key || lengths !== last.lengths))
+    setLast({ ranked: current, lengths });
+  if ((status === "bucket" || status === "loading") && (last?.ranked || last?.lengths !== lengths))
+    setLast({ ranked: null, lengths });
   if (status === "loading") {
     return (
       <ListsPanel title="Earliest and latest" label="Places with the earliest and latest median dates">
@@ -320,7 +426,7 @@ export function WhenLists({
       </ListsPanel>
     );
   }
-  const { earliest, latest, eligible } = (status === "updating" && shown) || current!;
+  const { earliest, latest, eligible } = (status === "updating" && last?.ranked) || current!;
   const empty =
     eligible === 1
       ? `Only one place has ${MIN_MEDIAN_PAGES} or more matching pages ${scope(trailing)}.`
@@ -333,18 +439,49 @@ export function WhenLists({
       </span>
     </>
   );
+  // A list grew (or shrank) since the last lists: the days of the places it lists are on their way.
+  const note =
+    status !== "updating"
+      ? ""
+      : last && last.lengths !== lengths
+        ? "Finding the listed places' median days…"
+        : "Updating for the new date…";
   return (
     <ListsPanel title="Earliest and latest" label="Places with the earliest and latest median dates">
       <div className={status === "updating" ? "lists--updating" : undefined} aria-busy={status === "updating"}>
-        <ShownList heading="Earliest median date" items={earliest} empty={empty} itemKey={(r) => r.id} render={item} />
-        <ShownList heading="Latest median date" items={latest} empty={empty} itemKey={(r) => r.id} render={item} />
+        <ShownList
+          heading="Earliest median date"
+          items={earliest}
+          empty={empty}
+          itemKey={(r) => r.id}
+          render={item}
+          limit={shown.earliest}
+          onLimit={(n) => onShown("earliest", n)}
+          ranking={status === "updating"}
+        />
+        <ShownList
+          heading="Latest median date"
+          items={latest}
+          empty={empty}
+          itemKey={(r) => r.id}
+          render={item}
+          limit={shown.latest}
+          onLimit={(n) => onShown("latest", n)}
+          ranking={status === "updating"}
+        />
       </div>
       <p className="skew-list__note" role="status">
-        {status === "updating" ? "Updating for the new date…" : ""}
+        {note}
       </p>
+      {tied && status === "bucket" && (
+        <p className="skew-list__note">
+          Too many places share a median {tied} to look up each one&apos;s day, so these lists go by {tied}.
+        </p>
+      )}
       <p className="skew-list__note">
         A place&apos;s median date is when half of its matching pages {scope(trailing)} had been printed. Only places
-        with at least {MIN_MEDIAN_PAGES} matching pages are listed.
+        with at least {MIN_MEDIAN_PAGES} matching pages are listed: the earlier half under Earliest, the later half
+        under Latest.
       </p>
     </ListsPanel>
   );

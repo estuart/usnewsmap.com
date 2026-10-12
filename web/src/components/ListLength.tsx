@@ -37,7 +37,9 @@ export function useListLengths<K extends string>(
  * One list in the side panel: its heading, its first `limit` entries, how
  * many there are in all, and buttons to show the next ones or go back to the
  * first few. Without `onLimit` it shows every entry it is given, with no
- * buttons.
+ * buttons. While `ranking` is set the entries' order may still change (the
+ * Median date lists before the days of the places just added arrive), so
+ * focus waits for it to settle before moving to an added entry.
  */
 export function ShownList<R>({
   heading,
@@ -47,6 +49,7 @@ export function ShownList<R>({
   render,
   limit = Infinity,
   onLimit,
+  ranking = false,
 }: {
   heading: string;
   empty: string;
@@ -56,6 +59,8 @@ export function ShownList<R>({
   render: (r: R) => ReactNode;
   limit?: number;
   onLimit?: (n: number) => void;
+  /** The order of `items` is not final yet: hold focus moves to an entry until it is. */
+  ranking?: boolean;
 }) {
   const id = useId();
   const listId = `${id}-list`;
@@ -71,22 +76,36 @@ export function ShownList<R>({
   // Where focus goes once the list has changed: after "Show more", the first
   // entry it added (its button, or the entry itself when it has none), so
   // keyboard and screen reader users land on the new rows; after "Show
-  // fewer", which goes away, the "Show more" button.
-  const focusNext = useRef<number | "more" | null>(null);
+  // fewer", which goes away, the "Show more" button. While `ranking`, the
+  // added entries may still move, and one moved past the end would unmount
+  // with focus on it, so the move to an entry waits, focus staying on "Show
+  // more", and then goes to whichever entry is first of the added ones in
+  // the final order. `waited` notes that it waited: by then focus may have
+  // gone elsewhere on purpose, and is only moved if it is still on "Show
+  // more", or nowhere because that button went away with the last entries.
+  const focusNext = useRef<{ to: number | "more"; waited: boolean } | null>(null);
 
   useEffect(() => {
     const next = focusNext.current;
     if (next === null) return;
-    focusNext.current = null;
-    if (next === "more") {
+    if (next.to === "more") {
+      focusNext.current = null;
       moreButton.current?.focus();
       return;
     }
-    const item = list.current?.children[next] as HTMLElement | undefined;
+    if (ranking) {
+      next.waited = true;
+      return;
+    }
+    focusNext.current = null;
+    const active = document.activeElement;
+    if (next.waited && active && active !== document.body && active !== moreButton.current) return;
+    const entries = list.current?.children;
+    const item = (entries?.[next.to] ?? entries?.[entries.length - 1]) as HTMLElement | undefined;
     const target = item?.querySelector("button") ?? item;
     if (target === item && item) item.tabIndex = -1;
     target?.focus();
-  }, [limit]);
+  }, [limit, ranking]);
 
   let count = "";
   if (onLimit && items.length > LIST_LENGTH) {
@@ -125,7 +144,7 @@ export function ShownList<R>({
               aria-controls={listId}
               aria-describedby={`${headingId} ${countId}`}
               onClick={() => {
-                focusNext.current = visible.length;
+                focusNext.current = { to: visible.length, waited: false };
                 onLimit(Math.min(visible.length + LIST_LENGTH, MOST_SHOWN));
               }}
             >
@@ -140,7 +159,7 @@ export function ShownList<R>({
               aria-controls={listId}
               aria-describedby={`${headingId} ${countId}`}
               onClick={() => {
-                focusNext.current = "more";
+                focusNext.current = { to: "more", waited: false };
                 onLimit(LIST_LENGTH);
               }}
             >

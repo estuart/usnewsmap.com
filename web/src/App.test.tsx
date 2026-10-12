@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { AggregateResponse, HitsResponse, Meta, PlacesResponse, TitlesResponse } from "./api/types";
+import type { AggregateResponse, DaysResponse, HitsResponse, Meta, PlacesResponse, TitlesResponse } from "./api/types";
+import { dayNumber } from "./lib/time";
 
 // The API answers from these, so App can be shown for a search (no WebGL in
 // jsdom: it shows the tables, not the map).
@@ -216,5 +217,99 @@ describe("App under a newspaper filter (07 §7.13)", () => {
     show("?q=gold");
     await screen.findByRole("region", { name: "Newspapers" });
     expect(api.titles).not.toHaveBeenCalled();
+  });
+});
+
+describe("App's Median date lists (#264)", () => {
+  // Forty places, every one's pages in 1850: too many tied in one bucket to
+  // ask for their days at 10+5 (a budget of 30), but not at 15+5 (40).
+  const ids = Array.from({ length: 40 }, (_, i) => `P${String(i).padStart(5, "0")}`);
+  const name = (i: number) => `Town ${String(i).padStart(2, "0")}`;
+  const tied: PlacesResponse = {
+    type: "FeatureCollection",
+    index_version: "v1",
+    features: ids.map((id, i) => ({
+      type: "Feature",
+      id,
+      geometry: { type: "Point", coordinates: [-90 + i * 0.1, 40] },
+      properties: { name: name(i), state: "IL", precision: "city", titles: 1 },
+    })),
+  };
+  const year: AggregateResponse = {
+    ...aggregate("P00001", 10, "sn82014424"),
+    total: { hits: 400, places: 40, baseline_pages: 0, papers: 1 },
+    series: { hits: [400], baseline: null },
+    places: { id: ids, hits: ids.map(() => 10), first_day: ids.map(() => dayNumber("1850-01-01")) },
+    cube: { p: ids.map((_, i) => i), b: ids.map(() => 0), h: ids.map(() => 10), calls: 1, baseline_ref: null },
+  };
+  // By day, the higher a place's number the earlier its median: Town 39 first.
+  const answer = (want: string[]): DaysResponse => ({
+    index_version: "v1",
+    places: want.map((id) => ({ id, days: [dayNumber("1850-01-01") + (39 - Number(id.slice(1))) * 5], hits: [10] })),
+  });
+
+  it("keeps the bucket-ranked lists, and focus on Show more, while a longer list's first days load", async () => {
+    api.places.mockResolvedValue(tied);
+    api.aggregate.mockResolvedValue(year);
+    // The days wait for `release` (two requests: at most 20 places each).
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    api.days.mockImplementation(async (_params: unknown, _version: unknown, want: string[]) => {
+      await gate;
+      return answer(want);
+    });
+    show("?q=gold&norm=when");
+    const heading = await screen.findByRole("heading", { name: "Earliest median date" });
+    const list = heading.closest("section")!;
+    const rows = () => within(list).getAllByRole("listitem");
+    const more = () => within(list).getByRole("button", { name: "Show more" });
+    // 10+5: still too many tied places to ask for, ranked by bucket.
+    fireEvent.click(more());
+    expect(rows()).toHaveLength(10);
+    expect(api.days).not.toHaveBeenCalled();
+    // 15+5: their days are asked for. The lists stay, marked as ranking, with focus on Show more.
+    const button = more();
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => expect(api.days).toHaveBeenCalled());
+    expect(screen.queryByText("Finding each place's median day…")).toBeNull();
+    expect(button.isConnected).toBe(true);
+    expect(rows()).toHaveLength(15);
+    expect(document.activeElement).toBe(button);
+    await act(async () => release());
+    // Ranked by day, Town 39 down, and focus on the first added in that order: Town 29.
+    await waitFor(() => expect(rows()[0]!.textContent).toContain(name(39)));
+    expect(rows()[10]!.textContent).toContain(name(29));
+    expect(document.activeElement?.textContent).toBe(`${name(29)}, IL`);
+  });
+
+  it("lists nothing until the first exact answer when playback makes the first place eligible", async () => {
+    // Two years: Atlanta's 2 pages in 1850 are too few for a median, its 12 by 1851 enough.
+    const twoYears: AggregateResponse = {
+      ...aggregate("P00001", 12, "sn82014424"),
+      bucket: { unit: "year", from: "1850-01-01", to: "1851-12-31", count: 2 },
+      series: { hits: [2, 10], baseline: null },
+      cube: { p: [0, 0], b: [0, 1], h: [2, 10], calls: 1, baseline_ref: null },
+    };
+    api.aggregate.mockResolvedValue(twoYears);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    api.days.mockImplementation(async (_params: unknown, _version: unknown, want: string[]): Promise<DaysResponse> => {
+      await gate;
+      return { index_version: "v1", places: want.map((id) => ({ id, days: [dayNumber("1851-06-01")], hits: [12] })) };
+    });
+    show("?q=gold&norm=when&t=1850-01-01");
+    // In 1850 no place can be listed, and no days are asked for.
+    const list = (await screen.findByRole("heading", { name: "Earliest median date" })).closest("section")!;
+    expect(within(list).queryAllByRole("listitem")).toHaveLength(0);
+    expect(api.days).not.toHaveBeenCalled();
+    // Playback reaches 1851: Atlanta's days are asked for, and nothing is listed until they come.
+    fireEvent.change(screen.getByRole("slider", { name: "Time" }), { target: { value: "1" } });
+    await waitFor(() => expect(api.days).toHaveBeenCalled());
+    expect(screen.getByText("Finding each place's median day…")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Earliest median date" })).toBeNull();
+    await act(async () => release());
+    const ranked = (await screen.findByRole("heading", { name: "Earliest median date" })).closest("section")!;
+    expect(within(ranked).getAllByRole("listitem")[0]!.textContent).toContain("Atlanta");
   });
 });

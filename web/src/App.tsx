@@ -29,7 +29,15 @@ import { americanStoriesOnlyNote } from "./lib/matchSource";
 import { baselineNote } from "./lib/baseline";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
-import { PagesLists, WhenLists, exactMedian, medianCandidates, type MedianStatus } from "./components/PlaceLists";
+import {
+  PagesLists,
+  WhenLists,
+  daysFor,
+  exactMedian,
+  medianCandidates,
+  type MedianStatus,
+  type PlaceDays,
+} from "./components/PlaceLists";
 import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
 import { useListLengths } from "./components/ListLength";
 import { hasWebGL2 } from "./lib/webgl";
@@ -42,8 +50,8 @@ import { congressFeature } from "./lib/congress";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
-/** The side panel lists that show more on request: Clearest differences (relative rate) and Pages. */
-const LIST_NAMES = ["above", "below", "places", "states"] as const;
+/** The side panel lists that show more on request: Clearest differences (relative rate), Pages and Median date. */
+const LIST_NAMES = ["above", "below", "places", "states", "earliest", "latest"] as const;
 
 export function App() {
   const [view, setView] = useView();
@@ -359,34 +367,53 @@ export function App() {
     ? americanStoriesOnlyNote(data.total.american_stories_only, data.total.hits, pagesShown)
     : null;
 
+  // How many places each side panel list shows. Kept here, above the lists, so
+  // they keep it when they move (see `narrow` below), and because the Median
+  // date lists' lengths decide which places' days are asked for.
+  const [listShown, setListShown] = useListLengths(`${key}|${view.bucket}|${view.win}|${norm}`, LIST_NAMES);
+
   // Median date lists: the bucket only gives a month (or year), so the
-  // places that could be listed get their pages per day (/v1/days) and their
-  // exact median for the playback window. The lists never show the bucket's
-  // ranking first and swap it for the exact one: until the first answer for a
-  // search they say they are loading, and after it a changed set (playback,
-  // scrubbing) keeps the last exact lists, marked as updating, until the new
-  // answer. The first set is asked for at once; later ones once the set has
-  // held still for a second, so playback doesn't send a request per step.
-  // Searches by day need none: their buckets are days.
+  // places that could be listed, as far down as the lists show, get their
+  // pages per day (/v1/days) and their exact median for the playback window.
+  // The lists never show the bucket's ranking first and swap it for the
+  // exact one: until the first answer for a search they say they are
+  // loading, and after it a changed set (playback, scrubbing, a longer or
+  // shorter list) keeps the last exact lists, marked as updating, until the
+  // new answer. The first set, and the first after Show more or Show fewer,
+  // is asked for at once; later ones once the set has held still for a
+  // second, so playback doesn't send a request per step. Searches by day
+  // need none: their buckets are days.
   const byDay = data?.bucket.unit === "day";
   const wantsDays = norm === "when" && !view.place && !!data && !byDay;
-  const candidatesKey = wantsDays && !agg.isPlaceholderData ? medianCandidates(visible).join(",") : "";
-  // The first set for a search is asked for at once; any other set waits
-  // until it has held still for a second. Kept per search during render, so
-  // the first answer shows as soon as it arrives.
+  const candidates = wantsDays && !agg.isPlaceholderData ? medianCandidates(visible, listShown) : [];
+  const candidatesKey = candidates?.join(",") ?? "";
+  // The first set for a search, or for new list lengths (Show more, Show
+  // fewer), is asked for at once; any other set waits until it has held
+  // still for a second. Kept per search and lengths during render, so the
+  // first answer shows as soon as it arrives.
   const searchId = JSON.stringify([version, params]);
-  const [firstSet, setFirstSet] = useState({ searchId: "", key: "" });
-  if (candidatesKey !== "" && firstSet.searchId !== searchId) setFirstSet({ searchId, key: candidatesKey });
-  const isFirstSet = firstSet.searchId === searchId ? firstSet.key === candidatesKey : candidatesKey !== "";
+  const setId = `${searchId}|${listShown.earliest}|${listShown.latest}`;
+  const [firstSet, setFirstSet] = useState({ setId: "", key: "" });
+  if (candidatesKey !== "" && firstSet.setId !== setId) setFirstSet({ setId, key: candidatesKey });
+  const isFirstSet = firstSet.setId === setId ? firstSet.key === candidatesKey : candidatesKey !== "";
   const [settledKey, setSettledKey] = useState("");
   useEffect(() => {
     const id = setTimeout(() => setSettledKey(candidatesKey), 1000);
     return () => clearTimeout(id);
   }, [candidatesKey]);
   const requestKey = isFirstSet ? candidatesKey : settledKey;
+  const knownDays = useRef<{ searchId: string; places: Map<string, PlaceDays> }>({ searchId: "", places: new Map() });
   const dayCounts = useQuery({
     queryKey: ["days", version, params, requestKey],
-    queryFn: ({ signal }) => api.days(params, version, requestKey.split(","), signal),
+    queryFn: async ({ signal }) => {
+      // A search's days per place, kept across sets: a longer list, or the
+      // same places at a new date, asks only for the places it adds.
+      if (knownDays.current.searchId !== searchId) knownDays.current = { searchId, places: new Map() };
+      const places = await daysFor(requestKey.split(","), knownDays.current.places, (ids) =>
+        api.days(params, version, ids, signal),
+      );
+      return { places };
+    },
     enabled: !!version && requestKey !== "" && requestKey === candidatesKey,
     staleTime: Infinity,
     retry: false,
@@ -398,7 +425,7 @@ export function App() {
   });
   const fresh =
     !!dayCounts.data && !dayCounts.isPlaceholderData && candidatesKey !== "" && requestKey === candidatesKey;
-  const medianStatus: MedianStatus = !wantsDays
+  const baseStatus: MedianStatus = !wantsDays
     ? "bucket"
     : agg.isPlaceholderData
       ? "loading"
@@ -411,6 +438,20 @@ export function App() {
             : dayCounts.data
               ? "updating"
               : "loading";
+  // The search whose Median date lists have been shown. Once they have (by
+  // bucket: too many tied places to ask for at the lengths shown), a first
+  // answer still on its way, after Show more lets the days be asked for,
+  // keeps them, marked as updating, rather than blanking them: the lists, and
+  // the Show more button focus is on, stay mounted until the ranking settles.
+  // Only a search that has shown no lists yet says it is loading. Empty
+  // lists (no place yet has pages enough for a median) are not shown lists:
+  // when playback makes a place eligible, its first ranking waits for the
+  // exact answer rather than showing it by bucket first.
+  const [listedFor, setListedFor] = useState("");
+  const listed = baseStatus === "exact" || (baseStatus === "bucket" && (candidates === null || candidates.length > 0));
+  if (wantsDays && listed && listedFor !== searchId) setListedFor(searchId);
+  const medianStatus: MedianStatus =
+    baseStatus === "loading" && !agg.isPlaceholderData && listedFor === searchId ? "updating" : baseStatus;
   const daysSource = dayCounts.data ?? null;
   const exactMedians = useMemo(() => {
     if (!data || !daysSource || (medianStatus !== "exact" && medianStatus !== "updating")) return null;
@@ -473,9 +514,8 @@ export function App() {
   // Phones show the legend and the place lists after the playback controls, in the DOM as well as
   // on screen, so the controls sit right under the map. They move, not the controls: the legend and
   // lists keep no state of their own, so a rotation across the breakpoint loses nothing. How many
-  // places the Clearest differences and Pages lists show is kept here for that reason.
+  // places each list shows is kept in App (`listShown`, above) for that reason.
   const narrow = useMediaQuery("(max-width: 640px)");
-  const [listShown, setListShown] = useListLengths(`${key}|${view.bucket}|${view.win}|${norm}`, LIST_NAMES);
   const legend = !data ? null : norm === "skew" && skewModel ? (
     <SkewLegend
       places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
@@ -511,6 +551,9 @@ export function App() {
           trailing={view.win !== null}
           exact={exactMedians}
           status={medianStatus}
+          shown={listShown}
+          onShown={setListShown}
+          tied={candidates === null ? data.bucket.unit : undefined}
         />
       )}
       {view.place && (
