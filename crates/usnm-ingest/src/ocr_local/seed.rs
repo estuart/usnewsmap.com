@@ -251,6 +251,9 @@ impl Options {
                 bail!("seed years {from}-{to} run backwards");
             }
         }
+        if self.source == Source::Fetched && self.skip_american_stories {
+            bail!("the fetched seed source doesn't apply the American Stories skip; turn one off");
+        }
         if self.max_pages == Some(0) {
             bail!("a seed budget of 0 pages queues nothing; leave it unset for no budget");
         }
@@ -843,13 +846,17 @@ async fn fetched_pages(
         filter.languages.contains(&l).then_some(l)
     };
     let batches = opts.batch_set();
-    let rows = prefetch::decode_where(Bytes::from(bytes), |r| {
+    // Each issue's priority comes from all its keep pages, as the
+    // fetcher's does, before the filters drop any.
+    let mut best = HashMap::new();
+    let mut rows = prefetch::decode_where(Bytes::from(bytes), |r| {
+        prefetch::note_priority(&mut best, r);
         prefetch::set_of(r) == prefetch::Set::Keep
             && (batches.is_empty() || batches.contains(&r.batch))
             && language(r).is_some()
     })
     .with_context(|| format!("reading {path}"))?;
-    let rows = prefetch::keep_order(rows);
+    prefetch::sort_keep(&mut rows, &best);
 
     // The newest by the store's creation time: a node chose the name.
     let lists = out.list_info(&fetched::dir(mv)).await?;

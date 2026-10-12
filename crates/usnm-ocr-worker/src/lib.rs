@@ -10,6 +10,8 @@ pub mod engine;
 pub mod loc;
 /// Fetching scans ahead of the workers (#368).
 pub mod prefetch;
+/// The fetched list relayed to the seeder (12 Step 11).
+pub mod publish;
 /// The work message and dead letter, from `usnm-ocr-contract` (shared
 /// with the cloud jobs that fill and drain the queues).
 pub use usnm_ocr_contract::message;

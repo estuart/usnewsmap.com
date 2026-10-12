@@ -5,7 +5,9 @@
 #   scripts/ocr-node/install-worker.sh --env prod --name usnm-ocr-node1 \
 #     --host claude@node1.example.org [--ssh-key ~/.ssh/id_ed25519] \
 #     [--release ocr-worker-YYYYMMDD-SHA7] [--nodes N] [--concurrency N] \
-#     [--scan-cache-url http://HOST:8380] [--enable] [--rollback] [--dry-run]
+#     [--scan-cache-url http://HOST:8380] [--pacing-multiplier M] \
+#     [--page-timeout-secs N] [--publish-fetched VERSION] [--enable] \
+#     [--rollback] [--dry-run]
 #
 # Steps:
 #   1. picks the release (--release, or the newest ocr-worker-* release) and
@@ -19,12 +21,17 @@
 #      (root:usnm, 0640), from the environment's deployment outputs: the
 #      queue endpoint, the blob endpoint with ocr-out, --name as the node
 #      id, --concurrency (default: the node's CPUs), the Tesseract image,
-#      LoC gaps of 3500 x N and 1000 x N ms for N nodes, and the nodes'
+#      LoC gaps of 3500 x M and 1000 x M ms (M is --pacing-multiplier,
+#      default N, the number of nodes, and never under it), and the nodes'
 #      Application Insights connection string (OCR_NODE_APPINSIGHTS; left
 #      out when empty, so the worker sends no telemetry). N is the number
 #      of members in the nodes' Entra group; --nodes must match it. With
 #      --scan-cache-url, the worker reads prefetched scans from the scan
 #      server in the scan-fetch container first (ADR-0015 decision 9).
+#      --page-timeout-secs sets USNM_OCR_PAGE_TIMEOUT_SECS (the worker's
+#      default is 600). --publish-fetched VERSION makes this node also
+#      publish the scan server's fetched list for that prefetch manifest
+#      to ocr-out/fetched/ for the seeder (12 Step 11); set it on one node.
 #   3. over ssh with sudo (scripts/ocr-node/install-worker-node.sh): puts
 #      the binary in /usr/local/lib/usnm-ocr-worker/<release>/, loads the
 #      Tesseract image into the engine account's (usnmeng's) podman
@@ -49,13 +56,14 @@
 # members), and ssh with passwordless sudo for --host. Works with macOS's
 # bash 3.2.
 set -euo pipefail
-usage() { sed -n '5,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '5,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
 REPO=tgoodyear/usnewsmap.com
 WORKFLOW="$REPO/.github/workflows/ci.yml"
 ENV_NAME="" HOST="" NAME="" SSH_KEY="" RELEASE="" NODES="" CONCURRENCY="" SCAN_CACHE_URL=""
+PACING="" PAGE_TIMEOUT="" PUBLISH_FETCHED=""
 ENABLE=false ROLLBACK=false DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -67,6 +75,9 @@ while [ $# -gt 0 ]; do
     --nodes) NODES=${2:-}; shift 2 ;;
     --concurrency) CONCURRENCY=${2:-}; shift 2 ;;
     --scan-cache-url) SCAN_CACHE_URL=${2:-}; shift 2 ;;
+    --pacing-multiplier) PACING=${2:-}; shift 2 ;;
+    --page-timeout-secs) PAGE_TIMEOUT=${2:-}; shift 2 ;;
+    --publish-fetched) PUBLISH_FETCHED=${2:-}; shift 2 ;;
     --enable) ENABLE=true; shift ;;
     --rollback) ROLLBACK=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -83,6 +94,10 @@ done
 [ -z "$NODES" ] || [[ $NODES =~ ^[1-9][0-9]?$ ]] || die "--nodes: 1 to 99"
 [ -z "$CONCURRENCY" ] || [[ $CONCURRENCY =~ ^[1-9][0-9]?$ ]] || die "--concurrency: 1 to 99"
 [ -z "$SCAN_CACHE_URL" ] || [[ $SCAN_CACHE_URL =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || die "--scan-cache-url: http://HOST:PORT"
+[ -z "$PACING" ] || [[ $PACING =~ ^[1-9][0-9]?$ ]] || die "--pacing-multiplier: 1 to 99"
+[ -z "$PAGE_TIMEOUT" ] || [[ $PAGE_TIMEOUT =~ ^[1-9][0-9]{1,4}$ ]] || die "--page-timeout-secs: 10 to 99999"
+[ -z "$PUBLISH_FETCHED" ] || [[ $PUBLISH_FETCHED =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "--publish-fetched: a manifest version (pages-vYYYYMMDD-N)"
+[ -z "$PUBLISH_FETCHED" ] || [ -n "$SCAN_CACHE_URL" ] || die "--publish-fetched needs --scan-cache-url"
 [ "$ROLLBACK" = false ] || [ "$ENABLE" = false ] || die "--rollback and --enable don't go together"
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -158,6 +173,12 @@ members=$(az rest --method get --url "https://graph.microsoft.com/v1.0/groups/$N
   die "--nodes $NODES, but the nodes' group has $members members; every node runs with the group's count"
 NODES=$members
 echo "nodes in the group: $NODES"
+# The scan fetcher in the scan-fetch container also asks LoC, at the full
+# gaps, so the operator may slow the workers' LoC fallback further
+# (12 §12.2.2, "LoC pacing"). Never faster than one share per node.
+[ -n "$PACING" ] || PACING=$NODES
+[ "$PACING" -ge "$NODES" ] || die "--pacing-multiplier $PACING is under the $NODES nodes; every node waits at least N times as long"
+echo "LoC gaps: x$PACING"
 
 step "The release"
 command -v gh > /dev/null || die "needs gh"
@@ -199,9 +220,11 @@ echo "binary sha256 $BIN_SUM; Tesseract image $IMAGE_ID"
   echo "USNM_OCR_OUT_URL=${BLOB%/}/ocr-out"
   echo "USNM_OCR_NODE_ID=$NAME"
   echo "USNM_OCR_CONCURRENCY=$CONCURRENCY"
-  echo "# LoC's pacing for $NODES node(s): every node waits N times as long."
-  echo "USNM_OCR_API_GAP_MS=$((3500 * NODES))"
-  echo "USNM_OCR_TILE_GAP_MS=$((1000 * NODES))"
+  echo "# LoC's pacing for $NODES node(s), multiplier $PACING: every node waits M times as long."
+  echo "USNM_OCR_API_GAP_MS=$((3500 * PACING))"
+  echo "USNM_OCR_TILE_GAP_MS=$((1000 * PACING))"
+  [ -z "$PAGE_TIMEOUT" ] || echo "USNM_OCR_PAGE_TIMEOUT_SECS=$PAGE_TIMEOUT"
+  [ -z "$PUBLISH_FETCHED" ] || echo "USNM_OCR_PUBLISH_FETCHED=$PUBLISH_FETCHED"
   echo "USNM_OCR_TESSERACT_IMAGE=$IMAGE_ID"
   [ -z "$SCAN_CACHE_URL" ] || echo "USNM_OCR_SCAN_CACHE_URL=$SCAN_CACHE_URL"
   [ -z "$CONN" ] || echo "APPLICATIONINSIGHTS_CONNECTION_STRING=\"$CONN\""

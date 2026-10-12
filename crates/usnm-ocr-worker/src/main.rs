@@ -12,6 +12,7 @@ use usnm_ocr_worker::engine::{Engine, Limits, Remote, Runner, Tesseract, Tessera
 use usnm_ocr_worker::loc::{ImageSize, LocClient, LocConfig};
 use usnm_ocr_worker::message::{OcrMessage, Reason};
 use usnm_ocr_worker::prefetch;
+use usnm_ocr_worker::publish;
 use usnm_ocr_worker::queue::{self, BULK, PRIORITY};
 use usnm_ocr_worker::telemetry::{self, Metrics};
 use usnm_ocr_worker::worker::{check_node_id, Config, ScanSource, Worker};
@@ -183,8 +184,33 @@ enum Command {
         /// abandoned (they reappear when their visibility runs out).
         #[arg(long, default_value_t = 60)]
         shutdown_grace_secs: u64,
+        /// Also publish the scan server's fetched list for this prefetch
+        /// manifest version to `ocr-out/fetched/` every
+        /// --publish-every-secs, for the seeder (12 Step 11). Needs
+        /// --scan-cache-url. Set on one node.
+        #[arg(long, env = "USNM_OCR_PUBLISH_FETCHED")]
+        publish_fetched: Option<String>,
+        #[arg(long, env = "USNM_OCR_PUBLISH_EVERY_SECS", default_value_t = 1800, value_parser = clap::value_parser!(u64).range(60..))]
+        publish_every_secs: u64,
         #[command(flatten)]
         engine: EngineArgs,
+    },
+    /// Publish the scan server's fetched list once (12 Step 11): read
+    /// `<scan server>/index/full.jsonl` and write the full-size scans'
+    /// pages to `ocr-out/fetched/<manifest>/<node>.<stamp>.parquet`.
+    PublishFetched {
+        /// The scan server, `http://<host>:8380`.
+        #[arg(long, env = "USNM_OCR_SCAN_CACHE_URL")]
+        scan_cache_url: String,
+        /// `https://<account>.blob.core.windows.net/ocr-out`, or a directory.
+        #[arg(long, env = "USNM_OCR_OUT_URL")]
+        out_url: String,
+        /// This node's name, in the list's path.
+        #[arg(long, env = "USNM_OCR_NODE_ID")]
+        node_id: String,
+        /// The prefetch manifest's index version (`pages-v20261010-2`).
+        #[arg(long, env = "USNM_OCR_PUBLISH_FETCHED")]
+        manifest: String,
     },
     /// Fetch the scans a prefetch manifest lists onto local disk (#368),
     /// with the worker's LoC client and pacing, until done, stopped,
@@ -412,9 +438,22 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             scan_cache_url,
             visibility_secs,
             shutdown_grace_secs,
+            publish_fetched,
+            publish_every_secs,
             engine,
         } => {
             check_node_id(&node_id)?;
+            let publish = match publish_fetched.filter(|m| !m.is_empty()) {
+                Some(manifest) => Some(publish::Options {
+                    scan_server: scan_cache_url
+                        .clone()
+                        .filter(|u| !u.is_empty())
+                        .context("--publish-fetched needs --scan-cache-url")?,
+                    manifest,
+                    node_id: node_id.clone(),
+                }),
+                None => None,
+            };
             let cfg = Config {
                 node_id,
                 concurrency: concurrency.max(1),
@@ -455,7 +494,46 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 cfg,
                 metrics: Metrics::global(),
             });
-            worker.run(stop_signal()).await
+            let stop = stop_signal();
+            if let Some(opts) = publish {
+                tracing::info_span!("ocr_worker_start").in_scope(|| {
+                    tracing::info!(
+                        manifest = opts.manifest,
+                        every_secs = publish_every_secs,
+                        "publishing the fetched list"
+                    )
+                });
+                tokio::spawn(publish::every(
+                    Arc::clone(&worker.out),
+                    opts,
+                    Duration::from_secs(publish_every_secs),
+                    stop.clone(),
+                ));
+            }
+            worker.run(stop).await
+        }
+        Command::PublishFetched {
+            scan_cache_url,
+            out_url,
+            node_id,
+            manifest,
+        } => {
+            check_node_id(&node_id)?;
+            let out = usnm_store::open(&out_url)?;
+            let p = publish::publish(
+                out.as_ref(),
+                &publish::Options {
+                    scan_server: scan_cache_url,
+                    manifest,
+                    node_id,
+                },
+            )
+            .await?;
+            println!(
+                "{}",
+                serde_json::json!({"path": p.path, "lines": p.lines, "pages": p.pages, "skipped": p.skipped})
+            );
+            Ok(())
         }
         Command::Prefetch {
             manifest,

@@ -118,6 +118,13 @@ fn safe_batch(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
+impl Fetched {
+    /// A safe batch name and a doc_id that is its page key's.
+    pub fn check(&self) -> anyhow::Result<()> {
+        check(self)
+    }
+}
+
 fn check(p: &Fetched) -> anyhow::Result<()> {
     if !safe_batch(&p.batch) {
         bail!("fetched list: an unsafe batch name");

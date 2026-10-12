@@ -338,27 +338,44 @@ pub fn priority(r: &ManifestRow) -> u8 {
     }
 }
 
-/// The keep set's pages in the order the fetcher takes them (its
-/// `--order priority`): by issue, each issue in its best page's
-/// [`priority`] group, then (lccn, date, edition, seq). The seeder queues
-/// fetched pages in this order (12 Step 11).
-pub fn keep_order(rows: Vec<ManifestRow>) -> Vec<ManifestRow> {
-    type Issue = (String, NaiveDate, u16);
-    let mut rows: Vec<ManifestRow> = rows
-        .into_iter()
-        .filter(|r| set_of(r) == Set::Keep)
-        .collect();
-    let mut best: std::collections::HashMap<Issue, u8> = std::collections::HashMap::new();
-    for r in &rows {
+/// An issue: (lccn, date, edition).
+pub type Issue = (String, NaiveDate, u16);
+
+/// The issue's best (lowest) [`priority`] group seen so far, raised by
+/// `r` if it is a keep page. Feed it every keep row of the manifest, so an
+/// issue sorts as the fetcher sorts it even when only some of its pages
+/// are kept for later.
+pub fn note_priority(best: &mut std::collections::HashMap<Issue, u8>, r: &ManifestRow) {
+    if set_of(r) == Set::Keep {
         let e = best
             .entry((r.lccn.clone(), r.date, r.edition))
             .or_insert(u8::MAX);
         *e = (*e).min(priority(r));
     }
+}
+
+/// Sorts keep rows as the fetcher takes them (its `--order priority`): by
+/// issue, each issue in its best page's group from `best`, then (lccn,
+/// date, edition, seq).
+pub fn sort_keep(rows: &mut [ManifestRow], best: &std::collections::HashMap<Issue, u8>) {
     rows.sort_by_cached_key(|r| {
         let issue = (r.lccn.clone(), r.date, r.edition);
-        (best[&issue], issue, r.seq)
+        (best.get(&issue).copied().unwrap_or(u8::MAX), issue, r.seq)
     });
+}
+
+/// The keep set's pages in the order the fetcher takes them. The seeder
+/// queues fetched pages in this order (12 Step 11).
+pub fn keep_order(rows: Vec<ManifestRow>) -> Vec<ManifestRow> {
+    let mut best = std::collections::HashMap::new();
+    for r in &rows {
+        note_priority(&mut best, r);
+    }
+    let mut rows: Vec<ManifestRow> = rows
+        .into_iter()
+        .filter(|r| set_of(r) == Set::Keep)
+        .collect();
+    sort_keep(&mut rows, &best);
     rows
 }
 
