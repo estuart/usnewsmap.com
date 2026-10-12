@@ -58,6 +58,87 @@ pub struct WorkerStatus {
     /// Which journal file it is (it changes when the file is replaced), so
     /// a reader knows to start again from 0.
     pub journal_id: String,
+    /// The queues as this node last saw them, if it looks.
+    pub queues: Option<QueueStats>,
+}
+
+/// The queues' lengths and the dead letters at the front of
+/// `ocr-deadletter`, as a node sees them (Get Queue Metadata and Peek
+/// Messages, which take nothing).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QueueStats {
+    pub checked_at: DateTime<Utc>,
+    /// Queue → about how many messages it holds, hidden ones included.
+    pub counts: BTreeMap<String, u64>,
+    /// The oldest visible dead letters, at most [`DEAD_LETTERS_MAX`].
+    pub dead_letters: Vec<DeadLetterView>,
+    /// What went wrong with the last look, if anything.
+    pub error: Option<String>,
+}
+
+/// Free text as a dead letter keeps it: no control characters, cut to
+/// `max` characters.
+fn clean(s: &str, max: usize) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(max)
+        .collect()
+}
+
+impl QueueStats {
+    /// Held to its bounds: known queue names, at most
+    /// [`DEAD_LETTERS_MAX`] dead letters, each of short tags, a real
+    /// doc_id or none, and its error as a dead letter keeps it.
+    pub fn sanitize(&mut self) {
+        self.counts.retain(|k, _| is_tag(k, 63));
+        self.dead_letters.truncate(DEAD_LETTERS_MAX);
+        for d in &mut self.dead_letters {
+            let tag = |s: &mut String, max: usize| {
+                if !is_tag(s, max) {
+                    *s = "?".into();
+                }
+            };
+            tag(&mut d.message_id, 64);
+            tag(&mut d.from, 32);
+            tag(&mut d.cause, 32);
+            tag(&mut d.node, 64);
+            tag(&mut d.at, 40);
+            if d.kind.as_deref().is_some_and(|k| !is_tag(k, 32)) {
+                d.kind = Some("?".into());
+            }
+            if !d.doc_id.is_empty() && !canonical_doc_id(&d.doc_id) {
+                d.doc_id = String::new();
+            }
+            d.error = clean(&d.error, 200);
+        }
+        self.error = self.error.as_deref().map(|e| clean(e, 500));
+    }
+}
+
+/// The most dead letters a status carries.
+pub const DEAD_LETTERS_MAX: usize = 20;
+
+/// The fields of a dead letter shown on the dashboard. Its message is
+/// left out but for its page.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeadLetterView {
+    pub message_id: String,
+    /// The page's doc_id, empty when the message failed its checks.
+    pub doc_id: String,
+    /// The queue it came from.
+    pub from: String,
+    /// `dequeue_count`, `invalid`, `permanent`, `unroutable`.
+    pub cause: String,
+    pub kind: Option<String>,
+    /// The dead letter's free-text error (at most 200 characters, no
+    /// control characters).
+    pub error: String,
+    pub dequeue_count: u32,
+    pub node: String,
+    /// When it was dead-lettered (RFC 3339).
+    pub at: String,
 }
 
 /// A page a worker is on now.
@@ -202,6 +283,10 @@ impl WorkerStatus {
         }
         self.in_flight.retain(InFlight::check);
         self.recent.retain(|c| c.check().is_ok());
+        self.recent.truncate(RECENT_MAX);
+        if let Some(q) = &mut self.queues {
+            q.sanitize();
+        }
     }
 }
 
@@ -447,5 +532,41 @@ mod tests {
         assert!(s.scan_cache_url.is_some());
         assert_eq!(s.in_flight.len(), 1);
         assert_eq!(s.recent.len(), 1);
+    }
+
+    #[test]
+    fn queue_stats_from_the_network_are_held_to_their_bounds() {
+        let mut q = QueueStats {
+            counts: [("ocr-bulk".to_owned(), 3), ("Ein Satz\n".to_owned(), 1)].into(),
+            error: Some("x".repeat(2000)),
+            ..QueueStats::default()
+        };
+        for i in 0..30 {
+            q.dead_letters.push(DeadLetterView {
+                message_id: format!("m{i}"),
+                doc_id: if i == 0 {
+                    "Der Text der Seite".into()
+                } else {
+                    "sn84027718_1890-01-02_ed-1_seq-3".into()
+                },
+                node: "node\n1".into(),
+                error: format!("HTTP 404\n{}", "y".repeat(300)),
+                ..DeadLetterView::default()
+            });
+        }
+        let mut s = WorkerStatus {
+            queues: Some(q),
+            ..WorkerStatus::default()
+        };
+        s.sanitize();
+        let q = s.queues.unwrap();
+        assert_eq!(q.counts.len(), 1);
+        assert_eq!(q.dead_letters.len(), DEAD_LETTERS_MAX);
+        assert!(q.dead_letters[0].doc_id.is_empty());
+        assert_eq!(q.dead_letters[1].doc_id, "sn84027718_1890-01-02_ed-1_seq-3");
+        assert_eq!(q.dead_letters[0].node, "?");
+        assert_eq!(q.dead_letters[0].error.chars().count(), 200);
+        assert!(!q.dead_letters[0].error.contains('\n'));
+        assert_eq!(q.error.unwrap().len(), 500);
     }
 }

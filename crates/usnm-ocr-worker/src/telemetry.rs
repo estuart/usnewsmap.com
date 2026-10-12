@@ -45,6 +45,9 @@ pub struct Metrics {
     pub dead_lettered: Counter<u64>,
     /// Polls that found both queues empty.
     pub empty_polls: Counter<u64>,
+    /// Times the status server for the LAN dashboard failed (to bind,
+    /// while serving, or by a panic) and was started again, by `cause`.
+    pub status_restarts: Counter<u64>,
     /// loc.gov answers asking us to slow down, by `status` (429, 503),
     /// `server` (api or tile) and whether a `Retry-After` came with it.
     pub loc_slowdowns: Counter<u64>,
@@ -78,6 +81,10 @@ impl Metrics {
             empty_polls: meter
                 .u64_counter("ocr.empty_polls")
                 .with_description("Polls that found both queues empty")
+                .build(),
+            status_restarts: meter
+                .u64_counter("ocr.status_restarts")
+                .with_description("Status server failures, each followed by a restart")
                 .build(),
             loc_slowdowns: meter
                 .u64_counter("ocr.loc_slowdowns")

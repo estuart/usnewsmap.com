@@ -1126,7 +1126,7 @@ scripts/provision.sh --env prod
 
 ## The OCR dashboard on the LAN (#296)
 
-`usnm-ocrdash` shows the scan fetch, the OCR nodes and the Proxmox hosts on one page that refreshes itself, at `http://<CT 212's address>/` (`pct exec 212 -- hostname -I` on pve-big), from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. The address comes from DHCP. There is no DNS name, and internal names never go in the public `tjg.fyi` zone. The commands below name hosts by their LAN DNS names (`pve.tjg.fyi`, `usnm-ocr-node1-arcs-prod.tjg.fyi`), which resolve only through the gateway's local DNS; the dashboard's own address is written only into the hosts' configuration, never into the repository.
+`usnm-ocrdash` shows the scan fetch, the OCR nodes and the Proxmox hosts on one page that refreshes itself, at `http://ocr.tjg.fyi/`, from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. `ocr.tjg.fyi` is a static record in the LAN gateway's local DNS, with a DHCP reservation for CT 212; internal names never go in the public `tjg.fyi` zone. The commands below name hosts by their LAN DNS names (`pve.tjg.fyi`, `usnm-ocr-node1-arcs-prod.tjg.fyi`), which resolve only through the gateway's local DNS.
 
 **Host stats.** As root on each Proxmox host, from a checkout of the scripts:
 
@@ -1136,7 +1136,7 @@ scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve-big.js
   --pool tank --dataset tank/ocr --dataset tank/ocr/scans --dataset tank/ocr/text
 # the NUC host: pushes its stats to the dashboard
 scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve.json \
-  --push-url http://<CT 212's address>/api/host/pve
+  --push-url http://ocr.tjg.fyi/api/host/pve
 ```
 
 Each installs `usnm-hoststats.timer`, which runs every minute.
@@ -1156,7 +1156,7 @@ scripts/ocr-node/ocrdash-ct.sh --configure --allow lan \
 
 **When it shows something odd.**
 
-- _A node says "no status"._ The worker isn't answering on its status port: the worker is down, it doesn't have the status endpoint yet, or the node's firewall drops the dashboard's address.
+- _A node says "no status"._ The worker isn't answering on port 8381: it is down, or it was installed without `--status-allow ocr.tjg.fyi`, or the name points somewhere else now (the worker resolves it each time its status server starts, the node's nftables rule when `install-worker.sh` runs). `scripts/ocr-node/install-worker.sh --status-allow <address>` sets the worker's settings and the node's nftables rule (`usnm-ocr-status-firewall.service`).
 - _The stats are stale._ `systemctl status usnm-hoststats.timer` on the host. On the NUC, a failed push logs `can't push` in `journalctl -u usnm-hoststats`.
 - _A new manifest._ The dashboard reads the manifest the fetcher's status names, and reads it again when its sha256 changes.
 - _Logs:_ `pct exec 212 -- journalctl -u usnm-ocrdash`. The copies of the workers' journals are in `/var/lib/usnm-ocrdash` in the container; deleting them makes the dashboard copy each worker's journal again from the start.

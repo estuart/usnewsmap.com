@@ -674,10 +674,63 @@ pub fn render(v: &View) -> String {
     o.push_str("</p></section>");
 
     // 6. Queues.
+    o.push_str("<section><h2>Azure queues and dead letters</h2>");
+    match (&v.azure.queues, &v.azure.queues_from) {
+        (Some(q), Some(from)) => {
+            let _ = write!(
+                o,
+                "<p>As {} saw them {}{}.</p>",
+                esc(from),
+                ago(now, q.checked_at),
+                if v.azure.queues_stale {
+                    format!(" {}", badge("warning", "stale"))
+                } else {
+                    String::new()
+                }
+            );
+            if let Some(e) = &q.error {
+                let _ = write!(o, "<p class=\"err\">{}</p>", esc(e));
+            }
+            o.push_str("<table><tr><th>Queue</th><th class=\"r\">Messages</th></tr>");
+            for (name, n) in &q.counts {
+                let _ = write!(
+                    o,
+                    "<tr><td><code>{}</code></td><td class=\"r\">{}</td></tr>",
+                    esc(name),
+                    int(*n)
+                );
+            }
+            o.push_str("</table>");
+            if q.dead_letters.is_empty() {
+                o.push_str("<p class=\"muted\">No dead letters visible.</p>");
+            } else {
+                o.push_str("<h3>Dead letters, oldest first</h3><table><tr><th>doc_id</th><th>From</th><th>Cause</th><th class=\"r\">Received</th><th>Node</th><th>When</th><th>Error</th></tr>");
+                for d in &q.dead_letters {
+                    let cause = match &d.kind {
+                        Some(k) => format!("{} ({k})", d.cause),
+                        None => d.cause.clone(),
+                    };
+                    let _ = write!(
+                        o,
+                        "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td class=\"r\">{}</td><td>{}</td><td>{}</td><td class=\"note\">{}</td></tr>",
+                        if d.doc_id.is_empty() { "-".to_owned() } else { esc(&d.doc_id) },
+                        esc(&d.from),
+                        esc(&cause),
+                        d.dequeue_count,
+                        esc(&d.node),
+                        time_str(&d.at),
+                        esc(&d.error)
+                    );
+                }
+                o.push_str("</table>");
+            }
+        }
+        _ => o.push_str("<p class=\"muted\">No node has reported the queues yet.</p>"),
+    }
     let _ = write!(
         o,
-        "<section><h2>Azure queues and dead letters</h2><p class=\"note\">{}</p></section>",
-        esc(v.azure.queues)
+        "<p class=\"note\">{}</p></section>",
+        esc(v.azure.queues_note)
     );
 
     let _ = write!(o, "</div><script>{SCRIPT}</script></body></html>");

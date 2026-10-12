@@ -125,18 +125,29 @@ When `APPLICATIONINSIGHTS_CONNECTION_STRING` is set, the worker also sends telem
 
 Each message is a request (`ocr_page`) carrying its page id, queue, reason and language, with an `outcome` of `done`, `failed`, `abandoned` or `dead_lettered`. The lines logged while it runs, at the `RUST_LOG` level, go with it as traces. Message bodies, search text and tokens are never recorded. A page abandoned at shutdown is counted, and its request has no `outcome`. The metrics:
 
-| Metric                    | Attributes                                                       |
-| ------------------------- | ---------------------------------------------------------------- |
-| `ocr.pages_done`          | `engine`, `language`, `reason`, `queue`                          |
-| `ocr.pages_failed`        | the same, and `error` (fetch, engine, no_model, output, scratch) |
-| `ocr.pages_abandoned`     | `cause`: `budget` (with the page's attributes) or `shutdown`     |
-| `ocr.dead_lettered`       | `queue`, `cause` (dequeue_count, invalid, permanent, unroutable) |
-| `ocr.empty_polls`         | none: a poll that found both queues empty                        |
-| `ocr.loc_slowdowns`       | `status` (429, 503, 403), `server`, `retry_after`, `capped`      |
-| `ocr.ocr_seconds`         | histogram: `engine`, `models`, `language`                        |
-| `ocr.image_fetch_seconds` | histogram: `outcome` (ok, error), `source` (loc, cache)          |
+| Metric                    | Attributes                                                                      |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| `ocr.pages_done`          | `engine`, `language`, `reason`, `queue`                                         |
+| `ocr.pages_failed`        | the same, and `error` (fetch, engine, no_model, output, scratch)                |
+| `ocr.pages_abandoned`     | `cause`: `budget` (with the page's attributes) or `shutdown`                    |
+| `ocr.dead_lettered`       | `queue`, `cause` (dequeue_count, invalid, permanent, unroutable)                |
+| `ocr.empty_polls`         | none: a poll that found both queues empty                                       |
+| `ocr.status_restarts`     | `cause` (error, panic, stopped): the status server failed and was started again |
+| `ocr.loc_slowdowns`       | `status` (429, 503, 403), `server`, `retry_after`, `capped`                     |
+| `ocr.ocr_seconds`         | histogram: `engine`, `models`, `language`                                       |
+| `ocr.image_fetch_seconds` | histogram: `outcome` (ok, error), `source` (loc, cache)                         |
 
 Metrics are sent every 30 s and once more at shutdown.
+
+## Status for the LAN dashboard
+
+With `--status-listen 0.0.0.0:8381` (`USNM_OCR_STATUS_LISTEN`) and `--status-allow <dashboard address>` (`USNM_OCR_STATUS_ALLOW`), `run` serves its status to `usnm-ocrdash` (12 §12.2.5) and refuses every other address:
+
+- `GET /status`: the node id, version, engine, concurrency, scan server, any LoC hold, the pages in flight (doc_id, language, queue, stage, start), pages by outcome and scan source over the last hour and day and since the start, the latest finished pages, and each language's engine profile from its last page done.
+- The status also carries the queues as the worker last saw them, a look a minute: each queue's approximate length (Get Queue Metadata) and up to 20 dead letters at the front of `ocr-deadletter` (Peek Messages), shown as their page, cause, kind, error, receive count, node and time. It takes and deletes nothing, and needs Storage Queue Data Reader on the queues.
+- `GET /journal?from=<offset>`: `--status-journal` (`USNM_OCR_STATUS_JOURNAL`) from a byte offset, whole lines only, at most 1 MiB. Each line is one finished page: doc_id, language, engine tag, queue, reason, times, outcome, scan source, whether its output was uploaded, and a failure's kind. The file is appended to across restarts.
+
+The status server runs apart from the OCR loop: if it can't bind, fails or panics, it is logged, counted and started again after 5 s, doubling to 5 minutes. A page is tracked per attempt (its message id and pop receipt), so a redelivered message running beside an earlier attempt doesn't overwrite it. Neither endpoint holds page text. `scripts/ocr-node/install-worker.sh --status-allow <address>` writes the settings, and the node's nftables drops the port from anyone else.
 
 ## Building for AlmaLinux 9
 

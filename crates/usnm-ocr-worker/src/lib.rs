@@ -18,6 +18,8 @@ pub use usnm_ocr_contract::message;
 pub mod queue;
 /// The scan server on pve-big (#368).
 pub mod serve;
+/// The worker's status for the LAN dashboard (12 §12.2.5).
+pub mod status;
 pub mod telemetry;
 pub mod worker;
 

@@ -20,6 +20,7 @@ use crate::engine::{set_alto_source, Engine, EngineError};
 use crate::loc::{FetchError, LocClient, Scan};
 use crate::message::{self, Cause, DeadLetter, OcrMessage};
 use crate::queue::{random_token, LeaseLost, Queue, Received, BULK, DEADLETTER, PRIORITY};
+use crate::status::{Completion, Tracker};
 use crate::telemetry::{page_attrs, Metrics};
 
 /// Where a page's scan comes from (loc.gov, or a stand-in in tests).
@@ -164,6 +165,53 @@ pub struct Worker {
     pub engine: Arc<dyn Engine>,
     pub cfg: Config,
     pub metrics: Metrics,
+    /// What this worker is on and has finished, for the LAN dashboard.
+    pub tracker: Arc<Tracker>,
+}
+
+/// A page in the tracker, ended as abandoned if dropped before its
+/// outcome is known (the task was cancelled at shutdown).
+struct Tracked {
+    tracker: Arc<Tracker>,
+    token: String,
+    page: Option<Completion>,
+}
+
+impl Drop for Tracked {
+    fn drop(&mut self) {
+        if let Some(c) = self.page.take() {
+            self.tracker.end(&self.token, c);
+        }
+    }
+}
+
+/// How a message ended, for the tracker.
+struct Ended {
+    outcome: &'static str,
+    engine: String,
+    uploaded: bool,
+    error_kind: Option<&'static str>,
+}
+
+impl Ended {
+    /// A dead letter: `dead_lettered` once it is on `ocr-deadletter` and
+    /// off its work queue, else `failed` (the message comes back).
+    fn dead_lettered(moved: bool, cause: &'static str) -> Self {
+        if moved {
+            Ended::not_done("dead_lettered", cause)
+        } else {
+            Ended::not_done("failed", "dead_letter")
+        }
+    }
+
+    fn not_done(outcome: &'static str, error_kind: &'static str) -> Self {
+        Ended {
+            outcome,
+            engine: String::new(),
+            uploaded: false,
+            error_kind: Some(error_kind),
+        }
+    }
 }
 
 impl Worker {
@@ -299,7 +347,7 @@ impl Worker {
         kind: Option<&'static str>,
         error: &str,
         valid: Option<&OcrMessage>,
-    ) {
+    ) -> bool {
         let body = DeadLetter::new(
             &msg.queue,
             &msg.id,
@@ -315,7 +363,7 @@ impl Worker {
         if let Err(e) = self.queue.send(DEADLETTER, &text).await {
             // Leave the message: it comes back and is dead-lettered again.
             tracing::error!(error = format!("{e:#}"), "dead-letter send failed");
-            return;
+            return false;
         }
         match self.queue.delete(msg).await {
             Ok(()) => {
@@ -326,9 +374,13 @@ impl Worker {
                         KeyValue::new("cause", cause.as_str()),
                     ],
                 );
-                tracing::warn!(queue = %msg.queue, message_id = %msg.id, cause = cause.as_str(), kind, error, "dead-lettered")
+                tracing::warn!(queue = %msg.queue, message_id = %msg.id, cause = cause.as_str(), kind, error, "dead-lettered");
+                true
             }
-            Err(e) => tracing::error!(error = format!("{e:#}"), "delete after dead-letter failed"),
+            Err(e) => {
+                tracing::error!(error = format!("{e:#}"), "delete after dead-letter failed");
+                false
+            }
         }
     }
 
@@ -348,12 +400,54 @@ impl Worker {
             outcome = Empty,
             otel.status_code = Empty,
         );
-        self.handle_in(msg, received, &span)
+        let page = message::decode(&msg.text)
+            .ok()
+            .map(|(m, k)| (k.doc_id(), m.language, m.reason.as_str().to_owned()));
+        // Ends the page in the tracker however the task ends: with its
+        // outcome, or as abandoned at shutdown if the task is dropped.
+        // One attempt: the message as received this time (its id and pop
+        // receipt), so a redelivered message running beside an earlier
+        // attempt is tracked apart.
+        let attempt = format!("{}/{}", msg.id, msg.pop_receipt);
+        let mut guard = page.map(|(doc_id, language, reason)| {
+            self.tracker.begin(&attempt, &doc_id, &language, &msg.queue);
+            Tracked {
+                tracker: self.tracker.clone(),
+                token: attempt.clone(),
+                page: Some(Completion {
+                    doc_id,
+                    language,
+                    queue: msg.queue.clone(),
+                    reason,
+                    outcome: "abandoned".into(),
+                    error_kind: Some("shutdown".into()),
+                    ..Completion::default()
+                }),
+            }
+        });
+        let ended = self
+            .handle_in(msg, &attempt, received, &span)
             .instrument(span.clone())
             .await;
+        if let Some((g, mut c)) = guard
+            .as_mut()
+            .and_then(|g| g.page.take().map(|c| (g.token.clone(), c)))
+        {
+            c.engine = ended.engine;
+            c.outcome = ended.outcome.into();
+            c.uploaded = ended.uploaded;
+            c.error_kind = ended.error_kind.map(Into::into);
+            self.tracker.end(&g, c);
+        }
     }
 
-    async fn handle_in(&self, msg: Received, received: Instant, span: &tracing::Span) {
+    async fn handle_in(
+        &self,
+        msg: Received,
+        attempt: &str,
+        received: Instant,
+        span: &tracing::Span,
+    ) -> Ended {
         let decoded = message::decode(&msg.text);
         if let Ok((m, key)) = &decoded {
             span.record("page", tracing::field::display(key));
@@ -367,19 +461,21 @@ impl Worker {
         if msg.dequeue_count > self.cfg.max_dequeue {
             let why = format!("received {} times", msg.dequeue_count);
             let valid = decoded.as_ref().ok().map(|(m, _)| m);
-            self.dead_letter(&msg, Cause::DequeueCount, None, &why, valid)
+            let moved = self
+                .dead_letter(&msg, Cause::DequeueCount, None, &why, valid)
                 .await;
             outcome("dead_lettered");
-            return;
+            return Ended::dead_lettered(moved, "dequeue_count");
         }
         let (m, key) = match decoded {
             Ok(v) => v,
             Err(e) => {
                 let why = format!("invalid message: {}", e.kind());
-                self.dead_letter(&msg, Cause::Invalid, Some(e.kind()), &why, None)
+                let moved = self
+                    .dead_letter(&msg, Cause::Invalid, Some(e.kind()), &why, None)
                     .await;
                 outcome("dead_lettered");
-                return;
+                return Ended::dead_lettered(moved, "invalid");
             }
         };
         let deadline = received + self.cfg.budget();
@@ -390,8 +486,14 @@ impl Worker {
             m.reason.as_str(),
             &msg.queue,
         );
-        match self.process(&m, &key, deadline).await {
+        match self.process(&m, &key, attempt, deadline).await {
             Ok(done) => {
+                let ended = Ended {
+                    outcome: "done",
+                    engine: done.engine.clone(),
+                    uploaded: true,
+                    error_kind: None,
+                };
                 self.metrics.pages_done.add(1, &attrs);
                 outcome("done");
                 tracing::info!(
@@ -414,11 +516,14 @@ impl Worker {
                         );
                     }
                 }
+                ended
             }
             Err(Failure::Permanent(e)) => {
-                self.dead_letter(&msg, Cause::Permanent, None, &e, Some(&m))
+                let moved = self
+                    .dead_letter(&msg, Cause::Permanent, None, &e, Some(&m))
                     .await;
                 outcome("dead_lettered");
+                Ended::dead_lettered(moved, "permanent")
             }
             Err(Failure::Transient(kind, e)) => {
                 let mut attrs = attrs;
@@ -429,6 +534,7 @@ impl Worker {
                     page, error = %e, kind, dequeue_count = msg.dequeue_count,
                     "page failed; it reappears when its visibility runs out"
                 );
+                Ended::not_done("failed", kind)
             }
             Err(Failure::Abandoned) => {
                 let mut attrs = attrs;
@@ -440,6 +546,7 @@ impl Worker {
                     budget_secs = self.cfg.budget().as_secs(),
                     "page abandoned: out of time, nothing written; it reappears for another node"
                 );
+                Ended::not_done("abandoned", "budget")
             }
         }
     }
@@ -448,6 +555,7 @@ impl Worker {
         &self,
         m: &OcrMessage,
         key: &PageKey,
+        token: &str,
         deadline: Instant,
     ) -> Result<Done, Failure> {
         let work = tempfile::tempdir()
@@ -478,6 +586,8 @@ impl Worker {
                 ],
             );
             let scan = scan?;
+            self.tracker.scanned(token, scan.from_cache);
+            self.tracker.stage(token, "ocr");
             let scan_sha256 = crate::prefetch::sha256(&scan.jpeg);
             if scan.from_cache {
                 tracing::debug!(doc_id = %key.doc_id(), "scan read from the cache");
@@ -545,6 +655,7 @@ impl Worker {
         // The uploads are cut off at the deadline too: past it the message
         // may be with another node already. An ALTO without its part is
         // harmless; parts are only read with their ALTO.
+        self.tracker.stage(token, "upload");
         let (alto_path, part_path) =
             tokio::time::timeout_at(deadline.into(), self.write_output(key, alto, part))
                 .await
@@ -713,6 +824,7 @@ mod tests {
                 ..Config::default()
             },
             metrics: Metrics::global(),
+            tracker: Arc::new(Tracker::quiet()),
         });
         (w, queue, out, scans)
     }
@@ -744,6 +856,14 @@ mod tests {
             .unwrap();
         let (_tx, rx) = watch::channel(false);
         w.clone().run(rx).await.unwrap();
+        // The tracker saw the page through, with its engine tag and scan
+        // source, and holds nothing in flight.
+        let st = w.tracker.status();
+        assert_eq!(st.since_start.done, 1);
+        assert_eq!(st.since_start.from_loc, 1);
+        assert!(st.in_flight.is_empty());
+        assert_eq!(st.recent[0].doc_id, "sn83045462_1890-05-03_ed-1_seq-7");
+        assert!(st.recent[0].uploaded);
 
         let altos = out.list("alto").await.unwrap();
         assert_eq!(altos.len(), 1, "{altos:?}");
@@ -870,6 +990,10 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+        let st = w.tracker.status();
+        assert!(st.since_start.failed > 0);
+        assert_eq!(st.since_start.dead_lettered, 1);
+        assert_eq!(st.recent[0].error_kind.as_deref(), Some("dequeue_count"));
         assert!(out.list("pages").await.unwrap().is_empty());
     }
 
@@ -987,6 +1111,7 @@ mod tests {
             out: w.out.clone(),
             scans: w.scans.clone(),
             metrics: w.metrics.clone(),
+            tracker: w.tracker.clone(),
         });
         (w, queue, out)
     }
@@ -1034,6 +1159,7 @@ mod tests {
             .await
             .unwrap();
         let (tx, rx) = watch::channel(false);
+        let tracker = w.tracker.clone();
         let t0 = Instant::now();
         let run = tokio::spawn(w.run(rx));
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1047,6 +1173,11 @@ mod tests {
             t0.elapsed() < Duration::from_secs(1),
             "stopped after the grace"
         );
+        // The tracker ends the dropped page as abandoned at shutdown.
+        let st = tracker.status();
+        assert!(st.in_flight.is_empty());
+        assert_eq!(st.since_start.abandoned, 1);
+        assert_eq!(st.recent[0].error_kind.as_deref(), Some("shutdown"));
         assert!(out.list("pages").await.unwrap().is_empty());
         // Hidden until its visibility runs out, then back for another node.
         assert_eq!(

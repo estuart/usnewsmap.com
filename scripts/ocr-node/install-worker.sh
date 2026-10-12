@@ -6,8 +6,8 @@
 #     --host claude@node1.example.org [--ssh-key ~/.ssh/id_ed25519] \
 #     [--release ocr-worker-YYYYMMDD-SHA7] [--nodes N] [--concurrency N] \
 #     [--scan-cache-url http://HOST:8380] [--pacing-multiplier M] \
-#     [--page-timeout-secs N] [--publish-fetched VERSION] [--enable] \
-#     [--rollback] [--dry-run]
+#     [--page-timeout-secs N] [--publish-fetched VERSION] \
+#     [--status-allow DASHBOARD] [--enable] [--rollback] [--dry-run]
 #
 # Steps:
 #   1. picks the release (--release, or the newest ocr-worker-* release) and
@@ -32,6 +32,10 @@
 #      default is 600). --publish-fetched VERSION makes this node also
 #      publish the scan server's fetched list for that prefetch manifest
 #      to ocr-out/fetched/ for the seeder (12 Step 11); set it on one node.
+#      With --status-allow (the dashboard's host name, or its address),
+#      the worker serves its status to the LAN dashboard on port 8381 (12 §12.2.5), with a journal
+#      of finished pages in /var/lib/usnm-ocr, and the node's nftables
+#      drops the port from anyone else.
 #   3. over ssh with sudo (scripts/ocr-node/install-worker-node.sh): puts
 #      the binary in /usr/local/lib/usnm-ocr-worker/<release>/, loads the
 #      Tesseract image into the engine account's (usnmeng's) podman
@@ -63,7 +67,7 @@ step() { printf '\n== %s\n' "$*"; }
 REPO=tgoodyear/usnewsmap.com
 WORKFLOW="$REPO/.github/workflows/ci.yml"
 ENV_NAME="" HOST="" NAME="" SSH_KEY="" RELEASE="" NODES="" CONCURRENCY="" SCAN_CACHE_URL=""
-PACING="" PAGE_TIMEOUT="" PUBLISH_FETCHED=""
+PACING="" PAGE_TIMEOUT="" PUBLISH_FETCHED="" STATUS_ALLOW=""
 ENABLE=false ROLLBACK=false DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -78,6 +82,7 @@ while [ $# -gt 0 ]; do
     --pacing-multiplier) PACING=${2:-}; shift 2 ;;
     --page-timeout-secs) PAGE_TIMEOUT=${2:-}; shift 2 ;;
     --publish-fetched) PUBLISH_FETCHED=${2:-}; shift 2 ;;
+    --status-allow) STATUS_ALLOW=${2:-}; shift 2 ;;
     --enable) ENABLE=true; shift ;;
     --rollback) ROLLBACK=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -98,6 +103,7 @@ done
 [ -z "$PAGE_TIMEOUT" ] || [[ $PAGE_TIMEOUT =~ ^[1-9][0-9]{1,4}$ ]] || die "--page-timeout-secs: 10 to 99999"
 [ -z "$PUBLISH_FETCHED" ] || [[ $PUBLISH_FETCHED =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "--publish-fetched: a manifest version (pages-vYYYYMMDD-N)"
 [ -z "$PUBLISH_FETCHED" ] || [ -n "$SCAN_CACHE_URL" ] || die "--publish-fetched needs --scan-cache-url"
+[ -z "$STATUS_ALLOW" ] || [[ $STATUS_ALLOW =~ ^[A-Za-z0-9.-]+$ ]] || die "--status-allow: the dashboard's host name or IPv4 address"
 [ "$ROLLBACK" = false ] || [ "$ENABLE" = false ] || die "--rollback and --enable don't go together"
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -227,6 +233,11 @@ echo "binary sha256 $BIN_SUM; Tesseract image $IMAGE_ID"
   [ -z "$PUBLISH_FETCHED" ] || echo "USNM_OCR_PUBLISH_FETCHED=$PUBLISH_FETCHED"
   echo "USNM_OCR_TESSERACT_IMAGE=$IMAGE_ID"
   [ -z "$SCAN_CACHE_URL" ] || echo "USNM_OCR_SCAN_CACHE_URL=$SCAN_CACHE_URL"
+  if [ -n "$STATUS_ALLOW" ]; then
+    echo "USNM_OCR_STATUS_LISTEN=0.0.0.0:8381"
+    echo "USNM_OCR_STATUS_ALLOW=$STATUS_ALLOW"
+    echo "USNM_OCR_STATUS_JOURNAL=/var/lib/usnm-ocr/journal.jsonl"
+  fi
   [ -z "$CONN" ] || echo "APPLICATIONINSIGHTS_CONNECTION_STRING=\"$CONN\""
 } > "$TMP/ocr-worker.env"
 

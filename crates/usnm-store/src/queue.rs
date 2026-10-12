@@ -62,6 +62,12 @@ pub trait Queue: Send + Sync + std::fmt::Debug {
     /// About how many messages `queue` holds, hidden ones included (Get
     /// Queue Metadata's `x-ms-approximate-messages-count`).
     async fn approximate_count(&self, queue: &str) -> anyhow::Result<u64>;
+    /// The texts of up to `n` (1 to 32) visible messages at the front of
+    /// `queue`, without taking or hiding them (Peek Messages).
+    async fn peek(&self, queue: &str, n: u32) -> anyhow::Result<Vec<String>> {
+        let _ = (queue, n);
+        bail!("this queue can't peek")
+    }
 }
 
 /// Open a queue service: an `https://{account}.queue.core.windows.net` URL
@@ -215,6 +221,14 @@ fn parse_received(queue: &str, xml: &str) -> anyhow::Result<Option<Received>> {
     }))
 }
 
+/// Every message's text in a Peek Messages response.
+fn parse_peeked(xml: &str) -> Vec<String> {
+    xml.split("<QueueMessage>")
+        .skip(1)
+        .filter_map(|m| xml_value(m, "MessageText"))
+        .collect()
+}
+
 fn lease_error(status: StatusCode, msg: &Received, op: &str) -> anyhow::Error {
     // 404: the message is gone (deleted, or its pop receipt is stale);
     // 400 with PopReceiptMismatch: another receiver took it.
@@ -317,6 +331,27 @@ impl Queue for AzureQueue {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse().ok())
             .with_context(|| format!("queue `{queue}`: no x-ms-approximate-messages-count"))
+    }
+
+    async fn peek(&self, queue: &str, n: u32) -> anyhow::Result<Vec<String>> {
+        check_queue_name(queue)?;
+        let resp = self
+            .request(Method::GET, &format!("{queue}/messages"))
+            .await?
+            .query(&[
+                ("peekonly", "true".to_owned()),
+                ("numofmessages", n.clamp(1, 32).to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("peek messages `{queue}`: {}", e.without_url()))?;
+        if !resp.status().is_success() {
+            bail!(
+                "peek messages `{queue}` returned HTTP {}",
+                resp.status().as_u16()
+            );
+        }
+        Ok(parse_peeked(&resp.text().await?))
     }
 }
 
@@ -487,11 +522,55 @@ impl Queue for LocalQueue {
         }
         Ok(n)
     }
+
+    async fn peek(&self, queue: &str, n: u32) -> anyhow::Result<Vec<String>> {
+        self.requeue_expired(queue)?;
+        let ready = self.dir(queue, "ready")?;
+        let mut names: Vec<String> = std::fs::read_dir(&ready)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        names.sort();
+        let mut out = Vec::new();
+        for name in names.into_iter().take(n.clamp(1, 32) as usize) {
+            // Taken since it was listed: skip it.
+            let Ok(b) = std::fs::read(ready.join(&name)) else {
+                continue;
+            };
+            let m: LocalMessage = serde_json::from_slice(&b)
+                .with_context(|| format!("local queue message {name}"))?;
+            out.push(m.text);
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn peeking_takes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = LocalQueue::new(dir.path());
+        q.send(DEADLETTER, "first").await.unwrap();
+        q.send(DEADLETTER, "second").await.unwrap();
+        assert_eq!(q.peek(DEADLETTER, 1).await.unwrap(), ["first"]);
+        assert_eq!(q.peek(DEADLETTER, 32).await.unwrap(), ["first", "second"]);
+        let m = q
+            .receive(DEADLETTER, Duration::from_secs(600))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.text, "first");
+        // A held message isn't visible to a peek.
+        assert_eq!(q.peek(DEADLETTER, 32).await.unwrap(), ["second"]);
+        let xml = "<QueueMessagesList><QueueMessage><MessageId>a</MessageId><MessageText>x&amp;y</MessageText></QueueMessage>\
+                   <QueueMessage><MessageId>b</MessageId><MessageText>z</MessageText></QueueMessage></QueueMessagesList>";
+        assert_eq!(parse_peeked(xml), ["x&y", "z"]);
+        assert!(parse_peeked("<QueueMessagesList />").is_empty());
+    }
 
     #[tokio::test]
     async fn local_queue_leases_and_deletes() {
