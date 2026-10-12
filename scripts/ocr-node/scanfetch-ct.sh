@@ -14,7 +14,7 @@
 #   scanfetch-ct.sh --configure --manifest /tank/ocr/manifests/<file>.parquet
 #     [--resolution full] [--buffer-resolution full] [--sets both]
 #     [--buffer-cap BYTES] [--order priority] [--max-total-bytes N]
-#     [--concurrency 2] [--enable] [--ctid 211]
+#     [--concurrency 4] [--enable] [--ctid 211]
 #   scanfetch-ct.sh --serve --allow 192.168.0.192,192.168.0.243 [--port 8380]
 #     [--ctid 211]
 #
@@ -42,7 +42,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 CTID=211 NAME=usnm-scanfetch STORAGE=ssd BRIDGE=vmbr0 CORES=2 MEMORY=4096 SWAP=512
 TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst DATA=/tank/ocr
 CREATE=false INSTALL=false CONFIGURE=false ENABLE=false RELEASE=""
-MANIFEST="" RESOLUTION=full ORDER=priority MAX_BYTES="" CONCURRENCY=2
+MANIFEST="" RESOLUTION=full ORDER=priority MAX_BYTES="" CONCURRENCY=4
 BUFFER_RESOLUTION=full SETS=both BUFFER_CAP=1000000000000
 SERVE=false ALLOW="" PORT=8380
 REPO=tgoodyear/usnewsmap.com

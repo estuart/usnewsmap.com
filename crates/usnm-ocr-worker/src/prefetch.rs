@@ -135,7 +135,7 @@ impl Default for Options {
             buffer_cap: 1_000_000_000_000,
             limit: None,
             sample: None,
-            concurrency: 2,
+            concurrency: 4,
             progress_every: 100,
             max_failures_in_a_row: 20,
             order: Order::Priority,
