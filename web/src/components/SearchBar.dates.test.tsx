@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { Meta } from "../api/types";
+import { PHONE } from "../lib/useMediaQuery";
 import { DEFAULTS, type ViewState } from "../state/url";
 import { SearchBar } from "./SearchBar";
 
@@ -15,6 +16,16 @@ const meta = {
   limits: { max_query_chars: 256 },
   ja: null,
 } as unknown as Meta;
+
+/** Lay the form out as on a phone, where the Options button holds every option. */
+function onPhone() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query === PHONE,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+}
 
 function setup(view: Partial<ViewState> = {}) {
   const onSearch = vi.fn();
@@ -137,6 +148,7 @@ describe("SearchBar dates", () => {
   });
 
   it("opens the options on phones to show a problem", () => {
+    onPhone();
     const { from, submit } = setup();
     const toggle = screen.getByRole("button", { name: /^Options/ });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
@@ -145,12 +157,25 @@ describe("SearchBar dates", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("counts a typed date as an option", () => {
+  it("counts a typed date as an option on phones, where the dates are behind the button", () => {
+    onPhone();
     const { from } = setup();
     const toggle = screen.getByRole("button", { name: /^Options/ });
     expect(toggle.textContent).toBe("Options");
     fireEvent.change(from, { target: { value: "1860" } });
     expect(toggle.textContent).toBe("Options (1)");
+  });
+
+  it("leaves the dates out of the count on wide screens, where they stay in the row", () => {
+    const { from, submit } = setup();
+    const toggle = screen.getByRole("button", { name: /^Options/ });
+    fireEvent.change(from, { target: { value: "1860" } });
+    expect(toggle.textContent).toBe("Options");
+    // A date problem doesn't open the filters: the box is already in view.
+    fireEvent.change(from, { target: { value: "/15/1860" } });
+    submit();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(from);
   });
 
   it("opens the browser's calendar from the button and takes the date picked", () => {

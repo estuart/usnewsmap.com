@@ -252,6 +252,8 @@ describe("browsing a newspaper's pages without a search word (#274)", () => {
     api.aggregate.mockResolvedValue(aggregate("P00001", 3, "sn82014424"));
     show("?q=gold&lccn=sn82014424");
     await screen.findByText(/Only pages from/);
+    // Wide screens keep the newspaper filter behind the Options button.
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
     fireEvent.click(screen.getByRole("button", { name: "Newspapers: The Atlanta Intelligencer" }));
     fireEvent.click(browseButton()!);
     const heading = await screen.findByRole("heading", { name: "Pages of The Atlanta Intelligencer" });
@@ -267,7 +269,11 @@ describe("browsing a newspaper's pages without a search word (#274)", () => {
     // Closing puts focus back on the newspaper filter, not on the body:
     // with the close button…
     const trigger = screen.getByRole("button", { name: "Newspapers: The Atlanta Intelligencer" });
+    // The press outside closes the Options panel, which opens again for the focus.
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Close the pages" }));
+    expect(trigger.closest("[hidden]")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Close the pages" }));
+    expect(trigger.closest("[hidden]")).toBeNull();
     expect(screen.queryByRole("heading", { name: /^Pages of/ })).toBeNull();
     expect(document.activeElement).toBe(trigger);
     // …and with Escape.
@@ -284,6 +290,8 @@ describe("browsing a newspaper's pages without a search word (#274)", () => {
     api.aggregate.mockResolvedValue(aggregate("P00001", 3, "sn82014424"));
     show("?q=gold&lccn=sn82014424");
     await screen.findByText(/Only pages from/);
+    // Wide screens keep the newspaper filter behind the Options button.
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
     fireEvent.click(screen.getByRole("button", { name: "Newspapers: The Atlanta Intelligencer" }));
     await screen.findByRole("list", { name: "Chosen newspapers" });
     expect(browseButton()).toBeNull();

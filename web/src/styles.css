@@ -203,6 +203,7 @@ select {
 }
 
 .search {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -213,10 +214,34 @@ select {
   flex: 1 1 160px;
   min-width: 160px;
 }
-.search__options {
+/* Wide screens: the match mode and dates sit in the row; the filters
+   (source, states, languages, newspapers) open in a panel below the
+   Options button. */
+.search__options,
+.search__basics {
   display: contents;
 }
 .search__toggle {
+  order: 1;
+  font-size: 0.9rem;
+}
+.search__filters {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
+}
+.search__filters[hidden] {
   display: none;
 }
 /* What a Japanese query searches (#139): its own line, under the box and options. */
@@ -227,9 +252,19 @@ select {
   font-size: 0.85rem;
   color: var(--muted);
 }
-/* Last on wide screens, after the options; next to the box on phones. */
+/* Last on wide screens, after the Options button; next to the box on phones. */
 .search__go {
-  order: 1;
+  order: 2;
+}
+/* Between phones and wide screens, a narrower box and match list keep the
+   row on one line down to about 1000px. */
+@media (min-width: 641px) and (max-width: 1099px) {
+  .search__q {
+    min-width: 120px;
+  }
+  .search__basics > select {
+    width: 8.5em;
+  }
 }
 .search__date,
 .search__state,
@@ -1237,10 +1272,15 @@ select {
     order: 0;
   }
   .search__toggle {
-    display: inline-block;
+    order: 0;
   }
   .search__options {
     display: none;
+  }
+  /* Phones: one list of options under the box, no separate panel. */
+  .search__basics,
+  .search__filters {
+    display: contents;
   }
   .search--open .search__options {
     display: flex;

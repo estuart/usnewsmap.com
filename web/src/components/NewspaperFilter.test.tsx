@@ -229,6 +229,7 @@ describe("the newspaper filter in the search form", () => {
       <SearchBar view={{ ...DEFAULTS, q: "gold", lccn: ["sn6"] }} meta={meta} onSearch={onSearch} titles={TITLES} />,
     );
     expect(screen.getByRole("button", { name: /^Options/ }).textContent).toBe("Options (1)");
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
     fireEvent.click(screen.getByRole("button", { name: "Newspapers: Daily Alta California" }));
     const input = screen.getByRole("combobox", { name: "Newspapers" });
     fireEvent.change(input, { target: { value: "herald omaha" } });
@@ -258,6 +259,7 @@ describe("the newspaper filter in the search form", () => {
         onBrowsePaper={onBrowse}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
     fireEvent.click(screen.getByRole("button", { name: "Newspapers: Daily Alta California" }));
     expect(screen.queryByRole("button", { name: /^Browse pages/ })).toBeNull();
     unmount();
@@ -270,6 +272,7 @@ describe("the newspaper filter in the search form", () => {
         onBrowsePaper={onBrowse}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
     const button = screen.getByRole("button", { name: "Newspapers: Daily Alta California" });
     fireEvent.click(button);
     fireEvent.click(screen.getByRole("button", { name: "Browse pages of Daily Alta California" }));
@@ -304,6 +307,7 @@ describe("the newspaper filter in the search form", () => {
         titles={TITLES}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
     fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: "congress" } });
     expect(screen.queryByRole("button", { name: /^Newspapers:/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Search" }));

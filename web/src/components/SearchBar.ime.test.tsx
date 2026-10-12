@@ -54,6 +54,7 @@ describe("SearchBar with Japanese", () => {
     expect(hint.textContent).toBe("Japanese text can't be searched in Congress pages.");
     expect(screen.getByRole("searchbox").getAttribute("aria-describedby")).toBe(hint.id);
     // Back to the newspapers, the newspaper hint as before.
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
     fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: "news" } });
     expect(screen.getByRole("note").textContent).toMatch(/^Japanese searches cover only the 11,058/);
   });

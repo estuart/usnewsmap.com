@@ -29,7 +29,7 @@ import { Tooltip } from "./components/Tooltip";
 import { americanStoriesOnlyNote } from "./lib/matchSource";
 import { baselineNote } from "./lib/baseline";
 import { SkewLegend } from "./components/SkewLegend";
-import { useMediaQuery } from "./lib/useMediaQuery";
+import { PHONE, useMediaQuery } from "./lib/useMediaQuery";
 import {
   PagesLists,
   WhenLists,
@@ -528,7 +528,7 @@ export function App() {
   // on screen, so the controls sit right under the map. They move, not the controls: the legend and
   // lists keep no state of their own, so a rotation across the breakpoint loses nothing. How many
   // places each list shows is kept in App (`listShown`, above) for that reason.
-  const narrow = useMediaQuery("(max-width: 640px)");
+  const narrow = useMediaQuery(PHONE);
   const legend = !data ? null : norm === "skew" && skewModel ? (
     <SkewLegend
       places={frame ? frame.placePages.filter((p) => p > 0).length : 0}

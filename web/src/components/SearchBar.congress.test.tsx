@@ -1,16 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { Meta } from "../api/types";
+import { PHONE } from "../lib/useMediaQuery";
 import { DEFAULTS } from "../state/url";
 import { SearchBar } from "./SearchBar";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 const meta = {
   bounds: { from: "1736-01-01", to: "1963-12-31" },
   limits: { max_query_chars: 256 },
   ja: null,
 } as unknown as Meta;
+
+/** Lay the form out as on a phone, where the Options button holds every option. */
+function onPhone() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query === PHONE,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+}
 
 const withCongress = {
   ...meta,
@@ -24,6 +38,7 @@ describe("SearchBar's name (#229)", () => {
   it("names the corpus the form searches", () => {
     render(<SearchBar view={{ ...DEFAULTS, q: "gold", source: "congress" }} meta={withCongress} onSearch={() => {}} />);
     expect(screen.getByRole("search", { name: "Search Congress" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
     fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: "news" } });
     expect(screen.getByRole("search", { name: "Search newspapers" })).toBeTruthy();
   });
@@ -55,6 +70,7 @@ describe("SearchBar's options count (#229)", () => {
       />,
     );
     expect(toggle().textContent).toBe("Options (2)");
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
     fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: "congress" } });
     expect(toggle().textContent).toBe("Options (1)");
   });
@@ -71,7 +87,8 @@ describe("SearchBar before /v1/meta has loaded (#229)", () => {
     expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ source: "congress", state: [], lang: [] }));
   });
 
-  it("opens a Congress link's options, and keeps them open once /v1/meta lists Congress", () => {
+  it("opens a Congress link's options on phones, and keeps them open once /v1/meta lists Congress", () => {
+    onPhone();
     const { rerender } = render(<SearchBar view={congressLink} meta={undefined} onSearch={() => {}} />);
     const toggle = () => screen.getByRole("button", { name: /^Options/ });
     expect(toggle().getAttribute("aria-expanded")).toBe("true");

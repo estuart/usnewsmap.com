@@ -245,15 +245,10 @@ test("a Japanese query says what it searches before it's sent", async ({ page })
 });
 
 test("the search options open with an extra tap on phones", async ({ page, isMobile }) => {
+  test.skip(!isMobile, "wide screens: see the next test");
   await page.goto("/");
   const match = page.getByLabel("Match");
   const toggle = page.getByRole("button", { name: /^Options/ });
-  if (!isMobile) {
-    // Wide screens show the options inline and no toggle.
-    await expect(match).toBeVisible();
-    await expect(toggle).toBeHidden();
-    return;
-  }
   await expect(page.getByRole("searchbox")).toBeVisible();
   await expect(match).toBeHidden();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -267,6 +262,52 @@ test("the search options open with an extra tap on phones", async ({ page, isMob
   // A search that uses an option opens with the options showing.
   await page.goto("/?q=gold&mode=any");
   await expect(page.getByLabel("Match")).toBeVisible();
+});
+
+test("wide screens keep the search on one row, with the filters behind Options", async ({ page, isMobile }) => {
+  test.skip(isMobile, "phones: see the previous test");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/");
+  const box = page.getByRole("searchbox");
+  const go = page.getByRole("button", { name: "Search", exact: true });
+  const toggle = page.getByRole("button", { name: /^Options/ });
+  const states = page.getByRole("textbox", { name: "States" });
+  await expect(page.getByLabel("Match")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "From" })).toBeVisible();
+  await expect(states).toBeHidden();
+  // One row: the box and the Search button share a line.
+  const [a, b] = [(await box.boundingBox())!, (await go.boundingBox())!];
+  expect(Math.abs(a.y + a.height / 2 - (b.y + b.height / 2))).toBeLessThan(4);
+
+  // From the keyboard: Enter opens, Escape closes and leaves focus on the button, Space opens again.
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(states).toBeVisible();
+  await expect(page.getByRole("button", { name: "Languages: any" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Newspapers: any" })).toBeVisible();
+  await expectAccessible(page);
+  await states.fill("GA");
+  await expect(toggle).toHaveText("Options (1)");
+  await page.keyboard.press("Escape");
+  await expect(states).toBeHidden();
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(states).toBeVisible();
+  // A press elsewhere closes it.
+  await box.click();
+  await expect(states).toBeHidden();
+  // A States entry the browser rejects opens the panel again when Search is pressed.
+  await toggle.click();
+  await states.fill("Georgia");
+  await go.click();
+  await expect(states).toBeVisible();
+  await expect(states).toBeFocused();
+  await states.fill("");
+
+  // A link with filters shows how many on the button.
+  await page.goto("/?q=gold&state=GA,SC&lang=ger");
+  await expect(toggle).toHaveText("Options (2)");
 });
 
 test("the dataset details show the published version without the pipeline state", async ({ page }) => {
