@@ -18,7 +18,7 @@ use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::memory::MemoryBackend;
 use usnm_search::quickwit::QuickwitBackend;
 use usnm_search::{
-    CubeCell, HitSort, HitsQuery, IndexSet, PageDoc, PageLanguageSets, PageLanguageSide,
+    BrowseKey, CubeCell, HitSort, HitsQuery, IndexSet, PageDoc, PageLanguageSets, PageLanguageSide,
     SearchBackend, SearchError, Summary,
 };
 
@@ -722,6 +722,7 @@ async fn hits_pages_match_the_reference_backend() {
                     (
                         h.doc_id.clone(),
                         h.day,
+                        h.sort_key,
                         h.lccn.clone(),
                         h.place_id.clone(),
                         h.edition,
@@ -778,7 +779,9 @@ async fn hits_pages_match_the_reference_backend() {
 
 /// Pages without a query (#274): both backends list the same pages of a
 /// title (or place, or every page) by date, with the same openings, and
-/// both refuse relevance.
+/// both refuse relevance. Walked to the end a page at a time after the
+/// last page's key (the API's browse cursor), both list every page once, in
+/// the same order as the whole list, same-day pages included.
 #[tokio::test]
 async fn browsing_without_a_query_matches_the_reference_backend() {
     let Some(qw) = quickwit() else {
@@ -789,6 +792,7 @@ async fn browsing_without_a_query_matches_the_reference_backend() {
     let mut sets = searched_sets();
     sets.push(("japanese", IndexSet::new(vec![JA_INDEX.to_owned()])));
     let mut listed = 0;
+    let mut walks = 0;
     for ((sname, set), (fname, f)) in sets
         .into_iter()
         .flat_map(|s| filter_cases().into_iter().map(move |f| (s.clone(), f)))
@@ -821,8 +825,8 @@ async fn browsing_without_a_query_matches_the_reference_backend() {
                     ..selector.clone()
                 };
                 let ctx = format!("{sname} / {fname} / {selector:?} / offset {offset}");
-                let want = mem.browse(set, &f, &page).await.expect(&ctx);
-                let got = qw.browse(set, &f, &page).await.expect(&ctx);
+                let want = mem.browse(set, &f, &page, None).await.expect(&ctx);
+                let got = qw.browse(set, &f, &page, None).await.expect(&ctx);
                 assert_eq!(got.total, want.total, "total: {ctx}");
                 assert_eq!(got.days, want.days, "days: {ctx}");
                 let key = |h: &usnm_search::Hit| {
@@ -851,6 +855,45 @@ async fn browsing_without_a_query_matches_the_reference_backend() {
                 }
                 listed += got.hits.len();
             }
+            // Every page, walked after the last key in both backends.
+            let ctx = format!("{sname} / {fname} / {selector:?} / walked");
+            let all = HitsQuery {
+                limit: usize::MAX,
+                ..selector.clone()
+            };
+            let whole: Vec<String> = mem
+                .browse(set, &f, &all, None)
+                .await
+                .expect(&ctx)
+                .hits
+                .into_iter()
+                .map(|h| h.doc_id)
+                .collect();
+            let step = HitsQuery {
+                limit: 7,
+                ..selector.clone()
+            };
+            for backend in [&mem as &dyn SearchBackend, &qw] {
+                let mut walked: Vec<String> = Vec::new();
+                let mut after = None;
+                for _ in 0..=whole.len() {
+                    let got = backend.browse(set, &f, &step, after).await.expect(&ctx);
+                    assert_eq!(
+                        got.total as usize,
+                        whole.len() - walked.len(),
+                        "remaining: {ctx}"
+                    );
+                    walked.extend(got.hits.iter().map(|h| h.doc_id.clone()));
+                    match got.hits.last() {
+                        Some(last) if walked.len() < whole.len() => {
+                            after = Some(BrowseKey::of(last));
+                        }
+                        _ => break,
+                    }
+                }
+                assert_eq!(walked, whole, "{ctx}");
+                walks += 1;
+            }
         }
         let relevant = HitsQuery {
             lccn: Some("sn99000002".into()),
@@ -860,12 +903,13 @@ async fn browsing_without_a_query_matches_the_reference_backend() {
         };
         for backend in [&mem as &dyn SearchBackend, &qw] {
             assert!(matches!(
-                backend.browse(set, &f, &relevant).await,
+                backend.browse(set, &f, &relevant, None).await,
                 Err(SearchError::Unsupported(_))
             ));
         }
     }
     assert!(listed > 0, "nothing listed");
+    assert!(walks > 0, "nothing walked");
 }
 
 /// "Most mentions first" (#126): Quickwit's score weighs rare words per

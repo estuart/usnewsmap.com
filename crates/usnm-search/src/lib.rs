@@ -385,6 +385,37 @@ pub fn browse_order(sort: HitSort) -> Result<(), SearchError> {
     }
 }
 
+/// Where a list of pages without a query resumes (#274): the date order
+/// key of the last page already listed, `day` then `sort_key` (title,
+/// edition, page). Within one title no two pages share it, so a list that
+/// carries on strictly after it neither repeats nor skips a page, however
+/// deep it goes: keyset pagination, where a search's cursor is an offset
+/// (capped at 10,000).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BrowseKey {
+    pub day: u32,
+    pub sort_key: u64,
+}
+
+impl BrowseKey {
+    /// The key of `hit`.
+    pub fn of(hit: &Hit) -> Self {
+        Self {
+            day: hit.day,
+            sort_key: hit.sort_key,
+        }
+    }
+
+    /// Whether a page with key `key` comes after `self` in `sort` order
+    /// (`Oldest` or `Newest`).
+    pub fn precedes(self, key: BrowseKey, sort: HitSort) -> bool {
+        match sort {
+            HitSort::Newest => key < self,
+            HitSort::Oldest | HitSort::Relevant => key > self,
+        }
+    }
+}
+
 /// Which hits to return. With neither `place_id` nor `lccn`, every match.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HitsQuery {
@@ -402,6 +433,10 @@ pub struct HitsQuery {
 pub struct Hit {
     pub doc_id: String,
     pub day: u32,
+    /// The same-day order (title, edition, page; 05 §5.5): with `day`, the
+    /// [`BrowseKey`] a browse list resumes after. Not in the JSON.
+    #[serde(skip)]
+    pub sort_key: u64,
     pub lccn: String,
     pub place_id: String,
     pub edition: u16,
@@ -524,11 +559,17 @@ pub trait SearchBackend: Send + Sync {
     /// `snippet_source` or `matched_in`. With no query there is no
     /// relevance, so [`HitSort::Relevant`] is refused. A backend without it
     /// refuses.
+    ///
+    /// With `after`, only the pages after that key in `page.sort` order
+    /// ([`BrowseKey::precedes`]), and `total` counts those alone (the API
+    /// returns it as is: the pages not yet listed). `page.offset` still
+    /// skips from there (the API sends 0 with `after`).
     async fn browse(
         &self,
         _indexes: &IndexSet,
         _filters: &Filters,
         _page: &HitsQuery,
+        _after: Option<BrowseKey>,
     ) -> Result<HitsPage, SearchError> {
         Err(SearchError::Unsupported(
             "listing pages without a query".into(),

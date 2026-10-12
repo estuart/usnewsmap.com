@@ -2056,6 +2056,108 @@ async fn a_titles_pages_are_listed_without_a_query_only_when_switched_on() {
     );
 }
 
+/// A title's pages without a query go on to the last one however deep
+/// (#274): their cursor is the last page's key, not an offset, so the
+/// offset cap that stops a search's "next" doesn't apply. With the cap
+/// lowered to a few pages, walking the cursors lists every page of the
+/// title once, in order, same-day pages included, in both orders, while a
+/// search of the same title stops at the cap.
+#[tokio::test]
+async fn browsing_a_titles_pages_reaches_the_last_page_past_the_offset_cap() {
+    let mut cfg = config();
+    cfg.browse_pages = true;
+    cfg.max_offset = 4;
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let mut docs: Vec<PageDoc> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|i| load_docs(i))
+        .filter(|d| d.lccn == "sn99000002")
+        .collect();
+    docs.sort_by_key(|d| (d.day, d.sort_key));
+    let oldest: Vec<String> = docs.iter().map(|d| d.doc_id.clone()).collect();
+    assert!(oldest.len() > 4 + 3, "too few pages to pass the cap");
+    assert!(
+        docs.windows(2).any(|w| w[0].day == w[1].day),
+        "no two pages on one day"
+    );
+    let mut newest = oldest.clone();
+    newest.reverse();
+    for (sort, want) in [("oldest", &oldest), ("newest", &newest)] {
+        let mut walked: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..=want.len() {
+            let uri = match &cursor {
+                None => format!("/v1/hits?lccn=sn99000002&limit=3&sort={sort}"),
+                Some(c) => format!("/v1/hits?lccn=sn99000002&limit=3&sort={sort}&cursor={c}"),
+            };
+            let (status, _, body) = get(&s, &uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+            // The pages from this one on, as the backend counts them.
+            assert_eq!(body["total"], want.len() - walked.len(), "{uri}");
+            walked.extend(
+                body["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| i["doc_id"].as_str().unwrap().to_owned()),
+            );
+            match body["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_owned()),
+                None => break,
+            }
+        }
+        assert_eq!(&walked, want, "{sort}");
+    }
+
+    // A search of the same title stops at the cap.
+    let (_, _, searched) = get(&s, "/v1/hits?q=the&lccn=sn99000002&limit=3").await;
+    assert!(
+        searched["total"].as_u64().unwrap() > 6,
+        "{}",
+        searched["total"]
+    );
+    let search_cursor = searched["next_cursor"].as_str().unwrap().to_owned();
+    let (_, _, deeper) = get(
+        &s,
+        &format!("/v1/hits?q=the&lccn=sn99000002&limit=3&cursor={search_cursor}"),
+    )
+    .await;
+    assert_eq!(deeper["next_cursor"], Value::Null, "{deeper}");
+
+    // A cursor that isn't this list's, in this order, is refused.
+    let (_, _, first) = get(&s, "/v1/hits?lccn=sn99000002&limit=3").await;
+    let browse_cursor = first["next_cursor"].as_str().unwrap().to_owned();
+    // A cursor carries no count a client could set: one with `n` is refused.
+    let decoded: Value = serde_json::from_slice(
+        &base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            &browse_cursor,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut forged = decoded.clone();
+    forged["n"] = json!(u64::MAX);
+    let forged = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        serde_json::to_vec(&forged).unwrap(),
+    );
+    for uri in [
+        format!("/v1/hits?lccn=sn99000002&cursor={forged}"),
+        "/v1/hits?lccn=sn99000002&cursor=not-a-cursor".to_owned(),
+        format!("/v1/hits?lccn=sn99000002&cursor={search_cursor}"),
+        format!("/v1/hits?lccn=sn99000002&sort=newest&cursor={browse_cursor}"),
+        format!("/v1/hits?q=the&lccn=sn99000002&cursor={browse_cursor}"),
+    ] {
+        let (status, _, body) = get(&s, &uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+    }
+}
+
 #[tokio::test]
 async fn coverage_matches_aggregate_baseline() {
     let s = state_with(None).await;

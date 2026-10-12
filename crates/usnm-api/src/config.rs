@@ -34,6 +34,9 @@ pub const MAX_WARM_UP_SECS: u64 = 24 * 60 * 60;
 /// plus room for a slow network.
 pub const MIN_ABANDON_AFTER_SECS: u64 = 5;
 
+/// The deepest offset a search's `cursor` reaches in `/v1/hits` (06 §6.3.4).
+pub const MAX_OFFSET: usize = 10_000;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
@@ -153,6 +156,11 @@ pub struct Config {
     /// has no word to skip splits by, so it is measured before it is on.
     /// `/v1/meta` says so (`browse_pages`), and the site offers it only then.
     pub browse_pages: bool,
+    /// The deepest offset a search's `cursor` reaches in `/v1/hits`
+    /// ([`MAX_OFFSET`]). Not a setting: tests lower it
+    /// to show that a list of a title's pages without `q`, whose cursor is
+    /// a key rather than an offset (#274), goes past it.
+    pub max_offset: usize,
     /// End-to-end tests only, and only with the memory backend: an aggregate
     /// search whose query contains this term waits this long before it runs,
     /// to stand in for a cold search on the real corpus.
@@ -300,6 +308,7 @@ impl Config {
                 }
             },
             browse_pages: flag("USNM_BROWSE_PAGES", false)?,
+            max_offset: MAX_OFFSET,
             fixture_slow,
         })
     }

@@ -20,8 +20,8 @@ use crate::cache_metrics::{self, CacheReport};
 use crate::snippet::{matched_in, opening_snippet, page_snippets};
 use crate::thread_metrics::{self, ThreadReport};
 use crate::{
-    ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
-    KeyCount, PlaceSummary, SearchBackend, SearchError, Summary,
+    ja_snippets, rank, BrowseKey, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery,
+    IndexSet, KeyCount, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
 /// Upper bound on places in one terms aggregation.
@@ -688,14 +688,37 @@ fn selection(page: &HitsQuery) -> Vec<String> {
 /// of every split of the version, and skips splits only as any search
 /// limited to some decades does (05 §5.5.5).
 /// `Relevant` is refused, as by every backend.
+///
+/// With `after`, a clause keeps only the pages after that key in the
+/// list's order (`day`, then `sort_key`): keyset pagination, as the native
+/// search API of Quickwit 0.9 takes no `search_after` (its body refuses
+/// the field). Both fields are fast fields, and a range on a fast field
+/// needs no index (`sort_key` has `indexed: false`), so no reindex.
 pub fn browse_request(
     filters: &Filters,
     indexes: &IndexSet,
     page: &HitsQuery,
+    after: Option<BrowseKey>,
 ) -> Result<Value, SearchError> {
     crate::browse_order(page.sort)?;
-    let query = scope(filters, indexes, selection(page)).join(" AND ");
+    let mut extra = selection(page);
+    extra.extend(after.map(|a| after_clause(a, page.sort)));
+    let query = scope(filters, indexes, extra).join(" AND ");
     Ok(page_request(query, page))
+}
+
+/// The pages after `a` in `sort` order (`Oldest` or `Newest`), as
+/// [`BrowseKey::precedes`] says.
+fn after_clause(a: BrowseKey, sort: HitSort) -> String {
+    let op = match sort {
+        HitSort::Newest => '<',
+        HitSort::Oldest | HitSort::Relevant => '>',
+    };
+    format!(
+        "(day:{op}{day} OR (day:{day} AND sort_key:{op}{key}))",
+        day = a.day,
+        key = a.sort_key
+    )
 }
 
 /// A page of a hit list for `query`, with the days counted when asked.
@@ -774,6 +797,10 @@ pub struct StoredHit {
     pub lccn: String,
     pub edition: u16,
     pub seq: u16,
+    /// The same-day order (stored, as fields are by default), which a
+    /// browse list resumes after (#274).
+    #[serde(default)]
+    pub sort_key: Option<u64>,
     /// The page's stored text, for its snippets (#126).
     #[serde(default)]
     pub text: Option<String>,
@@ -1012,6 +1039,15 @@ fn hits_page(
         // Built here from the stored text, as the memory backend does (#126).
         // A Japanese page's come from its printed text: its indexed text is
         // folded tokens with spaces between them.
+        // A browse list resumes after its last page's key, so it needs
+        // each page's; a search's hits don't.
+        let sort_key = match (d.sort_key, query) {
+            (Some(k), _) => k,
+            (None, Some(_)) => 0,
+            (None, None) => {
+                return Err(SearchError::Backend("hit has no sort_key".into()));
+            }
+        };
         let text = d.text.as_deref().unwrap_or_default();
         let (snippets, snippet_source, matched_in) = match query {
             None => (
@@ -1044,6 +1080,7 @@ fn hits_page(
             congress: d.congress,
             front_page,
             day,
+            sort_key,
             doc_id: d.doc_id,
             lccn: d.lccn,
             place_id: d.place_id,
@@ -1133,9 +1170,10 @@ impl SearchBackend for QuickwitBackend {
         indexes: &IndexSet,
         filters: &Filters,
         page: &HitsQuery,
+        after: Option<BrowseKey>,
     ) -> Result<HitsPage, SearchError> {
         let resp = self
-            .search(indexes, &browse_request(filters, indexes, page)?)
+            .search(indexes, &browse_request(filters, indexes, page, after)?)
             .await?;
         parse_browse(resp, indexes)
     }
@@ -1772,7 +1810,7 @@ mod tests {
         };
         let mut f = filters();
         f.lccns = vec!["sn99000001".into()];
-        let r = browse_request(&f, &stories(true), &page).unwrap();
+        let r = browse_request(&f, &stories(true), &page, None).unwrap();
         assert_eq!(
             r["query"],
             format!(
@@ -1785,12 +1823,36 @@ mod tests {
         assert_eq!(r["sort_by"], "day,sort_key");
         assert_eq!(r["max_hits"], 20);
         assert_eq!(r["aggs"]["days"]["cardinality"]["field"], "day");
+        // After a key: the pages before it newest first, later ones oldest
+        // first, by day and then `sort_key` (a fast field: a range on it
+        // needs no index).
+        let key = BrowseKey {
+            day: 71_995,
+            sort_key: 7 << 32 | 1 << 16 | 2,
+        };
+        let r = browse_request(&f, &stories(true), &page, Some(key)).unwrap();
+        let q = r["query"].as_str().unwrap();
+        assert!(
+            q.ends_with(
+                " AND lccn:sn99000001 AND (day:<71995 OR (day:71995 AND sort_key:<30064836610))"
+            ),
+            "{q}"
+        );
+        let oldest = HitsQuery {
+            sort: HitSort::Oldest,
+            ..page.clone()
+        };
+        let r = browse_request(&f, &stories(true), &oldest, Some(key)).unwrap();
+        assert!(r["query"]
+            .as_str()
+            .unwrap()
+            .ends_with(" AND (day:>71995 OR (day:71995 AND sort_key:>30064836610))"));
         let relevant = HitsQuery {
             sort: HitSort::Relevant,
             ..page.clone()
         };
         assert!(matches!(
-            browse_request(&f, &none(), &relevant),
+            browse_request(&f, &none(), &relevant, None),
             Err(SearchError::Unsupported(_))
         ));
         let resp: SearchResponse = serde_json::from_value(json!({
@@ -1798,14 +1860,22 @@ mod tests {
             "hits": [
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-1", "date": "1896-07-10T00:00:00Z",
                  "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1,
-                 "text": "THE <BEE>\nOmaha", "text_as": "other"},
+                 "sort_key": 4_295_032_833_u64, "text": "THE <BEE>\nOmaha", "text_as": "other"},
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-2", "date": "1896-07-10T00:00:00Z",
-                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 2}
+                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 2,
+                 "sort_key": 4_295_032_834_u64}
             ]
         }))
         .unwrap();
         let page = parse_browse(resp, &stories(true)).unwrap();
         assert_eq!(page.total, 2);
+        assert_eq!(
+            BrowseKey::of(&page.hits[1]),
+            BrowseKey {
+                day: 71_778,
+                sort_key: 4_295_032_834
+            }
+        );
         assert_eq!(page.hits[0].snippets, vec!["THE &lt;BEE&gt; Omaha"]);
         assert!(page.hits[1].snippets.is_empty());
         assert!(page

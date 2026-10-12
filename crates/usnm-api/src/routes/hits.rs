@@ -16,7 +16,7 @@ use usnm_core::ids::PageKey;
 use usnm_core::params::{BrowseRequest, RawParams};
 use usnm_core::query::highlight_terms;
 use usnm_core::time::date_from_day;
-use usnm_search::{Hit, HitSort, HitsPage, HitsQuery};
+use usnm_search::{BrowseKey, Hit, HitSort, HitsPage, HitsQuery};
 
 use super::{cached, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
@@ -24,12 +24,54 @@ use crate::refdata::{RefData, CONGRESS_PLACE, CONGRESS_PLACE_NAME};
 use crate::{version, AppState};
 
 pub const MAX_LIMIT: usize = 50;
-/// Deepest page reachable by offset pagination.
-pub const MAX_OFFSET: usize = 10_000;
-
+/// A search's cursor: the offset of its next page, at most
+/// `Config::max_offset` (10,000).
 #[derive(Serialize, Deserialize)]
 struct Cursor {
     o: usize,
+}
+
+/// A list of a title's pages without `q` (#274) resumes after the last page
+/// listed rather than at an offset, so it reaches every page however many
+/// the title has: `d` and `k` are that page's [`BrowseKey`] (day and
+/// `sort_key`), and `s` the order it was listed in, which a request must
+/// repeat. It carries no count: anyone can write a cursor, so a later
+/// page's `total` is what the backend counts after the key, never a number
+/// the client sent. A search's cursor (`{"o":…}`)
+/// isn't one, nor is this a search's.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowseCursor {
+    d: u32,
+    k: u64,
+    s: String,
+}
+
+impl BrowseCursor {
+    /// The cursor after `last`, listed in `sort` order.
+    fn encode(last: BrowseKey, sort: HitSort) -> String {
+        let c = BrowseCursor {
+            d: last.day,
+            k: last.sort_key,
+            s: sort.as_str().to_owned(),
+        };
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&c).unwrap_or_default())
+    }
+
+    /// The key to resume after; 400 for anything that isn't a browse cursor
+    /// of `sort` order.
+    fn decode(c: &str, sort: HitSort) -> Result<BrowseKey, ApiError> {
+        URL_SAFE_NO_PAD
+            .decode(c)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<BrowseCursor>(&b).ok())
+            .filter(|c| c.s == sort.as_str())
+            .map(|c| BrowseKey {
+                day: c.d,
+                sort_key: c.k,
+            })
+            .ok_or_else(|| ApiError::BadRequest("invalid `cursor`".into()))
+    }
 }
 
 #[derive(Serialize)]
@@ -257,7 +299,7 @@ pub async fn hits(
         limit,
         sort,
         offset,
-    } = PageParams::parse(&raw)?;
+    } = PageParams::parse(&raw, state.config.max_offset)?;
 
     let canonical = {
         let mut canon = form_urlencoded::Serializer::new(req.canonical());
@@ -326,12 +368,13 @@ pub async fn hits(
             }),
             None => None,
         });
+        let next_cursor = offset_cursor(offset, &result, st.config.max_offset);
         Ok::<_, ApiError>(respond(
             rd,
             place,
             title.as_deref(),
             result,
-            offset,
+            next_cursor,
             &highlight,
         ))
     };
@@ -364,22 +407,29 @@ struct PageParams {
     offset: usize,
 }
 
+/// `limit` and `sort`, for a search or a browse list.
+fn limit_and_sort(raw: &RawParams) -> Result<(usize, HitSort), ApiError> {
+    let limit = match raw.get("limit") {
+        None => MAX_LIMIT,
+        Some(l) => l
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=MAX_LIMIT).contains(n))
+            .ok_or_else(|| ApiError::BadRequest(format!("`limit` must be 1–{MAX_LIMIT}")))?,
+    };
+    let sort = match raw.get("sort") {
+        None => HitSort::default(),
+        Some(s) => HitSort::parse(s).ok_or_else(|| {
+            ApiError::BadRequest("`sort` must be `oldest`, `newest` or `relevant`".into())
+        })?,
+    };
+    Ok((limit, sort))
+}
+
 impl PageParams {
-    fn parse(raw: &RawParams) -> Result<Self, ApiError> {
-        let limit = match raw.get("limit") {
-            None => MAX_LIMIT,
-            Some(l) => l
-                .parse::<usize>()
-                .ok()
-                .filter(|n| (1..=MAX_LIMIT).contains(n))
-                .ok_or_else(|| ApiError::BadRequest(format!("`limit` must be 1–{MAX_LIMIT}")))?,
-        };
-        let sort = match raw.get("sort") {
-            None => HitSort::default(),
-            Some(s) => HitSort::parse(s).ok_or_else(|| {
-                ApiError::BadRequest("`sort` must be `oldest`, `newest` or `relevant`".into())
-            })?,
-        };
+    /// A search's: its cursor is an offset, at most `max_offset`.
+    fn parse(raw: &RawParams, max_offset: usize) -> Result<Self, ApiError> {
+        let (limit, sort) = limit_and_sort(raw)?;
         let offset = match raw.get("cursor") {
             None => 0,
             Some(c) => URL_SAFE_NO_PAD
@@ -387,7 +437,7 @@ impl PageParams {
                 .ok()
                 .and_then(|b| serde_json::from_slice::<Cursor>(&b).ok())
                 .map(|c| c.o)
-                .filter(|o| *o <= MAX_OFFSET)
+                .filter(|o| *o <= max_offset)
                 .ok_or_else(|| ApiError::BadRequest("invalid `cursor`".into()))?,
         };
         Ok(Self {
@@ -398,19 +448,24 @@ impl PageParams {
     }
 }
 
-/// The response for a page of `result`, from `offset`.
+/// A search's next cursor after `result`, its page from `offset`: none at
+/// the end, or past `max_offset`.
+fn offset_cursor(offset: usize, result: &HitsPage, max_offset: usize) -> Option<String> {
+    let next = offset + result.hits.len();
+    (next < result.total as usize && next <= max_offset).then(|| {
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&Cursor { o: next }).unwrap_or_default())
+    })
+}
+
+/// The response for a page of `result`, with `next_cursor`.
 fn respond(
     rd: &RefData,
     place: Option<PlaceOut>,
     title: Option<&str>,
     result: HitsPage,
-    offset: usize,
+    next_cursor: Option<String>,
     highlight: &str,
 ) -> HitsResponse {
-    let next = offset + result.hits.len();
-    let next_cursor = (next < result.total as usize && next <= MAX_OFFSET).then(|| {
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&Cursor { o: next }).unwrap_or_default())
-    });
     HitsResponse {
         index_version: rd.version().to_owned(),
         synthetic: rd.current.synthetic,
@@ -453,17 +508,18 @@ async fn browse(state: Arc<AppState>, uri: &Uri, raw: &RawParams) -> Result<Resp
             ))
         }
     };
-    let PageParams {
-        limit,
-        sort,
-        offset,
-    } = PageParams::parse(raw)?;
+    let (limit, sort) = limit_and_sort(raw)?;
     if sort == HitSort::Relevant {
         return Err(ApiError::BadRequest(
             "`sort=relevant` needs `q`: without one, pages are listed by date (`oldest` or `newest`)"
                 .into(),
         ));
     }
+    // Not an offset: the last page's key, so no depth is out of reach.
+    let after = raw
+        .get("cursor")
+        .map(|c| BrowseCursor::decode(c, sort))
+        .transpose()?;
     // A search's canonical URL always has `q`; this one never does, so the
     // two never share a cache key.
     let canonical = {
@@ -497,20 +553,30 @@ async fn browse(state: Arc<AppState>, uri: &Uri, raw: &RawParams) -> Result<Resp
             place_id: None,
             lccn: Some(title.clone()),
             sort,
-            offset,
+            offset: 0,
             limit,
-            days: offset == 0,
+            days: after.is_none(),
         };
         let t = Instant::now();
         let result = with_timeout(
             &st,
             st.config.compute_cap,
-            snap2.backend.browse(&rd.index_set(), &req.filters, &page),
+            snap2
+                .backend
+                .browse(&rd.index_set(), &req.filters, &page, after),
         )
         .await;
         st.metrics.backend("hits", t.elapsed(), &result);
+        let result = result?;
+        // `total` is the backend's count from the key on: every page on the
+        // first request, those not yet listed on a later one.
+        let next_cursor = result
+            .hits
+            .last()
+            .filter(|_| (result.hits.len() as u64) < result.total)
+            .map(|last| BrowseCursor::encode(BrowseKey::of(last), sort));
         // No words to highlight: the viewer links have no `q`.
-        Ok::<_, ApiError>(respond(rd, None, Some(&title), result?, offset, ""))
+        Ok::<_, ApiError>(respond(rd, None, Some(&title), result, next_cursor, ""))
     };
     cached(
         &state,

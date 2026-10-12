@@ -16,8 +16,8 @@ use crate::snippet::{matched_in, opening_snippet, page_snippets};
 
 mod phrase;
 use crate::{
-    browse_order, ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery,
-    IndexSet, KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
+    browse_order, ja_snippets, rank, BrowseKey, Capabilities, CubeCell, Hit, HitSort, HitsPage,
+    HitsQuery, IndexSet, KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 pub use phrase::Scoring;
 
@@ -280,6 +280,7 @@ fn hit(
     Hit {
         doc_id: d.doc_id.clone(),
         day: d.day,
+        sort_key: d.sort_key,
         lccn: d.lccn.clone(),
         place_id: d.place_id.clone(),
         edition: d.edition,
@@ -451,12 +452,24 @@ impl SearchBackend for MemoryBackend {
         indexes: &IndexSet,
         filters: &Filters,
         page: &HitsQuery,
+        after: Option<BrowseKey>,
     ) -> Result<HitsPage, SearchError> {
         browse_order(page.sort)?;
         let mut docs: Vec<(usize, &PageDoc)> = self
             .selected(indexes, filters)?
             .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.doc.place_id == p))
             .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.doc.lccn == l))
+            .filter(|d| {
+                after.is_none_or(|a| {
+                    a.precedes(
+                        BrowseKey {
+                            day: d.doc.day,
+                            sort_key: d.doc.sort_key,
+                        },
+                        page.sort,
+                    )
+                })
+            })
             .map(|d| (0, &d.doc))
             .collect();
         sort_hits(&mut docs, page.sort);
@@ -1217,7 +1230,7 @@ mod shard_tests {
             1
         );
         // Browsing without a query (#274) hides them too.
-        let listed = b.browse(&hidden, &f, &page).await.unwrap();
+        let listed = b.browse(&hidden, &f, &page, None).await.unwrap();
         assert_eq!(listed.total, 2);
     }
 
@@ -1245,7 +1258,7 @@ mod shard_tests {
             days: true,
             ..HitsQuery::default()
         };
-        let listed = b.browse(&set, &f, &page).await.unwrap();
+        let listed = b.browse(&set, &f, &page, None).await.unwrap();
         // Place 2's page is another title's; a page with no text is listed
         // with no snippet.
         assert_eq!(listed.total, 3);
@@ -1259,7 +1272,7 @@ mod shard_tests {
             ..page.clone()
         };
         let days: Vec<u32> = b
-            .browse(&set, &f, &newest)
+            .browse(&set, &f, &newest, None)
             .await
             .unwrap()
             .hits
@@ -1272,8 +1285,71 @@ mod shard_tests {
             ..page
         };
         assert!(matches!(
-            b.browse(&set, &f, &relevant).await,
+            b.browse(&set, &f, &relevant, None).await,
             Err(SearchError::Unsupported(_))
         ));
+    }
+
+    /// Browsing resumes after the last page listed (#274): walking the
+    /// keys a page at a time lists every page of the title once, in order,
+    /// pages of the same day included, and each step's `total` counts what
+    /// is left.
+    #[tokio::test]
+    async fn browsing_after_a_key_walks_every_page_once_including_same_day_ties() {
+        let mut b = MemoryBackend::new();
+        let mut docs = Vec::new();
+        // Three days, each with pages of two editions; other titles' pages
+        // on the same days in between.
+        for i in [1, 2, 4] {
+            for (edition, seq) in [(1u16, 1u16), (1, 2), (1, 3), (2, 1)] {
+                let mut d = doc(i, 1);
+                d.doc_id = format!("sn99000001_1896-07-1{i}_ed-{edition}_seq-{seq}");
+                d.edition = edition;
+                d.seq = seq;
+                d.sort_key = 1 << 32 | u64::from(edition) << 16 | u64::from(seq);
+                docs.push(d);
+            }
+            docs.push(doc(i, 2));
+        }
+        b.add_index("i", docs);
+        let set = IndexSet::new(vec!["i".into()]);
+        let f = Filters {
+            from: usnm_core::time::date_from_day(71_000),
+            to: usnm_core::time::date_from_day(71_005),
+            states: vec![],
+            lccns: vec!["sn99000001".into()],
+            langs: vec![],
+            front_only: false,
+            series: Vec::new(),
+        };
+        for sort in [HitSort::Oldest, HitSort::Newest] {
+            let page = HitsQuery {
+                lccn: Some("sn99000001".into()),
+                sort,
+                limit: 3,
+                ..HitsQuery::default()
+            };
+            let all = HitsQuery {
+                limit: 100,
+                ..page.clone()
+            };
+            let whole = b.browse(&set, &f, &all, None).await.unwrap();
+            assert_eq!(whole.total, 12);
+            let mut walked = Vec::new();
+            let mut after = None;
+            for _ in 0..whole.total {
+                let step = b.browse(&set, &f, &page, after).await.unwrap();
+                assert_eq!(step.total, whole.total - walked.len() as u64);
+                walked.extend(step.hits.iter().map(|h| h.doc_id.clone()));
+                match step.hits.last() {
+                    Some(last) if walked.len() < whole.total as usize => {
+                        after = Some(BrowseKey::of(last))
+                    }
+                    _ => break,
+                }
+            }
+            let expected: Vec<String> = whole.hits.iter().map(|h| h.doc_id.clone()).collect();
+            assert_eq!(walked, expected, "{sort:?}");
+        }
     }
 }
