@@ -14,6 +14,7 @@ import { Searching } from "./components/Searching";
 import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
+import { PaperPages, type PaperSort } from "./components/PaperPages";
 import { usePrefetchPlaceHits } from "./components/placeHits";
 import { PlaceTable } from "./components/PlaceTable";
 import { NewspaperTable, paperRows } from "./components/NewspaperTable";
@@ -84,6 +85,18 @@ export function App() {
     staleTime: Infinity,
   });
   const wantTitlesNow = useCallback(() => setWantTitles(true), []);
+  // A newspaper's pages without a search word (07 §7.13, #274), opened from
+  // the newspaper filter when the API lists them (`browse_pages`).
+  // `returnFocus` puts focus back on what opened the list when it closes.
+  const [browsing, setBrowsing] = useState<{
+    lccn: string;
+    sort: PaperSort;
+    returnFocus: () => void;
+  } | null>(null);
+  const browsePaper = useCallback(
+    (lccn: string, returnFocus: () => void) => setBrowsing({ lccn, sort: "oldest", returnFocus }),
+    [],
+  );
 
   // Parsed afresh on every URL change; a stable key keeps queries cached.
   const paramsKey = JSON.stringify(searchParams(view));
@@ -586,9 +599,24 @@ export function App() {
           titles={titles.data?.titles}
           titlesFailed={titles.isError}
           onWantTitles={wantTitlesNow}
+          onBrowsePaper={browsePaper}
         />
       </header>
       <About ref={about} />
+      {browsing && meta.data?.browse_pages && (
+        <PaperPages
+          lccn={browsing.lccn}
+          name={titles.data?.titles.find((t) => t.lccn === browsing.lccn)?.title ?? browsing.lccn}
+          version={version}
+          sort={browsing.sort}
+          onSort={(sort) => setBrowsing({ ...browsing, sort })}
+          synthetic={meta.data.synthetic}
+          onClose={() => {
+            setBrowsing(null);
+            browsing.returnFocus();
+          }}
+        />
+      )}
 
       {meta.data?.synthetic && (
         <p className="notice notice--demo" role="note">

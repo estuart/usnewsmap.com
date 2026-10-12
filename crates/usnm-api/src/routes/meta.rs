@@ -70,6 +70,9 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         // a version with them (05 §5.5.8), its title's otherwise.
         "language_filter": if rd.uses_page_language() { "page" } else { "title" },
         "languages": filter_languages(rd),
+        // Whether `/v1/hits` lists a title's pages without `q` (#274,
+        // `USNM_BROWSE_PAGES`): the site offers "Browse pages" only then.
+        "browse_pages": state.config.browse_pages,
         "capabilities": snap.backend.capabilities(),
         "limits": {
             "max_query_chars": query::MAX_QUERY_CHARS,

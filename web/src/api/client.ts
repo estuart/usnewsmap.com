@@ -376,6 +376,26 @@ export const api = {
     if (cursor) s.set("cursor", cursor);
     return getPinned<HitsResponse>(`/v1/hits?${s}`, version, { signal, giveUp });
   },
+  /**
+   * One newspaper's pages without a search word (#274), by date: only when
+   * `/v1/meta` says `browse_pages`. Each page's snippet is the opening of its text.
+   */
+  titlePages: (
+    lccn: string,
+    version: string,
+    sort: "oldest" | "newest",
+    cursor: string | null,
+    signal?: AbortSignal,
+  ) => {
+    const s = new URLSearchParams();
+    s.set("lccn", lccn);
+    s.set("limit", "20");
+    // Oldest first is the API's default, and leaving it out keeps one URL per list.
+    if (sort !== "oldest") s.set("sort", sort);
+    if (cursor) s.set("cursor", cursor);
+    s.set("v", version);
+    return getPinned<HitsResponse>(`/v1/hits?${s}`, version, { signal });
+  },
   /** Matching pages per day for up to 20 places, for exact median dates. */
   days: (p: SearchParams, version: string, places: string[], signal?: AbortSignal) => {
     const s = searchQuery(p, version);

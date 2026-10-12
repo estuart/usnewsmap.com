@@ -148,6 +148,11 @@ pub struct Config {
     /// Both find the same pages; the setting is for measuring one against
     /// the other.
     pub page_language_filter: usnm_search::PageLanguageSide,
+    /// Whether `/v1/hits` lists a title's pages without `q`
+    /// (`USNM_BROWSE_PAGES`, #274, 06 §6.3.4). Off by default: such a list
+    /// has no word to skip splits by, so it is measured before it is on.
+    /// `/v1/meta` says so (`browse_pages`), and the site offers it only then.
+    pub browse_pages: bool,
     /// End-to-end tests only, and only with the memory backend: an aggregate
     /// search whose query contains this term waits this long before it runs,
     /// to stand in for a cold search on the real corpus.
@@ -294,6 +299,7 @@ impl Config {
                     ))
                 }
             },
+            browse_pages: flag("USNM_BROWSE_PAGES", false)?,
             fixture_slow,
         })
     }
@@ -327,6 +333,15 @@ mod tests {
         assert!(c.fixture_slow.is_none());
         assert_eq!(c.searcher_metrics_interval, Duration::from_secs(60));
         assert!(c.american_stories_search);
+        assert!(!c.browse_pages);
+        let browse = |v: &str| {
+            let v = v.to_owned();
+            Config::from_lookup(move |k| (k == "USNM_BROWSE_PAGES").then(|| v.clone()))
+                .map(|c| c.browse_pages)
+        };
+        assert_eq!(browse("true"), Ok(true));
+        assert_eq!(browse("FALSE"), Ok(false));
+        assert!(browse("yes").is_err());
         assert_eq!(
             c.page_language_filter,
             usnm_search::PageLanguageSide::Smaller

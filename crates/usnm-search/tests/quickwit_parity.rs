@@ -776,6 +776,98 @@ async fn hits_pages_match_the_reference_backend() {
     );
 }
 
+/// Pages without a query (#274): both backends list the same pages of a
+/// title (or place, or every page) by date, with the same openings, and
+/// both refuse relevance.
+#[tokio::test]
+async fn browsing_without_a_query_matches_the_reference_backend() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = memory();
+    let mut sets = searched_sets();
+    sets.push(("japanese", IndexSet::new(vec![JA_INDEX.to_owned()])));
+    let mut listed = 0;
+    for ((sname, set), (fname, f)) in sets
+        .into_iter()
+        .flat_map(|s| filter_cases().into_iter().map(move |f| (s.clone(), f)))
+    {
+        let set = &set;
+        for selector in [
+            HitsQuery {
+                lccn: Some("sn99000002".into()),
+                ..Default::default()
+            },
+            HitsQuery {
+                lccn: Some("sn99000004".into()),
+                sort: HitSort::Newest,
+                ..Default::default()
+            },
+            HitsQuery {
+                place_id: Some("P00001".into()),
+                ..Default::default()
+            },
+            HitsQuery {
+                sort: HitSort::Newest,
+                ..Default::default()
+            },
+        ] {
+            for offset in [0, 5, 30] {
+                let page = HitsQuery {
+                    offset,
+                    limit: 7,
+                    days: offset == 0,
+                    ..selector.clone()
+                };
+                let ctx = format!("{sname} / {fname} / {selector:?} / offset {offset}");
+                let want = mem.browse(set, &f, &page).await.expect(&ctx);
+                let got = qw.browse(set, &f, &page).await.expect(&ctx);
+                assert_eq!(got.total, want.total, "total: {ctx}");
+                assert_eq!(got.days, want.days, "days: {ctx}");
+                let key = |h: &usnm_search::Hit| {
+                    (
+                        h.doc_id.clone(),
+                        h.day,
+                        h.lccn.clone(),
+                        h.place_id.clone(),
+                        h.edition,
+                        h.seq,
+                        h.front_page,
+                        h.snippets.clone(),
+                        h.snippet_source,
+                        h.matched_in.clone(),
+                    )
+                };
+                assert_eq!(
+                    got.hits.iter().map(key).collect::<Vec<_>>(),
+                    want.hits.iter().map(key).collect::<Vec<_>>(),
+                    "hits: {ctx}"
+                );
+                for h in &got.hits {
+                    assert!(h.snippets.len() <= 1, "{ctx}");
+                    assert!(h.snippets.iter().all(|s| !s.contains('<')), "{ctx}");
+                    assert!(h.matched_in.is_none() && h.snippet_source.is_none());
+                }
+                listed += got.hits.len();
+            }
+        }
+        let relevant = HitsQuery {
+            lccn: Some("sn99000002".into()),
+            sort: HitSort::Relevant,
+            limit: 7,
+            ..Default::default()
+        };
+        for backend in [&mem as &dyn SearchBackend, &qw] {
+            assert!(matches!(
+                backend.browse(set, &f, &relevant).await,
+                Err(SearchError::Unsupported(_))
+            ));
+        }
+    }
+    assert!(listed > 0, "nothing listed");
+}
+
 /// "Most mentions first" (#126): Quickwit's score weighs rare words per
 /// split, so its order isn't the reference's; the pages listed are the same.
 #[tokio::test]

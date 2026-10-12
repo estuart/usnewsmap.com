@@ -12,12 +12,12 @@ use usnm_core::text::{fold, index_tokens, tokenize, Analyzer, MAX_TOKEN_CHARS, U
 use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
 
-use crate::snippet::{matched_in, page_snippets};
+use crate::snippet::{matched_in, opening_snippet, page_snippets};
 
 mod phrase;
 use crate::{
-    ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
-    KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
+    browse_order, ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery,
+    IndexSet, KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 pub use phrase::Scoring;
 
@@ -198,6 +198,19 @@ impl MemoryBackend {
         filters: &'a Filters,
         scoring: Scoring,
     ) -> Result<impl Iterator<Item = &'a Indexed> + 'a, SearchError> {
+        let analyzed = as_analyzed(query);
+        Ok(self
+            .selected(indexes, filters)?
+            .filter(move |d| eval_scored(d.reads(query, &analyzed), &d.texts(indexes), scoring)))
+    }
+
+    /// The pages `filters` select, whatever their text, less the copies
+    /// `indexes` hides.
+    fn selected<'a>(
+        &'a self,
+        indexes: &'a IndexSet,
+        filters: &'a Filters,
+    ) -> Result<impl Iterator<Item = &'a Indexed> + 'a, SearchError> {
         let mut selected = Vec::new();
         for id in indexes.ids() {
             let docs = self
@@ -207,7 +220,6 @@ impl MemoryBackend {
             selected.push(docs);
         }
         let (from, to) = (filters.from_day(), filters.to_day());
-        let analyzed = as_analyzed(query);
         let language = indexes.language_match(&filters.langs);
         Ok(selected.into_iter().flatten().filter(move |d| {
             let doc = &d.doc;
@@ -230,8 +242,55 @@ impl MemoryBackend {
                         .as_ref()
                         .is_some_and(|s| filters.series.contains(s)))
                 && !indexes.hides(&doc.doc_id, &doc.batch)
-                && eval_scored(d.reads(query, &analyzed), &d.texts(indexes), scoring)
         }))
+    }
+}
+
+/// `docs` in `sort` order by date: by day, then `sort_key` (title,
+/// edition, page) and doc id, reversed for newest first. A `Relevant`
+/// order puts more `mentions` first and ties in date order.
+fn sort_hits(docs: &mut [(usize, &PageDoc)], sort: HitSort) {
+    docs.sort_by(|(ma, a), (mb, b)| {
+        let order = (a.day, a.sort_key, &a.doc_id).cmp(&(b.day, b.sort_key, &b.doc_id));
+        match sort {
+            HitSort::Oldest => order,
+            HitSort::Newest => order.reverse(),
+            HitSort::Relevant => mb.cmp(ma).then(order),
+        }
+    });
+}
+
+/// The days `docs` appeared on, when `page` asks (#127).
+fn days_of(docs: &[(usize, &PageDoc)], page: &HitsQuery) -> Option<u64> {
+    page.days.then(|| {
+        docs.iter()
+            .map(|(_, d)| d.day)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as u64
+    })
+}
+
+/// A hit for `d` with these snippets.
+fn hit(
+    d: &PageDoc,
+    snippets: Vec<String>,
+    snippet_source: Option<&'static str>,
+    matched_in: Option<Vec<&'static str>>,
+) -> Hit {
+    Hit {
+        doc_id: d.doc_id.clone(),
+        day: d.day,
+        lccn: d.lccn.clone(),
+        place_id: d.place_id.clone(),
+        edition: d.edition,
+        seq: d.seq,
+        front_page: d.front_page,
+        snippets,
+        snippet_source,
+        matched_in,
+        ocr_source: d.ocr_source.clone(),
+        ocr_engine: d.ocr_engine.clone(),
+        congress: d.congress.clone(),
     }
 }
 
@@ -357,20 +416,8 @@ impl SearchBackend for MemoryBackend {
                 (mentions, &d.doc)
             })
             .collect();
-        docs.sort_by(|(ma, a), (mb, b)| {
-            let order = (a.day, a.sort_key, &a.doc_id).cmp(&(b.day, b.sort_key, &b.doc_id));
-            match page.sort {
-                HitSort::Oldest => order,
-                HitSort::Newest => order.reverse(),
-                HitSort::Relevant => mb.cmp(ma).then(order),
-            }
-        });
-        let days = page.days.then(|| {
-            docs.iter()
-                .map(|(_, d)| d.day)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len() as u64
-        });
+        sort_hits(&mut docs, page.sort);
+        let days = days_of(&docs, page);
         Ok(HitsPage {
             total: docs.len() as u64,
             days,
@@ -393,21 +440,37 @@ impl SearchBackend for MemoryBackend {
                         (indexes.american_stories() && d.printed.is_none()).then(|| {
                             matched_in(&d.text, d.text_as.as_deref(), query, indexes.text_layout())
                         });
-                    Hit {
-                        doc_id: d.doc_id.clone(),
-                        day: d.day,
-                        lccn: d.lccn.clone(),
-                        place_id: d.place_id.clone(),
-                        edition: d.edition,
-                        seq: d.seq,
-                        front_page: d.front_page,
-                        snippets,
-                        snippet_source,
-                        matched_in,
-                        ocr_source: d.ocr_source.clone(),
-                        ocr_engine: d.ocr_engine.clone(),
-                        congress: d.congress.clone(),
-                    }
+                    hit(d, snippets, snippet_source, matched_in)
+                })
+                .collect(),
+        })
+    }
+
+    async fn browse(
+        &self,
+        indexes: &IndexSet,
+        filters: &Filters,
+        page: &HitsQuery,
+    ) -> Result<HitsPage, SearchError> {
+        browse_order(page.sort)?;
+        let mut docs: Vec<(usize, &PageDoc)> = self
+            .selected(indexes, filters)?
+            .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.doc.place_id == p))
+            .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.doc.lccn == l))
+            .map(|d| (0, &d.doc))
+            .collect();
+        sort_hits(&mut docs, page.sort);
+        let days = days_of(&docs, page);
+        Ok(HitsPage {
+            total: docs.len() as u64,
+            days,
+            hits: docs
+                .into_iter()
+                .skip(page.offset)
+                .take(page.limit)
+                .map(|(_, d)| {
+                    let text = d.printed.as_deref().unwrap_or(&d.text);
+                    hit(d, opening_snippet(text), None, None)
                 })
                 .collect(),
         })
@@ -1153,5 +1216,64 @@ mod shard_tests {
                 .count(),
             1
         );
+        // Browsing without a query (#274) hides them too.
+        let listed = b.browse(&hidden, &f, &page).await.unwrap();
+        assert_eq!(listed.total, 2);
+    }
+
+    /// A title's pages without a query (#274): every page of the title the
+    /// filters select, whatever its text, by date, with its opening.
+    #[tokio::test]
+    async fn browsing_lists_a_titles_pages_by_date_whatever_their_text() {
+        let mut b = MemoryBackend::new();
+        let mut blank = doc(5, 1);
+        blank.text = String::new();
+        b.add_index("i", [doc(3, 1), doc(1, 1), doc(2, 2), blank]);
+        let set = IndexSet::new(vec!["i".into()]);
+        let f = Filters {
+            from: usnm_core::time::date_from_day(71_000),
+            to: usnm_core::time::date_from_day(71_005),
+            states: vec![],
+            lccns: vec!["sn99000001".into()],
+            langs: vec![],
+            front_only: false,
+            series: Vec::new(),
+        };
+        let page = HitsQuery {
+            lccn: Some("sn99000001".into()),
+            limit: 10,
+            days: true,
+            ..HitsQuery::default()
+        };
+        let listed = b.browse(&set, &f, &page).await.unwrap();
+        // Place 2's page is another title's; a page with no text is listed
+        // with no snippet.
+        assert_eq!(listed.total, 3);
+        assert_eq!(listed.days, Some(3));
+        let days: Vec<u32> = listed.hits.iter().map(|h| h.day).collect();
+        assert_eq!(days, [71_001, 71_003, 71_005]);
+        assert_eq!(listed.hits[0].snippets, ["a cross of gold"]);
+        assert!(listed.hits[2].snippets.is_empty());
+        let newest = HitsQuery {
+            sort: HitSort::Newest,
+            ..page.clone()
+        };
+        let days: Vec<u32> = b
+            .browse(&set, &f, &newest)
+            .await
+            .unwrap()
+            .hits
+            .iter()
+            .map(|h| h.day)
+            .collect();
+        assert_eq!(days, [71_005, 71_003, 71_001]);
+        let relevant = HitsQuery {
+            sort: HitSort::Relevant,
+            ..page
+        };
+        assert!(matches!(
+            b.browse(&set, &f, &relevant).await,
+            Err(SearchError::Unsupported(_))
+        ));
     }
 }

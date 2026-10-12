@@ -271,6 +271,44 @@ pub fn matched_in(
     }
 }
 
+/// Characters of a page's opening excerpt when it is listed without a
+/// query (#274): two lines of print, as a fragment around a match is.
+pub const OPENING: usize = 2 * CONTEXT;
+
+/// A page listed without a query (`/v1/hits?lccn=…` with no `q`, #274):
+/// at most the first [`OPENING`] characters of its text, cut before the
+/// word the limit falls in (or at the limit when that word is the first, as
+/// an over-long OCR run can be), with columns' line breaks and runs of spaces as one space, `…` when the
+/// text goes on, and HTML-escaped with no `<mark>`. No fragment for a page
+/// with no text. Both backends use it, on the text the hit already carries.
+pub fn opening_snippet(text: &str) -> Vec<String> {
+    // Whitespace is made one space before the cut is chosen, so a long run
+    // of spaces or line breaks in the OCR neither spends the budget nor
+    // leaves `…` after nothing but trailing whitespace.
+    let chars: Vec<char> = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    // Back to the start of the word the limit falls in, never forward: an
+    // OCR run with no break can go on for most of a page, and the excerpt
+    // must stay within the limit whatever the text.
+    let limit = OPENING.min(chars.len());
+    let to = match word_start(&chars, limit) {
+        0 => limit,
+        start => start,
+    };
+    let mut excerpt = chars[..to].iter().collect::<String>().trim_end().to_owned();
+    if to < chars.len() {
+        excerpt.push_str(" …");
+    }
+    vec![mark_html(&[(false, excerpt.as_str())])]
+}
+
 fn collapse_spaces(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut space = false;
@@ -295,6 +333,66 @@ mod tests {
 
     fn snip(text: &str, q: &str) -> Vec<String> {
         text_snippets(text, &parse(q).unwrap(), TextLayout::Separate)
+    }
+
+    #[test]
+    fn an_opening_excerpt_is_the_first_words_escaped_and_unmarked() {
+        assert_eq!(
+            opening_snippet("  The <Bee>\n\nOmaha  & Co."),
+            ["The &lt;Bee&gt; Omaha &amp; Co."]
+        );
+        assert!(opening_snippet("").is_empty());
+        assert!(opening_snippet(" \n ").is_empty());
+        // A long text is cut between words, within the limit.
+        let long = format!("{} tail", "word ".repeat(40));
+        let cut = &opening_snippet(&long)[0];
+        assert!(cut.ends_with("word …"), "{cut}");
+        assert!(cut.chars().count() <= OPENING + 2, "{cut}");
+        // The word the limit falls in is left out, not finished.
+        let lead = "a".repeat(OPENING - 5);
+        assert_eq!(
+            opening_snippet(&format!("{lead} straddling words")),
+            [format!("{lead} …")]
+        );
+        // An over-long OCR run after the first word is left out whole, and
+        // one that starts the text is cut at the limit.
+        let run = "x".repeat(100_000);
+        assert_eq!(opening_snippet(&format!("The {run} y")), ["The …"]);
+        assert_eq!(
+            opening_snippet(&format!("{run} y")),
+            [format!("{} …", "x".repeat(OPENING))]
+        );
+    }
+
+    #[test]
+    fn an_opening_excerpt_counts_a_run_of_whitespace_as_one_space() {
+        // A long run of spaces and line breaks takes one character of the
+        // budget, so the words after it are still in the excerpt.
+        let gap = format!("{}{}", " ".repeat(OPENING * 3), "\n".repeat(OPENING));
+        assert_eq!(
+            opening_snippet(&format!("The{gap}Omaha\t\t\tBee")),
+            ["The Omaha Bee"]
+        );
+        let words = "word ".repeat(OPENING / 5 - 2);
+        let spaced = format!("lead{gap}{words}end");
+        let want = format!("lead {words}end");
+        assert!(want.chars().count() <= OPENING, "{want}");
+        assert_eq!(opening_snippet(&spaced), [want]);
+        // Trailing whitespace, however long, is not more text: no `…`.
+        assert_eq!(
+            opening_snippet(&format!("The Omaha Bee{}", " \n".repeat(OPENING * 2))),
+            ["The Omaha Bee"]
+        );
+        let full = "x".repeat(OPENING);
+        assert_eq!(
+            opening_snippet(&format!("{full}{}", "\n ".repeat(OPENING))),
+            [full.as_str()]
+        );
+        // Only the text after the cut makes `…`.
+        assert_eq!(
+            opening_snippet(&format!("{full}{} y", "\n".repeat(50))),
+            [format!("{full} …")]
+        );
     }
 
     #[test]

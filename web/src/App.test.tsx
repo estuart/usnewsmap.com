@@ -15,6 +15,7 @@ const { api } = vi.hoisted(() => ({
     coverage: vi.fn(),
     days: vi.fn(),
     hits: vi.fn(),
+    titlePages: vi.fn(),
   },
 }));
 vi.mock("./api/client", async (importOriginal) => ({ ...(await importOriginal<object>()), api }));
@@ -217,6 +218,76 @@ describe("App under a newspaper filter (07 §7.13)", () => {
     show("?q=gold");
     await screen.findByRole("region", { name: "Newspapers" });
     expect(api.titles).not.toHaveBeenCalled();
+  });
+});
+
+describe("browsing a newspaper's pages without a search word (#274)", () => {
+  const pages: HitsResponse = {
+    index_version: "v1",
+    place: null,
+    title: { lccn: "sn82014424", name: "The Atlanta Intelligencer" },
+    total: 2000,
+    days: 500,
+    items: [
+      {
+        doc_id: "sn82014424_1860-01-04_ed-1_seq-1",
+        date: "1860-01-04",
+        lccn: "sn82014424",
+        title: "The Atlanta Intelligencer",
+        place_id: "P00001",
+        edition: 1,
+        seq: 1,
+        front_page: true,
+        snippets: ["THE ATLANTA INTELLIGENCER. Wednesday Morning …"],
+        links: { viewer: "https://www.loc.gov/resource/sn82014424/1860-01-04/ed-1/?sp=1" },
+      },
+    ],
+    next_cursor: "eyJvIjoyMH0",
+  };
+  const browseButton = () => screen.queryByRole("button", { name: "Browse pages of The Atlanta Intelligencer" });
+
+  it("lists a chosen paper's pages by date when the API offers it", async () => {
+    api.meta.mockResolvedValue({ ...meta, browse_pages: true });
+    api.titlePages.mockResolvedValue(pages);
+    api.aggregate.mockResolvedValue(aggregate("P00001", 3, "sn82014424"));
+    show("?q=gold&lccn=sn82014424");
+    await screen.findByText(/Only pages from/);
+    fireEvent.click(screen.getByRole("button", { name: "Newspapers: The Atlanta Intelligencer" }));
+    fireEvent.click(browseButton()!);
+    const heading = await screen.findByRole("heading", { name: "Pages of The Atlanta Intelligencer" });
+    expect(document.activeElement).toBe(heading);
+    expect(api.titlePages).toHaveBeenCalledWith("sn82014424", "v1", "oldest", null, expect.anything());
+    await screen.findByText("THE ATLANTA INTELLIGENCER. Wednesday Morning …");
+    expect(screen.getByText(/^2,000 pages on 500 days/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Load more" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Newest first" }));
+    await waitFor(() =>
+      expect(api.titlePages).toHaveBeenCalledWith("sn82014424", "v1", "newest", null, expect.anything()),
+    );
+    // Closing puts focus back on the newspaper filter, not on the body:
+    // with the close button…
+    const trigger = screen.getByRole("button", { name: "Newspapers: The Atlanta Intelligencer" });
+    fireEvent.click(screen.getByRole("button", { name: "Close the pages" }));
+    expect(screen.queryByRole("heading", { name: /^Pages of/ })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    // …and with Escape.
+    fireEvent.click(trigger);
+    fireEvent.click(browseButton()!);
+    const again = await screen.findByRole("heading", { name: "Pages of The Atlanta Intelligencer" });
+    expect(document.activeElement).toBe(again);
+    fireEvent.keyDown(again, { key: "Escape" });
+    expect(screen.queryByRole("heading", { name: /^Pages of/ })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("isn't offered when the API doesn't list pages without a word", async () => {
+    api.aggregate.mockResolvedValue(aggregate("P00001", 3, "sn82014424"));
+    show("?q=gold&lccn=sn82014424");
+    await screen.findByText(/Only pages from/);
+    fireEvent.click(screen.getByRole("button", { name: "Newspapers: The Atlanta Intelligencer" }));
+    await screen.findByRole("list", { name: "Chosen newspapers" });
+    expect(browseButton()).toBeNull();
+    expect(api.titlePages).not.toHaveBeenCalled();
   });
 });
 

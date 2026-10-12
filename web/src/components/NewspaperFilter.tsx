@@ -130,9 +130,33 @@ interface Props {
   /** Chosen LCCNs, sorted. */
   value: string[];
   onChange: (lccns: string[]) => void;
+  /**
+   * Lists a chosen paper's pages without a search word (#274). Given only
+   * when the API lists pages that way (`/v1/meta`'s `browse_pages`); each
+   * chosen paper then has "Browse pages". `returnFocus` puts focus back
+   * where the list was opened from, for when it closes.
+   */
+  onBrowse?: (lccn: string, returnFocus: () => void) => void;
 }
 
-export function NewspaperFilter({ id, titles, failed = false, onWant, value, onChange }: Props) {
+/**
+ * Focus back on the "Browse pages" button `from` while it can take focus,
+ * else on the filter's trigger (the panel holding `from` is closed, or the
+ * paper is no longer chosen), so closing the pages never leaves focus on
+ * the page's body.
+ */
+function focusOpener(from: HTMLElement, trigger: HTMLElement | null) {
+  const usable = (el: HTMLElement | null) => !!el && el.isConnected && !el.closest("[hidden]");
+  const to = usable(from)
+    ? from
+    : usable(trigger)
+      ? trigger
+      : // The search form was remounted: the trigger is a new element.
+        document.querySelector<HTMLElement>(".papers-filter__button");
+  to?.focus();
+}
+
+export function NewspaperFilter({ id, titles, failed = false, onWant, value, onChange, onBrowse }: Props) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   // The highlighted match (aria-activedescendant), or -1 for none.
@@ -331,6 +355,19 @@ export function NewspaperFilter({ id, titles, failed = false, onWant, value, onC
                   <span className="papers-filter__title">{t?.title ?? lccn}</span>
                   {t && <span className="papers-filter__detail">{titleDetail(t)}</span>}
                   <span className="papers-filter__actions">
+                    {onBrowse && (
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={(e) => {
+                          const from = e.currentTarget;
+                          setOpen(false);
+                          onBrowse(lccn, () => focusOpener(from, button.current));
+                        }}
+                      >
+                        Browse pages <span className="visually-hidden">of {t?.title ?? lccn}</span>
+                      </button>
+                    )}
                     <a href={locTitleUrl(lccn)} target="_blank" rel="noopener noreferrer">
                       Issues <span className="visually-hidden">of {t?.title ?? lccn}</span> at loc.gov
                     </a>

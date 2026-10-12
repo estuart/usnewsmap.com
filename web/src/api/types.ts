@@ -58,6 +58,12 @@ export interface Meta {
    * version has none, or the API's setting leaves them off.
    */
   congress?: CongressMeta | null;
+  /**
+   * Whether `/v1/hits` lists a newspaper's pages without a search word
+   * (#274, the API's `USNM_BROWSE_PAGES`): the newspaper filter offers
+   * "Browse pages" only then. Absent from older APIs, which don't.
+   */
+  browse_pages?: boolean;
 }
 
 /** A Congress series in `/v1/meta` (#229). */

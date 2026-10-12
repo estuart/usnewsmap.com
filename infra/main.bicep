@@ -71,6 +71,9 @@ param congressSearch bool = true
 @allowed(['', 'smaller', 'match'])
 param pageLanguageFilter string = ''
 
+@description('List a newspaper\'s pages without a search word (#274): /v1/hits with lccn and no q, and the site\'s "Browse pages". Off until its cost on the full index is measured: a list with no word reads every split for the title\'s pages (docs/configuration.md, USNM_BROWSE_PAGES).')
+param browsePages bool = false
+
 @description('Give each ingest release the Congress pages curated under curated/congress/ (#229, the ingest job\'s --congress): an index set of their own, rebuilt when the curated pages change and kept otherwise. Clearing it makes the next release publish a version without them (docs/operations.md, "Congress pages").')
 param congress bool = false
 
@@ -594,6 +597,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     americanStoriesSearch: americanStoriesSearch
     congressSearch: congressSearch
     pageLanguageFilter: pageLanguageFilter
+    browsePages: browsePages
   }
 }
 

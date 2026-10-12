@@ -466,6 +466,16 @@ select {
   border-color: var(--danger);
   color: var(--danger);
 }
+/* A newspaper's pages without a search word (#274), under the search form. */
+.paper-pages {
+  margin: 10px 16px;
+  padding: 12px 16px;
+  max-height: 70vh;
+  overflow-y: auto;
+  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
 .notice--demo {
   border-style: dashed;
   font-size: 0.9rem;

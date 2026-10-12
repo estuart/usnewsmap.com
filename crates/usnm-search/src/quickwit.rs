@@ -17,7 +17,7 @@ use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
 
 use crate::cache_metrics::{self, CacheReport};
-use crate::snippet::{matched_in, page_snippets};
+use crate::snippet::{matched_in, opening_snippet, page_snippets};
 use crate::thread_metrics::{self, ThreadReport};
 use crate::{
     ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
@@ -547,11 +547,18 @@ fn full_query(
 /// `query` with the filters and the hidden copies' clauses.
 fn scoped(query: String, filters: &Filters, indexes: &IndexSet, extra: Vec<String>) -> String {
     let mut parts = vec![query];
-    parts.extend(filter_clauses(filters, indexes));
+    parts.extend(scope(filters, indexes, extra));
+    parts.join(" AND ")
+}
+
+/// The filters' clauses, the decades', the hidden copies' and `extra`:
+/// never empty, as the filters always name the days.
+fn scope(filters: &Filters, indexes: &IndexSet, extra: Vec<String>) -> Vec<String> {
+    let mut parts = filter_clauses(filters, indexes);
     parts.extend(decade_clause(filters, indexes));
     parts.extend(hidden_clauses(indexes));
     parts.extend(extra);
-    parts.join(" AND ")
+    parts
 }
 
 fn histogram(spec: &BucketSpec, min_doc_count: u64) -> Value {
@@ -659,6 +666,12 @@ pub fn hits_request(
     indexes: &IndexSet,
     page: &HitsQuery,
 ) -> Result<Value, SearchError> {
+    let query = full_query(node, filters, indexes, selection(page))?;
+    Ok(page_request(query, page))
+}
+
+/// The place or title a page list is limited to.
+fn selection(page: &HitsQuery) -> Vec<String> {
     let mut extra = Vec::new();
     if let Some(p) = &page.place_id {
         extra.push(format!("place_id:{p}"));
@@ -666,8 +679,29 @@ pub fn hits_request(
     if let Some(l) = &page.lccn {
         extra.push(format!("lccn:{l}"));
     }
+    extra
+}
+
+/// Pages without a query (#274): the filters' clauses alone, with no text
+/// term, in date order. Quickwit then has no posting list of a word to
+/// skip splits by: it reads the `lccn` (or `place_id`) and `day` postings
+/// of every split of the version, and skips splits only as any search
+/// limited to some decades does (05 §5.5.5).
+/// `Relevant` is refused, as by every backend.
+pub fn browse_request(
+    filters: &Filters,
+    indexes: &IndexSet,
+    page: &HitsQuery,
+) -> Result<Value, SearchError> {
+    crate::browse_order(page.sort)?;
+    let query = scope(filters, indexes, selection(page)).join(" AND ");
+    Ok(page_request(query, page))
+}
+
+/// A page of a hit list for `query`, with the days counted when asked.
+fn page_request(query: String, page: &HitsQuery) -> Value {
     let mut req = json!({
-        "query": full_query(node, filters, indexes, extra)?,
+        "query": query,
         "max_hits": page.limit,
         "start_offset": page.offset,
         "sort_by": sort_by(page.sort)
@@ -677,7 +711,7 @@ pub fn hits_request(
     if page.days {
         req["aggs"] = json!({ "days": { "cardinality": { "field": "day" } } });
     }
-    Ok(req)
+    req
 }
 
 /// How many pages only American Stories' text finds
@@ -949,6 +983,23 @@ pub fn parse_hits(
     query: &Node,
     indexes: &IndexSet,
 ) -> Result<HitsPage, SearchError> {
+    hits_page(resp, Some(query), indexes)
+}
+
+/// The pages of a [`browse_request`] (#274): each with the opening of its
+/// text as its snippet ([`opening_snippet`]), and no `snippet_source` or
+/// `matched_in`.
+pub fn parse_browse(resp: SearchResponse, indexes: &IndexSet) -> Result<HitsPage, SearchError> {
+    hits_page(resp, None, indexes)
+}
+
+/// The hits of `resp`, with snippets of `query`, or without one the
+/// opening of each page's text.
+fn hits_page(
+    resp: SearchResponse,
+    query: Option<&Node>,
+    indexes: &IndexSet,
+) -> Result<HitsPage, SearchError> {
     let american_stories = indexes.american_stories();
     let analyzer = indexes.analyzer();
     let layout = indexes.text_layout();
@@ -962,13 +1013,25 @@ pub fn parse_hits(
         // A Japanese page's come from its printed text: its indexed text is
         // folded tokens with spaces between them.
         let text = d.text.as_deref().unwrap_or_default();
-        let (snippets, snippet_source) = match &d.printed {
-            Some(printed) => (ja_snippets(printed, query, analyzer), None),
-            None => page_snippets(text, d.text_as.as_deref(), query, american_stories, layout),
+        let (snippets, snippet_source, matched_in) = match query {
+            None => (
+                opening_snippet(d.printed.as_deref().unwrap_or(text)),
+                None,
+                None,
+            ),
+            Some(query) => {
+                let (snippets, snippet_source) = match &d.printed {
+                    Some(printed) => (ja_snippets(printed, query, analyzer), None),
+                    None => {
+                        page_snippets(text, d.text_as.as_deref(), query, american_stories, layout)
+                    }
+                };
+                // Which texts match, from the same stored texts: no extra query.
+                let matched_in = (american_stories && d.printed.is_none())
+                    .then(|| matched_in(text, d.text_as.as_deref(), query, layout));
+                (snippets, snippet_source, matched_in)
+            }
         };
-        // Which texts match, from the same stored texts: no extra query.
-        let matched_in = (american_stories && d.printed.is_none())
-            .then(|| matched_in(text, d.text_as.as_deref(), query, layout));
         // A Congress unit's first page is no front page (#229), as its
         // document says and the memory backend reads.
         let front_page = d.seq == 1 && !d.congress.is_congress();
@@ -1063,6 +1126,18 @@ impl SearchBackend for QuickwitBackend {
             .search(indexes, &hits_request(query, filters, indexes, page)?)
             .await?;
         parse_hits(resp, query, indexes)
+    }
+
+    async fn browse(
+        &self,
+        indexes: &IndexSet,
+        filters: &Filters,
+        page: &HitsQuery,
+    ) -> Result<HitsPage, SearchError> {
+        let resp = self
+            .search(indexes, &browse_request(filters, indexes, page)?)
+            .await?;
+        parse_browse(resp, indexes)
     }
 
     async fn american_stories_only(
@@ -1681,6 +1756,62 @@ mod tests {
             parse_hits(first, &q, &stories(false)).unwrap().days,
             Some(2)
         );
+    }
+
+    /// A title's pages without a query (#274): the filters alone, in date
+    /// order, never by relevance, and each page's opening as its snippet.
+    #[test]
+    fn browsing_sends_the_filters_alone_and_decodes_openings() {
+        let page = HitsQuery {
+            place_id: None,
+            lccn: Some("sn99000001".into()),
+            sort: HitSort::Newest,
+            offset: 0,
+            limit: 20,
+            days: true,
+        };
+        let mut f = filters();
+        f.lccns = vec!["sn99000001".into()];
+        let r = browse_request(&f, &stories(true), &page).unwrap();
+        assert_eq!(
+            r["query"],
+            format!(
+                "day:[{} TO {}] AND state:IN [GA SC] AND lccn:IN [sn99000001] \
+                 AND front_page:true AND lccn:sn99000001",
+                f.from_day(),
+                f.to_day()
+            )
+        );
+        assert_eq!(r["sort_by"], "day,sort_key");
+        assert_eq!(r["max_hits"], 20);
+        assert_eq!(r["aggs"]["days"]["cardinality"]["field"], "day");
+        let relevant = HitsQuery {
+            sort: HitSort::Relevant,
+            ..page.clone()
+        };
+        assert!(matches!(
+            browse_request(&f, &none(), &relevant),
+            Err(SearchError::Unsupported(_))
+        ));
+        let resp: SearchResponse = serde_json::from_value(json!({
+            "num_hits": 2,
+            "hits": [
+                {"doc_id": "sn99000001_1896-07-10_ed-1_seq-1", "date": "1896-07-10T00:00:00Z",
+                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1,
+                 "text": "THE <BEE>\nOmaha", "text_as": "other"},
+                {"doc_id": "sn99000001_1896-07-10_ed-1_seq-2", "date": "1896-07-10T00:00:00Z",
+                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 2}
+            ]
+        }))
+        .unwrap();
+        let page = parse_browse(resp, &stories(true)).unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(page.hits[0].snippets, vec!["THE &lt;BEE&gt; Omaha"]);
+        assert!(page.hits[1].snippets.is_empty());
+        assert!(page
+            .hits
+            .iter()
+            .all(|h| h.matched_in.is_none() && h.snippet_source.is_none()));
     }
 
     /// A Congress page's stored fields come back with it, and the first page

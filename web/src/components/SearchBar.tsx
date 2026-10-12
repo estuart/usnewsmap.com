@@ -19,6 +19,8 @@ interface Props {
   titlesFailed?: boolean;
   /** Asks for the newspapers' list: it loads when the newspaper filter is first opened. */
   onWantTitles?: () => void;
+  /** Lists a newspaper's pages without a search word (#274), when `meta.browse_pages` says the API can. */
+  onBrowsePaper?: (lccn: string, returnFocus: () => void) => void;
 }
 
 const MODES: { value: Mode; label: string }[] = [
@@ -102,7 +104,16 @@ export function searchBounds(
   return lo && hi ? { from: lo, to: hi } : undefined;
 }
 
-export function SearchBar({ view, meta, onSearch, busy = false, titles, titlesFailed, onWantTitles }: Props) {
+export function SearchBar({
+  view,
+  meta,
+  onSearch,
+  busy = false,
+  titles,
+  titlesFailed,
+  onWantTitles,
+  onBrowsePaper,
+}: Props) {
   const id = useId();
   // The parent remounts this form (via `key`) when the search in the URL
   // changes, so back/forward and example cards replace the draft.
@@ -337,6 +348,7 @@ export function SearchBar({ view, meta, onSearch, busy = false, titles, titlesFa
             onWant={onWantTitles}
             value={draft.lccn}
             onChange={(lccn) => setDraft({ ...draft, lccn })}
+            onBrowse={meta?.browse_pages ? onBrowsePaper : undefined}
           />
         )}
       </div>

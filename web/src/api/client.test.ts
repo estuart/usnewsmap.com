@@ -253,6 +253,17 @@ describe("api client", () => {
     expect(searchQuery({ q: "gold", mode: "all", lang: [] }, "v").toString()).toBe("q=gold&v=v");
   });
 
+  it("asks for a newspaper's pages without a search word (#274)", async () => {
+    respond({ index_version: "v1" });
+    await api.titlePages("sn82014424", "v1", "oldest", null);
+    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe("/v1/hits?lccn=sn82014424&limit=20&v=v1");
+    respond({ index_version: "v1" });
+    await api.titlePages("sn82014424", "v1", "newest", "abc");
+    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(
+      "/v1/hits?lccn=sn82014424&limit=20&sort=newest&cursor=abc&v=v1",
+    );
+  });
+
   it("sends the mode for plain words and query syntax as-is", () => {
     const q = (p: Parameters<typeof searchQuery>[0]) => searchQuery(p, "v").toString();
     expect(q({ q: "cross of gold", mode: "phrase" })).toBe("q=cross+of+gold&mode=phrase&v=v");

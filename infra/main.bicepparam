@@ -21,6 +21,7 @@ param americanStories = bool(readEnvironmentVariable('USNM_AMERICAN_STORIES', 'f
 param americanStoriesSearch = bool(readEnvironmentVariable('USNM_AMERICAN_STORIES_SEARCH', 'true'))
 param congressSearch = bool(readEnvironmentVariable('USNM_CONGRESS_SEARCH', 'true'))
 param pageLanguageFilter = readEnvironmentVariable('USNM_PAGE_LANGUAGE_FILTER', '')
+param browsePages = bool(readEnvironmentVariable('USNM_BROWSE_PAGES', 'false'))
 param congress = bool(readEnvironmentVariable('USNM_CONGRESS', 'false'))
 param congressJob = bool(readEnvironmentVariable('USNM_CONGRESS_JOB', 'false'))
 param serialSetJob = bool(readEnvironmentVariable('USNM_SERIALSET_JOB', 'false'))

@@ -1927,6 +1927,135 @@ async fn hits_by_title_uses_lccn() {
     assert_eq!(body["total"], 0);
 }
 
+async fn browsing_state(on: bool) -> Arc<AppState> {
+    let mut cfg = config();
+    cfg.browse_pages = on;
+    Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ))
+}
+
+/// A title's pages without a query (#274): only with `USNM_BROWSE_PAGES`,
+/// which `/v1/meta` reports; every page of the one title, by date, each
+/// with its opening and an unhighlighted viewer link.
+#[tokio::test]
+async fn a_titles_pages_are_listed_without_a_query_only_when_switched_on() {
+    let off = state_with(None).await;
+    let (_, _, meta) = get(&off, "/v1/meta").await;
+    assert_eq!(meta["browse_pages"], false);
+    let (status, _, body) = get(&off, "/v1/hits?lccn=sn99000002").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("`q`"), "{body}");
+
+    let s = browsing_state(true).await;
+    let (_, _, meta) = get(&s, "/v1/meta").await;
+    assert_eq!(meta["browse_pages"], true);
+    let mut days: Vec<u32> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|i| load_docs(i))
+        .filter(|d| d.lccn == "sn99000002")
+        .map(|d| d.day)
+        .collect();
+    days.sort_unstable();
+    let (status, _, body) = get(&s, "/v1/hits?lccn=sn99000002&limit=5").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], days.len());
+    assert_eq!(body["title"]["lccn"], "sn99000002");
+    assert_eq!(body["place"], Value::Null);
+    assert!(body["days"].as_u64().unwrap() > 0);
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 5);
+    let first = date_from_day(days[0]).to_string();
+    assert_eq!(items[0]["date"], first.as_str());
+    for i in items {
+        assert_eq!(i["lccn"], "sn99000002");
+        let snippets = i["snippets"].as_array().unwrap();
+        assert_eq!(snippets.len(), 1, "{i}");
+        assert!(!snippets[0].as_str().unwrap().contains("<mark>"), "{i}");
+        assert!(i.get("matched_in").is_none());
+        let viewer = i["links"]["viewer"].as_str().unwrap();
+        assert!(!viewer.contains("&q="), "{viewer}");
+    }
+    // The next page carries on from the cursor, and newest first ends where
+    // oldest first began.
+    let cursor = body["next_cursor"].as_str().unwrap();
+    let (status, _, next) = get(
+        &s,
+        &format!("/v1/hits?lccn=sn99000002&limit=5&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(next.get("days").is_none());
+    let last = date_from_day(*days.last().unwrap()).to_string();
+    let (_, _, newest) = get(&s, "/v1/hits?lccn=sn99000002&limit=1&sort=newest").await;
+    assert_eq!(newest["items"][0]["date"], last.as_str());
+    // Dates and the other filters narrow the list.
+    let (_, _, narrowed) = get(
+        &s,
+        "/v1/hits?lccn=sn99000002&from=1896-01-01&to=1896-12-31&front=true&limit=50",
+    )
+    .await;
+    let n = narrowed["total"].as_u64().unwrap();
+    assert!(n > 0 && n < days.len() as u64, "{n}");
+    assert!(narrowed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|i| i["front_page"] == true && i["date"].as_str().unwrap().starts_with("1896")));
+
+    // One title, no place, no relevance, nothing that needs a query.
+    for uri in [
+        "/v1/hits",
+        "/v1/hits?lccn=sn99000001,sn99000002",
+        "/v1/hits?lccn=sn99000002&place=P00002",
+        "/v1/hits?place=P00002",
+        "/v1/hits?lccn=sn99000002&sort=relevant",
+        "/v1/hits?lccn=sn99000002&mode=all",
+        "/v1/hits?lccn=sn99000002&bucket=year",
+        "/v1/hits?lccn=sn99000002&source=congress",
+    ] {
+        let (status, _, body) = get(&s, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+    }
+    let (status, _, _) = get(&s, "/v1/hits?lccn=sn99999999").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = get(&s, "/v1/hits?lccn=sn99999999&v=fixture-v1").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // A stale `v` is redirected before the title is looked up: a title of
+    // an older version may be gone from this one, and the client learns of
+    // the new version from the redirect, not from a 404 at the old URL.
+    let (status, headers, body) = get(&s, "/v1/hits?lccn=sn99999999&v=old-version").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT, "{body}");
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    let location = header_str(&headers, header::LOCATION);
+    assert!(
+        location.contains("lccn=sn99999999") && location.ends_with("&v=fixture-v1"),
+        "{location}"
+    );
+    // A search with `q` answers as before, under a key of its own.
+    let (status, _, searched) = get(&s, "/v1/hits?q=gold&lccn=sn99000002&limit=5").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(searched["total"].as_u64().unwrap() < days.len() as u64);
+    // A stale `v` is redirected to the current version's canonical URL.
+    let resp = app(s.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/hits?lccn=sn99000002&v=old-version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+    let location = header_str(resp.headers(), header::LOCATION);
+    assert!(
+        location.contains("lccn=sn99000002") && !location.contains("q="),
+        "{location}"
+    );
+}
+
 #[tokio::test]
 async fn coverage_matches_aggregate_baseline() {
     let s = state_with(None).await;

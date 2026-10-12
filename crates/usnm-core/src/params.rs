@@ -199,82 +199,15 @@ impl SearchRequest {
         let near = raw.u8_in("near", query::MAX_SLOP)?.unwrap_or(0);
         let fuzzy = raw.u8_in("fuzzy", query::MAX_FUZZY)?.unwrap_or(0);
         let query = parse_for(q, mode, near, fuzzy, analyzers)?;
-
-        let date = |key: &str, default: NaiveDate| -> Result<NaiveDate, ParamError> {
-            raw.get(key)
-                .map(|v| {
-                    NaiveDate::parse_from_str(v, "%Y-%m-%d")
-                        .map_err(|_| invalid(key, "must be YYYY-MM-DD"))
-                })
-                .transpose()
-                .map(|d| d.unwrap_or(default).clamp(bounds.0, bounds.1))
-        };
-        let from = date("from", bounds.0)?;
-        let to = date("to", bounds.1)?;
-        if from > to {
-            return Err(invalid("from", "must not be after `to`"));
-        }
-
-        let states = list(raw.get("state"), "state", |s| {
-            (s.len() == 2 && s.bytes().all(|b| b.is_ascii_alphabetic()))
-                .then(|| s.to_ascii_uppercase())
-        })?;
-        let lccns = list(raw.get("lccn"), "lccn", |s| {
-            (!s.is_empty()
-                && s.len() <= 16
-                && s.bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
-            .then(|| s.to_owned())
-        })?;
-        let langs = raw.langs()?;
-        let front_only = match raw.get("front") {
-            None | Some("false") | Some("0") => false,
-            Some("true") | Some("1") => true,
-            Some(_) => return Err(invalid("front", "must be true or false")),
-        };
-        let source = match raw.get("source") {
-            None => Source::News,
-            Some(v) => Source::parse(v)
-                .ok_or_else(|| invalid("source", "must be news, congress or all"))?,
-        };
-        let series = list(raw.get("series"), "series", |s| {
-            CONGRESS_SERIES.contains(&s).then(|| s.to_owned())
-        })?;
-        if !series.is_empty() && !source.congress() {
-            return Err(invalid("series", "needs source=congress or source=all"));
-        }
-        // Newspaper-only filters mean nothing for Congress pages, which have
-        // no title and no front page.
-        if source == Source::Congress {
-            if !lccns.is_empty() {
-                return Err(invalid(
-                    "lccn",
-                    "applies to newspapers, not source=congress",
-                ));
-            }
-            if front_only {
-                return Err(invalid(
-                    "front",
-                    "applies to newspapers, not source=congress",
-                ));
-            }
-        }
+        let (filters, source) = scope(raw, bounds)?;
         let bucket = match raw.get("bucket") {
-            None | Some("auto") => BucketUnit::auto(from, to),
+            None | Some("auto") => BucketUnit::auto(filters.from, filters.to),
             Some(b) => BucketUnit::parse(b)
                 .ok_or_else(|| invalid("bucket", "must be auto, year, month, week or day"))?,
         };
         Ok(Self {
             query,
-            filters: Filters {
-                from,
-                to,
-                states,
-                lccns,
-                langs,
-                front_only,
-                series,
-            },
+            filters,
             source,
             bucket,
             version: raw.get("v").map(str::to_owned),
@@ -320,6 +253,142 @@ impl SearchRequest {
         c.push_str("&v=");
         c.extend(form_urlencoded::byte_serialize(version.as_bytes()));
         c
+    }
+}
+
+/// The filters and corpus of a request, with or without a query: dates
+/// clamped to the corpus `bounds`, lists validated and sorted, and the
+/// newspaper-only filters refused for Congress pages.
+fn scope(raw: &RawParams, bounds: (NaiveDate, NaiveDate)) -> Result<(Filters, Source), ParamError> {
+    let date = |key: &str, default: NaiveDate| -> Result<NaiveDate, ParamError> {
+        raw.get(key)
+            .map(|v| {
+                NaiveDate::parse_from_str(v, "%Y-%m-%d")
+                    .map_err(|_| invalid(key, "must be YYYY-MM-DD"))
+            })
+            .transpose()
+            .map(|d| d.unwrap_or(default).clamp(bounds.0, bounds.1))
+    };
+    let from = date("from", bounds.0)?;
+    let to = date("to", bounds.1)?;
+    if from > to {
+        return Err(invalid("from", "must not be after `to`"));
+    }
+
+    let states = list(raw.get("state"), "state", |s| {
+        (s.len() == 2 && s.bytes().all(|b| b.is_ascii_alphabetic())).then(|| s.to_ascii_uppercase())
+    })?;
+    let lccns = list(raw.get("lccn"), "lccn", |s| {
+        (!s.is_empty()
+            && s.len() <= 16
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+        .then(|| s.to_owned())
+    })?;
+    let langs = raw.langs()?;
+    let front_only = match raw.get("front") {
+        None | Some("false") | Some("0") => false,
+        Some("true") | Some("1") => true,
+        Some(_) => return Err(invalid("front", "must be true or false")),
+    };
+    let source = match raw.get("source") {
+        None => Source::News,
+        Some(v) => {
+            Source::parse(v).ok_or_else(|| invalid("source", "must be news, congress or all"))?
+        }
+    };
+    let series = list(raw.get("series"), "series", |s| {
+        CONGRESS_SERIES.contains(&s).then(|| s.to_owned())
+    })?;
+    if !series.is_empty() && !source.congress() {
+        return Err(invalid("series", "needs source=congress or source=all"));
+    }
+    // Newspaper-only filters mean nothing for Congress pages, which have
+    // no title and no front page.
+    if source == Source::Congress {
+        if !lccns.is_empty() {
+            return Err(invalid(
+                "lccn",
+                "applies to newspapers, not source=congress",
+            ));
+        }
+        if front_only {
+            return Err(invalid(
+                "front",
+                "applies to newspapers, not source=congress",
+            ));
+        }
+    }
+    Ok((
+        Filters {
+            from,
+            to,
+            states,
+            lccns,
+            langs,
+            front_only,
+            series,
+        },
+        source,
+    ))
+}
+
+/// The search parameters that make no sense without a query: refused when
+/// pages are listed without one.
+const QUERY_ONLY_KEYS: &[&str] = &["mode", "near", "fuzzy", "bucket"];
+
+/// A request for pages without a query (#274): `/v1/hits` with `lccn` and
+/// no `q`, which lists a title's pages by date. The filters are a search's,
+/// newspapers only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BrowseRequest {
+    pub filters: Filters,
+    /// `index_version` the client expects, if any.
+    pub version: Option<String>,
+}
+
+impl BrowseRequest {
+    /// Parse and validate as [`SearchRequest::from_raw`] does, without `q`.
+    /// `mode`, `near`, `fuzzy` and `bucket` need a query and are refused, as
+    /// is a `source` other than the newspapers.
+    pub fn from_raw(raw: &RawParams, bounds: (NaiveDate, NaiveDate)) -> Result<Self, ParamError> {
+        if let Some(key) = QUERY_ONLY_KEYS.iter().find(|k| raw.get(k).is_some()) {
+            return Err(invalid(key, "applies to a search with `q`"));
+        }
+        let (filters, source) = scope(raw, bounds)?;
+        if source != Source::News {
+            return Err(invalid(
+                "source",
+                "pages are listed without `q` for newspapers only",
+            ));
+        }
+        Ok(Self {
+            filters,
+            version: raw.get("v").map(str::to_owned),
+        })
+    }
+
+    /// Canonical query string, without `v`: the filters in a search's
+    /// order, with no `q` or `bucket`, so it never names a search's
+    /// response.
+    pub fn canonical(&self) -> String {
+        let f = &self.filters;
+        let mut s = form_urlencoded::Serializer::new(String::new());
+        s.append_pair("from", &f.from.format("%Y-%m-%d").to_string());
+        if f.front_only {
+            s.append_pair("front", "true");
+        }
+        if !f.langs.is_empty() {
+            s.append_pair("lang", &f.langs.join(","));
+        }
+        if !f.lccns.is_empty() {
+            s.append_pair("lccn", &f.lccns.join(","));
+        }
+        if !f.states.is_empty() {
+            s.append_pair("state", &f.states.join(","));
+        }
+        s.append_pair("to", &f.to.format("%Y-%m-%d").to_string());
+        s.finish()
     }
 }
 
@@ -515,6 +584,44 @@ mod tests {
         assert_eq!(
             raw.reject_unknown(&[]).unwrap_err(),
             ParamError::Unknown("_".into())
+        );
+    }
+
+    fn browse(q: &str) -> Result<BrowseRequest, ParamError> {
+        BrowseRequest::from_raw(&RawParams::parse(q)?, bounds())
+    }
+
+    #[test]
+    fn listing_pages_without_a_query_takes_the_filters_alone() {
+        let r =
+            browse("lccn=sn99000002&to=1900-01-01&from=1600-01-01&state=ga&v=pages-v2").unwrap();
+        assert_eq!(r.filters.from, bounds().0);
+        assert_eq!(r.filters.lccns, ["sn99000002"]);
+        assert_eq!(r.version.as_deref(), Some("pages-v2"));
+        // No `q` and no `bucket`: never a search's canonical URL.
+        assert_eq!(
+            r.canonical(),
+            "from=1756-01-01&lccn=sn99000002&state=GA&to=1900-01-01"
+        );
+        assert_eq!(
+            browse("lccn=sn99000002&source=news").unwrap().canonical(),
+            browse("lccn=sn99000002").unwrap().canonical()
+        );
+        let invalid = |q: &str| match browse(q) {
+            Err(ParamError::Invalid { name, .. }) => name,
+            other => panic!("{q}: {other:?}"),
+        };
+        for key in ["mode=all", "near=3", "fuzzy=1", "bucket=year"] {
+            assert_eq!(
+                invalid(&format!("lccn=sn99000002&{key}")),
+                key.split('=').next().unwrap()
+            );
+        }
+        assert_eq!(invalid("lccn=sn99000002&source=all"), "source");
+        assert_eq!(invalid("lccn=SN-1"), "lccn");
+        assert_eq!(
+            invalid("lccn=sn99000002&from=1900-01-01&to=1899-01-01"),
+            "from"
         );
     }
 

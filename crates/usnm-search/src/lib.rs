@@ -374,6 +374,17 @@ impl HitSort {
     }
 }
 
+/// [`SearchBackend::browse`]'s refusal of [`HitSort::Relevant`]: with no
+/// query, no page mentions anything more than another.
+pub fn browse_order(sort: HitSort) -> Result<(), SearchError> {
+    match sort {
+        HitSort::Relevant => Err(SearchError::Unsupported(
+            "most mentions first without a query".into(),
+        )),
+        HitSort::Oldest | HitSort::Newest => Ok(()),
+    }
+}
+
 /// Which hits to return. With neither `place_id` nor `lccn`, every match.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HitsQuery {
@@ -505,6 +516,24 @@ pub trait SearchBackend: Send + Sync {
         filters: &Filters,
         page: &HitsQuery,
     ) -> Result<HitsPage, SearchError>;
+
+    /// Pages without a query (#274): every page `filters` and `page`'s
+    /// place or title select, by date in `page.sort` order and then by
+    /// `sort_key`, as [`Self::hits`] lists them. Each hit's snippet is the
+    /// opening of its text ([`snippet::opening_snippet`]); none has
+    /// `snippet_source` or `matched_in`. With no query there is no
+    /// relevance, so [`HitSort::Relevant`] is refused. A backend without it
+    /// refuses.
+    async fn browse(
+        &self,
+        _indexes: &IndexSet,
+        _filters: &Filters,
+        _page: &HitsQuery,
+    ) -> Result<HitsPage, SearchError> {
+        Err(SearchError::Unsupported(
+            "listing pages without a query".into(),
+        ))
+    }
 
     /// How many of the pages a search of both texts finds match the query
     /// in American Stories' text but not in LoC's (05 §5.5.4): the hits
