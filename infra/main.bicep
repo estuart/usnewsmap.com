@@ -207,7 +207,7 @@ param ocrNodeIps string = ''
 @description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
 
-@description('Schedule for the OCR pickup job usnm-ocrsync-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
+@description('Schedule for the OCR pickup job usnm-ocrs-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
 param ocrSyncCron string = '17 * * * *'
 
 @description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name (USNM_OCR_SEED_* and USNM_OCR_BULK_*; docs/operations.md). Seeding stays off while USNM_OCR_SEED_PLAN is empty (ADR-0015 decision 7).')
@@ -272,6 +272,11 @@ var searcherName = 'usnm-search-ca-${env}'
 // not 'congress': with a 16-character environment name the name is 30
 // characters, within the Container Apps job limit (ingestjobs.bicep checks it).
 var congressJobName = 'usnm-cong-caj-${env}'
+// The OCR pickup job (ocrNodes, 12 §12.5 Step 8), in ADR-0017's form.
+// 'ocrs', not 'ocrsync': with a 16-character environment name the name is
+// 30 characters, within the Container Apps job limit (ingestjobs.bicep
+// checks it).
+var ocrSyncJobName = 'usnm-ocrs-caj-${env}'
 var appOrigin = 'https://${appName}.${containerEnv.outputs.defaultDomain}'
 var domainOrigins = empty(dnsZoneName) ? [] : ['https://${dnsZoneName}', 'https://www.${dnsZoneName}']
 var siteOrigins = union(allowedOrigins, domainOrigins, [appOrigin])
@@ -699,6 +704,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     jaOcrReplicas: jaOcrReplicas
     rootImage: '${registry.outputs.loginServer}/${quickwitPin.image}@${quickwitPin.digest}'
     ocrSync: ocrNodes
+    ocrSyncJobName: ocrSyncJobName
     ocrQueueEndpoint: ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
     ocrBlobEndpoint: ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
     ocrSyncCron: ocrSyncCron == 'manual' ? '' : ocrSyncCron

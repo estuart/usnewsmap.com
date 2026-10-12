@@ -1032,7 +1032,7 @@ Check it with `pct exec 211 -- cat /tank/ocr/scans/status-full.json` and `pct ex
 
 ## OCR pickup: ocr-sync (#296)
 
-`usnm-ingest ocr-sync` takes the nodes' output into the lake ([12 §12.5 Step 8](design/12-onprem-ocr-pipeline.md)). It runs hourly at minute 17 (`USNM_OCR_SYNC_CRON`; `manual` turns the schedule off) as `usnm-ocrsync-caj-<env>` (saved as `OCR_SYNC_JOB`), on the ingest image as `id-usnm-ingest`, 0.5 vCPU and 1 GiB. The provision creates the job only when `USNM_OCR_NODES` and the ingest jobs are on, together with the exchange account's `ocr-quarantine` container, the identity's grant on it and two alerts. Runs take the Cosmos lock `ops/ocr-sync`, so two never overlap. Logs carry page ids, paths and reason codes, never text.
+`usnm-ingest ocr-sync` takes the nodes' output into the lake ([12 §12.5 Step 8](design/12-onprem-ocr-pipeline.md)). It runs hourly at minute 17 (`USNM_OCR_SYNC_CRON`; `manual` turns the schedule off) as `usnm-ocrs-caj-<env>` (saved as `OCR_SYNC_JOB`; `usnm-ocrsync-caj-<env>` before the October 2026 rename, #309), on the ingest image as `id-usnm-ingest`, 0.5 vCPU and 1 GiB. The provision creates the job only when `USNM_OCR_NODES` and the ingest jobs are on, together with the exchange account's `ocr-quarantine` container, the identity's grant on it and two alerts. Runs take the Cosmos lock `ops/ocr-sync`, so two never overlap. Logs carry page ids, paths and reason codes, never text.
 
 Each run:
 
@@ -1089,7 +1089,7 @@ Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismat
 scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
 ```
 
-**Alerts** (with alert emails), severity 3: `usnm-ocrsync-failed-alert-<env>` when an execution fails, and `usnm-ocrsync-backlog-alert-<env>` when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
+**Alerts** (with alert emails), severity 3: `usnm-ocrs-failed-alert-<env>` when an execution fails, and `usnm-ocrs-backlog-alert-<env>` when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
 
 ## Our OCR in releases (#296)
 

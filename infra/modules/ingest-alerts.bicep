@@ -23,7 +23,7 @@ param tags object
 param nameSuffix string
 param workspaceId string
 param actionGroupId string
-@description('Alert on the OCR pickup job, usnm-ocrsync-caj-<env> (with the on-prem OCR nodes, 12 §12.5 Step 8).')
+@description('Alert on the OCR pickup job, usnm-ocrs-caj-<env> (with the on-prem OCR nodes, 12 §12.5 Step 8).')
 param ocrSync bool = false
 
 // Every error exit of usnm-ingest ends with one "command failed" line: the
@@ -337,10 +337,12 @@ var rules = [
   }
 ]
 
-// The OCR pickup job (usnm-ocrsync-caj-*, 12 §12.5 Step 8), at severity 3:
+// The OCR pickup job (usnm-ocrs-caj-*, 12 §12.5 Step 8), at severity 3:
 // a failed pickup touches no published index, and the next hourly run
 // continues it. Its "command failed" line, or the platform's events for a
 // replica that died without one. Split by Execution and Reason as above.
+// The container is still called ocrsync (the job was usnm-ocrsync-caj-{env}
+// until the October 2026 rename, #309), so the console queries match both.
 var ocrSyncFailed = '''
 let lines = ContainerAppConsoleLogs
     | where ContainerName == "ocrsync"
@@ -351,7 +353,7 @@ let lines = ContainerAppConsoleLogs
     | project TimeGenerated, Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName,
         Detail = tostring(j.fields.error);
 let platform = ContainerAppSystemLogs
-    | where JobName startswith "usnm-ocrsync-caj-" or ContainerAppName startswith "usnm-ocrsync-caj-"
+    | where JobName startswith "usnm-ocrs-caj-" or ContainerAppName startswith "usnm-ocrs-caj-"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Reason in ("BackoffLimitExceeded", "DeadlineExceeded")
         or (Log contains "terminated with exit code" and Log !contains "exit code '0'")
@@ -373,14 +375,16 @@ union lines, platform
 // part it left (oldest_age_s), from the parts' creation times on the
 // server. Parts left that long are refused by nothing and taken by
 // nothing: a run that keeps stopping at its max runtime, or a pickup
-// that can't read them.
+// that can't read them. The latest line of any job counts, not each job's
+// own, so a run of the job under its old name (usnm-ocrsync-caj-{env})
+// isn't reported again after the rename.
 var ocrSyncBacklog = '''
 ContainerAppConsoleLogs
 | where ContainerName == "ocrsync"
 | where Log has "ocr sync finished"
 | extend j = parse_json(Log)
 | where tostring(j.fields.message) == "ocr sync finished"
-| summarize arg_max(TimeGenerated, j) by ContainerAppName
+| summarize arg_max(TimeGenerated, j, ContainerAppName)
 | extend OldestHours = toint(tolong(j.fields.oldest_age_s) / 3600), PartsLeft = tolong(j.fields.parts_left)
 | where OldestHours > 72
 | project TimeGenerated, Job = ContainerAppName, Detail = strcat(PartsLeft, " parts left, the oldest ", OldestHours, " hours old")
@@ -388,9 +392,9 @@ ContainerAppConsoleLogs
 
 var ocrSyncRules = [
   {
-    name: 'usnm-ocrsync-failed-alert-${nameSuffix}'
+    name: 'usnm-ocrs-failed-alert-${nameSuffix}'
     displayName: 'OCR pickup failed'
-    description: 'An execution of the OCR pickup job (usnm-ocrsync-caj) failed in the last 15 minutes; Execution and Reason say which and why. Nothing published changes, and the next hourly run continues. Next: the job\'s console logs for its last lines (scripts/logs.sh --env <env> --query-name job-executions --span 1d); fix the cause, then start the job again or wait for the schedule.'
+    description: 'An execution of the OCR pickup job (usnm-ocrs-caj) failed in the last 15 minutes; Execution and Reason say which and why. Nothing published changes, and the next hourly run continues. Next: the job\'s console logs for its last lines (scripts/logs.sh --env <env> --query-name job-executions --span 1d); fix the cause, then start the job again or wait for the schedule.'
     severity: 3
     frequency: 'PT5M'
     window: 'PT30M'
@@ -398,7 +402,7 @@ var ocrSyncRules = [
     dimensions: ['Execution', 'Reason']
   }
   {
-    name: 'usnm-ocrsync-backlog-alert-${nameSuffix}'
+    name: 'usnm-ocrs-backlog-alert-${nameSuffix}'
     displayName: 'OCR output waiting over 72 hours'
     description: 'The OCR pickup\'s last run left node output in ocr-out that is more than 72 hours old; Detail says how much. ocr-out deletes blobs 30 days after their last change. Next: reference status/ocr-local.json (parts_left, oldest_age_s) and the pickup\'s logs; raise --max-parts or start extra executions (scripts/start-job.sh --job OCR_SYNC_JOB -- ocr-sync).'
     severity: 3
