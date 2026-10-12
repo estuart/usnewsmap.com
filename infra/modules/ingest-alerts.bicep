@@ -20,9 +20,15 @@
 
 param location string
 param tags object
-param nameSuffix string
 param workspaceId string
 param actionGroupId string
+@description('The jobs the queries watch, by their exact names (infra/naming.bicep), so the queries match no other name form.')
+param ingestJobName string
+param backfillJobName string
+param jaOcrJobName string
+param jaAuditJobName string
+@description('The alert rules\' names (infra/naming.bicep): ingestJobFailed, jaOcrJobFailed, ingestNotProgressing, releaseStalled, backfillStalled, backfillReplicaSilent, ocrSyncFailed and ocrSyncBacklog.')
+param alertNames object
 @description('Alert on the OCR pickup job, usnm-ocrs-caj-<env> (with the on-prem OCR nodes, 12 §12.5 Step 8).')
 param ocrSync bool = false
 
@@ -58,8 +64,8 @@ let lines = ContainerAppConsoleLogs
     | project TimeGenerated, Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName,
         Detail, Expected;
 let platform = ContainerAppSystemLogs
-    | where JobName startswith "caj-usnm-ingest-" or JobName startswith "caj-usnm-backfill-"
-        or ContainerAppName startswith "caj-usnm-ingest-" or ContainerAppName startswith "caj-usnm-backfill-"
+    | where JobName startswith "__INGEST_JOB__" or JobName startswith "__BACKFILL_JOB__"
+        or ContainerAppName startswith "__INGEST_JOB__" or ContainerAppName startswith "__BACKFILL_JOB__"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Reason in ("BackoffLimitExceeded", "DeadlineExceeded")
         or (Log contains "terminated with exit code" and Log !contains "exit code '0'")
@@ -96,8 +102,8 @@ union (lines | where not(Expected)), replicaEvents, jobEvents
 // field are reported, not failures); split by Execution and Reason as above.
 var jaOcrJobFailed = '''
 let platform = ContainerAppSystemLogs
-    | where JobName startswith "caj-usnm-jaocr-" or JobName startswith "caj-usnm-jaone-"
-        or ContainerAppName startswith "caj-usnm-jaocr-" or ContainerAppName startswith "caj-usnm-jaone-"
+    | where JobName startswith "__JAOCR_JOB__" or JobName startswith "__JAONE_JOB__"
+        or ContainerAppName startswith "__JAOCR_JOB__" or ContainerAppName startswith "__JAONE_JOB__"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Reason in ("BackoffLimitExceeded", "DeadlineExceeded")
         or (Log contains "terminated with exit code" and Log !contains "exit code '0'" and Log !contains "ManuallyStopped")
@@ -248,11 +254,11 @@ let replicas = lines
     | extend LastLine = TimeGenerated
     | extend Execution = extract(@"^(.+)-[a-z0-9]+$", 1, Replica);
 let platform = ContainerAppSystemLogs
-    | where JobName startswith "caj-usnm-backfill-"
+    | where JobName startswith "__BACKFILL_JOB__"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET";
 let replicaStops = platform
     | where Reason in ("ContainerTerminated", "PodDeletion", "ProcessExited", "SuccessfulDelete")
-    | extend Replica = iff(isnotempty(ReplicaName), ReplicaName, extract(@"(caj-usnm-backfill-[a-z0-9-]+)", 1, Log))
+    | extend Replica = iff(isnotempty(ReplicaName), ReplicaName, extract(@"(__BACKFILL_JOB__-[a-z0-9-]+)", 1, Log))
     | summarize by Replica;
 let executions = replicas | summarize Started = min(FirstLine) by Execution | extend k = 1;
 let executionStops = platform
@@ -274,7 +280,7 @@ replicas
 
 var rules = [
   {
-    name: 'ingest-job-failed'
+    name: alertNames.ingestJobFailed
     displayName: 'Ingest or backfill job failed'
     description: 'An ingest or backfill replica exited with an error in the last 15 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Next: scripts/logs.sh --env <env> --query-name job-executions --span 1d for how each replica ended, and errors-by-batch 1d for the warnings before it. Fix the cause, then start the job again; the next run picks up where this one stopped.'
     severity: 2
@@ -286,7 +292,7 @@ var rules = [
     dimensions: ['Execution', 'Reason']
   }
   {
-    name: 'jaocr-job-failed'
+    name: alertNames.jaOcrJobFailed
     displayName: 'Japanese OCR or audit job failed'
     description: 'A replica of the Japanese OCR job (caj-usnm-jaocr) or its one-off audit job (caj-usnm-jaone) died or printed a traceback in the last 15 minutes; Execution and Reason say which and why. It touches no published index. Next: scripts/ja-ocr/quality-rows.sh --env <env> --execution <execution> or the job\'s console logs for its last lines; fix the cause and start the run again (OCR resumes from its claims; audits rerun).'
     severity: 3
@@ -296,7 +302,7 @@ var rules = [
     dimensions: ['Execution', 'Reason']
   }
   {
-    name: 'ingest-not-progressing'
+    name: alertNames.ingestNotProgressing
     displayName: 'Ingest not progressing'
     description: 'The ingest job keeps stopping at the titles-sync deadline: Condition says how. "not started again": the last stop was 3 or more hours ago and no execution has run since; start the job (and check whatever restarts it). "no titles progress": 3 stops in a row left as many titles as the first; LoC may be refusing title records. Next: scripts/logs.sh --env <env> --query-name ingest-endings --span 2d for each stop and the titles left, and /v1/status (titles.pipeline.awaiting_sync).'
     severity: 3
@@ -306,7 +312,7 @@ var rules = [
     dimensions: ['Condition', 'Execution', 'Detail']
   }
   {
-    name: 'release-stalled'
+    name: alertNames.releaseStalled
     displayName: 'Release stalled'
     description: 'A release is building an index but has logged no progress for 10 minutes; Execution and Detail say which version and where it stopped. Next: scripts/logs.sh --env <env> --query-name release-progress for the last lines (disk, memory, Quickwit retries) and job-executions to see if the replica is still running.'
     severity: 2
@@ -316,7 +322,7 @@ var rules = [
     dimensions: ['Execution', 'Detail']
   }
   {
-    name: 'backfill-stalled'
+    name: alertNames.backfillStalled
     displayName: 'Backfill stalled'
     description: 'Backfill workers have run for the last hour but none has curated a batch in it (and LoC is not rate limiting). Next: scripts/logs.sh --env <env> --query-name curation-throughput for the recent work, curate-replicas for each worker\'s stage, and errors-by-batch 2h for repeated failures on the same batches.'
     severity: 2
@@ -326,7 +332,7 @@ var rules = [
     dimensions: []
   }
   {
-    name: 'backfill-replica-silent'
+    name: alertNames.backfillReplicaSilent
     displayName: 'Backfill replica silent'
     description: 'A backfill replica that is still running has logged nothing for 15 minutes; a working one logs curate progress every minute. Replica and Detail say which and its last line. Next: scripts/logs.sh --env <env> --query-name curate-replicas for each replica\'s last stage and heartbeat; stop the execution if it is stuck (its batch lease expires and another worker retries it).'
     severity: 2
@@ -392,7 +398,7 @@ ContainerAppConsoleLogs
 
 var ocrSyncRules = [
   {
-    name: 'usnm-ocrs-failed-alert-${nameSuffix}'
+    name: alertNames.ocrSyncFailed
     displayName: 'OCR pickup failed'
     description: 'An execution of the OCR pickup job (usnm-ocrs-caj) failed in the last 15 minutes; Execution and Reason say which and why. Nothing published changes, and the next hourly run continues. Next: the job\'s console logs for its last lines (scripts/logs.sh --env <env> --query-name job-executions --span 1d); fix the cause, then start the job again or wait for the schedule.'
     severity: 3
@@ -402,7 +408,7 @@ var ocrSyncRules = [
     dimensions: ['Execution', 'Reason']
   }
   {
-    name: 'usnm-ocrs-backlog-alert-${nameSuffix}'
+    name: alertNames.ocrSyncBacklog
     displayName: 'OCR output waiting over 72 hours'
     description: 'The OCR pickup\'s last run left node output in ocr-out that is more than 72 hours old; Detail says how much. ocr-out deletes blobs 30 days after their last change. Next: reference status/ocr-local.json (parts_left, oldest_age_s) and the pickup\'s logs; raise --max-parts or start extra executions (scripts/start-job.sh --job OCR_SYNC_JOB -- ocr-sync).'
     severity: 3
@@ -451,7 +457,7 @@ resource ocrSyncAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
 
 resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
   for r in rules: {
-    name: 'alert-usnm-${r.name}-${nameSuffix}'
+    name: r.name
     location: location
     tags: tags
     kind: 'LogAlert'
@@ -470,7 +476,16 @@ resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
       criteria: {
         allOf: [
           {
-            query: r.query
+            // The placeholders become the jobs' exact names.
+            query: replace(
+              replace(
+                replace(replace(r.query, '__INGEST_JOB__', ingestJobName), '__BACKFILL_JOB__', backfillJobName),
+                '__JAOCR_JOB__',
+                jaOcrJobName
+              ),
+              '__JAONE_JOB__',
+              jaAuditJobName
+            )
             timeAggregation: 'Count'
             operator: 'GreaterThan'
             threshold: 0

@@ -101,14 +101,16 @@
 
 param location string
 param tags object
-@description('Environment name, the suffix of the alert rules\' names.')
-param nameSuffix string
 @description('The nodes\' Log Analytics workspace, usnm-ocr-log-<env>.')
 param workspaceName string
 @description('The nodes\' Application Insights component, usnm-ocr-appi-<env>.')
 param appInsightsName string
 @description('The nodes\' data collection rule, usnm-ocr-dcr-<env>.')
 param ruleName string
+@description('The alerts\' names: a node sending too much, loc.gov asking a node to wait, the nodes\' workspace cap.')
+param volumeAlertName string
+param locHoldAlertName string
+param capAlertName string
 @description('The nodes\' workspace\'s daily ingestion cap in GB. ops/queries/ocr-node-health.kql has the same figure (cap_gb).')
 param dailyCapGb string = '0.1'
 @description('Object id of the nodes\' Entra group (usnm-ocr-nodes-<env>, ADR-0015); empty grants it nothing.')
@@ -288,7 +290,7 @@ union agent, worker
 // too much, resolved when it stops. Split by node, which stays the same
 // while it lasts.
 resource volumeAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!empty(actionGroupId)) {
-  name: 'alert-usnm-ocr-node-volume-${nameSuffix}'
+  name: volumeAlertName
   location: location
   tags: tags
   kind: 'LogAlert'
@@ -340,7 +342,7 @@ AppMetrics
 // Stateful, hourly: one email when a node first sees a capped hold,
 // resolved when an hour passes without one.
 resource locCappedAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!empty(actionGroupId)) {
-  name: 'alert-usnm-ocr-loc-hold-${nameSuffix}'
+  name: locHoldAlertName
   location: location
   tags: tags
   kind: 'LogAlert'
@@ -394,7 +396,7 @@ _LogOperation
 '''
 
 resource capAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!empty(actionGroupId)) {
-  name: 'alert-usnm-ocr-log-cap-${nameSuffix}'
+  name: capAlertName
   location: location
   tags: tags
   kind: 'LogAlert'

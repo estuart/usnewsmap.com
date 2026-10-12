@@ -24,11 +24,12 @@ let console = ContainerAppConsoleLogs
             tostring(j.fields.message) == "command failed")
         by Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName;
 let platform = ContainerAppSystemLogs
-    // The OCR pickup job under both its names: usnm-ocrsync-caj-{env} until
-    // the October 2026 rename (#309), then usnm-ocrs-caj-{env}.
+    // Both name forms (ADR-0017): caj-usnm-{job}-{env} and usnm-{job}-caj-{env};
+    // the latter covers the OCR pickup job under both its names,
+    // usnm-ocrsync-caj-{env} until the October 2026 rename (#309), then
+    // usnm-ocrs-caj-{env}.
     | where JobName startswith "caj-usnm-" or ContainerAppName startswith "caj-usnm-"
-        or JobName startswith "usnm-ocrs-caj-" or ContainerAppName startswith "usnm-ocrs-caj-"
-        or JobName startswith "usnm-ocrsync-caj-" or ContainerAppName startswith "usnm-ocrsync-caj-"
+        or JobName matches regex @"^usnm-[a-z0-9-]+-caj-" or ContainerAppName matches regex @"^usnm-[a-z0-9-]+-caj-"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where isnotempty(ReplicaName)
     | summarize Reasons = make_set(Reason, 10), Platform = take_anyif(Log, Log has "exit code")

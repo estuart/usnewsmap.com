@@ -1,10 +1,7 @@
 // Private container registry (08 §8.6). Images are never public: pulls need
 // Entra ID (the app and ingest identities have AcrPull); there is no
-// admin user and no anonymous pull. CI pushes as `id-usnm-ci-{env}`, a
-// user-assigned identity that GitHub Actions signs in to with OIDC (a
-// federated credential; no secret is stored anywhere). It trusts only jobs
-// in this repository's GitHub Environment named after the environment,
-// which the bootstrap script restricts to the `main` branch.
+// admin user and no anonymous pull. CI pushes as the CI identity
+// (identities.bicep), which GitHub Actions signs in to with OIDC.
 //
 // Basic tier: private endpoints need Premium (~$50/month), so the registry
 // keeps its public endpoint, which still requires a token. Images are code,
@@ -13,13 +10,9 @@
 param location string
 param tags object
 param name string
-param ciIdentityName string
-@description('GitHub repository allowed to deploy, as owner/name.')
-param githubRepo string
-@description('The same repository in GitHub\'s immutable-ID subject format, `owner@ownerId/name@repoId`; empty if unknown. Repositories may use either format, so both are trusted.')
-param githubRepoIds string = ''
-@description('GitHub Environment whose jobs may use the CI identity.')
-param githubEnvironment string
+@description('The CI identity (identities.bicep), which gets AcrPush: its resource id and principal.')
+param ciIdentityId string
+param ciPrincipalId string
 param pullPrincipalIds array
 
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
@@ -32,36 +25,6 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
     // or Premium, so Basic can't turn it on.
     adminUserEnabled: false
     publicNetworkAccess: 'Enabled'
-  }
-}
-
-resource ci 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: ciIdentityName
-  location: location
-  tags: tags
-
-  // Only jobs in this repository's GitHub Environment can use it. (The
-  // name predates environments; it is kept so existing identities update
-  // in place.)
-  resource github 'federatedIdentityCredentials' = {
-    name: 'github-main'
-    properties: {
-      issuer: 'https://token.actions.githubusercontent.com'
-      subject: 'repo:${githubRepo}:environment:${githubEnvironment}'
-      audiences: ['api://AzureADTokenExchange']
-    }
-  }
-
-  // The immutable-ID form of the same subject. Credentials on one identity
-  // must be written one at a time.
-  resource githubIds 'federatedIdentityCredentials' = if (!empty(githubRepoIds)) {
-    name: 'github-ids'
-    dependsOn: [github]
-    properties: {
-      issuer: 'https://token.actions.githubusercontent.com'
-      subject: 'repo:${githubRepoIds}:environment:${githubEnvironment}'
-      audiences: ['api://AzureADTokenExchange']
-    }
   }
 }
 
@@ -82,9 +45,9 @@ resource pulls 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 
 resource push 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: registry
-  name: guid(registry.id, ci.id, acrPush)
+  name: guid(registry.id, ciIdentityId, acrPush)
   properties: {
-    principalId: ci.properties.principalId
+    principalId: ciPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPush)
   }
@@ -92,5 +55,3 @@ resource push 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 output name string = registry.name
 output loginServer string = registry.properties.loginServer
-output ciClientId string = ci.properties.clientId
-output ciPrincipalId string = ci.properties.principalId

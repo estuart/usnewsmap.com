@@ -8,10 +8,11 @@
 targetScope = 'subscription'
 
 import { guardrailPolicyNames } from 'guardrails.bicep'
+import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
 
-@minLength(1)
-@maxLength(16)
-@description('Environment name, e.g. dev or prod (AZURE_ENV_NAME in the environment\'s settings).')
+@minLength(2)
+@maxLength(5)
+@description('Environment name: prod, dev, or x plus 1-4 lowercase letters or digits for a short-lived experiment (ADR-0017; AZURE_ENV_NAME in the environment\'s settings).')
 param environmentName string
 
 @description('Region; East US 2 has ACI Spot (preview).')
@@ -101,7 +102,7 @@ param dedicatedProfile bool = false
 @description('Run the ingest job on the E4 profile (needs dedicatedProfile). Turn this off and provision before turning dedicatedProfile off: a profile in use can\'t be removed.')
 param ingestOnDedicated bool = false
 
-@description('Deploy the experimental Quickwit search cluster (#239): node apps ca-usnm-qw-{i}, the bench job caj-usnm-qwbench-{env} and their containers qw-cluster and qw-bench (docs/operations.md, "Search cluster experiment"). Needs useAcr; ignored in prod. Turning it off deletes all of it, the two containers included.')
+@description('Deploy the experimental Quickwit search cluster (#239): node apps usnm-qw-{i}-ca-{env}, the bench job usnm-qw-bench-caj-{env} and their containers qw-cluster and qw-bench (docs/operations.md, "Search cluster experiment"). Needs useAcr; ignored in prod. Turning it off deletes all of it, the two containers included.')
 param searchCluster bool = false
 
 @description('Search cluster members (0 to 4). 0 keeps the cluster\'s containers and bench job but runs no node.')
@@ -130,10 +131,10 @@ param searchClusterRuntimeThreads int = 0
 @minValue(0)
 param searchClusterSearchThreads int = 0
 
-@description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher ca-usnm-qws-{i} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations.md, "Quickwit version comparison"). Empty: none.')
+@description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher usnm-qw-cmp-{i}-ca-{env} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations.md, "Quickwit version comparison"). Empty: none.')
 param searchCompareTags string = ''
 
-@description('Local-disk test (#251): a standalone 0.9.1 searcher, ca-usnm-qwl-0, reading the search cluster\'s indexes from Blob (blob) or a copy of searchLocalIndex on an NFS share (nfs), on Consumption at the API sidecar\'s 3.75 vCPU / 7.5 GiB, or through a split cache (cache) or from a copy (copy) on its own disk, on the E4 profile (needs dedicatedProfile) for the disk (docs/operations.md, "Local-disk test"). Empty: none.')
+@description('Local-disk test (#251): a standalone 0.9.1 searcher, usnm-qw-local-ca-{env}, reading the search cluster\'s indexes from Blob (blob) or a copy of searchLocalIndex on an NFS share (nfs), on Consumption at the API sidecar\'s 3.75 vCPU / 7.5 GiB, or through a split cache (cache) or from a copy (copy) on its own disk, on the E4 profile (needs dedicatedProfile) for the disk (docs/operations.md, "Local-disk test"). Empty: none.')
 @allowed(['', 'blob', 'cache', 'copy', 'nfs'])
 param searchLocalMode string = ''
 
@@ -243,14 +244,21 @@ param experiment string = ''
 @description('When the experiment started, UTC (ISO 8601), set by scripts/lib/env.sh.')
 param experimentStarted string = ''
 
-// Resource names must be lowercase (Cosmos, storage).
-var env = toLower(environmentName)
+// A name outside ADR-0017's closed list fails here, before anything is
+// deployed (main.bicepparam checks it at build-params time too).
+var env = checkedEnvName(environmentName)
 var tags = {
   project: 'usnewsmap'
   environment: environmentName
 }
 var emails = filter(map(split(alertEmails, ','), e => trim(e)), e => !empty(e))
 var suffix = take(uniqueString(subscription().id, env), 6)
+// Every resource name (ADR-0017), from infra/naming.bicep. Only the current
+// prod (its suffix in its subscription, legacyProdSuffix) keeps its legacy
+// names; dev, experiments and a prod rebuilt in another subscription come
+// up in ADR-0017's form (#309; dev held nothing when this changed).
+var pinnedNames = suffix == legacyProdSuffix
+var n = names(env, suffix, pinnedNames)
 // The Quickwit image (ADR-0013, 08 §8.6). An environment listed in
 // quickwit-image.json runs our build of Quickwit from its own registry,
 // pushed there by scripts/build-quickwit.sh; any other runs upstream
@@ -262,21 +270,7 @@ var quickwitUpstream = '${quickwitPins.upstream.image}:${quickwitPins.upstream.t
 // Where the site is served: the API app's own hostname, and the domain and
 // www if there is one. The site calls the API on its own origin, so these
 // matter for the tiles account's CORS (and any cross-origin API caller).
-var appName = 'ca-usnm-${env}'
-// The searcher's own app (searcherApp, #267); a new resource, so it takes
-// ADR-0017's form. 'search', not 'searcher': with a 16-character
-// environment name (environmentName's limit) the name is 31 characters,
-// within the container app limit (containerapp.bicep checks it).
-var searcherName = 'usnm-search-ca-${env}'
-// The Congress fetch job (congressJob, #229), in ADR-0017's form. 'cong',
-// not 'congress': with a 16-character environment name the name is 30
-// characters, within the Container Apps job limit (ingestjobs.bicep checks it).
-var congressJobName = 'usnm-cong-caj-${env}'
-// The OCR pickup job (ocrNodes, 12 §12.5 Step 8), in ADR-0017's form.
-// 'ocrs', not 'ocrsync': with a 16-character environment name the name is
-// 30 characters, within the Container Apps job limit (ingestjobs.bicep
-// checks it).
-var ocrSyncJobName = 'usnm-ocrs-caj-${env}'
+var appName = n.apiApp
 var appOrigin = 'https://${appName}.${containerEnv.outputs.defaultDomain}'
 var domainOrigins = empty(dnsZoneName) ? [] : ['https://${dnsZoneName}', 'https://www.${dnsZoneName}']
 var siteOrigins = union(allowedOrigins, domainOrigins, [appOrigin])
@@ -292,13 +286,13 @@ var customDomains = empty(dnsZoneName)
 // The experiment marker is on the project group alone: scripts/dev-status.sh
 // reads it there, and a new `started` doesn't touch every resource.
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-  name: 'rg-usnm-${env}'
+  name: n.rg
   location: location
   tags: empty(experiment) ? tags : union(tags, { experiment: experiment, started: experimentStarted })
 }
 
 resource spotRg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-  name: 'rg-usnm-${env}-spot'
+  name: n.spotRg
   location: location
   tags: tags
 }
@@ -309,10 +303,11 @@ module monitoring 'modules/monitoring.bicep' = {
   params: {
     location: location
     tags: tags
-    workspaceName: 'log-usnm-${env}'
-    appInsightsName: 'appi-usnm-${env}'
-    actionGroupName: 'ag-usnm-${env}'
-    nameSuffix: env
+    workspaceName: n.workspace
+    appInsightsName: n.appInsights
+    actionGroupName: n.actionGroup
+    actionGroupShortName: n.actionGroupShortName
+    capAlertName: n.logCapAlert
     alertEmails: emails
     // Prod: 1 GB. 0.15 GB stopped all logging on 2026-10-07 (the American Stories writer's blob
     // writes reached it by 17:46 ET; nothing was logged, alerts included, until the next reset).
@@ -330,11 +325,9 @@ module registry 'modules/registry.bicep' = {
   params: {
     location: location
     tags: tags
-    name: 'crusnm${env}${suffix}'
-    ciIdentityName: 'id-usnm-ci-${env}'
-    githubRepo: githubRepo
-    githubRepoIds: githubRepoIds
-    githubEnvironment: env
+    name: n.registry
+    ciIdentityId: identities.outputs.ciId
+    ciPrincipalId: identities.outputs.ciPrincipalId
     pullPrincipalIds: [identities.outputs.appPrincipalId, identities.outputs.ingestPrincipalId]
   }
 }
@@ -345,7 +338,7 @@ module network 'modules/network.bicep' = {
   params: {
     location: location
     tags: tags
-    name: 'vnet-usnm-${env}'
+    name: n.vnet
     storageServiceEndpoint: ocrNodes
   }
 }
@@ -356,8 +349,12 @@ module identities 'modules/identities.bicep' = {
   params: {
     location: location
     tags: tags
-    appName: 'id-usnm-app-${env}'
-    ingestName: 'id-usnm-ingest-${env}'
+    appName: n.apiIdentity
+    ingestName: n.ingestIdentity
+    ciName: n.ciIdentity
+    githubRepo: githubRepo
+    githubRepoIds: githubRepoIds
+    githubEnvironment: env
   }
 }
 
@@ -367,13 +364,13 @@ module storage 'modules/storage.bicep' = {
   params: {
     location: location
     tags: tags
-    name: 'stusnmd${suffix}'
+    name: n.dataLake
   }
 }
 
 // The tiles account serves public map data. The public-network policy exempts it
 // by resource id, so its assignment must be in place before the account is written.
-var tilesName = 'stusnmt${suffix}'
+var tilesName = n.tiles
 var tilesId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.Storage/storageAccounts', tilesName)
 
 module tiles 'modules/tiles.bicep' = {
@@ -391,7 +388,7 @@ module tiles 'modules/tiles.bicep' = {
 // The on-prem OCR exchange account (#296, ADR-0015) allows public network
 // access behind a firewall, so the public-network policy exempts it by
 // resource id like the tiles account, and its assignment goes first.
-var exchangeName = 'stusnmo${suffix}'
+var exchangeName = n.ocrExchange
 var exchangeId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.Storage/storageAccounts', exchangeName)
 
 module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
@@ -406,6 +403,7 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
     subnetId: network.outputs.caeSubnetId
     nodeGroupId: trim(ocrNodeGroupId)
     ingestPrincipalId: identities.outputs.ingestPrincipalId
+    nodeWriterRoleLabel: n.ocrNodeWriterRole
   }
 }
 
@@ -415,9 +413,7 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
 // node IPs (the operator's home IP), so the public-network policy exempts it
 // by resource id like the exchange account, and its assignment goes first.
 // Compact name (ADR-0017): usnm{fn}{abbr}{env}{sfx}, at most 24 characters.
-// The environment name is cut to 9 characters, never the suffix, which
-// keeps the name unique; ADR-0017's 5-character cap makes the cut moot.
-var ocrVaultName = 'usnmocrkv${take(env, 9)}${suffix}'
+var ocrVaultName = n.ocrVault
 var ocrVaultId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.KeyVault/vaults', ocrVaultName)
 
 module ocrVault 'modules/ocr-vault.bicep' = if (ocrNodes) {
@@ -454,10 +450,12 @@ module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
   params: {
     location: location
     tags: tags
-    nameSuffix: env
-    workspaceName: 'usnm-ocr-log-${env}'
-    appInsightsName: 'usnm-ocr-appi-${env}'
-    ruleName: 'usnm-ocr-dcr-${env}'
+    workspaceName: n.ocrWorkspace
+    appInsightsName: n.ocrAppInsights
+    ruleName: n.ocrDcr
+    volumeAlertName: n.ocrNodeVolumeAlert
+    locHoldAlertName: n.ocrLocHoldAlert
+    capAlertName: n.ocrLogCapAlert
     dailyCapGb: ocrNodeDailyCapGb
     nodeGroupId: trim(ocrNodeGroupId)
     actionGroupId: monitoring.outputs.actionGroupId
@@ -470,7 +468,7 @@ module cosmos 'modules/cosmos.bicep' = {
   params: {
     location: location
     tags: tags
-    name: 'cosmos-usnm-${env}-${suffix}'
+    name: n.cosmos
     freeTier: cosmosFreeTier
   }
 }
@@ -482,6 +480,10 @@ module privateEndpoints 'modules/private-endpoints.bicep' = {
     location: location
     tags: tags
     subnetId: network.outputs.peSubnetId
+    blobEndpointName: n.dataEndpoint
+    blobEndpointNic: n.dataEndpointNic
+    cosmosEndpointName: n.stateEndpoint
+    cosmosEndpointNic: n.stateEndpointNic
     storageId: storage.outputs.id
     cosmosId: cosmos.outputs.id
     blobDnsZoneId: network.outputs.blobDnsZoneId
@@ -496,6 +498,7 @@ module rbac 'modules/rbac.bicep' = {
     storageName: storage.outputs.name
     cosmosName: cosmos.outputs.name
     appInsightsName: monitoring.outputs.appInsightsName
+    searchLogRoleLabel: n.searchLogRole
     appPrincipalId: identities.outputs.appPrincipalId
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     searchLogReaders: filter(map(split(searchLogReaders, ','), r => trim(r)), r => !empty(r))
@@ -508,7 +511,7 @@ module ocrService 'modules/ocr.bicep' = if (ocr) {
   params: {
     location: location
     tags: tags
-    name: 'di-usnm-${env}-${suffix}'
+    name: n.docIntel
     sku: ocrSku
     workspaceId: monitoring.outputs.workspaceId
     users: filter(map(split(ocrUsers, ','), u => trim(u)), u => !empty(u))
@@ -522,7 +525,8 @@ module containerEnv 'modules/containerapps-env.bicep' = {
   params: {
     location: location
     tags: tags
-    name: 'cae-usnm-${env}'
+    name: n.containerEnv
+    infrastructureResourceGroup: n.containerEnvInfraRg
     subnetId: network.outputs.caeSubnetId
     dedicatedProfile: dedicatedProfile
   }
@@ -578,7 +582,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     minReplicas: apiMinReplicas
     searchBackend: searchBackend
     searcherApp: searcherApp
-    searcherName: searcherName
+    searcherName: n.searcherApp
     // Warm where the API keeps a replica warm (prod); elsewhere it scales to
     // zero with the API.
     searcherMinReplicas: apiMinReplicas > 0 ? 1 : 0
@@ -595,8 +599,9 @@ module deployer 'modules/deployer.bicep' = {
   scope: rg
   name: 'deployer'
   params: {
-    principalId: registry.outputs.ciPrincipalId
+    principalId: identities.outputs.ciPrincipalId
     appIdentityName: identities.outputs.appName
+    roleLabel: n.deployRole
   }
 }
 
@@ -611,7 +616,8 @@ module archiveAccess 'modules/archive-access.bicep' = if (!empty(archiveAccountI
   params: {
     location: location
     tags: tags
-    name: 'pe-usnm-archive-blob'
+    name: n.archiveEndpoint
+    nicName: n.archiveEndpointNic
     subnetId: network.outputs.peSubnetId
     accountId: archiveAccountId
     blobDnsZoneId: network.outputs.blobDnsZoneId
@@ -624,6 +630,8 @@ module archiveGrant 'modules/archive-grant.bicep' = if (!empty(archiveAccountId)
   params: {
     accountName: archiveAccount
     env: env
+    roleLabel: n.archiveWriterRole
+    roleScopeEnv: n.archiveWriterRoleScopeEnv
     grants: concat(
       [{ container: 'raw', principalId: identities.outputs.ingestPrincipalId, role: 'writer' }],
       searchClusterOn
@@ -655,7 +663,9 @@ module scratch 'modules/ingest-scratch.bicep' = if (nfsAccount) {
   params: {
     location: location
     tags: tags
-    name: 'stusnms${suffix}'
+    name: n.scratch
+    endpointName: n.scratchEndpoint
+    endpointNic: n.scratchEndpointNic
     sizeGiB: ingestScratch ? ingestScratchGiB : 0
     searchGiB: searchNfs ? searchNfsGiB : 0
     vnetId: network.outputs.vnetId
@@ -681,7 +691,11 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     storageBlobEndpoint: storage.outputs.blobEndpoint
     cosmosEndpoint: cosmos.outputs.endpoint
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
-    jobNameSuffix: env
+    ingestJobName: n.ingestJob
+    backfillJobName: n.backfillJob
+    jaOcrJobName: n.jaocrJob
+    jaAuditJobName: n.jaoneJob
+    ocrSyncJobName: n.ocrSyncJob
     cron: ingestCron
     full: ingestFull
     americanStories: americanStories
@@ -689,7 +703,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     ocrLocal: ocrLocal
     congress: congress
     congressJob: congressJob
-    congressJobName: congressJobName
+    congressJobName: n.congressJob
     partitionDecade: partitionDecade
     singleTextField: singleTextField
     pageLanguage: pageLanguage
@@ -704,7 +718,6 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     jaOcrReplicas: jaOcrReplicas
     rootImage: '${registry.outputs.loginServer}/${quickwitPin.image}@${quickwitPin.digest}'
     ocrSync: ocrNodes
-    ocrSyncJobName: ocrSyncJobName
     ocrQueueEndpoint: ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
     ocrBlobEndpoint: ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
     ocrSyncCron: ocrSyncCron == 'manual' ? '' : ocrSyncCron
@@ -727,7 +740,12 @@ module searchClusterModule 'modules/searchcluster.bicep' = if (searchClusterOn) 
   params: {
     location: location
     tags: tags
-    nameSuffix: env
+    nodeAppNames: n.qwNodeApps
+    compareAppNames: n.qwCompareApps
+    localAppName: n.qwLocalApp
+    benchJobName: n.qwBenchJob
+    nodeIdentityName: n.qwNodeIdentity
+    benchIdentityName: n.qwBenchIdentity
     environmentId: containerEnv.outputs.id
     image: '${registry.outputs.loginServer}/usnewsmap-ingest:${imageTag}'
     registryServer: registry.outputs.loginServer
@@ -757,7 +775,7 @@ module budget 'modules/budget.bicep' = if (!empty(emails) && !empty(budgetStartD
   scope: rg
   name: 'budget'
   params: {
-    name: 'budget-usnm-${env}'
+    name: n.budget
     startDate: budgetStartDate
     contactEmails: emails
   }
@@ -770,9 +788,22 @@ module ingestAlerts 'modules/ingest-alerts.bicep' = if (!empty(emails) && ingest
   params: {
     location: location
     tags: tags
-    nameSuffix: env
     workspaceId: monitoring.outputs.workspaceId
     actionGroupId: monitoring.outputs.actionGroupId
+    ingestJobName: n.ingestJob
+    backfillJobName: n.backfillJob
+    jaOcrJobName: n.jaocrJob
+    jaAuditJobName: n.jaoneJob
+    alertNames: {
+      ingestJobFailed: n.ingestJobFailedAlert
+      jaOcrJobFailed: n.jaocrJobFailedAlert
+      ingestNotProgressing: n.ingestNotProgressingAlert
+      releaseStalled: n.releaseStalledAlert
+      backfillStalled: n.backfillStalledAlert
+      backfillReplicaSilent: n.backfillReplicaSilentAlert
+      ocrSyncFailed: n.ocrSyncFailedAlert
+      ocrSyncBacklog: n.ocrSyncBacklogAlert
+    }
     ocrSync: ocrNodes
   }
 }
@@ -786,10 +817,18 @@ module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
   params: {
     location: location
     tags: tags
-    nameSuffix: env
     workspaceId: monitoring.outputs.workspaceId
     appInsightsId: monitoring.outputs.appInsightsId
     actionGroupId: monitoring.outputs.actionGroupId
+    alertNames: {
+      serverErrors: n.apiServerErrorsAlert
+      aggregateSlow: n.apiAggregateSlowAlert
+      searchesSlow: n.apiSearchesSlowAlert
+      searchQueueWait: n.apiSearchQueueWaitAlert
+      replicaCpu: n.apiReplicaCpuAlert
+      siteUnavailable: n.siteUnavailableAlert
+    }
+    siteWebtestName: n.siteWebtest
     apiAppName: api!.outputs.name
     searcherAppName: api!.outputs.searcherName
     replicaCpu: apiMinReplicas > 0
@@ -809,7 +848,9 @@ module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deplo
     tags: tags
     workspaceId: monitoring.outputs.workspaceId
     appInsightsId: monitoring.outputs.appInsightsId
-    env: env
+    pipelineTitle: n.pipelineWorkbookTitle
+    apiTitle: n.apiWorkbookTitle
+    ocrNodesTitle: n.ocrNodesWorkbookTitle
     pipeline: ingestJobs && useAcr
     api: deployApi
     apiAppName: deployApi ? api!.outputs.name : ''
@@ -882,7 +923,7 @@ output SEARCHER_APP string = deployApi ? api!.outputs.searcherName : ''
 output SITE_URL string = !deployApi
   ? ''
   : (!empty(dnsZoneName) && !empty(siteCertificateId) ? 'https://${dnsZoneName}' : 'https://${api!.outputs.fqdn}')
-output CONTAINER_ENV_NAME string = 'cae-usnm-${env}'
+output CONTAINER_ENV_NAME string = containerEnv.outputs.name
 // Set these as the domain's name servers at the registrar.
 output NAME_SERVERS string = empty(dnsZoneName) ? '' : join(dns!.outputs.nameServers, ' ')
 output TILES_URL string = tiles.outputs.tilesUrl
@@ -900,7 +941,7 @@ output CONGRESS_JOB string = ingestJobs && useAcr ? ingest!.outputs.congressJobN
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
 // For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).
-output CI_CLIENT_ID string = registry.outputs.ciClientId
+output CI_CLIENT_ID string = identities.outputs.ciClientId
 output AZURE_TENANT_ID string = tenant().tenantId
 output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString

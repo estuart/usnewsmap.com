@@ -6,8 +6,11 @@ param tags object
 param workspaceName string
 param appInsightsName string
 param actionGroupName string
-@description('Environment name, the suffix of the alert rule names.')
-param nameSuffix string
+@description('The action group\'s short name (at most 12 characters), shown in its emails and SMS.')
+@maxLength(12)
+param actionGroupShortName string
+@description('The daily cap alert\'s name.')
+param capAlertName string
 @description('Alert recipients; no action group is created when empty.')
 param alertEmails array = []
 @description('Daily ingestion cap in GB (0.15 ≈ 4.5 GB/month, inside the free 5 GB; main.bicep raises it for prod).')
@@ -83,7 +86,7 @@ resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(a
   location: 'global'
   tags: tags
   properties: {
-    groupShortName: 'usnm'
+    groupShortName: actionGroupShortName
     enabled: true
     emailReceivers: [
       for (email, i) in alertEmails: {
@@ -114,7 +117,7 @@ _LogOperation
 '''
 
 resource capAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!empty(alertEmails)) {
-  name: 'alert-usnm-log-cap-${nameSuffix}'
+  name: capAlertName
   location: location
   tags: tags
   kind: 'LogAlert'

@@ -41,12 +41,17 @@
 
 param location string
 param tags object
-param nameSuffix string
 param workspaceId string
 param appInsightsId string
 param actionGroupId string
 
-@description('The API\'s container app (ca-usnm-<env>), for the replica CPU alert.')
+@description('The alert rules\' names (infra/naming.bicep): serverErrors, aggregateSlow, searchesSlow, searchQueueWait, replicaCpu and siteUnavailable.')
+param alertNames object
+
+@description('The site availability test\'s name (infra/naming.bicep).')
+param siteWebtestName string
+
+@description('The API\'s container app, for the replica CPU alert.')
 param apiAppName string
 
 @description('The searcher\'s own app (usnm-search-ca-<env>, #267), whose CPU the replica CPU alert then watches; empty while the searcher is the API\'s sidecar.')
@@ -164,7 +169,7 @@ AppMetrics
 
 var rules = [
   {
-    name: 'api-server-errors'
+    name: alertNames.serverErrors
     displayName: 'API server errors'
     description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests (search timeouts and busy refusals not counted), or at least 10 search timeouts and busy refusals. Kind says which, TopRoute the route and status with the most. Next: scripts/logs.sh --env <env> --query-name api-errors --span 1h for the routes, codes and the API\'s error lines; for timeouts and busy refusals, check the Quickwit sidecar (container quickwit) and whether a new index version was just published.'
     severity: 2
@@ -175,7 +180,7 @@ var rules = [
     autoMitigate: true
   }
   {
-    name: 'api-aggregate-slow'
+    name: alertNames.aggregateSlow
     displayName: 'Slow aggregate searches'
     description: 'p95 of /v1/aggregate was over 3 s in the last 15 minutes (at least 20 requests, 3 of them over 3 s). Right after a new index version is published every search is cold, so this can fire and clear on its own. Next: scripts/logs.sh --env <env> --query-name api-requests --span 1h for latency by route, and the API workbook for cache hits and backend time.'
     severity: 3
@@ -186,7 +191,7 @@ var rules = [
     autoMitigate: true
   }
   {
-    name: 'api-searches-slow'
+    name: alertNames.searchesSlow
     displayName: 'Searches longer than a visitor waits'
     description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Endpoint and Outcome are the ones with the most. Errors other than timeouts and busy refusals count toward the API server errors alert. Next: the slow-search tiles in the API workbook (by endpoint and outcome), and scripts/logs.sh --env <env> --query-name api-requests --span 1h.'
     severity: 3
@@ -197,7 +202,7 @@ var rules = [
     autoMitigate: true
   }
   {
-    name: 'api-search-queue-wait'
+    name: alertNames.searchQueueWait
     displayName: 'Search capacity: searches waiting for a slot'
     description: 'On each of the last two days more than 10% of the searches that needed a computation slot waited over 3 s for one (p90 of api.search_queue_wait_seconds above 3 s), with at least 20 such searches a day. Sent once a day while it holds. #238 (deferred 10 October 2026): if it holds for a week, revisit more search capacity (a second searcher, #239, after moving Quickwit out of the API replica, #267). Next: the capacity tiles in the API workbook (daily share over 3 s and p90 estimate), and whether a new index version or a traffic spike explains it.'
     severity: 4
@@ -211,7 +216,7 @@ var rules = [
 
 resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
   for r in rules: {
-    name: 'alert-usnm-${r.name}-${nameSuffix}'
+    name: r.name
     location: location
     tags: tags
     kind: 'LogAlert'
@@ -249,7 +254,7 @@ resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
 
 var tests = filter(
   [
-    { name: 'site', displayName: 'Site home page', url: siteUrl }
+    { name: siteWebtestName, alertName: alertNames.siteUnavailable, displayName: 'Site home page', url: siteUrl }
   ],
   t => !empty(t.url)
 )
@@ -262,12 +267,12 @@ var linkTag = { 'hidden-link:${appInsightsId}': 'Resource' }
 
 resource webtest 'Microsoft.Insights/webtests@2022-06-15' = [
   for t in tests: {
-    name: 'webtest-usnm-${t.name}-${nameSuffix}'
+    name: t.name
     location: location
     tags: union(tags, linkTag)
     kind: 'standard'
     properties: {
-      SyntheticMonitorId: 'webtest-usnm-${t.name}-${nameSuffix}'
+      SyntheticMonitorId: t.name
       Name: t.displayName
       Description: 'GET ${t.url} expects 200 and a certificate valid for 7 more days.'
       Enabled: true
@@ -293,7 +298,7 @@ resource webtest 'Microsoft.Insights/webtests@2022-06-15' = [
 
 resource unavailable 'Microsoft.Insights/metricAlerts@2018-03-01' = [
   for (t, i) in tests: {
-    name: 'alert-usnm-${t.name}-unavailable-${nameSuffix}'
+    name: t.alertName
     location: 'global'
     tags: union(tags, linkTag)
     properties: {
@@ -336,7 +341,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' existing = {
 // With the searcher in its own app (#267) the alert watches that app: one
 // replica of 3.75 vCPU, which the same 3 vCPU threshold leaves 0.75 under.
 resource replicaCpuAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (replicaCpu) {
-  name: 'alert-usnm-api-replica-cpu-${nameSuffix}'
+  name: alertNames.replicaCpu
   location: 'global'
   tags: tags
   properties: {

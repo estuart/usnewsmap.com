@@ -9,6 +9,8 @@
 param location string
 param tags object
 param name string
+@description('The resource group Azure creates for the environment\'s infrastructure (create-only); empty leaves Azure\'s ME_{name}_{group}_{region}.')
+param infrastructureResourceGroup string = ''
 param subnetId string
 @description('Add the memory-optimized E4 profile the ingest job uses for a full rebuild (#172).')
 param dedicatedProfile bool = false
@@ -20,24 +22,29 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: name
   location: location
   tags: tags
-  properties: {
-    workloadProfiles: concat(
-      [{ name: 'Consumption', workloadProfileType: 'Consumption' }],
-      dedicatedProfile
-        ? [{ name: dedicatedName, workloadProfileType: 'E4', minimumCount: 0, maximumCount: 1 }]
-        : []
-    )
-    vnetConfiguration: {
-      infrastructureSubnetId: subnetId
-      internal: false
-    }
-    // Logs go through the environment's diagnostic setting
-    // (diagnostics.bicep), not the workspace's shared key.
-    appLogsConfiguration: {
-      destination: 'azure-monitor'
-    }
-    zoneRedundant: false
-  }
+  // The infrastructure group can only be set at creation: the existing
+  // environments were created without one, so it is set only when not empty.
+  properties: union(
+    {
+      workloadProfiles: concat(
+        [{ name: 'Consumption', workloadProfileType: 'Consumption' }],
+        dedicatedProfile
+          ? [{ name: dedicatedName, workloadProfileType: 'E4', minimumCount: 0, maximumCount: 1 }]
+          : []
+      )
+      vnetConfiguration: {
+        infrastructureSubnetId: subnetId
+        internal: false
+      }
+      // Logs go through the environment's diagnostic setting
+      // (diagnostics.bicep), not the workspace's shared key.
+      appLogsConfiguration: {
+        destination: 'azure-monitor'
+      }
+      zoneRedundant: false
+    },
+    empty(infrastructureResourceGroup) ? {} : { infrastructureResourceGroup: infrastructureResourceGroup }
+  )
 }
 
 output id string = env.id

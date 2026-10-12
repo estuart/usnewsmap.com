@@ -604,7 +604,7 @@ scripts/archive-store.sh deploy --subscription <id>     # prints the account's r
 
 `what-if` shows the guard-rail definitions' changes, then the account's. Until the definitions exist, the account's what-if can fail on its assignments; `deploy` creates them first.
 
-**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, `id-usnm-qwbench` also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting this way. `scripts/teardown.sh` detaches an environment that has the setting on by itself first ([Dev environment lifecycle](#dev-environment-lifecycle)).
+**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, the bench identity (`usnm-qw-bench-id-{env}`) also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting this way. `scripts/teardown.sh` detaches an environment that has the setting on by itself first ([Dev environment lifecycle](#dev-environment-lifecycle)).
 
 ```sh
 scripts/archive-store.sh unlock
@@ -670,9 +670,9 @@ Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.ta
 
 ## Dev environment lifecycle
 
-**The rule** (#275): `dev` (`usnm-dev`, `rg-usnm-dev`) holds no resources unless a focused experiment is running. Stand it up for the experiment, and tear it down completely once the results are saved. Scaling to zero isn't enough: with no replicas running it still costs about $2 a day, about $60 a month. That's the 4 private endpoints ($0.24 a day each), the Container Apps environment's load balancer (about $0.45 to $0.60 a day) and public IP ($0.12), the registry (ACR Basic, about $0.17), the NFS share (64 GiB, about $0.21), 3 private DNS zones (about $0.05) and storage (Cost Management, October 2026).
+**The rule** (#275): `dev` (the stack `usnm-dev`, the group `usnm-core-rg-dev`) holds no resources unless a focused experiment is running. Stand it up for the experiment, and tear it down completely once the results are saved. Scaling to zero isn't enough: with no replicas running it still costs about $2 a day, about $60 a month. That's the 4 private endpoints ($0.24 a day each), the Container Apps environment's load balancer (about $0.45 to $0.60 a day) and public IP ($0.12), the registry (ACR Basic, about $0.17), the NFS share (64 GiB, about $0.21), 3 private DNS zones (about $0.05) and storage (Cost Management, October 2026).
 
-**The marker.** Provisioning `dev` needs `USNM_EXPERIMENT`, the experiment's issue number. It tags `rg-usnm-dev` with `experiment` and `started` (UTC), which stays the same while the experiment does. `scripts/dev-status.sh` lists the stack, what's in `rg-usnm-dev`, `rg-usnm-dev-spot` and `ME_cae-usnm-dev_*`, the tag and its age, and what those groups have cost since the experiment started. It exits 1 if anything is there without the tag, and warns when the tag is older than 7 days. The guard-rail stack, which stays up between experiments, holds a budget on dev's three groups, `budget-usnm-dev-groups`, that mails the alert recipients at $5 of actual spend in a month. It needs no `dev`, only an environment with `USNM_ALERT_EMAILS` provisioned since the budget was added. The Container Apps group's name ends in dev's region: each provision of `dev` records its `AZURE_LOCATION` in the budget, and other environments' provisions keep it.
+**The marker.** Provisioning `dev` needs `USNM_EXPERIMENT`, the experiment's issue number. It tags dev's project group, `usnm-core-rg-dev`, with `experiment` and `started` (UTC), which stays the same while the experiment does. `scripts/dev-status.sh` lists the stack, what's in `usnm-core-rg-dev`, `usnm-core-infra-rg-dev` (the Container Apps environment's own) and `rg-usnm-dev-spot` (and the legacy `rg-usnm-dev` and `ME_cae-usnm-dev_*`, ADR-0017), the tag and its age, and what those groups have cost since the experiment started. It exits 1 if anything is there without the tag, and warns when the tag is older than 7 days. The guard-rail stack, which stays up between experiments, holds a budget on dev's groups (in both name forms), `budget-usnm-dev-groups`, that mails the alert recipients at $5 of actual spend in a month. It needs no `dev`, only an environment with `USNM_ALERT_EMAILS` provisioned since the budget was added. The legacy Container Apps group's name (`ME_cae-usnm-dev_rg-usnm-dev_<region>`) ends in dev's region: each provision of `dev` records its `AZURE_LOCATION` in the budget, and other environments' provisions keep it.
 
 **Stand it up:**
 
@@ -710,7 +710,7 @@ scripts/teardown.sh --env dev
 scripts/dev-status.sh                                  # expect: dev holds nothing
 ```
 
-With `USNM_ARCHIVE_ACCOUNT` set, `teardown.sh` first detaches `dev` from the archival account. It lifts the account's delete lock, clears `USNM_ARCHIVE_ACCOUNT` and `USNM_SEARCH_CLUSTER` (the settings that grant roles there) and provisions, so the stack deletes its endpoint and roles itself. It then checks that no role assignment in the account's group belongs to one of dev's identities and that no endpoint connection from dev's groups remains, and puts the lock back (`scripts/archive-store.sh deploy`) whatever happened. The account and its data are never changed. Run it again if it stops partway: it picks up where it stopped. Then it removes `dev` from `USNM_DEPLOY_ENVIRONMENTS` if it's there, waiting for any deploy (`ci` on main) that could still roll it; detaches the stack and deletes `rg-usnm-dev` and `rg-usnm-dev-spot` (the `ME_` group goes with the Container Apps environment), the custom roles and any role assignment the stack made outside them; keeps `usnm-guardrails` while another environment (or `usnm-archive`) uses it; deletes the GitHub Environment `dev` if there is one; and keeps the settings file as `.env.deleted-<time>`, without the experiment marker. `az deployment group delete -g rg-usnm-archive -n archive-grant-dev` removes the stale deployment record, if wanted.
+With `USNM_ARCHIVE_ACCOUNT` set, `teardown.sh` first detaches `dev` from the archival account. It lifts the account's delete lock, clears `USNM_ARCHIVE_ACCOUNT` and `USNM_SEARCH_CLUSTER` (the settings that grant roles there) and provisions, so the stack deletes its endpoint and roles itself. It then checks that no role assignment in the account's group belongs to one of dev's identities and that no endpoint connection from dev's groups remains, and puts the lock back (`scripts/archive-store.sh deploy`) whatever happened. The account and its data are never changed. Run it again if it stops partway: it picks up where it stopped. Then it removes `dev` from `USNM_DEPLOY_ENVIRONMENTS` if it's there, waiting for any deploy (`ci` on main) that could still roll it; detaches the stack and deletes the groups it manages, `usnm-core-rg-dev` and `rg-usnm-dev-spot` (the Container Apps environment's `usnm-core-infra-rg-dev` goes with the environment), the custom roles and any role assignment the stack made outside them; keeps `usnm-guardrails` while another environment (or `usnm-archive`) uses it; deletes the GitHub Environment `dev` if there is one; and keeps the settings file as `.env.deleted-<time>`, without the experiment marker. `az deployment group delete -g rg-usnm-archive -n archive-grant-dev` removes the stale deployment record, if wanted.
 
 Log Analytics keeps the workspace soft-deleted for 14 days at no cost, and a stand-up within that window recovers it. Storage account names are reusable straight away, and the resource names come back the same, since the suffix is `uniqueString(subscription, env)`. Dev's data goes with it: Cosmos batch state, curated parts, indexes and `qw-bench`. The archive keeps what was downloaded from LoC. With `USNM_OCR` on, the Document Intelligence account would need a purge before it could be recreated; it's off in dev.
 
@@ -724,10 +724,10 @@ An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1
 
 **What it deploys** (`infra/modules/searchcluster.bicep`):
 
-- **Nodes** `ca-usnm-qw-{i}`, `USNM_SEARCH_CLUSTER_NODES` of them (0 to 4), each exactly one replica of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU (default 2, the API sidecar's size) with 2 GiB per vCPU, on the Consumption profile. Node 0 is the only metastore (the single writer of the file-backed metastore in `qw-cluster`), the control plane, the janitor, an indexer, a searcher, and the root: searches enter there through its internal ingress, `http://ca-usnm-qw-0` inside the environment. Nodes 1 to `USNM_SEARCH_CLUSTER_INDEXERS - 1` also index; the rest only search. Their node config is `infra/quickwit/cluster-node.yaml`; its searcher settings are the sidecar's (`searcher.yaml`), which a test checks.
+- **Nodes** `usnm-qw-{i}-ca-{env}`, `USNM_SEARCH_CLUSTER_NODES` of them (0 to 4), each exactly one replica of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU (default 2, the API sidecar's size) with 2 GiB per vCPU, on the Consumption profile. Node 0 is the only metastore (the single writer of the file-backed metastore in `qw-cluster`), the control plane, the janitor, an indexer, a searcher, and the root: searches enter there through its internal ingress, `http://usnm-qw-0-ca-{env}` inside the environment. Nodes 1 to `USNM_SEARCH_CLUSTER_INDEXERS - 1` also index; the rest only search. Their node config is `infra/quickwit/cluster-node.yaml`; its searcher settings are the sidecar's (`searcher.yaml`), which a test checks.
 - **Addresses.** Quickwit gossips over UDP and calls leaves over gRPC, both on replica IPs, which change whenever a replica restarts (#239). Each node starts as `usnm-qwcluster node`. That writes its replica IP to `qw-bench/seeds/qw-{i}.json`, reads the other nodes' entries as `QW_PEER_SEEDS`, sets `QW_ADVERTISE_ADDRESS`, and then becomes Quickwit. Every node writes before it reads, so of two nodes starting together at least one sees the other. A node that restarts at a new IP joins through the others, and they learn its new address by gossip.
-- **Bench job** `caj-usnm-qwbench-{env}` (manual, 4 vCPU / 8 GiB, 6 h timeout), which runs `usnm-qwcluster` with each step's arguments (`scripts/start-job.sh`).
-- **Storage, Entra only.** Containers `qw-cluster` (splits and metastore; Blob Data Contributor for each node's system-assigned identity, since Quickwit can use no other) and `qw-bench` (seeds, the sample, reports; Contributor for `id-usnm-qwnode-{env}` and `id-usnm-qwbench-{env}`). The bench identity also reads `curated` and `reference`. Nothing can write `qw-index`, `reference` or `curated`. Turning the setting off deletes both containers (soft delete keeps them 14 days).
+- **Bench job** `usnm-qw-bench-caj-{env}` (manual, 4 vCPU / 8 GiB, 6 h timeout), which runs `usnm-qwcluster` with each step's arguments (`scripts/start-job.sh`).
+- **Storage, Entra only.** Containers `qw-cluster` (splits and metastore; Blob Data Contributor for each node's system-assigned identity, since Quickwit can use no other) and `qw-bench` (seeds, the sample, reports; Contributor for `usnm-qw-node-id-{env}` and `usnm-qw-bench-id-{env}`). The bench identity also reads `curated` and `reference`. Nothing can write `qw-index`, `reference` or `curated`. Turning the setting off deletes both containers (soft delete keeps them 14 days).
 
 **The steps.** Each `usnm-qwcluster` step logs one `qwcluster report` line and stores the full report in `qw-bench/runs/`.
 
@@ -792,8 +792,8 @@ scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 3
 scripts/provision.sh --env dev
 J bench --label n3 --index s1ix --sample dev1pct --expect-searchers 3
 J members
-az containerapp revision restart -n ca-usnm-qw-2 -g "$RG" \
-  --revision "$(az containerapp revision list -n ca-usnm-qw-2 -g "$RG" --query "[?properties.active].name | [0]" -o tsv)"
+az containerapp revision restart -n usnm-qw-2-ca-dev -g "$RG" \
+  --revision "$(az containerapp revision list -n usnm-qw-2-ca-dev -g "$RG" --query "[?properties.active].name | [0]" -o tsv)"
 J bench --label n3-restart --index s1ix --sample dev1pct --expect-searchers 3 --levels 1,4 --levels-only
 J members                                  # qw-2 has a new address and generation
 
@@ -813,7 +813,7 @@ Start each step once the previous execution has ended (`az containerapp job exec
 
 Whether a pre-0.9 Quickwit searches our splits with less work than 0.9.1 (#251; upstream quickwit-oss/quickwit#6883 reports 0.9.1 1.25 to 2x slower than a 0.8 nightly on identical splits). The released 0.8.2 can't take part: it reads tantivy index formats 4 to 6 and 0.9.1 writes 7, and it authenticates to Azure only with an account key, which our accounts refuse (ADR-0009). The baseline is the `qw-azure-fix` nightly (`quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc…`, main of 23 September 2025 plus the Azure multipart fix, which reports 0.8.0): it writes and reads format 7, uses managed identity, reads the 0.9 metastore, and takes every searcher key of `searcher.yaml` but `predicate_cache_capacity` and `leaf_request_timeout_secs`.
 
-**What it deploys.** `USNM_SEARCH_COMPARE_TAGS`, ingest image tags separated by commas, gives one standalone searcher per tag, `ca-usnm-qws-{i}` (root `http://ca-usnm-qws-{i}` inside the environment), of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU each. Each runs as the API sidecar does: searcher and metastore, polling the file-backed metastore in `qw-cluster` every 30 s, with Blob Data Reader on `qw-cluster` only, so it searches the cluster's indexes and can't change them. Each has a cluster id of its own and no seeds, so the two never join and a search never mixes versions. The node wrapper reads `quickwit --version` and, below 0.9, drops the two searcher keys and pins `warmup_single_split_initial_allocation` to 0.9.1's 300 MB (the nightly's default is 1 GB). The bench records the root's Quickwit version, each node's main-runtime busy time and Blob bytes downloaded per pass, and samples the search pool's running and queued split searches every 2 s.
+**What it deploys.** `USNM_SEARCH_COMPARE_TAGS`, ingest image tags separated by commas, gives one standalone searcher per tag, `usnm-qw-cmp-{i}-ca-{env}` (root `http://usnm-qw-cmp-{i}-ca-{env}` inside the environment), of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU each. Each runs as the API sidecar does: searcher and metastore, polling the file-backed metastore in `qw-cluster` every 30 s, with Blob Data Reader on `qw-cluster` only, so it searches the cluster's indexes and can't change them. Each has a cluster id of its own and no seeds, so the two never join and a search never mixes versions. The node wrapper reads `quickwit --version` and, below 0.9, drops the two searcher keys and pins `warmup_single_split_initial_allocation` to 0.9.1's 300 MB (the nightly's default is 1 GB). The bench records the root's Quickwit version, each node's main-runtime busy time and Blob bytes downloaded per pass, and samples the search pool's running and queued split searches every 2 s.
 
 **Images.** The second tag is the ingest image on the nightly's Quickwit (`Dockerfile.ingest`'s `QUICKWIT_IMAGE`; CI always builds the default, v0.9.1):
 
@@ -844,12 +844,12 @@ wait_for() {  # until execution $1 has ended; prints how
     case "$s" in Running|Processing|Unknown|"") sleep 20 ;; *) echo "$1 $s"; return ;; esac
   done
 }
-restart() { for a in ca-usnm-qws-0 ca-usnm-qws-1; do az containerapp revision restart -n $a -g "$RG" --revision "$(az containerapp revision list -n $a -g "$RG" --query "[?properties.active].name | [0]" -o tsv)"; done; sleep 90; }
-wait_for "$(J members --cluster http://ca-usnm-qws-0)"; wait_for "$(J members --cluster http://ca-usnm-qws-1)"
-bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index s1ixb --sample dev1pct --levels 1,4,10)"; }
-restart; bench cmp-v091-r1 qws-0; bench cmp-n2509-r1 qws-1
-restart; bench cmp-n2509-r2 qws-1; bench cmp-v091-r2 qws-0
-restart; bench cmp-v091-r3 qws-0; bench cmp-n2509-r3 qws-1
+restart() { for a in usnm-qw-cmp-0-ca-dev usnm-qw-cmp-1-ca-dev; do az containerapp revision restart -n $a -g "$RG" --revision "$(az containerapp revision list -n $a -g "$RG" --query "[?properties.active].name | [0]" -o tsv)"; done; sleep 90; }
+wait_for "$(J members --cluster http://usnm-qw-cmp-0-ca-dev)"; wait_for "$(J members --cluster http://usnm-qw-cmp-1-ca-dev)"
+bench() { wait_for "$(J bench --label "$1" --cluster "http://usnm-qw-cmp-$2-ca-dev" --index s1ixb --sample dev1pct --levels 1,4,10)"; }
+restart; bench cmp-v091-r1 0; bench cmp-n2509-r1 1
+restart; bench cmp-n2509-r2 1; bench cmp-v091-r2 0
+restart; bench cmp-v091-r3 0; bench cmp-n2509-r3 1
 scripts/qwcluster-report.py --env dev --since 6h --out qwcompare.md
 ```
 
@@ -864,7 +864,7 @@ wait_for "$(J load --sample dev1pct --index asdup3k --as-from-text)"
 wait_for "$(J load --sample dev1pct --index asdup30k --split-docs 30000 --as-from-text)"
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
 scripts/provision.sh --env dev
-bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index "$3" --sample dev1pct --american-stories --levels 1,4,10)"; }
+bench() { wait_for "$(J bench --label "$1" --cluster "http://usnm-qw-cmp-$2-ca-dev" --index "$3" --sample dev1pct --american-stories --levels 1,4,10)"; }
 # then the same three rounds as above for asdup3k and asdup30k
 ```
 
@@ -872,14 +872,14 @@ bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index
 
 ### Local-disk test
 
-Whether reading splits from somewhere other than Blob removes the main runtime's CPU cost (#251): the same index and bench on Quickwit 0.9.1 with the sidecar's 4 and 4 threads, one searcher, `ca-usnm-qwl-0`, in one mode at a time (`USNM_SEARCH_LOCAL_MODE`):
+Whether reading splits from somewhere other than Blob removes the main runtime's CPU cost (#251): the same index and bench on Quickwit 0.9.1 with the sidecar's 4 and 4 threads, one searcher, `usnm-qw-local-ca-dev`, in one mode at a time (`USNM_SEARCH_LOCAL_MODE`):
 
 - `blob`: splits read from Blob, as the sidecar reads them.
 - `nfs`: the index (`USNM_SEARCH_LOCAL_INDEX`) copied once onto an NFS Azure Files share and served from there as `file://`. The share, `qw-search` (`USNM_SEARCH_NFS_GIB`, default 64), is a second share in the ingest scratch share's provisioned v2 SSD account, reached through the same private endpoint; it exists while the mode is `nfs` (or the scratch share is on). The copy is made at the first start (`crates/usnm-ingest/src/cluster/local.rs`) and kept: a restart, or another index, copies only what isn't there.
 - `cache`: Quickwit's split cache (`searcher.split_cache`, `USNM_SEARCH_LOCAL_CACHE_GIB`, default 40) on the replica's disk. A search reads from Blob and marks its splits; the cache downloads them whole in the background (4 at a time) and later searches read the local files.
 - `copy`: the index copied to the replica's disk before Quickwit starts and served as `file://`, so no Blob client runs at all.
 
-**Where it runs.** `blob` and `nfs` run on Consumption at the sidecar's 3.75 vCPU / 7.5 GiB (with `nfs`'s 0.25 vCPU init container that hands the share's directory to the node's user, 4 / 8 in all), the shape production searches with. A Consumption replica can mount an NFS share: the environment has its own VNet, and the ingest job mounts its scratch share on Consumption the same way ([storage mounts](https://learn.microsoft.com/azure/container-apps/storage-mounts#azure-files-volume)). `cache` and `copy` need more disk than a Consumption replica's 8 GiB ([ephemeral storage](https://learn.microsoft.com/azure/container-apps/storage-mounts#ephemeral-storage)), and a VM is out (`usnm-deny-iaas-compute` denies them in `rg-usnm-dev`), so they run on the E4 dedicated profile (`USNM_DEDICATED_PROFILE`), where Microsoft reported about 80 GiB of ephemeral storage per replica in September 2026 (microsoft/azure-container-apps#1779; the node logs `data directory disk` with `df` at start): 3.25 vCPU / 24 GiB, an E4 replica's most, its disk emptied by a restart. The E4 node costs about $0.39 an hour plus the $0.10 Dedicated plan fee while the profile exists; the share about $0.10 per GiB a month while it exists.
+**Where it runs.** `blob` and `nfs` run on Consumption at the sidecar's 3.75 vCPU / 7.5 GiB (with `nfs`'s 0.25 vCPU init container that hands the share's directory to the node's user, 4 / 8 in all), the shape production searches with. A Consumption replica can mount an NFS share: the environment has its own VNet, and the ingest job mounts its scratch share on Consumption the same way ([storage mounts](https://learn.microsoft.com/azure/container-apps/storage-mounts#azure-files-volume)). `cache` and `copy` need more disk than a Consumption replica's 8 GiB ([ephemeral storage](https://learn.microsoft.com/azure/container-apps/storage-mounts#ephemeral-storage)), and a VM is out (`usnm-deny-iaas-compute` denies them in dev's groups), so they run on the E4 dedicated profile (`USNM_DEDICATED_PROFILE`), where Microsoft reported about 80 GiB of ephemeral storage per replica in September 2026 (microsoft/azure-container-apps#1779; the node logs `data directory disk` with `df` at start): 3.25 vCPU / 24 GiB, an E4 replica's most, its disk emptied by a restart. The E4 node costs about $0.39 an hour plus the $0.10 Dedicated plan fee while the profile exists; the share about $0.10 per GiB a month while it exists.
 
 **One E4 mode at a time, with a provision in between.** The E4 profile has one node. A new revision there can't start while the old one holds it, and the old one keeps the traffic: on the evening of 9 October 2026 (ET) the `cache` and `copy` runs were all served by the `blob` revision (`AssigningReplicaFailed: Insufficient capacity on workload profile 'ingest-e4'`, then `Deployment Progress Deadline Exceeded`), and repeated the `blob` runs' windows, which Quickwit's partial request cache answered. Their results don't stand. To switch between `cache` and `copy`, clear the mode (`--unset`), provision, then set the new one and provision. The bench's `--variant blob|nfs|cache|copy` now reads the root's node config (`/api/v1/config`) and stops if the searcher isn't in that mode. Give each run its own `--offset` too, so no two runs share windows.
 
@@ -888,9 +888,9 @@ Whether reading splits from somewhere other than Blob removes the main runtime's
 With `RG`, `J`, `JOB` and `wait_for` as in the version comparison above, and the image tag that has these flags in `USNM_IMAGE_TAG`:
 
 ```sh
-lbench() { wait_for "$(J bench --label "$1" --cluster http://ca-usnm-qwl-0 --index "$IX" --sample dev1pct --variant "$2" --levels 1,4,10 --probe --profile-secs 120 "${@:3}")"; }
+lbench() { wait_for "$(J bench --label "$1" --cluster http://usnm-qw-local-ca-dev --index "$IX" --sample dev1pct --variant "$2" --levels 1,4,10 --probe --profile-secs 120 "${@:3}")"; }
 # Until the searcher's newest revision is the ready one (a first nfs copy takes minutes).
-ready() { until [ "$(az containerapp show -n ca-usnm-qwl-0 -g "$RG" --query "properties.latestReadyRevisionName == properties.latestRevisionName" -o tsv)" = true ]; do sleep 30; done; }
+ready() { until [ "$(az containerapp show -n usnm-qw-local-ca-dev -g "$RG" --query "properties.latestReadyRevisionName == properties.latestRevisionName" -o tsv)" = true ]; do sleep 30; done; }
 scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
 scripts/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --unset
 IX=s1ixb; scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_INDEX --value $IX
@@ -898,7 +898,7 @@ scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value blob; scripts
 lbench c-blob-r1 blob --offset 200; lbench c-blob-r2 blob --levels-only --offset 210
 scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value nfs; scripts/provision.sh --env dev; ready
 lbench c-nfs-r1 nfs --offset 220; lbench c-nfs-r2 nfs --levels-only --offset 230
-az containerapp logs show -n ca-usnm-qwl-0 -g "$RG" --container qwnode --tail 300 | grep -E 'data directory disk|local copy disk|index copied'
+az containerapp logs show -n usnm-qw-local-ca-dev -g "$RG" --container qwnode --tail 300 | grep -E 'data directory disk|local copy disk|index copied'
 scripts/qwcluster-report.py --env dev --since 12h --out qwlocal.md
 scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --unset; scripts/provision.sh --env dev   # removes the searcher and the share
 ```

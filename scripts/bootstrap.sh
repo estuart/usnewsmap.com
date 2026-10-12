@@ -53,11 +53,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENV_NAME" ] || usage
 # It becomes part of resource names (the registry allows only lowercase
-# letters and digits) and of the CI identity's OIDC subject.
-if ! [[ $ENV_NAME =~ ^[a-z][a-z0-9]{0,15}$ ]] || [ "$ENV_NAME" = guardrails ]; then
-  echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter (not \"guardrails\", the shared policy stack)" >&2
-  exit 2
-fi
+# letters and digits) and of the CI identity's OIDC subject. Checked before
+# anything signs in; scripts/lib/env.sh checks it again with the same rule.
+# shellcheck source=scripts/lib/env-name.sh
+. "$(dirname "$0")/lib/env-name.sh"
+valid_env_name "$ENV_NAME"
 
 step() { printf '\n==> %s\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -120,8 +120,10 @@ if [ -n "$EMAIL" ]; then
 fi
 [ "$INGEST" = true ] && aset USNM_INGEST_JOBS true
 # One Cosmos DB free-tier account per subscription: use it only if it's free.
+# This environment's own account is the one tagged with it, whatever its
+# name (ADR-0017).
 if [ -z "$(aget USNM_COSMOS_FREE_TIER)" ] || [ "$MOVING" = true ]; then
-  others=$(az cosmosdb list --query "[?enableFreeTier && !starts_with(name, 'cosmos-usnm-$ENV_NAME-')].name" -o tsv)
+  others=$(az cosmosdb list --query "[?enableFreeTier && !(tags.project == 'usnewsmap' && tags.environment == '$ENV_NAME')].name" -o tsv)
   if [ -n "$others" ]; then
     echo "the subscription's free tier is taken by: $others"
     aset USNM_COSMOS_FREE_TIER false

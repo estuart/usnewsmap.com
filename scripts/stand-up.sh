@@ -86,7 +86,7 @@ az account set --subscription "$recorded" ||
 aset USNM_EXPERIMENT "$EXPERIMENT"
 # One Cosmos DB free-tier account per subscription, as bootstrap decides.
 if [ -z "$(aget USNM_COSMOS_FREE_TIER)" ]; then
-  others=$(az cosmosdb list --query "[?enableFreeTier && !starts_with(name, 'cosmos-usnm-$ENV_NAME-')].name" -o tsv)
+  others=$(az cosmosdb list --query "[?enableFreeTier && !(tags.project == 'usnewsmap' && tags.environment == '$ENV_NAME')].name" -o tsv)
   if [ -n "$others" ]; then aset USNM_COSMOS_FREE_TIER false; else aset USNM_COSMOS_FREE_TIER true; fi
 fi
 

@@ -455,10 +455,20 @@ def bench_rows(benches):
     return rows
 
 
-def app_of(node_id):
-    """A node's Container App: qw-1 is ca-usnm-qw-1, the version
-    comparison's qws-0 is ca-usnm-qws-0."""
-    return f"ca-usnm-{node_id}"
+def app_of(node_id, env):
+    """A Quickwit node's Container App, named as infra/naming.bicep names it
+    (qwNodeApps, qwCompareApps, qwLocalApp) in ADR-0017's form: in dev,
+    qw-1 is usnm-qw-1-ca-dev, the version comparison's qws-0 is
+    usnm-qw-cmp-0-ca-dev and the local-disk searcher qwl-0 is
+    usnm-qw-local-ca-dev. The cluster never runs in prod, the only
+    environment that keeps legacy names (ADR-0017), so there is no other
+    form to look for."""
+    m = re.fullmatch(r"(qws|qwl|qw)-(\d+)", node_id)
+    if not m:
+        return node_id
+    kind, i = m.groups()
+    desc = {"qw": f"qw-{i}", "qws": f"qw-cmp-{i}", "qwl": "qw-local"}[kind]
+    return f"usnm-{desc}-ca-{env}"
 
 
 def ok_searches(p):
@@ -722,7 +732,7 @@ def report(env, since, out, from_file=None):
             secs = secs_between(r["started_at"], r["sealed_at"])
             nodes = [m["node_id"] for m in r["members"]]
             for n in nodes:
-                app = app_of(n)
+                app = app_of(n, env)
                 m = app_metrics(sub, rg, app, r["started_at"], r["sealed_at"]) or {}
                 rows.append([r["index_id"], app, fmt(m.get("cpu_avg"), 2), fmt(m.get("cpu_max"), 2),
                              fmt(m.get("mem_max_mib"), 0), fmt(secs, 0)])
@@ -745,7 +755,7 @@ def report(env, since, out, from_file=None):
         for b in benches:
             secs = secs_between(b["started_at"], b["ended_at"])
             for m in b["members"]:
-                app = app_of(m["node_id"])
+                app = app_of(m["node_id"], env)
                 x = app_metrics(sub, rg, app, b["started_at"], b["ended_at"]) or {}
                 rows.append([b["label"], app, fmt(x.get("cpu_avg"), 2), fmt(x.get("cpu_max"), 2),
                              fmt(x.get("mem_max_mib"), 0), fmt(secs, 0)])
@@ -798,8 +808,8 @@ def report(env, since, out, from_file=None):
     now = datetime.datetime.now(datetime.timezone.utc)
     day_ago = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     idle_rows = []
-    for app in ([f"ca-usnm-qw-{i}" for i in range(4)] + [f"ca-usnm-qws-{i}" for i in range(4)]
-                + ["ca-usnm-qwl-0"]):
+    for app in [app_of(n, env) for n in [f"qw-{i}" for i in range(4)] + [f"qws-{i}" for i in range(4)]
+                + ["qwl-0"]]:
         m = app_metrics(sub, rg, app, day_ago, now.strftime("%Y-%m-%dT%H:%M:%SZ"))
         if m and m["minutes"]:
             idle_rows.append([app, m["minutes"], m["idle_minutes"], fmt(m["cpu_avg"], 3),

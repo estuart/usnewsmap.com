@@ -19,9 +19,10 @@ const PRIVATE_SUFFIXES: [&str; 9] = [
     ".internal",
 ];
 
-/// Name prefixes of this deployment's Azure resources (08 §8.1), which some
-/// service errors quote without a hostname.
-const RESOURCE_PREFIXES: [&str; 13] = [
+/// Name prefixes of this deployment's Azure resources in their legacy form
+/// (08 §8.1), which some service errors quote without a hostname. Names in
+/// ADR-0017's form are recognized by [`is_adr_0017_name`].
+const RESOURCE_PREFIXES: [&str; 18] = [
     "cosmos-usnm",
     "stusnm",
     "crusnm",
@@ -35,7 +36,26 @@ const RESOURCE_PREFIXES: [&str; 13] = [
     "rg-usnm",
     "vnet-usnm",
     "snet-usnm",
+    "di-usnm",
+    "ag-usnm",
+    "dcr-usnm",
+    "alert-usnm",
+    "webtest-usnm",
 ];
+
+/// ADR-0017's type abbreviations for resources (infra/naming.bicep,
+/// `typeAbbreviations`, less the `display: true` ones): the token before the
+/// environment in `usnm-{desc}-{abbr}-{env}[-{suffix}]`. scripts/ci/check-names.py
+/// fails when this list, or [`COMPACT_ABBREVIATIONS`], differs from naming.bicep.
+const TYPE_ABBREVIATIONS: [&str; 20] = [
+    "ag", "alert", "appi", "budget", "ca", "caj", "cae", "cosno", "cr", "dcr", "di", "id", "kv",
+    "log", "nic", "pep", "rg", "st", "vnet", "webtest",
+];
+
+/// The abbreviations of the types whose names are compact,
+/// `usnm{fn}{abbr}{env}{suffix}` (letters and digits only): naming.bicep's
+/// `form: 'compact'` ones.
+const COMPACT_ABBREVIATIONS: [&str; 3] = ["st", "cr", "kv"];
 
 /// `error` with private details replaced and cut to [`MAX_CHARS`].
 pub fn sanitize(error: &str) -> String {
@@ -144,7 +164,7 @@ fn redact_component(c: &str) -> &str {
         return "[worker]";
     }
     let pieces = || lower.split(':');
-    if pieces().any(|p| RESOURCE_PREFIXES.iter().any(|r| p.starts_with(r))) {
+    if pieces().any(|p| RESOURCE_PREFIXES.iter().any(|r| p.starts_with(r)) || is_adr_0017_name(p)) {
         return "[resource]";
     }
     if c.contains('@') && c.rsplit('@').next().is_some_and(|d| d.contains('.')) {
@@ -157,6 +177,52 @@ fn redact_component(c: &str) -> &str {
         return "[id]";
     }
     c
+}
+
+/// An environment name (ADR-0017): prod, dev, or x and 1-4 lowercase
+/// letters or digits.
+fn is_env(s: &str) -> bool {
+    s == "prod"
+        || s == "dev"
+        || (s.len() >= 2
+            && s.len() <= 5
+            && s.starts_with('x')
+            && s[1..]
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+}
+
+/// A resource name in ADR-0017's form (lower case): hyphenated
+/// `usnm-{desc}-{abbr}-{env}`, with anything after it (a global name's
+/// suffix, a job execution's id), or compact `usnm{fn}{abbr}{env}{suffix}`.
+/// `usnm` alone (the Cosmos database), crate and binary names such as
+/// `usnm-ingest`, and the OCR nodes' `usnmocr` group don't match.
+fn is_adr_0017_name(s: &str) -> bool {
+    if let Some(rest) = s.strip_prefix("usnm-") {
+        let tokens: Vec<&str> = rest.split('-').collect();
+        // At least one description token before the abbreviation.
+        return (1..tokens.len().saturating_sub(1))
+            .any(|i| TYPE_ABBREVIATIONS.contains(&tokens[i]) && is_env(tokens[i + 1]));
+    }
+    let Some(rest) = s.strip_prefix("usnm") else {
+        return false;
+    };
+    if !rest
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    {
+        return false;
+    }
+    // {fn}{abbr}{env}{suffix}: a function word of letters, then the
+    // abbreviation, the environment and the 6-character deployment suffix.
+    (1..rest.len()).any(|i| {
+        let (word, tail) = rest.split_at(i);
+        word.bytes().all(|b| b.is_ascii_lowercase())
+            && COMPACT_ABBREVIATIONS.iter().any(|a| {
+                tail.strip_prefix(a)
+                    .is_some_and(|t| t.len() > 6 && is_env(&t[..t.len() - 6]))
+            })
+    })
 }
 
 fn strip_port(host: &str) -> &str {
@@ -310,6 +376,36 @@ mod tests {
             sanitize("account stusnmdataxyz: 403"),
             "account [resource]: 403"
         );
+    }
+
+    #[test]
+    fn replaces_adr_0017_names() {
+        // Hyphenated, global (with the suffix) and a job execution.
+        assert_eq!(
+            sanitize("job usnm-ingest-caj-dev failed; usnm-state-cosno-dev-abc123 refused"),
+            "job [resource] failed; [resource] refused"
+        );
+        assert_eq!(
+            sanitize("execution usnm-backfill-caj-x1-ab12cd3: Failed"),
+            "execution [resource]: Failed"
+        );
+        assert_eq!(
+            sanitize("scope=/resourceGroups/usnm-core-rg-xabcd/x"),
+            "scope=/resourceGroups/[resource]/x"
+        );
+        // Compact: storage, registry and Key Vault.
+        assert_eq!(
+            sanitize("account usnmdatastdevabc123: 403, usnmcorecrprodzz9y8x, usnmocrkvx1abc123"),
+            "account [resource]: 403, [resource], [resource]"
+        );
+        // Legacy names the list lacked.
+        assert_eq!(
+            sanitize("di-usnm-prod-abc123 and ag-usnm-prod"),
+            "[resource] and [resource]"
+        );
+        // Not resources: the database, binaries, the nodes' group, the image.
+        let e = "usnm usnm-ingest usnm-qwcluster usnm-ocr-worker usnmocr usnewsmap-ingest dbs/usnm/colls";
+        assert_eq!(sanitize(e), e);
     }
 
     #[test]

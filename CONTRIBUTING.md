@@ -33,9 +33,11 @@ python3 -m unittest scripts/ci/test_no_positional_args.py
 scripts/ci/check-workbooks.py
 python3 -m unittest scripts/ci/test_check_workbooks.py
 python3 -m unittest scripts/test_env_scripts.py
+scripts/ci/check-names.py --base origin/main
+python3 -m unittest scripts/ci/test_check_names.py
 bicep build infra/main.bicep --stdout > /dev/null
 bicep build infra/guardrails.bicep --stdout > /dev/null
-AZURE_ENV_NAME=ci bicep build-params infra/main.bicepparam --stdout > /dev/null
+AZURE_ENV_NAME=dev bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
 
 `scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).

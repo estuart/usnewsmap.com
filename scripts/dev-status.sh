@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Is dev up, and for which experiment (#275; docs/operations.md, "Dev
 # environment lifecycle")? Lists its deployment stack and what's in its
-# groups (rg-usnm-dev, rg-usnm-dev-spot and the Container Apps environment's
-# ME_cae-usnm-dev_* group), the experiment tag on rg-usnm-dev and its age,
-# and what those groups have cost so far (Cost Management, actual): since the
-# experiment started, or this month when there's no tag.
+# groups (usnm-core-rg-dev, the Container Apps environment's
+# usnm-core-infra-rg-dev and rg-usnm-dev-spot; the legacy rg-usnm-dev and
+# ME_cae-usnm-dev_* too, ADR-0017), the experiment tag on the project group
+# and its age, and what those groups have cost so far (Cost Management,
+# actual): since the experiment started, or this month when there's no tag.
 #
 #   scripts/dev-status.sh [--env dev] [--subscription ID]
 #
@@ -38,7 +39,6 @@ az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
 [ -n "$SUBSCRIPTION" ] || SUBSCRIPTION=$(az account show --query id -o tsv)
 SUBSCRIPTION=$(az account show --subscription "$SUBSCRIPTION" --query id -o tsv) ||
   die "can't select subscription $SUBSCRIPTION"
-RG="rg-usnm-$ENV_NAME"
 echo "$ENV_NAME in subscription $SUBSCRIPTION"
 
 # Seconds since the epoch of an ISO 8601 UTC time: GNU date, then BSD date.
@@ -53,8 +53,11 @@ if out=$(az stack sub show -n "$STACK" --subscription "$SUBSCRIPTION" --query "l
 elif ! grep -qiE 'NotFound|could not be found' <<< "$out"; then
   die "can't check the deployment stack $STACK: $out"
 fi
+# $ENV_GROUPS, $PROJECT_GROUPS and $LEGACY_INFRA_GROUP: scripts/lib/env.sh.
+match=""
+for g in $ENV_GROUPS; do match="$match || name=='$g'"; done
 groups=$(az group list --subscription "$SUBSCRIPTION" \
-  --query "[?name=='$RG' || name=='$RG-spot' || starts_with(name, 'ME_cae-usnm-${ENV_NAME}_')].name" -o tsv) ||
+  --query "[?${match# || } || starts_with(name, '$LEGACY_INFRA_GROUP')].name" -o tsv) ||
   die "can't list resource groups"
 for g in $groups; do
   list=$(az resource list -g "$g" --subscription "$SUBSCRIPTION" --query "[].[type, name]" -o tsv) ||
@@ -65,8 +68,12 @@ for g in $groups; do
   [ -z "$list" ] || while IFS=$'\t' read -r type name; do echo "  $type  $name"; done <<< "$list"
 done
 
-experiment="" started=""
-if grep -Fqx "$RG" <<< "$groups"; then
+# The project group, in whichever name form it has.
+experiment="" started="" RG=""
+for g in $PROJECT_GROUPS; do
+  if grep -Fqx "$g" <<< "$groups"; then RG=$g; break; fi
+done
+if [ -n "$RG" ]; then
   tags=$(az group show -n "$RG" --subscription "$SUBSCRIPTION" --query "[tags.experiment, tags.started]" -o tsv) ||
     die "can't read the tags of $RG"
   IFS=$'\t' read -r experiment started <<< "$tags"
@@ -83,11 +90,12 @@ body=$(jq -n --arg from "$from" --arg to "$now" '{
 if cost=$(az rest --method post \
   --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/providers/Microsoft.CostManagement/query?api-version=2023-11-01" \
   --body "$body" 2>&1); then
-  cost=$(jq -r --arg e "$ENV_NAME" '
+  cost=$(jq -r --arg groups "$ENV_GROUPS" --arg infra "$LEGACY_INFRA_GROUP" '
     .properties as $p | ($p.columns | map(.name)) as $c
+    | ($groups | ascii_downcase | split(" ")) as $g | ($infra | ascii_downcase) as $i
     | [$p.rows[] | {cost: .[$c | index("Cost")], rg: ((.[$c | index("ResourceGroupName")] // "") | ascii_downcase),
         cur: .[$c | index("Currency")]}
-       | select(.rg == "rg-usnm-\($e)" or .rg == "rg-usnm-\($e)-spot" or (.rg | startswith("me_cae-usnm-\($e)_")))]
+       | select(.rg as $r | ($g | any(. == $r)) or ($r | startswith($i)))]
     | "\((map(.cost) | add // 0) * 100 | round / 100) \(.[0].cur // "")"' <<< "$cost") ||
     die "can't read Cost Management's answer"
   echo "cost since $from: $cost"
@@ -103,7 +111,7 @@ if [ "$stack" = false ] && [ -z "$groups" ]; then
   exit 0
 fi
 if [ -z "$experiment" ]; then
-  echo "error: $ENV_NAME has resources and no experiment tag on $RG: tear it down (scripts/teardown.sh --env $ENV_NAME), or tag it (scripts/settings.sh --env $ENV_NAME --key USNM_EXPERIMENT --value <issue>; scripts/provision.sh --env $ENV_NAME)" >&2
+  echo "error: $ENV_NAME has resources and no experiment tag on ${RG:-its project group (${PROJECT_GROUPS// / or })}: tear it down (scripts/teardown.sh --env $ENV_NAME), or tag it (scripts/settings.sh --env $ENV_NAME --key USNM_EXPERIMENT --value <issue>; scripts/provision.sh --env $ENV_NAME)" >&2
   exit 1
 fi
 age=""

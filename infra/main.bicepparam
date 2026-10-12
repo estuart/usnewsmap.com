@@ -3,7 +3,11 @@
 // a value before it deploys the stack; the rest take the defaults here.
 using './main.bicep'
 
-param environmentName = readEnvironmentVariable('AZURE_ENV_NAME')
+import { checkedEnvName } from 'naming.bicep'
+
+// prod, dev or x plus 1-4 lowercase letters or digits (ADR-0017); any
+// other name fails here, at build-params time.
+param environmentName = checkedEnvName(readEnvironmentVariable('AZURE_ENV_NAME'))
 param location = readEnvironmentVariable('AZURE_LOCATION', 'eastus2')
 param apiImage = readEnvironmentVariable('USNM_API_IMAGE', '')
 param searchBackend = readEnvironmentVariable('USNM_SEARCH_BACKEND', 'fixtures')

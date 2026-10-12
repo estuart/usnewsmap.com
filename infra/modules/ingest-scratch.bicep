@@ -24,6 +24,9 @@
 param location string
 param tags object
 param name string
+@description('The account\'s File private endpoint and its NIC\'s name (create-only; empty leaves Azure\'s generated name).')
+param endpointName string
+param endpointNic string = ''
 @description('Scratch share size in GiB; 0: no scratch share. 128 is the floor for the merge settings in pages-index.yaml (main.bicep keeps the setting at 0 or 128 and up): a merge of about 60 GB, plus the write-ahead log, the split cache and the split being built, about 70 GB, with room for pages that index larger. A smaller share needs a smaller split_num_docs_target.')
 @minValue(0)
 param sizeGiB int
@@ -112,21 +115,24 @@ resource link 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01'
 }
 
 resource pe 'Microsoft.Network/privateEndpoints@2024-05-01' = {
-  name: 'pe-usnm-file'
+  name: endpointName
   location: location
   tags: tags
-  properties: {
-    subnet: { id: peSubnetId }
-    privateLinkServiceConnections: [
-      {
-        name: 'pe-usnm-file'
-        properties: {
-          privateLinkServiceId: account.id
-          groupIds: ['file']
+  properties: union(
+    {
+      subnet: { id: peSubnetId }
+      privateLinkServiceConnections: [
+        {
+          name: endpointName
+          properties: {
+            privateLinkServiceId: account.id
+            groupIds: ['file']
+          }
         }
-      }
-    ]
-  }
+      ]
+    },
+    empty(endpointNic) ? {} : { customNetworkInterfaceName: endpointNic }
+  )
 }
 
 resource zoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {

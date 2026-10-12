@@ -10,8 +10,11 @@
 // *), and versioning keeps an overwritten version for 30 days.
 
 param accountName string
-@description('The environment, for the writer role\'s name.')
+@description('The environment, in the writer role\'s frozen guid() seed.')
 param env string
+@description('The writer role\'s name, before its scope, and what follows the scope\'s group (infra/naming.bicep).')
+param roleLabel string
+param roleScopeEnv string = ''
 @description('[{container, principalId, role}]: role is reader or writer.')
 param grants array
 
@@ -34,7 +37,7 @@ resource writer 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(resourceGroup().id, 'usnm-archive-writer', env)
   properties: {
     // Role names are unique per tenant: include the subscription, group and environment.
-    roleName: 'usnm archive writer (${take(subscription().subscriptionId, 8)}/${resourceGroup().name}/${env})'
+    roleName: '${roleLabel} (${take(subscription().subscriptionId, 8)}/${resourceGroup().name}${roleScopeEnv})'
     description: 'An environment on the archival account: list, read and create blobs. No delete.'
     type: 'CustomRole'
     permissions: [

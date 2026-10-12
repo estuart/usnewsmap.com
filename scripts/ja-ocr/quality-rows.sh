@@ -33,8 +33,10 @@ die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/../.."
 . scripts/lib/env.sh
 command -v jq > /dev/null || die "jq is needed"
-[[ $EXECUTION =~ ^caj-usnm-ja(ocr|one)-[a-z0-9]+-[a-z0-9]+$ ]] ||
-  die "\"$EXECUTION\" isn't an execution of the ja-ocr job or its one-off job (caj-usnm-jaocr-… or caj-usnm-jaone-…)"
+# Both name forms (ADR-0017): caj-usnm-jaocr-<env>-<id> until Phase 3,
+# usnm-jaocr-caj-<env>-<id> after; the same for jaone.
+[[ $EXECUTION =~ ^(caj-usnm-ja(ocr|one)|usnm-ja(ocr|one)-caj)-[a-z0-9]+-[a-z0-9]+$ ]] ||
+  die "\"$EXECUTION\" isn't an execution of the ja-ocr job or its one-off job (caj-usnm-jaocr-…, usnm-jaocr-caj-… or the jaone forms)"
 [[ $SPAN =~ ^[0-9]+[hd]$ ]] || die "timespan \"$SPAN\": use e.g. 12h or 3d"
 case $SPAN in *h) iso="PT${SPAN%h}H" ;; *d) iso="P${SPAN%d}D" ;; esac
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"

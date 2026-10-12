@@ -16,7 +16,7 @@
 # quality audit runs on the ja-ocr job, whose replicas share its work
 # (quality.py); mixed, targets, damage-parity and the american-stories
 # commands, which one replica does, run on the one-replica audit job
-# (caj-usnm-jaone-<env>), so a second replica can't fail the execution.
+# (JA_AUDIT_JOB), so a second replica can't fail the execution.
 # `az containerapp job start --args` sends a container without the image or
 # settings, so this copies the job's template and swaps only the arguments.
 # Needs az signed in to the environment's subscription and jq. Results:
@@ -41,8 +41,12 @@ command -v jq > /dev/null || die "jq is needed to build the request"
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"
 sub=$(aget AZURE_SUBSCRIPTION_ID)
 rg=$(aget AZURE_RESOURCE_GROUP)
-job="caj-usnm-jaocr-$ENV_NAME"
-one="caj-usnm-jaone-$ENV_NAME"
+# The jobs' names from the stack's outputs (JA_OCR_JOB, JA_AUDIT_JOB), not
+# rebuilt here (ADR-0017).
+job=$(aget JA_OCR_JOB)
+one=$(aget JA_AUDIT_JOB)
+[ -n "$job" ] && [ -n "$one" ] ||
+  die "JA_OCR_JOB or JA_AUDIT_JOB isn't set for $ENV_NAME (USNM_JA_OCR_JOB on and provisioned?)"
 case $command in
   quality)
     allowed='^(--sample-pct|--min-pages|--metric|[0-9]+(\.[0-9]+)?|v[12])$' ;;

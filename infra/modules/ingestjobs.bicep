@@ -25,8 +25,9 @@
 //   on-prem OCR nodes): `usnm-ingest ocr-sync` on `ocrSyncCron` (hourly),
 //   one replica, as id-usnm-ingest: picks the nodes' output up from the
 //   exchange account, checks it and imports it into curated/ocr-local/
-//   (12 §12.5 Step 8). Named by ADR-0017 (main.bicep builds the name). With a seed plan (`ocrSeed`), each run then tops
-//   `ocr-bulk` up with the pages LoC read worst (12 §12.5 Step 10).
+//   (12 §12.5 Step 8). Named by ADR-0017 (infra/naming.bicep). With a
+//   seed plan (`ocrSeed`), each run then tops `ocr-bulk` up with the
+//   pages LoC read worst (12 §12.5 Step 10).
 //   `ocr-enqueue`, `ocr-requeue` and `ocr-seed` run as one-off executions of
 //   it (scripts/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
 //   account's endpoints.
@@ -61,7 +62,17 @@ param storageBlobEndpoint string
 param cosmosEndpoint string
 @description('Application Insights connection string: the ingestion endpoint and instrumentation key. The jobs authenticate with id-usnm-ingest (Monitoring Metrics Publisher); the component accepts nothing else.')
 param appInsightsConnectionString string
-param jobNameSuffix string
+@description('The jobs\' names (infra/naming.bicep); a Container Apps job name is under 32 characters.')
+@maxLength(31)
+param ingestJobName string
+@maxLength(31)
+param backfillJobName string
+@maxLength(31)
+param jaOcrJobName string
+@maxLength(31)
+param jaAuditJobName string
+@maxLength(31)
+param ocrSyncJobName string
 @description('Weekly schedule for the ingest job (UTC cron). Empty: manual only.')
 param cron string = ''
 @description('Make every ingest run a full release: a new base from every curated batch, merged (04 §4.7). For a one-off rebuild; turn it off afterwards.')
@@ -116,9 +127,6 @@ param jaOcrReplicas int = 2
 param rawUrl string = ''
 @description('Deploy the OCR pickup job, `ocrSyncJobName` (12 §12.5 Step 8). Needs the exchange account (ocrNodes).')
 param ocrSync bool = false
-@description('The OCR pickup job\'s name (with ocrSync), usnm-ocrs-caj-<env>; a Container Apps job name is under 32 characters (ADR-0017).')
-@maxLength(31)
-param ocrSyncJobName string = ''
 @description('The OCR exchange account\'s queue endpoint (OCR_QUEUE_ENDPOINT).')
 param ocrQueueEndpoint string = ''
 @description('The OCR exchange account\'s blob endpoint (OCR_BLOB_ENDPOINT), with its trailing slash.')
@@ -210,7 +218,7 @@ var env = [
 var rawEnv = empty(rawUrl) ? [] : [{ name: 'USNM_RAW_URL', value: rawUrl }]
 
 resource ingest 'Microsoft.App/jobs@2025-01-01' = {
-  name: 'caj-usnm-ingest-${jobNameSuffix}'
+  name: ingestJobName
   location: location
   tags: tags
   identity: {
@@ -286,7 +294,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
 }
 
 resource backfill 'Microsoft.App/jobs@2025-01-01' = {
-  name: 'caj-usnm-backfill-${jobNameSuffix}'
+  name: backfillJobName
   location: location
   tags: tags
   identity: {
@@ -326,7 +334,7 @@ resource backfill 'Microsoft.App/jobs@2025-01-01' = {
 }
 
 resource jaOcr 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
-  name: 'caj-usnm-jaocr-${jobNameSuffix}'
+  name: jaOcrJobName
   location: location
   tags: tags
   identity: {
@@ -366,7 +374,7 @@ resource jaOcr 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
 }
 
 resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
-  name: 'caj-usnm-jaone-${jobNameSuffix}'
+  name: jaAuditJobName
   location: location
   tags: tags
   identity: {

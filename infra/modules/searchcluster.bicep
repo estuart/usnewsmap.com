@@ -2,7 +2,7 @@
 // "Search cluster experiment"). Deployed only with `searchCluster` on; with
 // it off main.bicep skips this module, and the stack deletes what it made.
 //
-// - Nodes: one app per member, `ca-usnm-qw-{i}`, each exactly one replica
+// - Nodes: one app per member, `usnm-qw-{i}-ca-{env}`, each exactly one replica
 //   (min = max = 1) on the Consumption profile. Node 0 is the only metastore
 //   (the single writer of the file-backed metastore at `azure://qw-cluster`),
 //   the control plane, the janitor, an indexer and a searcher, and the root
@@ -16,7 +16,7 @@
 //   other nodes' entries as peer seeds and then becomes Quickwit (exec). A
 //   node that restarts at a new IP registers again and joins through the
 //   others; they learn its new address by gossip.
-// - Bench job `caj-usnm-qwbench-{env}` (manual): `usnm-qwcluster` builds the
+// - Bench job `usnm-qw-bench-caj-{env}` (manual): `usnm-qwcluster` builds the
 //   1% sample from `curated` (read only), loads it into the cluster, runs the
 //   benchmark searches against node 0, and logs and stores its reports in
 //   `qw-bench/runs/`.
@@ -27,15 +27,15 @@
 //   use a system-assigned identity in Container Apps (08 §8.2), so each node's
 //   system identity gets Blob Data Contributor on this container alone.
 // - `qw-bench`: the seed registry, the sample documents and the reports.
-//   Blob Data Contributor for `id-usnm-qwnode-{env}` (the nodes' own code:
-//   seeds) and `id-usnm-qwbench-{env}` (the bench job), both user-assigned.
+//   Blob Data Contributor for `usnm-qw-node-id-{env}` (the nodes' own code:
+//   seeds) and `usnm-qw-bench-id-{env}` (the bench job), both user-assigned.
 // - The bench identity reads `curated` and `reference` (Blob Data Reader).
 // Both identities pull the ingest image (AcrPull): it has Quickwit and the
 // `usnm-qwcluster` binary.
 //
 // Version comparison (#251; docs/operations.md, "Quickwit version
 // comparison"): with `compareImages`, one standalone searcher per image,
-// `ca-usnm-qws-{i}`, each the API sidecar's shape (searcher and metastore,
+// `usnm-qw-cmp-{i}-ca-{env}`, each the API sidecar's shape (searcher and metastore,
 // polling the file-backed metastore in `qw-cluster`), with a cluster id of
 // its own and no seeds, so they never join each other or the cluster. Each
 // searches the same splits, the cluster's indexes, with Blob Data *Reader*
@@ -51,8 +51,18 @@
 
 param location string
 param tags object
-@description('Environment name, for the job and identity names.')
-param nameSuffix string
+@description('The apps\' names (infra/naming.bicep), by index: nodes, comparison searchers, and the local-disk searcher. A container app name is under 32 characters.')
+@minLength(4)
+param nodeAppNames string[]
+@minLength(4)
+param compareAppNames string[]
+@maxLength(31)
+param localAppName string
+@description('The bench job\'s and the two identities\' names (infra/naming.bicep).')
+@maxLength(31)
+param benchJobName string
+param nodeIdentityName string
+param benchIdentityName string
 param environmentId string
 @description('The ingest image (Quickwit 0.9.1 with usnm-ingest and usnm-qwcluster): the cluster\'s nodes and the bench job.')
 param image string
@@ -62,7 +72,7 @@ param storageAccountName string
 param storageBlobEndpoint string
 @description('The archival account\'s Blob endpoint (USNM_ARCHIVE_ACCOUNT), for packaged sample sets; empty: none.')
 param archiveBlobEndpoint string = ''
-@description('Cluster members (apps ca-usnm-qw-0 to -{nodes - 1}). 0 runs no node and keeps the containers and the bench job: the idle state between runs.')
+@description('Cluster members (apps usnm-qw-0-ca-{env} to usnm-qw-{nodes - 1}-ca-{env}). 0 runs no node and keeps the containers and the bench job: the idle state between runs.')
 @minValue(0)
 @maxValue(4)
 param nodes int = 1
@@ -87,11 +97,11 @@ param runtimeThreads int = 0
 @minValue(0)
 param searchThreads int = 0
 
-@description('Version comparison (#251): one standalone searcher ca-usnm-qws-{i} per image, each nodeVcpu vCPU, reading the cluster\'s indexes. Empty: none.')
+@description('Version comparison (#251): one standalone searcher usnm-qw-cmp-{i}-ca-{env} per image, each nodeVcpu vCPU, reading the cluster\'s indexes. Empty: none.')
 @maxLength(4)
 param compareImages array = []
 
-@description('Local-disk test (#251): one standalone 0.9.1 searcher, ca-usnm-qwl-0, reading the cluster\'s indexes from Blob (blob) or from a copy of localIndex on an NFS share (nfs), on Consumption, or through a split cache on its disk (cache) or from a copy on its disk (copy), on the dedicated profile. Empty: none.')
+@description('Local-disk test (#251): one standalone 0.9.1 searcher, usnm-qw-local-ca-{env}, reading the cluster\'s indexes from Blob (blob) or from a copy of localIndex on an NFS share (nfs), on Consumption, or through a split cache on its disk (cache) or from a copy on its disk (copy), on the dedicated profile. Empty: none.')
 @allowed(['', 'blob', 'cache', 'copy', 'nfs'])
 param localMode string = ''
 
@@ -113,7 +123,7 @@ var benchContainer = 'qw-bench'
 // What node 0 adds to the indexer and searcher every node may run.
 var rootServices = ['metastore', 'control_plane', 'janitor']
 // Inside the environment: node 0's internal ingress, by app name.
-var rootUrl = 'http://ca-usnm-qw-0'
+var rootUrl = 'http://${nodeAppNames[0]}'
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
@@ -150,13 +160,13 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing =
 }
 
 resource nodeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-usnm-qwnode-${nameSuffix}'
+  name: nodeIdentityName
   location: location
   tags: tags
 }
 
 resource benchIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-usnm-qwbench-${nameSuffix}'
+  name: benchIdentityName
   location: location
   tags: tags
 }
@@ -243,7 +253,7 @@ var nodeProbes = [
 
 resource nodeApps 'Microsoft.App/containerApps@2024-03-01' = [
   for i in range(0, nodes): {
-    name: 'ca-usnm-qw-${i}'
+    name: nodeAppNames[i]
     location: location
     tags: tags
     // The user-assigned identity pulls the image and writes the seed entry;
@@ -297,7 +307,7 @@ resource nodeApps 'Microsoft.App/containerApps@2024-03-01' = [
             ], tuningArgs)
             resources: { cpu: nodeCpu, memory: nodeMemory }
             env: [
-              // Selects id-usnm-qwnode for the seed registry; the wrapper
+              // Selects the node identity for the seed registry; the wrapper
               // removes it before Quickwit starts.
               { name: 'AZURE_CLIENT_ID', value: nodeIdentity.properties.clientId }
               { name: 'RUST_LOG', value: nodeRustLog }
@@ -365,7 +375,7 @@ var localResources = localDedicated ? { cpu: json('3.25'), memory: '24Gi' } : { 
 var nfsOwnerImage = 'mcr.microsoft.com/azurelinux/busybox:1.36'
 
 resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
-  name: 'ca-usnm-qwl-0'
+  name: localAppName
   location: location
   tags: tags
   dependsOn: [pulls]
@@ -456,7 +466,7 @@ resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
 
 resource localReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (localOn) {
   scope: cluster
-  name: guid(cluster.id, 'ca-usnm-qwl-0', blobReader)
+  name: guid(cluster.id, localAppName, blobReader)
   properties: {
     principalId: localApp!.identity.principalId
     principalType: 'ServicePrincipal'
@@ -467,7 +477,7 @@ resource localReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (
 // Version comparison (#251): standalone searchers over the cluster's indexes.
 resource compareApps 'Microsoft.App/containerApps@2024-03-01' = [
   for (compareImage, i) in compareImages: {
-    name: 'ca-usnm-qws-${i}'
+    name: compareAppNames[i]
     location: location
     tags: tags
     dependsOn: [pulls]
@@ -539,7 +549,7 @@ resource compareReaders 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 ]
 
 resource benchJob 'Microsoft.App/jobs@2025-01-01' = {
-  name: 'caj-usnm-qwbench-${nameSuffix}'
+  name: benchJobName
   location: location
   tags: tags
   dependsOn: [pulls, benchWriters, curatedReader, referenceReader]
@@ -587,7 +597,7 @@ resource benchJob 'Microsoft.App/jobs@2025-01-01' = {
 
 output nodeApps array = [for i in range(0, nodes): nodeApps[i].name]
 output compareApps array = [for (compareImage, i) in compareImages: compareApps[i].name]
-output localUrl string = localOn ? 'http://ca-usnm-qwl-0' : ''
+output localUrl string = localOn ? 'http://${localAppName}' : ''
 // Each comparison searcher's root for `bench --cluster`, inside the environment.
 output compareUrls array = [for (compareImage, i) in compareImages: 'http://${compareApps[i].name}']
 output benchJobName string = benchJob.name

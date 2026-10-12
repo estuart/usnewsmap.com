@@ -5,6 +5,7 @@ scripts/test_env_scripts.py). Nothing here reaches Azure.
 The stub answers from environment variables: STUB_STACK (the stack's
 resource count; unset: not found), STUB_GROUPS (group names, one per line),
 STUB_TAGS (the project group's "experiment<TAB>started"; unset: no group),
+STUB_TAGGED_GROUP (when set, the only group `group show` finds),
 STUB_PARAMS (the guard-rail stack's parameters as two tsv rows) and
 STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
 message). For a job execution (scripts/start-job.sh, and
@@ -36,6 +37,8 @@ case "$1 $2" in
     esac ;;
   "group list") [ -z "${STUB_GROUPS:-}" ] || printf '%s\n' "$STUB_GROUPS" ;;
   "group show")
+    if [ -n "${STUB_TAGGED_GROUP:-}" ] && [ "$4" != "$STUB_TAGGED_GROUP" ]; then
+      echo "ERROR: (ResourceGroupNotFound) Resource group '$4' could not be found." >&2; exit 3; fi
     if [ -n "${STUB_TAGS+x}" ]; then printf '%b\n' "$STUB_TAGS"
     else echo "ERROR: (ResourceGroupNotFound) Resource group 'rg-usnm-dev' could not be found." >&2; exit 3; fi ;;
   "resource list") printf 'Microsoft.Storage/storageAccounts\tstusnmdev\n' ;;
@@ -100,17 +103,32 @@ class SettingsLocation(Stubbed):
         self.assertEqual(r.stdout.strip(), os.path.join(self.settings, "dev", ".env"))
 
     def test_without_it_the_checkout_holds_them(self):
-        r = self.lib('echo "$ENV_FILE"', env_name="nosuchenv")
-        self.assertEqual(r.stdout.strip(), ".azure/nosuchenv/.env")
+        r = self.lib('echo "$ENV_FILE"', env_name="x1")
+        self.assertEqual(r.stdout.strip(), ".azure/x1/.env")
 
 
-class ReservedNames(Stubbed):
-    def test_other_stacks_names_are_reserved(self):
-        # usnm-archive and usnm-guardrails are stacks of their own.
-        for name in ("archive", "guardrails"):
+class EnvironmentNames(Stubbed):
+    # ADR-0017: prod, dev, or x plus 1-4 lowercase letters or digits.
+    def test_the_closed_list(self):
+        for name in ("prod", "dev", "x1", "xab12"):
+            r = self.lib("true", env_name=name)
+            self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
+
+    def test_anything_else_is_refused(self):
+        # usnm-archive and usnm-guardrails are stacks of their own, ci is a
+        # function word, and longer names overflow the resource names.
+        for name in ("archive", "guardrails", "ci", "x", "xabcde", "Prod", "dev2", "staging", "x-1"):
             r = self.lib("true", env_name=name)
             self.assertEqual(r.returncode, 2, name)
-            self.assertIn("reserved", r.stderr)
+            self.assertIn("ADR-0017", r.stderr)
+
+    def test_bootstrap_checks_it_before_signing_in(self):
+        # The stub az would log a call; the name is refused first.
+        r = subprocess.run([os.path.join(HERE, "bootstrap.sh"), "--env", "staging"], cwd=ROOT,
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ADR-0017", r.stderr)
+        self.assertFalse(os.path.exists(self.log))
 
 
 class ExperimentMarker(Stubbed):
@@ -152,6 +170,19 @@ class ExperimentMarker(Stubbed):
         r = self.lib("experiment_marker; aget USNM_EXPERIMENT_STARTED",
                      STUB_TAGS="275\\t2026-10-01T12:00:00Z")
         self.assertEqual(r.stdout.strip(), "2026-10-01T12:00:00Z")
+
+    def test_the_group_in_either_name_form(self):
+        # Dev's project group is usnm-core-rg-dev (ADR-0017); rg-usnm-dev is
+        # the legacy form, still looked for.
+        self.settings_file('USNM_EXPERIMENT="275"\n')
+        for group in ("usnm-core-rg-dev", "rg-usnm-dev"):
+            r = self.lib("experiment_marker; aget USNM_EXPERIMENT_STARTED", STUB_TAGGED_GROUP=group,
+                         STUB_TAGS="275\\t2026-10-01T12:00:00Z")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip(), "2026-10-01T12:00:00Z", group)
+        shows = [c for c in self.calls() if c.startswith("group show")]
+        self.assertTrue(shows[0].startswith("group show -n usnm-core-rg-dev "), shows)
+        self.assertTrue(shows[-1].startswith("group show -n rg-usnm-dev "), shows)
 
     def test_another_experiment_starts_again(self):
         self.settings_file('USNM_EXPERIMENT="301"\n')
@@ -240,6 +271,24 @@ class DevStatus(Stubbed):
         self.assertIn("cost since 2026-10-01T12:00:00Z: 1.75 USD", r.stdout)
         self.assertTrue(re.search(r"group rg-usnm-dev: 1 resources", r.stdout))
 
+    def test_an_experiment_in_adr_0017_names(self):
+        cost = json.dumps({"properties": {
+            "columns": [{"name": "Cost"}, {"name": "ResourceGroupName"}, {"name": "Currency"}],
+            "rows": [[1.25, "usnm-core-rg-dev", "USD"], [0.5, "USNM-CORE-INFRA-RG-DEV", "USD"],
+                     [0.25, "rg-usnm-dev-spot", "USD"], [40.0, "rg-usnm-prod", "USD"],
+                     [0.1, "usnm-core-rg-dev2", "USD"]]}})
+        r = self.status(STUB_STACK="120", STUB_GROUPS="usnm-core-rg-dev\nusnm-core-infra-rg-dev",
+                        STUB_TAGGED_GROUP="usnm-core-rg-dev", STUB_TAGS="275\\t2026-10-01T12:00:00Z",
+                        STUB_COST=cost)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("experiment #275, started 2026-10-01T12:00:00Z", r.stdout)
+        self.assertIn("cost since 2026-10-01T12:00:00Z: 2 USD", r.stdout)
+        self.assertTrue(re.search(r"group usnm-core-infra-rg-dev: 1 resources", r.stdout))
+        query = [c for c in self.calls() if c.startswith("group list")][0]
+        for g in ("usnm-core-rg-dev", "usnm-core-infra-rg-dev", "rg-usnm-dev-spot", "rg-usnm-dev",
+                  "ME_cae-usnm-dev_"):
+            self.assertIn(f"'{g}'", query)
+
     def test_cost_without_the_reader_role_is_a_warning(self):
         r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\\t2026-10-01T12:00:00Z",
                         STUB_COST_ERROR="ERROR: (AuthorizationFailed) no access")
@@ -251,6 +300,35 @@ class DevStatus(Stubbed):
                         STUB_COST_ERROR="ERROR: (TooManyRequests) throttled")
         self.assertEqual(r.returncode, 1)
         self.assertIn("can't read the cost", r.stderr)
+
+
+class StartQuality(Stubbed):
+    # The jobs' names come from the stack's outputs, in either form (ADR-0017).
+    SETTINGS = ('AZURE_SUBSCRIPTION_ID="sub-1"\nAZURE_RESOURCE_GROUP="usnm-core-rg-dev"\n'
+                'JA_OCR_JOB="usnm-jaocr-caj-dev"\nJA_AUDIT_JOB="usnm-jaone-caj-dev"\n')
+
+    def start(self, *args):
+        return subprocess.run([os.path.join(HERE, "ja-ocr", "start-quality.sh"), "--env", "dev", *args],
+                              cwd=ROOT, env={**self.env, "STUB_EXECUTION": "usnm-jaocr-caj-dev-abc12"},
+                              capture_output=True, text=True)
+
+    def test_the_jobs_come_from_the_settings(self):
+        self.settings_file(self.SETTINGS)
+        r = self.start("--sample-pct", "10")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(any(c.startswith("containerapp job show -n usnm-jaocr-caj-dev -g usnm-core-rg-dev")
+                            for c in self.calls()))
+        self.assertTrue(any("/jobs/usnm-jaocr-caj-dev/start?" in c for c in self.calls()))
+        r = self.start("--command", "mixed")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(any("/jobs/usnm-jaone-caj-dev/start?" in c for c in self.calls()))
+
+    def test_without_the_outputs(self):
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\nAZURE_RESOURCE_GROUP="rg-usnm-dev"\n')
+        r = self.start()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("JA_OCR_JOB", r.stderr)
+        self.assertFalse(os.path.exists(self.log))
 
 
 class StartJobWait(Stubbed):

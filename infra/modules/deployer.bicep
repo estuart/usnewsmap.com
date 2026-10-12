@@ -18,6 +18,8 @@
 param principalId string
 @description('The API app\'s user-assigned identity, the only one CI may assign.')
 param appIdentityName string
+@description('The role\'s name, before its scope (infra/naming.bicep).')
+param roleLabel string
 
 // The name predates the Container Apps rights (it once also read a Static
 // Web App's deploy token); it's kept so existing environments update the
@@ -26,7 +28,7 @@ resource role 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(resourceGroup().id, 'usnm-swa-deployer')
   properties: {
     // Role names are unique per tenant: include the subscription and group.
-    roleName: 'usnm deployer (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
+    roleName: '${roleLabel} (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
     description: 'CI deploys: roll Container Apps onto new images.'
     type: 'CustomRole'
     permissions: [

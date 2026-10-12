@@ -4,14 +4,20 @@
 param location string
 param tags object
 param subnetId string
+@description('The data lake\'s Blob endpoint and its NIC\'s name (create-only; empty leaves Azure\'s generated name).')
+param blobEndpointName string
+param blobEndpointNic string = ''
+@description('Cosmos DB\'s endpoint and its NIC\'s name (create-only; empty leaves Azure\'s generated name).')
+param cosmosEndpointName string
+param cosmosEndpointNic string = ''
 param storageId string
 param cosmosId string
 param blobDnsZoneId string
 param cosmosDnsZoneId string
 
 var endpoints = [
-  { name: 'pe-usnm-blob', target: storageId, group: 'blob', zone: blobDnsZoneId }
-  { name: 'pe-usnm-cosmos', target: cosmosId, group: 'Sql', zone: cosmosDnsZoneId }
+  { name: blobEndpointName, nic: blobEndpointNic, target: storageId, group: 'blob', zone: blobDnsZoneId }
+  { name: cosmosEndpointName, nic: cosmosEndpointNic, target: cosmosId, group: 'Sql', zone: cosmosDnsZoneId }
 ]
 
 resource pe 'Microsoft.Network/privateEndpoints@2024-05-01' = [
@@ -19,18 +25,23 @@ resource pe 'Microsoft.Network/privateEndpoints@2024-05-01' = [
     name: e.name
     location: location
     tags: tags
-    properties: {
-      subnet: { id: subnetId }
-      privateLinkServiceConnections: [
-        {
-          name: e.name
-          properties: {
-            privateLinkServiceId: e.target
-            groupIds: [e.group]
+    // The NIC's name can only be set at creation: the existing endpoints
+    // were created without one, so it is set only when not empty.
+    properties: union(
+      {
+        subnet: { id: subnetId }
+        privateLinkServiceConnections: [
+          {
+            name: e.name
+            properties: {
+              privateLinkServiceId: e.target
+              groupIds: [e.group]
+            }
           }
-        }
-      ]
-    }
+        ]
+      },
+      empty(e.nic) ? {} : { customNetworkInterfaceName: e.nic }
+    )
   }
 ]
 

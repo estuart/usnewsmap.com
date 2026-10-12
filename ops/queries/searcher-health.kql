@@ -22,8 +22,10 @@ let searcher = ContainerAppConsoleLogs
         by Detail = strcat(Level, " ", Module), Replica = ContainerGroupName
     | extend Source = "quickwit";
 let platform = ContainerAppSystemLogs
+    // Both name forms (ADR-0017): ca-usnm-{env} and usnm-api-ca-{env} for
+    // the API, usnm-search-ca-{env} for the searcher's own app.
     | where ContainerAppName == "ca-usnm" or ContainerAppName startswith "ca-usnm-"
-        or ContainerAppName startswith "usnm-search-ca-"
+        or ContainerAppName matches regex @"^usnm-(api|search)-ca-"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Type != "Normal"
         or Reason has_any ("OOM", "Kill", "BackOff", "Restart", "Unhealthy", "Fail", "Terminat", "Probe")

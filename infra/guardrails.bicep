@@ -266,8 +266,9 @@ resource noRegistryLocalAuth 'Microsoft.Authorization/policyDefinitions@2023-04-
 // groups says it was left up. It lives here, not in dev's stack, so it
 // exists while dev doesn't. A budget filters by exact group names: the
 // project group, the Spot group, and the group the Container Apps
-// environment creates for its load balancer, named for dev's region.
-// A distinct name from the budget-usnm-<env> dev's own stack can deploy.
+// environment creates for its load balancer (named by dev's template now;
+// the legacy one, Azure's default, is named for dev's region). A distinct
+// name from the budget dev's own stack can deploy (usnm-core-budget-dev).
 var devEmails = filter(map(split(devBudgetEmails, ','), e => trim(e)), e => !empty(e))
 
 resource devBudget 'Microsoft.Consumption/budgets@2023-11-01' = if (!empty(devEmails) && !empty(devBudgetStart)) {
@@ -281,7 +282,16 @@ resource devBudget 'Microsoft.Consumption/budgets@2023-11-01' = if (!empty(devEm
       dimensions: {
         name: 'ResourceGroupName'
         operator: 'In'
-        values: ['rg-usnm-dev', 'rg-usnm-dev-spot', 'ME_cae-usnm-dev_rg-usnm-dev_${devBudgetLocation}']
+        // dev's groups in ADR-0017's form (infra/naming.bicep: rg,
+        // containerEnvInfraRg, spotRg), then the legacy ones, which an
+        // older checkout's dev would still use.
+        values: [
+          'usnm-core-rg-dev'
+          'usnm-core-infra-rg-dev'
+          'rg-usnm-dev-spot'
+          'rg-usnm-dev'
+          'ME_cae-usnm-dev_rg-usnm-dev_${devBudgetLocation}'
+        ]
       }
     }
     notifications: {

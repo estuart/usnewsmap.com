@@ -162,8 +162,10 @@ class ReportTest(unittest.TestCase):
         # Reports from before the counters have no comparison rows.
         old = json.loads(fixture("bench.json")["Report"])
         self.assertEqual(report.compare_rows([old]), [])
-        self.assertEqual(report.app_of("qws-1"), "ca-usnm-qws-1")
-        self.assertEqual(report.app_of("qw-0"), "ca-usnm-qw-0")
+        # Node ids to their apps' names (infra/naming.bicep, ADR-0017's form).
+        self.assertEqual(report.app_of("qws-1", "dev"), "usnm-qw-cmp-1-ca-dev")
+        self.assertEqual(report.app_of("qw-0", "dev"), "usnm-qw-0-ca-dev")
+        self.assertEqual(report.app_of("qwl-0", "x1"), "usnm-qw-local-ca-x1")
 
     def test_local_disk_tables(self):
         stats = {"num_hits": 10, "localexec_num_splits": 58, "leaf_wall_time_microsecs": 2_000_000,

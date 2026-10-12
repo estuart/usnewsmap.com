@@ -24,8 +24,10 @@ param location string
 param tags object
 param workspaceId string
 param appInsightsId string
-@description('Environment name, in the OCR nodes workbook\'s title.')
-param env string
+@description('The workbooks\' titles (displayName).')
+param pipelineTitle string
+param apiTitle string
+param ocrNodesTitle string
 
 @description('Create the pipeline workbook (the ingest and backfill jobs exist).')
 param pipeline bool
@@ -69,7 +71,7 @@ resource pipelineWorkbook 'Microsoft.Insights/workbooks@2023-06-01' = if (pipeli
   tags: tags
   kind: 'shared'
   properties: {
-    displayName: 'usnewsmap pipeline'
+    displayName: pipelineTitle
     category: 'workbook'
     sourceId: sourceId
     version: 'Notebook/1.0'
@@ -83,7 +85,7 @@ resource apiWorkbook 'Microsoft.Insights/workbooks@2023-06-01' = if (api) {
   tags: tags
   kind: 'shared'
   properties: {
-    displayName: 'usnewsmap API'
+    displayName: apiTitle
     category: 'workbook'
     sourceId: sourceId
     version: 'Notebook/1.0'
@@ -105,7 +107,7 @@ resource ocrNodesWorkbook 'Microsoft.Insights/workbooks@2023-06-01' = if (ocrNod
   tags: tags
   kind: 'shared'
   properties: {
-    displayName: 'usnm OCR nodes (${env})'
+    displayName: ocrNodesTitle
     category: 'workbook'
     sourceId: toLower(ocrNodeAppInsightsId)
     version: 'Notebook/1.0'

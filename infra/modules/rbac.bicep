@@ -10,6 +10,8 @@ param cosmosName string
 param appInsightsName string
 param appPrincipalId string
 param ingestPrincipalId string
+@description('The search log writer role\'s name, before its scope (infra/naming.bicep).')
+param searchLogRoleLabel string
 @description('Entra object ids (people or groups) that may read the search log.')
 param searchLogReaders array = []
 
@@ -67,7 +69,7 @@ resource searchLogWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = 
   name: guid(resourceGroup().id, 'usnm-search-log-writer')
   properties: {
     // Role names are unique per tenant: include the subscription and group.
-    roleName: 'usnm search log writer (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
+    roleName: '${searchLogRoleLabel} (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
     description: 'The API: list, read and create blobs. No delete.'
     type: 'CustomRole'
     permissions: [

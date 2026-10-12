@@ -21,6 +21,8 @@ param subnetId string
 param nodeGroupId string = ''
 @description('The ingest identity: the cloud jobs that fill the queues and copy the output into curated.')
 param ingestPrincipalId string
+@description('The node writer role\'s name, before its scope (infra/naming.bicep).')
+param nodeWriterRoleLabel string
 
 // Role definition ids, from
 // https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage
@@ -168,7 +170,7 @@ resource nodeWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(resourceGroup().id, 'usnm-ocr-node-writer')
   properties: {
     // Role names are unique per tenant: include the subscription and group.
-    roleName: 'usnm OCR node writer (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
+    roleName: '${nodeWriterRoleLabel} (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
     description: 'An on-prem OCR node: list, read and create blobs. No delete.'
     type: 'CustomRole'
     permissions: [
