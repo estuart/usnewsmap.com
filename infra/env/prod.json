@@ -1,3 +1,23 @@
 {
-  "$schema": "./schema.json"
+  "$schema": "./schema.json",
+  "USNM_AMERICAN_STORIES": true,
+  "USNM_AMERICAN_STORIES_SEARCH": true,
+  "USNM_BUDGET_START": "2026-10-01",
+  "USNM_COSMOS_FREE_TIER": true,
+  "USNM_DNS_ZONE": "usnewsmap.com",
+  "USNM_GITHUB_REPO": "tgoodyear/usnewsmap.com",
+  "USNM_INGEST_JOBS": true,
+  "USNM_INGEST_SCRATCH_GIB": 128,
+  "USNM_JA_LATIN": true,
+  "USNM_JA_OCR_JOB": true,
+  "USNM_OCR": false,
+  "USNM_OCR_BULK_WINDOW": "1000",
+  "USNM_OCR_NODES": true,
+  "USNM_OCR_SEED_LANGUAGES": "ger",
+  "USNM_OCR_SEED_MAX_PAGES": "50000",
+  "USNM_OCR_SEED_PLAN": "pilot-german-frak2021",
+  "USNM_OCR_SEED_SOURCE": "fetched",
+  "USNM_SEARCHER_APP": true,
+  "USNM_SEARCH_BACKEND": "quickwit",
+  "USNM_USE_ACR": true
 }
