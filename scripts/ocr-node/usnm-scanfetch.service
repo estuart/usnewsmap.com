@@ -2,7 +2,8 @@
 # (scripts/ocr-node/scanfetch-ct.sh installs it). It is the only process
 # that fetches from LoC while it runs: `usnm-ocr-worker prefetch` with the
 # worker's client and pacing, writing into /tank/ocr/scans, a bind mount
-# of the host's tank/ocr/scans. Its settings are in /etc/usnm/scanfetch.env.
+# of the host's tank/ocr/scans, and keeping batch manifests and issue METS
+# in /tank/ocr/manifests/batches. Its settings are in /etc/usnm/scanfetch.env.
 # It doesn't restart on failure: it stops after 20 pages from 3 titles
 # fail in a row, which is how a block looks, and someone should look
 # before it goes on. One title's broken items are skipped and asked again
@@ -30,6 +31,9 @@ CapabilityBoundingSet=
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/tank/ocr/scans
+# Batch manifests and issue METS (#368); `-`: a container configured
+# before the batch route starts without it.
+ReadWritePaths=-/tank/ocr/manifests/batches
 PrivateTmp=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes

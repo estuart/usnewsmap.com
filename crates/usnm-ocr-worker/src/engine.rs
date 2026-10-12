@@ -970,20 +970,26 @@ pub fn set_alto_file_name(alto: &str, name: &str) -> String {
 /// Point ALTO's `sourceImageInformation/fileName` at the scan's URL, as
 /// [`set_alto_file_name`], and record the sha256 of the bytes read in a
 /// `fileIdentifier` after it (ADR-0015 decision 9), so a result can be
-/// traced to the exact scan, fetched or cached.
-pub fn set_alto_source(alto: &str, name: &str, sha256: &str) -> String {
+/// traced to the exact scan, fetched or cached. A JP2 from its batch also
+/// gets a `fileIdentifier` with the md5 LoC's bag manifest lists for it,
+/// which the bytes matched.
+pub fn set_alto_source(alto: &str, name: &str, sha256: &str, md5: Option<&str>) -> String {
     let named = set_alto_file_name(alto, name);
-    if !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+    let hex = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
+    if !hex(sha256) {
         return named;
+    }
+    let mut ids =
+        format!("<fileIdentifier fileIdentifierLocation=\"sha256\">{sha256}</fileIdentifier>");
+    if let Some(m) = md5.filter(|m| hex(m)) {
+        ids.push_str(&format!(
+            "<fileIdentifier fileIdentifierLocation=\"md5\">{m}</fileIdentifier>"
+        ));
     }
     match named.find("</fileName>") {
         Some(b) if named.contains("<fileName>") => {
             let end = b + "</fileName>".len();
-            format!(
-                "{}<fileIdentifier fileIdentifierLocation=\"sha256\">{sha256}</fileIdentifier>{}",
-                &named[..end],
-                &named[end..]
-            )
+            format!("{}{ids}{}", &named[..end], &named[end..])
         }
         _ => named,
     }
@@ -1420,11 +1426,17 @@ mod tests {
         );
         assert_eq!(set_alto_file_name("<alto/>", "x"), "<alto/>");
         assert_eq!(
-            set_alto_source(alto, "https://tile.loc.gov/a", "ab12"),
+            set_alto_source(alto, "https://tile.loc.gov/a", "ab12", None),
             "<sourceImageInformation><fileName>https://tile.loc.gov/a</fileName><fileIdentifier fileIdentifierLocation=\"sha256\">ab12</fileIdentifier></sourceImageInformation>"
         );
-        assert_eq!(set_alto_source("<alto/>", "x", "ab"), "<alto/>");
-        assert!(!set_alto_source(alto, "x", "<x>").contains("fileIdentifier"));
+        assert_eq!(set_alto_source("<alto/>", "x", "ab", None), "<alto/>");
+        assert!(!set_alto_source(alto, "x", "<x>", None).contains("fileIdentifier"));
+        // A JP2 from its batch: the storage URL, the sha256 and the bag's md5.
+        assert_eq!(
+            set_alto_source(alto, "https://tile.loc.gov/storage-services/service/ndnp/x/0812.jp2", "ab12", Some("cd34")),
+            "<sourceImageInformation><fileName>https://tile.loc.gov/storage-services/service/ndnp/x/0812.jp2</fileName><fileIdentifier fileIdentifierLocation=\"sha256\">ab12</fileIdentifier><fileIdentifier fileIdentifierLocation=\"md5\">cd34</fileIdentifier></sourceImageInformation>"
+        );
+        assert!(!set_alto_source(alto, "x", "ab", Some("<x>")).contains("md5"));
     }
 
     /// Reads a rendered line with the real Tesseract, when it is installed

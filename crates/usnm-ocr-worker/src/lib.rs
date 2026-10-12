@@ -4,6 +4,9 @@
 //! no LoC text and makes no keep-or-drop decision; a cloud job checks the
 //! parts and the release decides.
 
+/// LoC's batch directories: a page's JP2 from the bag manifest and the
+/// issue METS (#368).
+pub mod batch;
 /// Scans read from the prefetch cache over HTTP before LoC (#368).
 pub mod cache;
 pub mod engine;
@@ -24,3 +27,7 @@ pub mod telemetry;
 pub mod worker;
 
 pub mod testimg;
+
+/// A stand-in LoC for tests.
+#[cfg(test)]
+pub(crate) mod standin;

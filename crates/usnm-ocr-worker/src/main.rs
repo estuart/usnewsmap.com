@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use tokio::sync::watch;
 use usnm_ocr_worker::cache::CachedScans;
 use usnm_ocr_worker::engine::{Engine, Limits, Remote, Runner, Tesseract, TesseractOptions};
-use usnm_ocr_worker::loc::{ImageSize, LocClient, LocConfig};
+use usnm_ocr_worker::loc::{ImageSize, LocClient, LocConfig, STORAGE_SERVICE_ROOT};
 use usnm_ocr_worker::message::{OcrMessage, Reason};
 use usnm_ocr_worker::prefetch;
 use usnm_ocr_worker::publish;
@@ -166,8 +166,9 @@ enum Command {
         #[arg(long)]
         once: bool,
         /// Gap between loc.gov API requests, shared by all pages on this
-        /// node. With several nodes, multiply by their number.
-        #[arg(long, env = "USNM_OCR_API_GAP_MS", default_value_t = 3500)]
+        /// node (5 s: www.loc.gov's `Crawl-Delay`). With several nodes,
+        /// multiply by their number.
+        #[arg(long, env = "USNM_OCR_API_GAP_MS", default_value_t = 5000)]
         api_gap_ms: u64,
         /// Gap between image requests to LoC's IIIF server.
         #[arg(long, env = "USNM_OCR_TILE_GAP_MS", default_value_t = 1000)]
@@ -228,7 +229,10 @@ enum Command {
         manifest: String,
     },
     /// Fetch the scans a prefetch manifest lists onto local disk (#368),
-    /// with the worker's LoC client and pacing, until done, stopped,
+    /// with the worker's LoC client and pacing: each page's original JP2
+    /// through its batch directory (bag manifest and issue METS, kept on
+    /// disk, md5 checked), and only for a page that route can't place, the
+    /// item API and the IIIF JPEG. Until done, stopped,
     /// `--max-total-bytes` is reached or 20 pages from 3 titles fail in a
     /// row. Resumable: scans already there and matching their sidecar are
     /// skipped. An issue whose item loc.gov can't serve while it serves
@@ -303,12 +307,31 @@ enum Command {
         /// Cool-offs before such an issue is taken as permanent.
         #[arg(long, env = "USNM_PREFETCH_ITEM_MAX_COOLOFFS", default_value_t = 3)]
         item_max_cooloffs: u32,
-        /// Gap between loc.gov API requests.
-        #[arg(long, env = "USNM_OCR_API_GAP_MS", default_value_t = 3500)]
+        /// Gap between loc.gov API requests (5 s: www.loc.gov's
+        /// `Crawl-Delay`). Only pages the batch route can't place use the API.
+        #[arg(long, env = "USNM_OCR_API_GAP_MS", default_value_t = 5000)]
         api_gap_ms: u64,
         /// Gap between image requests to LoC's IIIF server.
         #[arg(long, env = "USNM_OCR_TILE_GAP_MS", default_value_t = 1000)]
         tile_gap_ms: u64,
+        /// Gap between requests to LoC's storage service (batch manifests,
+        /// issue METS, JP2s).
+        #[arg(long, env = "USNM_OCR_STORAGE_GAP_MS", default_value_t = 1000)]
+        storage_gap_ms: u64,
+        /// Give the storage service a pacer of its own. Without it, storage
+        /// and image requests share one, at the longer of the two gaps, and
+        /// a hold on either holds both (LoC publishes a limit for each but
+        /// doesn't say whether they're counted together).
+        #[arg(long, env = "USNM_OCR_STORAGE_OWN_BUDGET")]
+        storage_own_budget: bool,
+        /// Where batch manifests and issue METS are kept, so each is
+        /// fetched once.
+        #[arg(
+            long,
+            env = "USNM_PREFETCH_BATCH_CACHE",
+            default_value = "/tank/ocr/manifests/batches"
+        )]
+        batch_cache: PathBuf,
     },
     /// Serve the prefetched scans to the OCR nodes over HTTP (#368): GET
     /// scans and sidecars, DELETE buffer-set scans, PUT manifests, from the
@@ -350,7 +373,7 @@ enum Command {
         /// The sample run's index file.
         #[arg(long)]
         index: PathBuf,
-        #[arg(long, default_value_t = 3500)]
+        #[arg(long, default_value_t = 5000)]
         api_gap_ms: u64,
         #[arg(long, default_value_t = 1000)]
         tile_gap_ms: u64,
@@ -524,7 +547,12 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     Some(url) => {
                         tracing::info_span!("ocr_worker_start")
                             .in_scope(|| tracing::info!(url, "reading prefetched scans first"));
-                        Arc::new(CachedScans::new(url, iiif_root, loc)?)
+                        Arc::new(CachedScans::new(
+                            url,
+                            iiif_root,
+                            STORAGE_SERVICE_ROOT.into(),
+                            loc,
+                        )?)
                     }
                     None => loc,
                 }
@@ -641,10 +669,16 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             item_max_cooloffs,
             api_gap_ms,
             tile_gap_ms,
+            storage_gap_ms,
+            storage_own_budget,
+            batch_cache,
         } => {
             let loc = Arc::new(LocClient::new(LocConfig {
                 api_gap: Duration::from_millis(api_gap_ms),
                 tile_gap: Duration::from_millis(tile_gap_ms),
+                storage_gap: Duration::from_millis(storage_gap_ms),
+                storage_own_budget,
+                batch_cache: Some(batch_cache),
                 ..LocConfig::default()
             })?);
             let opts = prefetch::Options {

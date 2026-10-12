@@ -27,8 +27,11 @@
 # the container, straight from GitHub, checks the sum, and points
 # /usr/local/bin/usnm-ocr-worker at /usr/local/lib/usnm-ocr-worker/<release>/.
 # --configure writes /etc/usnm/scanfetch.env and the unit
-# (usnm-scanfetch.service, beside this script), and with --enable starts it
-# (restarts it if it was running, which goes on where it stopped).
+# (usnm-scanfetch.service, beside this script), makes the batch cache
+# /tank/ocr/manifests/batches, and with --enable starts it (restarts it if
+# it was running, which goes on where it stopped). The fetcher reads each
+# page's JP2 through its batch, 1 s apart on LoC's storage service, and
+# goes to the loc.gov API (5 s apart) only for pages that route can't place.
 # --serve installs nftables in the container with a rule that drops the
 # scan server's port from anyone outside the container's own LAN (its eth0
 # subnet, read when it runs), writes /etc/usnm/scanserve.env and the unit
@@ -159,11 +162,15 @@ USNM_PREFETCH_SETS=$SETS
 USNM_PREFETCH_BUFFER_CAP=$BUFFER_CAP
 USNM_PREFETCH_ORDER=$ORDER
 USNM_PREFETCH_CONCURRENCY=$CONCURRENCY
-USNM_OCR_API_GAP_MS=3500
+USNM_OCR_API_GAP_MS=5000
 USNM_OCR_TILE_GAP_MS=1000
+USNM_OCR_STORAGE_GAP_MS=1000
+USNM_PREFETCH_BATCH_CACHE=/tank/ocr/manifests/batches
 RUST_LOG=info"
   [ -z "$MAX_BYTES" ] || env+="
 USNM_PREFETCH_MAX_TOTAL_BYTES=$MAX_BYTES"
+  # Batch manifests and issue METS, kept so each is fetched once (#368).
+  in_ct install -d -o scanfetch -g scanfetch -m 2775 /tank/ocr/manifests/batches
   printf '%s\n' "$env" | in_ct bash -c 'cat > /etc/usnm/scanfetch.env.tmp && chmod 0644 /etc/usnm/scanfetch.env.tmp && mv /etc/usnm/scanfetch.env.tmp /etc/usnm/scanfetch.env'
   pct push "$CTID" "$HERE/usnm-scanfetch.service" /etc/systemd/system/usnm-scanfetch.service
   in_ct systemctl daemon-reload

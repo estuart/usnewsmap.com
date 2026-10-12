@@ -590,12 +590,14 @@ impl Worker {
             let scan = scan?;
             self.tracker.scanned(token, scan.from_cache);
             self.tracker.stage(token, "ocr");
-            let scan_sha256 = crate::prefetch::sha256(&scan.jpeg);
+            let scan_sha256 = crate::prefetch::sha256(&scan.bytes);
             if scan.from_cache {
-                tracing::debug!(doc_id = %key.doc_id(), "scan read from the cache");
+                tracing::debug!(doc_id = %key.doc_id(), format = scan.format.name(), "scan read from the cache");
             }
-            let image = work.path().join("page.jpg");
-            tokio::fs::write(&image, &scan.jpeg)
+            // The extension names the format: Tesseract (Leptonica) reads
+            // JPEG and, through OpenJPEG, JP2.
+            let image = work.path().join(format!("page.{}", scan.format.ext()));
+            tokio::fs::write(&image, &scan.bytes)
                 .await
                 .map_err(|e| Failure::Transient("scratch", format!("scratch image: {e}")))?;
             let t = Instant::now();
@@ -627,16 +629,28 @@ impl Worker {
                     KeyValue::new("language", m.language.clone()),
                 ],
             );
-            Ok((scan.iiif_base, scan_sha256, scan.evict, out))
+            Ok((
+                scan.iiif_base,
+                scan.url,
+                scan_sha256,
+                scan.md5,
+                scan.evict,
+                out,
+            ))
         };
-        let (iiif_base, scan_sha256, evict, out) = tokio::time::timeout_at(deadline.into(), read)
-            .await
-            .map_err(|_| Failure::Abandoned)??;
+        let (iiif_base, scan_url, scan_sha256, scan_md5, evict, out) =
+            tokio::time::timeout_at(deadline.into(), read)
+                .await
+                .map_err(|_| Failure::Abandoned)??;
         let text = usnm_core::text::normalize_ocr(&out.text);
+        // The ALTO names the file read (the IIIF JPEG or the batch's JP2)
+        // and its sha256, and a JP2's bag md5; the overlay row names the
+        // page by its IIIF base either way.
         let alto = set_alto_source(
             &String::from_utf8_lossy(&out.alto),
-            &format!("{iiif_base}/full/full/0/default.jpg"),
+            &scan_url,
             &scan_sha256,
+            scan_md5.as_deref(),
         );
         let row = OverlayRow {
             key: key.clone(),
@@ -741,12 +755,16 @@ mod tests {
             if key.seq == 98 {
                 return Err(FetchError::Transient("HTTP 500".into()));
             }
+            let iiif_base = format!(
+                "https://tile.loc.gov/image-services/iiif/service:ndnp:x:{}",
+                key.seq
+            );
             Ok(Scan {
-                iiif_base: format!(
-                    "https://tile.loc.gov/image-services/iiif/service:ndnp:x:{}",
-                    key.seq
-                ),
-                jpeg: bytes::Bytes::from_static(b"jpeg"),
+                url: format!("{iiif_base}/full/full/0/default.jpg"),
+                iiif_base,
+                format: crate::loc::ScanFormat::Jpeg,
+                bytes: bytes::Bytes::from_static(b"jpeg"),
+                md5: None,
                 download: std::time::Duration::ZERO,
                 from_cache: false,
                 evict: None,

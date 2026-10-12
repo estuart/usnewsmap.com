@@ -21,7 +21,7 @@
 #      (root:usnm, 0640), from the environment's deployment outputs: the
 #      queue endpoint, the blob endpoint with ocr-out, --name as the node
 #      id, --concurrency (default: the node's CPUs), the Tesseract image,
-#      LoC gaps of 3500 x M and 1000 x M ms (M is --pacing-multiplier,
+#      LoC gaps of 5000 x M and 1000 x M ms (M is --pacing-multiplier,
 #      default N, the number of nodes, and never under it), and the nodes'
 #      Application Insights connection string (OCR_NODE_APPINSIGHTS; left
 #      out when empty, so the worker sends no telemetry). N is the number
@@ -227,7 +227,8 @@ echo "binary sha256 $BIN_SUM; Tesseract image $IMAGE_ID"
   echo "USNM_OCR_NODE_ID=$NAME"
   echo "USNM_OCR_CONCURRENCY=$CONCURRENCY"
   echo "# LoC's pacing for $NODES node(s), multiplier $PACING: every node waits M times as long."
-  echo "USNM_OCR_API_GAP_MS=$((3500 * PACING))"
+  # 5 s: www.loc.gov's Crawl-Delay.
+  echo "USNM_OCR_API_GAP_MS=$((5000 * PACING))"
   echo "USNM_OCR_TILE_GAP_MS=$((1000 * PACING))"
   [ -z "$PAGE_TIMEOUT" ] || echo "USNM_OCR_PAGE_TIMEOUT_SECS=$PAGE_TIMEOUT"
   [ -z "$PUBLISH_FETCHED" ] || echo "USNM_OCR_PUBLISH_FETCHED=$PUBLISH_FETCHED"

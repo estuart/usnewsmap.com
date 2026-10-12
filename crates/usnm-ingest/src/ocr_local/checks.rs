@@ -23,8 +23,18 @@ pub const MAX_ENGINE_CHARS: usize = 512;
 /// replaces this when it lands.
 pub const ENGINE_SOURCES: [&str; 3] = ["usnm-tesseract", "usnm-kraken", "usnm-doctr"];
 
-/// Where IIIF scans come from.
+/// Where scans come from: tile.loc.gov's IIIF image server (the page's
+/// IIIF base, which the worker writes as `image_url`) and its storage
+/// service (a batch's original JP2, which the fetcher reads since #368).
 pub const IMAGE_PREFIX: &str = "https://tile.loc.gov/";
+
+/// Check 5's test of `image_url`: a short URL on tile.loc.gov with no
+/// spaces or control characters.
+pub fn image_url_ok(url: &str) -> bool {
+    url.starts_with(IMAGE_PREFIX)
+        && url.len() <= 512
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+}
 
 /// Why a part or dead letter was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,13 +259,7 @@ pub fn check_part(name: &PartName, bytes: Vec<u8>, ctx: &Context) -> Result<Node
     if languages.iter().any(|l| l == "jpn") {
         return Err(Reject::TitleJapanese);
     }
-    let image_ok = row.image_url.starts_with(IMAGE_PREFIX)
-        && row.image_url.len() <= 512
-        && !row
-            .image_url
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace());
-    if !image_ok {
+    if !image_url_ok(&row.image_url) {
         return Err(Reject::ImageUrl);
     }
     Ok(row)
@@ -274,4 +278,27 @@ pub fn check_alto(bytes: &[u8]) -> Result<usnm_alto::AltoPage, Reject> {
 /// field in its format; #338's rules).
 pub fn check_dead_letter(text: &str) -> Result<DeadLetter, Reject> {
     decode_dead_letter(text).map_err(|e| Reject::DeadLetter(e.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_urls_are_on_tile_loc_gov() {
+        for ok in [
+            "https://tile.loc.gov/image-services/iiif/service:ndnp:mdu:batch_mdu_garlic_ver02:data:sn83045081:0029602241A:1904072901:0812",
+            "https://tile.loc.gov/storage-services/service/ndnp/mdu/batch_mdu_garlic_ver02/data/sn83045081/0029602241A/1904072901/0812.jp2",
+        ] {
+            assert!(image_url_ok(ok), "{ok}");
+        }
+        for bad in [
+            "https://evil.example/x",
+            "https://tile.loc.gov.evil.example/x",
+            "http://tile.loc.gov/x",
+            "https://tile.loc.gov/a b",
+        ] {
+            assert!(!image_url_ok(bad), "{bad}");
+        }
+    }
 }

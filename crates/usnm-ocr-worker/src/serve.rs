@@ -3,17 +3,19 @@
 //! them with the same async, time-bounded client they use for LoC and
 //! mount nothing (ADR-0015 decision 9).
 //!
-//! - `GET /scans/<set>/<batch>/<lccn>/<date>/<ed>/<seq>.jpg` and the
-//!   sidecar `<…>.jpg.json`, from the scan root, read-only.
-//! - `DELETE /scans/buffer/<…>.jpg` removes a buffer-set scan: its
-//!   sidecar is renamed `<…>.jpg.done` first (so a half-done delete never
+//! - `GET /scans/<set>/<batch>/<lccn>/<date>/<ed>/<seq>.<jp2|jpg>` and
+//!   the sidecar `<…>.json`, from the scan root, read-only. A `.jp2` is
+//!   the batch's original JP2, a `.jpg` the IIIF JPEG.
+//! - `DELETE /scans/buffer/<…>.<jp2|jpg>` removes a buffer-set scan: its
+//!   sidecar is renamed `<…>.done` first (so a half-done delete never
 //!   leaves a scan that looks valid, and the fetcher knows not to fetch the
 //!   page again), then the scan goes. A worker sends it once its output for
 //!   the page is uploaded. A keep-set path is refused with 403.
 //! - `GET /index/<tag>.jsonl` (`full`, or `pct<n>`): the fetcher's index,
 //!   one JSON line per fetched scan (its sidecar: doc_id, batch,
 //!   batch_version, loc_url, iiif_base, resolution, fetched_at, bytes,
-//!   sha256, download_ms, user_agent), appended as scans land. It is how a
+//!   sha256, download_ms, user_agent, format and, for a JP2, md5),
+//!   appended as scans land. It is how a
 //!   seeder learns which pages are cached: a line means the scan was
 //!   written; a buffer scan may since have been read and deleted.
 //! - `PUT /manifests/<version>/{manifest.parquet,summary.json}` writes a
@@ -24,8 +26,8 @@
 //! name: no private address is written into the repository). The names are
 //! resolved at startup and again every `--allow-refresh-secs`; the
 //! container's nftables rule lets in only its own LAN. Plain HTTP: the scans are LoC's
-//! public images, and a worker checks each one's size and sha256 against
-//! its sidecar and the sidecar's URL against tile.loc.gov before use. Each
+//! public images, and a worker checks each one's size, sha256 and md5
+//! against its sidecar and the sidecar's URL against tile.loc.gov before use. Each
 //! request is logged (method, path, status, peer); no page text exists here.
 
 use std::collections::BTreeMap;
@@ -131,8 +133,14 @@ impl AllowList {
     }
 }
 
+/// A scan file's name: `.jpg` or `.jp2`.
+fn is_scan(name: &str) -> bool {
+    name.ends_with(".jpg") || name.ends_with(".jp2")
+}
+
 /// A path under `/scans/`: `keep` or `buffer`, then safe segments, ending
-/// in `.jpg` or `.jpg.json`. Returns the set.
+/// in a scan (`.jpg`, `.jp2`) or its sidecar (`.jpg.json`, `.jp2.json`).
+/// Returns the set.
 pub fn scan_rel(path: &str) -> Option<&str> {
     let segs: Vec<&str> = path.split('/').collect();
     if segs.len() < 2 || segs.len() > 8 {
@@ -149,7 +157,8 @@ pub fn scan_rel(path: &str) -> Option<&str> {
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
     });
     let last = segs[segs.len() - 1];
-    (ok && (last.ends_with(".jpg") || last.ends_with(".jpg.json"))).then_some(set)
+    let file = last.strip_suffix(".json").unwrap_or(last);
+    (ok && is_scan(file)).then_some(set)
 }
 
 /// `rel` under `root`, built from its checked segments only, so it can't
@@ -224,6 +233,8 @@ async fn get_scan(
         Ok(b) => {
             let ct = if path.ends_with(".json") {
                 "application/json"
+            } else if path.ends_with(".jp2") {
+                "image/jp2"
             } else {
                 "image/jpeg"
             };
@@ -242,7 +253,7 @@ async fn delete_scan(
     UrlPath(path): UrlPath<String>,
 ) -> Response {
     match scan_rel(&path) {
-        Some("buffer") if path.ends_with(".jpg") => {}
+        Some("buffer") if is_scan(&path) => {}
         Some("keep") => return StatusCode::FORBIDDEN.into_response(),
         _ => return StatusCode::BAD_REQUEST.into_response(),
     }
@@ -399,12 +410,22 @@ mod tests {
             scan_rel("buffer/curiv_joshuaTree/sn1/1890-05-03/1/7.jpg.json"),
             Some("buffer")
         );
+        assert_eq!(
+            scan_rel("keep/mdu_garlic/sn1/1904-07-29/1/7.jp2"),
+            Some("keep")
+        );
+        assert_eq!(
+            scan_rel("keep/mdu_garlic/sn1/1904-07-29/1/7.jp2.json"),
+            Some("keep")
+        );
         for bad in [
             "other/a/b.jpg",
             "keep/../x/1.jpg",
             "keep/a/.hidden.jpg",
             "keep/a//1.jpg",
             "keep/a/1.txt",
+            "keep/a/1.jp2.done",
+            "keep/a/1.json",
             "keep",
             "buffer/a b/1.jpg",
         ] {
@@ -555,6 +576,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(other.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn serves_and_deletes_jp2s_beside_jpegs() {
+        let (dir, root) = server(&["127.0.0.1"]).await;
+        let issue = dir.path().join("scans/buffer/b/sn1/1890-05-03/1");
+        std::fs::write(issue.join("2.jp2"), b"jp2").unwrap();
+        std::fs::write(issue.join("2.jp2.json"), b"{}").unwrap();
+        let http = reqwest::Client::new();
+        let url = |p: &str| format!("{root}/scans/buffer/b/sn1/1890-05-03/1/{p}");
+        let jp2 = http.get(url("2.jp2")).send().await.unwrap();
+        assert_eq!(jp2.status(), 200);
+        assert_eq!(jp2.headers()["content-type"], "image/jp2");
+        assert_eq!(&jp2.bytes().await.unwrap()[..], b"jp2");
+        let jpg = http.get(url("1.jpg")).send().await.unwrap();
+        assert_eq!(jpg.headers()["content-type"], "image/jpeg");
+        let side = http.get(url("2.jp2.json")).send().await.unwrap();
+        assert_eq!(side.headers()["content-type"], "application/json");
+        let del = http.delete(url("2.jp2")).send().await.unwrap();
+        assert_eq!(del.status(), 204);
+        assert!(!issue.join("2.jp2").exists() && issue.join("2.jp2.done").exists());
+        // The JPEG beside it is untouched.
+        assert!(issue.join("1.jpg").exists());
     }
 
     #[tokio::test]

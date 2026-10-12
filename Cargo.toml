@@ -51,6 +51,8 @@ http-body-util = "0.1"
 futures = "0.3"
 governor = "0.10"
 httpdate = "1"
+# The md5s in LoC's BagIt batch manifests, checked against each fetched JP2 (#368).
+md-5 = "0.11"
 # The bounded ALTO reader (usnm-alto): streaming, no DTD processing.
 quick-xml = "0.42"
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
