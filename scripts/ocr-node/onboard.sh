@@ -9,7 +9,7 @@
 # provision is needed afterwards.
 #
 #   scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org \
-#     --name usnm-ocr-node1 [--ssh-key ~/.ssh/id_ed25519] [--dry-run]
+#     --name usnm-ocr-node1 [--reboot-day Sun] [--ssh-key ~/.ssh/id_ed25519] [--dry-run]
 #
 # The node runs AlmaLinux 9 or RHEL 10 and takes key-based SSH with passwordless sudo
 # for --host. Run with USNM_OCR_NODES=true already provisioned (the exchange
@@ -20,8 +20,9 @@
 #   2. unless the node is already connected, creates a throwaway app
 #      registration and service principal with a 2-hour secret and only
 #      Azure Connected Machine Onboarding on the environment's group;
-#   3. copies scripts/ocr-node/node-setup.sh and the worker's unit,
-#      usnm-ocr-worker.service, to the node and runs node-setup.sh with
+#   3. copies scripts/ocr-node/node-setup.sh, the worker's unit,
+#      usnm-ocr-worker.service, and reboot-if-needed.sh (the weekly reboot
+#      window's script) to the node and runs node-setup.sh with
 #      sudo, sending the tenant, app id and secret on its stdin (never on a
 #      command line, never on the node's disk); on a RHEL node that isn't
 #      registered with Red Hat yet, also the organization id and activation
@@ -30,7 +31,9 @@
 #      (docs/operations.md); and the exchange account
 #      and the nodes' Application Insights connection string
 #      (OCR_NODE_APPINSIGHTS) as arguments (not secrets) for the worker's
-#      unit;
+#      unit, and --reboot-day, the node's day for its weekly reboot window
+#      (a new node needs one no other node has; without it, a node keeps
+#      the day it has);
 #   4. deletes the role assignment, the service principal and the app
 #      registration, and purges them from Entra's deleted items, as soon as
 #      node-setup.sh has finished (the connect was their only use), or when
@@ -65,12 +68,13 @@ usage() { sed -n '11,12s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
-ENV_NAME="" HOST="" NAME="" SSH_KEY="" DRY_RUN=false
+ENV_NAME="" HOST="" NAME="" SSH_KEY="" DRY_RUN=false REBOOT_DAY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --env) ENV_NAME=${2:-}; shift 2 ;;
     --host) HOST=${2:-}; shift 2 ;;
     --name) NAME=${2:-}; shift 2 ;;
+    --reboot-day) REBOOT_DAY=${2:-}; shift 2 ;;
     --ssh-key) SSH_KEY=${2:-}; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
@@ -85,6 +89,7 @@ done
 # the worker's --node-id.
 [[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,31}$ ]] || die "--name: 1 to 32 letters, digits or hyphens, starting with a letter or digit"
 [ -z "$SSH_KEY" ] || [ -r "$SSH_KEY" ] || die "--ssh-key: can't read $SSH_KEY"
+case "$REBOOT_DAY" in ""|Mon|Tue|Wed|Thu|Fri|Sat|Sun) ;; *) die "--reboot-day: Mon, Tue, Wed, Thu, Fri, Sat or Sun" ;; esac
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
@@ -180,6 +185,7 @@ fi
 SETUP_ARGS=$(printf '%q ' --subscription "$SUBSCRIPTION" --resource-group "$GROUP" \
   --location "$LOCATION" --name "$NAME" --tags "$TAGS" --identity-key-store "$KEY_STORE" \
   --exchange-account "$EXCHANGE" --app-insights "$CONN")
+[ -z "$REBOOT_DAY" ] || SETUP_ARGS+=$(printf '%q ' --reboot-day "$REBOOT_DAY")
 echo "identity key store: $KEY_STORE (HybridComputePreview feature: ${tpm_feature:-unknown})"
 
 # The onboarding credential is a throwaway service principal with only Azure
@@ -333,7 +339,7 @@ if [ "$DRY_RUN" = true ]; then
   else
     echo "warning: can't list $KEYVAULT's secrets (Key Vault Secrets Officer from USNM_OCR_KEYVAULT_ADMINS, at an address in USNM_OCR_NODE_IPS?)"
   fi
-  echo "would copy scripts/ocr-node/node-setup.sh and usnm-ocr-worker.service to $HOST and run:"
+  echo "would copy scripts/ocr-node/node-setup.sh, usnm-ocr-worker.service and reboot-if-needed.sh to $HOST and run:"
   echo "  sudo bash node-setup.sh $SETUP_ARGS < (tenant, app id and secret; on RHEL not yet registered, the Red Hat organization id and activation key from ${KEYVAULT:-OCR_KEYVAULT})"
 else
   if [ "$connected" != Connected ]; then
@@ -371,6 +377,8 @@ else
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/node-setup.sh" < scripts/ocr-node/node-setup.sh
   # shellcheck disable=SC2029
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/usnm-ocr-worker.service" < scripts/ocr-node/usnm-ocr-worker.service
+  # shellcheck disable=SC2029
+  ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/reboot-if-needed.sh" < scripts/ocr-node/reboot-if-needed.sh
   # A RHEL node registers with Red Hat before node-setup.sh installs
   # anything; one that's registered already needs no secrets.
   # shellcheck disable=SC2016 # expanded on the node

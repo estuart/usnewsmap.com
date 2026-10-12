@@ -16,7 +16,11 @@
 #      it (without --host, deleting the machine in step 4 removes the
 #      extension's resource; the node is gone or unreachable);
 #   3. with --host, over ssh with sudo: stops and disables
-#      usnm-ocr-worker.service, removes the engine runtime (ADR-0016: the
+#      the weekly reboot window first (usnm-ocr-reboot.timer and a
+#      usnm-ocr-reboot.service already running, so a window can't reboot
+#      the node mid-offboard; their units and script are removed) and
+#      dnf-automatic.timer, then usnm-ocr-worker.service; removes the
+#      engine runtime (ADR-0016: the
 #      engine account usnmeng with its containers, images and subordinate
 #      ids, its Podman API units, the cgroup delegation, the scratch tmpfs
 #      and the group usnmocr), stops the extension manager and removes any
@@ -29,6 +33,8 @@
 #      prints those commands instead;
 #   4. deletes the Arc machine with your own az sign-in, which deletes its
 #      identity.
+# The on-prem Serial Set fetch (usnm-sset.service, #229) is left alone;
+# stop it first on a node that runs it (docs/operations.md).
 # Tokens the node already holds stay valid until they expire: up to about
 # 24 hours for a managed identity (ADR-0015). Run again, it skips what's done.
 #
@@ -227,8 +233,19 @@ rm -f "/etc/systemd/system/$scratch" /etc/tmpfiles.d/usnm-ocr.conf
 rm -rf /run/usnm-ocr
 systemctl daemon-reload
 if getent group usnmocr > /dev/null; then groupdel usnmocr && echo "removed group usnmocr"; fi'
+# Automatic updates and the weekly reboot window that node-setup.sh sets
+# up: a node kept or reused after offboarding neither updates nor reboots
+# by itself. dnf-automatic stays installed.
+UPDATES_REMOVE='systemctl disable --now usnm-ocr-reboot.timer dnf-automatic.timer 2> /dev/null || true
+systemctl stop usnm-ocr-reboot.service 2> /dev/null || true
+systemctl disable usnm-ocr-reboot-resume.service 2> /dev/null || true
+rm -f /etc/systemd/system/usnm-ocr-reboot.timer /etc/systemd/system/usnm-ocr-reboot.service \
+  /etc/systemd/system/usnm-ocr-reboot-resume.service /usr/local/sbin/usnm-ocr-reboot-if-needed
+rm -rf /var/lib/usnm-ocr-reboot
+systemctl daemon-reload'
 # shellcheck disable=SC2016 # expanded on the node
-REMOTE='systemctl disable --now usnm-ocr-worker.service 2> /dev/null || true
+REMOTE=''"$UPDATES_REMOVE"'
+systemctl disable --now usnm-ocr-worker.service 2> /dev/null || true
 '"$ENGINE_REMOVE"'
 if ! command -v azcmagent > /dev/null; then
   echo "no Connected Machine agent"
@@ -260,6 +277,7 @@ if [ "$(. /etc/os-release && printf %s "${ID:-}")" = rhel ] && command -v subscr
 fi'
 if [ -z "$HOST" ]; then
   echo "no --host; if the node still exists, run on it as root:"
+  printf '%s\n' "$UPDATES_REMOVE" | while IFS= read -r line; do echo "  $line"; done
   echo "  systemctl disable --now usnm-ocr-worker.service"
   printf '%s\n' "$ENGINE_REMOVE" | while IFS= read -r line; do echo "  $line"; done
   echo "  systemctl stop extd"

@@ -5,7 +5,7 @@
 #   node-setup.sh --subscription ID --resource-group NAME --location REGION \
 #     --name ARC_NAME --exchange-account NAME [--app-insights CONNECTION_STRING] \
 #     [--tags K=V,K=V] [--identity-key-store default|tpm] [--scratch-size SIZE] \
-#     [--force-unsupported] < credentials
+#     [--reboot-day Mon|Tue|Wed|Thu|Fri|Sat|Sun] [--force-unsupported] < credentials
 #
 # Reads up to five lines from stdin. The first three are the onboarding
 # service principal: tenant id, app id, secret. onboard.sh makes that
@@ -22,7 +22,10 @@
 # On RHEL, registers with Red Hat (skipped if registered) and enables
 # BaseOS, AppStream and CodeReady Builder (for EPEL).
 # Keeps the journal on disk; installs python3, podman, chrony, cron and
-# rsyslog, and htop, iftop and screen from EPEL;
+# rsyslog, and htop, iftop and screen from EPEL; turns on dnf-automatic,
+# which installs every update daily and never reboots, and a weekly reboot
+# window (usnm-ocr-reboot.timer, 04:00 US Eastern on --reboot-day) that
+# reboots only when an update needs it, after stopping the worker;
 # creates the `usnm` system user; sets up the engine runtime of ADR-0016
 # (13 §13.3): the engine account `usnmeng` with lingering, subordinate ids
 # and cgroup delegation, its Podman API socket at
@@ -57,7 +60,7 @@ die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
 SUBSCRIPTION="" GROUP="" LOCATION="" NAME="" EXCHANGE="" CONN="" TAGS="" FORCE=false KEY_STORE=default
-SCRATCH_SIZE=2G
+SCRATCH_SIZE=2G REBOOT_DAY=""
 OCR_DATA_DIR=/srv/ocr-data
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -70,6 +73,7 @@ while [ $# -gt 0 ]; do
     --tags) TAGS=${2:-}; shift 2 ;;
     --identity-key-store) KEY_STORE=${2:-}; shift 2 ;;
     --scratch-size) SCRATCH_SIZE=${2:-}; shift 2 ;;
+    --reboot-day) REBOOT_DAY=${2:-}; shift 2 ;;
     --force-unsupported) FORCE=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
@@ -77,6 +81,7 @@ while [ $# -gt 0 ]; do
 done
 case "$KEY_STORE" in default|tpm) ;; *) echo "error: --identity-key-store is default or tpm" >&2; usage ;; esac
 [[ $SCRATCH_SIZE =~ ^[1-9][0-9]*[MG]$ ]] || die "--scratch-size: a size such as 2G or 1536M"
+case "$REBOOT_DAY" in ""|Mon|Tue|Wed|Thu|Fri|Sat|Sun) ;; *) die "--reboot-day: Mon, Tue, Wed, Thu, Fri, Sat or Sun" ;; esac
 for pair in SUBSCRIPTION:subscription GROUP:resource-group LOCATION:location NAME:name \
   EXCHANGE:exchange-account; do
   var=${pair%%:*}
@@ -247,6 +252,122 @@ else
   echo "journal kept in /var/log/journal (at most 1 GB)"
 fi
 
+# Writes $2 to the file $1 (root's, mode 0644) if it differs; returns 1 if
+# it was already so.
+put_conf() {
+  if [ "$(cat "$1" 2> /dev/null)" = "$2" ]; then
+    echo "$1: unchanged"
+    return 1
+  fi
+  mkdir -p "$(dirname "$1")"
+  printf '%s\n' "$2" > "$1.new"
+  chmod 0644 "$1.new"
+  mv -f "$1.new" "$1"
+  echo "$1: written"
+}
+
+step "Automatic updates"
+# dnf-automatic installs every update, not only security ones, once a day
+# (its timer: 06:00 UTC plus up to an hour), and never reboots: a reboot
+# would kill pages in flight at any hour. The Connected Machine agent is
+# left out; it upgrades itself (--enable-automatic-upgrade, below). Its
+# runs go to the journal and /var/log/dnf.log.
+# needs-restarting, from dnf-plugins-core, tells the reboot window below
+# whether an update needs a reboot.
+dnf -y -q install dnf-automatic dnf-plugins-core
+put_conf /etc/dnf/automatic.conf '# Written by scripts/ocr-node/node-setup.sh (#296).
+[commands]
+upgrade_type = default
+random_sleep = 0
+network_online_timeout = 60
+download_updates = yes
+apply_updates = yes
+reboot = never
+
+[emitters]
+emit_via = stdio
+
+[base]
+debuglevel = 1
+excludepkgs = azcmagent' || true
+systemctl enable --now dnf-automatic.timer > /dev/null
+echo "dnf-automatic.timer: next $(systemctl show -P NextElapseUSecRealtime dnf-automatic.timer)"
+
+step "Weekly reboot window"
+# usnm-ocr-reboot.timer runs usnm-ocr-reboot.service at 04:00 US Eastern
+# (DST included) on the node's day; the service runs
+# /usr/local/sbin/usnm-ocr-reboot-if-needed (scripts/ocr-node/reboot-if-needed.sh,
+# which onboard.sh copies beside this script), which reboots only when
+# `dnf needs-restarting -r` says an update needs it, after stopping the
+# worker (and the Serial Set fetch, where it runs); at boot,
+# usnm-ocr-reboot-resume.service starts again what it stopped that
+# wouldn't start by itself. Each node has its own day, so they are never
+# down together.
+# Without --reboot-day, a node keeps the day it has; a new node needs one.
+reboot_timer=/etc/systemd/system/usnm-ocr-reboot.timer
+if [ -z "$REBOOT_DAY" ]; then
+  REBOOT_DAY=$(sed -n 's/^OnCalendar=\([A-Z][a-z][a-z]\) .*/\1/p' "$reboot_timer" 2> /dev/null || true)
+  [ -n "$REBOOT_DAY" ] || die "no --reboot-day, and this node has no reboot window yet: give it a day no other node has"
+  echo "keeping this node's reboot day, $REBOOT_DAY"
+fi
+reboot_src="$(dirname "$0")/reboot-if-needed.sh"
+[ -r "$reboot_src" ] || die "no $reboot_src; onboard.sh copies it beside node-setup.sh"
+if cmp -s "$reboot_src" /usr/local/sbin/usnm-ocr-reboot-if-needed; then
+  echo "/usr/local/sbin/usnm-ocr-reboot-if-needed: unchanged"
+else
+  install -o root -g root -m 0755 "$reboot_src" /usr/local/sbin/usnm-ocr-reboot-if-needed
+  echo "/usr/local/sbin/usnm-ocr-reboot-if-needed: written"
+fi
+# A program in /usr/local/sbin, labelled like one (bin_t).
+! command -v restorecon > /dev/null || restorecon /usr/local/sbin/usnm-ocr-reboot-if-needed
+reboot_changed=false
+put_conf /etc/systemd/system/usnm-ocr-reboot.service '# Written by scripts/ocr-node/node-setup.sh (#296).
+[Unit]
+Description=Reboot the OCR node if an update needs it, after stopping the worker
+After=dnf-automatic.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usnm-ocr-reboot-if-needed --drain-timeout 1260
+# A oneshot has no start timeout by default; the script bounds itself at
+# 51 minutes (30 waiting for dnf-automatic, 21 stopping), so this is a
+# backstop above that.
+TimeoutStartSec=1h
+SyslogIdentifier=usnm-ocr-reboot' && reboot_changed=true
+put_conf "$reboot_timer" "# Written by scripts/ocr-node/node-setup.sh (#296).
+[Unit]
+Description=Weekly reboot window of the OCR node
+
+[Timer]
+OnCalendar=$REBOOT_DAY *-*-* 04:00:00 America/New_York
+AccuracySec=1min
+# A window missed while the node was off isn't made up at boot.
+Persistent=false
+
+[Install]
+WantedBy=timers.target" && reboot_changed=true
+put_conf /etc/systemd/system/usnm-ocr-reboot-resume.service '# Written by scripts/ocr-node/node-setup.sh (#296).
+[Unit]
+Description=Start again what the OCR node stopped for its reboot window
+ConditionPathExists=/var/lib/usnm-ocr-reboot/resume
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usnm-ocr-reboot-if-needed --resume
+SyslogIdentifier=usnm-ocr-reboot
+
+[Install]
+WantedBy=multi-user.target' || true
+systemctl daemon-reload
+systemctl enable usnm-ocr-reboot.timer usnm-ocr-reboot-resume.service > /dev/null 2>&1
+if [ "$reboot_changed" = true ]; then
+  systemctl restart usnm-ocr-reboot.timer
+else
+  systemctl start usnm-ocr-reboot.timer
+fi
+echo "usnm-ocr-reboot.timer: $REBOOT_DAY 04:00 US Eastern; next $(systemctl show -P NextElapseUSecRealtime usnm-ocr-reboot.timer)"
+
 step "SSH key exchange"
 # AlmaLinux 9.8's OpenSSH 9.9 supports post-quantum key exchange, but the
 # DEFAULT crypto policy leaves it out for sshd, so clients warn. Put the
@@ -301,20 +422,6 @@ add_subids() {
       echo "$1: ${f#/etc/} $start-$((start + 65535))"
     fi
   done
-}
-
-# Writes $2 to the file $1 (root's, mode 0644) if it differs; returns 1 if
-# it was already so.
-put_conf() {
-  if [ "$(cat "$1" 2> /dev/null)" = "$2" ]; then
-    echo "$1: unchanged"
-    return 1
-  fi
-  mkdir -p "$(dirname "$1")"
-  printf '%s\n' "$2" > "$1.new"
-  chmod 0644 "$1.new"
-  mv -f "$1.new" "$1"
-  echo "$1: written"
 }
 
 # A directory on tmpfs for the installer and the secret; removed on exit.
