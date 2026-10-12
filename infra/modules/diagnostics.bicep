@@ -52,8 +52,6 @@ param ocrNodeWorkspaceName string = ''
 param ocrNodeDcrName string = ''
 @description('The OCR nodes\' Key Vault (ocr-vault.bicep); empty if there is none.')
 param ocrVaultName string = ''
-@description('The settings vault (settings-vault.bicep).')
-param settingsVaultName string = ''
 
 var name = 'to-log-analytics'
 
@@ -233,21 +231,6 @@ resource ocrVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (!empty(o
 
 resource ocrVaultLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(ocrVaultName)) {
   scope: ocrVault
-  name: name
-  properties: {
-    workspaceId: workspaceId
-    logs: [{ category: 'AuditEvent', enabled: true }]
-  }
-}
-
-// The settings vault (#295): every read and write of a private setting and
-// every refused request, a few per provision.
-resource settingsVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (!empty(settingsVaultName)) {
-  name: settingsVaultName
-}
-
-resource settingsVaultLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(settingsVaultName)) {
-  scope: settingsVault
   name: name
   properties: {
     workspaceId: workspaceId

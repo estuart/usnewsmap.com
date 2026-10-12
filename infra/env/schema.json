@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "An environment's committed settings, infra/env/<env>.json (#295)",
-  "description": "The public choices for one environment, which infra/main.bicepparam and the environment scripts read. Every setting infra/main.bicepparam reads is listed here, and x-usnm-visibility says where it lives: public, in the committed file; private, in the environment's settings vault and never in the repository; local, in the environment's local settings file, written by the scripts. A setting left out takes its default in infra/main.bicepparam. Checked by scripts/lib/env_settings.py --check.",
+  "description": "The public choices for one environment, which infra/main.bicepparam and the environment scripts read. Every setting infra/main.bicepparam reads is listed here, and x-usnm-visibility says where it lives: public, in the committed file; private, in the settings store (an App Configuration store shared by the subscription's environments) under the environment's label, and never in the repository; local, in the environment's local settings file, written by the scripts. A setting left out takes its default in infra/main.bicepparam. Checked by scripts/lib/env_settings.py --check.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -21,7 +21,7 @@
     },
     "USNM_ALERT_EMAILS": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. Alert recipients' email addresses.",
+      "description": "Private: in the settings store, under the environment's label. Alert recipients' email addresses.",
       "not": {}
     },
     "USNM_AMERICAN_STORIES": {
@@ -34,7 +34,7 @@
     },
     "USNM_API_CERT_ID": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. A managed certificate's resource id, which names the subscription.",
+      "description": "Private: in the settings store, under the environment's label. A managed certificate's resource id, which names the subscription.",
       "not": {}
     },
     "USNM_API_IMAGE": {
@@ -43,7 +43,7 @@
     },
     "USNM_ARCHIVE_ACCOUNT": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. The archival account's resource id, which names its subscription.",
+      "description": "Private: in the settings store, under the environment's label. The archival account's resource id, which names its subscription.",
       "not": {}
     },
     "USNM_AVAILABILITY_FREQUENCY": {
@@ -106,7 +106,7 @@
     },
     "USNM_GITHUB_REPO_IDS": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. The repository's owner and repository ids, which the CI identity's federated credentials trust.",
+      "description": "Private: in the settings store, under the environment's label. The repository's owner and repository ids, which the CI identity's federated credentials trust.",
       "not": {}
     },
     "USNM_IMAGE_TAG": {
@@ -168,7 +168,7 @@
     },
     "USNM_OCR_KEYVAULT_ADMINS": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. Entra object ids given Key Vault Secrets Officer on the OCR nodes' vault.",
+      "description": "Private: in the settings store, under the environment's label. Entra object ids given Key Vault Secrets Officer on the OCR nodes' vault.",
       "not": {}
     },
     "USNM_OCR_LOCAL": {
@@ -181,12 +181,12 @@
     },
     "USNM_OCR_NODE_GROUP": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. The OCR nodes' Entra group's object id.",
+      "description": "Private: in the settings store, under the environment's label. The OCR nodes' Entra group's object id.",
       "not": {}
     },
     "USNM_OCR_NODE_IPS": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. The OCR nodes' public IP addresses (the operator's home IP).",
+      "description": "Private: in the settings store, under the environment's label. The OCR nodes' public IP addresses (the operator's home IP).",
       "not": {}
     },
     "USNM_OCR_SEED_BATCHES": {
@@ -239,7 +239,7 @@
     },
     "USNM_OCR_USERS": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. Entra principals given access to Document Intelligence.",
+      "description": "Private: in the settings store, under the environment's label. Entra principals given access to Document Intelligence.",
       "not": {}
     },
     "USNM_PAGE_LANGUAGE": {
@@ -312,7 +312,7 @@
     },
     "USNM_SEARCH_LOG_READERS": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. Entra principals that may read the search log.",
+      "description": "Private: in the settings store, under the environment's label. Entra principals that may read the search log.",
       "not": {}
     },
     "USNM_SEARCH_NFS_GIB": {
@@ -323,18 +323,13 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
-    "USNM_SETTINGS_VAULT_ADMINS": {
-      "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. Entra object ids given Key Vault Secrets Officer on the settings vault: every operator who provisions the environment.",
-      "not": {}
-    },
     "USNM_SINGLE_TEXT_FIELD": {
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
     "USNM_SITE_CERT_ID": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. A managed certificate's resource id, which names the subscription.",
+      "description": "Private: in the settings store, under the environment's label. A managed certificate's resource id, which names the subscription.",
       "not": {}
     },
     "USNM_SPLIT_DOCS": {
@@ -347,12 +342,12 @@
     },
     "USNM_VNET_ADDRESS_PREFIX": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. The VNet's address space, an RFC 1918 block (no private addresses in the repository, #399).",
+      "description": "Private: in the settings store, under the environment's label. The VNet's address space, an RFC 1918 block (no private addresses in the repository, #399).",
       "not": {}
     },
     "USNM_WWW_CERT_ID": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the environment's settings vault. A managed certificate's resource id, which names the subscription.",
+      "description": "Private: in the settings store, under the environment's label. A managed certificate's resource id, which names the subscription.",
       "not": {}
     }
   }

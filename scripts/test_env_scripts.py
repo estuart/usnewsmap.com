@@ -10,21 +10,22 @@ STUB_PARAMS (the guard-rail stack's parameters as two tsv rows) and
 STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
 message). For a job execution (scripts/start-job.sh, and
 scripts/titles-seed.sh through it): STUB_EXECUTION (the started execution's name) and
-STUB_EXEC_STATUS (its status). For the settings vault (#295): STUB_SECRETS
-(the secrets' names, one per line), STUB_SECRET_<NAME> (a secret's value,
-its hyphens as underscores), STUB_DELETED_SECRETS (soft-deleted secrets'
-names, one per line: show and delete don't find them, set conflicts until
-`secret recover`; a `secret delete` adds to them), STUB_VAULT_ERROR (listing,
-setting or deleting secrets fails with that message), STUB_SHOW_ERROR (reading a secret's value fails
-with that message), STUB_OUTPUTS (the stack's outputs as JSON),
-STUB_DELETED_VAULTS (soft-deleted vaults, one per line: the name, a tab
-and the vault id) and
+STUB_EXEC_STATUS (its status). For the settings store (#295): STUB_KEYS
+(the keys under the label, one per line), STUB_KV_<KEY> (a key's value),
+STUB_STORE_ERROR (every App Configuration call fails with that message),
+STUB_STORE_FAILS (the first that many are refused); STUB_LIVE_VAULT (the
+one Key Vault `keyvault show` finds);
+it refuses a call without --auth-mode login. STUB_OUTPUTS (a stack's
+outputs as JSON), STUB_VALIDATE_ERROR (`stack sub validate` fails with that
+message), STUB_DELETED_VAULTS (soft-deleted vaults, one per line: the name,
+a tab and the vault id) and
 STUB_GROUP_EXISTS (`az group exists`, for any group; unset: false) or
 STUB_EXISTING_GROUPS (when set, the only groups `az group exists` finds,
 one per line).
 `az account set` selects a subscription (STUB_ACCOUNTS: the ones az is
-signed in to, one per line; unset: any), and each vault call is logged with
-the selected one to STUB_LOG.vault, and each read of the stack's outputs
+signed in to, one per line; unset: any), and each store call is logged
+with the selected one, the operation and the label to STUB_LOG.store, and
+each read of the stack's outputs
 the selected one to STUB_LOG.stack. STUB_OUTPUTS_ERROR makes reading the
 stack's outputs fail with that message. It logs each call to STUB_LOG.
 
@@ -55,6 +56,8 @@ case "$1 $2" in
   "stack sub")
     case "$*" in
       "stack sub create"*) ;;
+      "stack sub validate"*)
+        if [ -n "${STUB_VALIDATE_ERROR:-}" ]; then echo "$STUB_VALIDATE_ERROR" >&2; exit 1; fi ;;
       *"--query location"*) echo eastus2 ;;
       *"keys(parameters"*) printf '%s\n' "${STUB_PARAMS:-}" ;;
       *"--query outputs -o json"*)
@@ -66,33 +69,23 @@ case "$1 $2" in
       *) if [ -n "${STUB_STACK:-}" ]; then echo "$STUB_STACK"
          else echo "ERROR: DeploymentStackNotFound: usnm-dev could not be found." >&2; exit 3; fi ;;
     esac ;;
-  "keyvault secret")
-    printf '%s %s\n' "$(cat "$STUB_LOG.account" 2> /dev/null || echo none)" "$3" >> "$STUB_LOG.vault"
-    n=$(sed -n 's/.*--name \([^ ]*\).*/\1/p' <<< "$*"); v="STUB_SECRET_${n//-/_}"
-    deleted() {
-      { printf '%b\n' "${STUB_DELETED_SECRETS:-}"; cat "$STUB_LOG.deleted" 2> /dev/null; } | grep -qx "$n" &&
-        ! { cat "$STUB_LOG.recovered" 2> /dev/null | grep -qx "$n"; }
-    }
+  "appconfig kv")
+    printf '%s %s %s\n' "$(cat "$STUB_LOG.account" 2> /dev/null || echo none)" "$3" \
+      "$(sed -n 's/.*--label \([^ ]*\).*/\1/p' <<< "$*")" >> "$STUB_LOG.store"
+    case "$*" in *"--auth-mode login"*) ;; *) echo "stub az: the store takes Entra ID only: $*" >&2; exit 9 ;; esac
+    if [ -n "${STUB_STORE_ERROR:-}" ]; then echo "$STUB_STORE_ERROR" >&2; exit 1; fi
+    if [ "$(wc -l < "$STUB_LOG.store")" -le "${STUB_STORE_FAILS:-0}" ]; then
+      echo "ERROR: Operation returned an invalid status 'Forbidden'" >&2; exit 1; fi
+    k=$(sed -n 's/.*--key \([^ ]*\).*/\1/p' <<< "$*")
     case "$3" in
-      list) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi
-        [ -z "${STUB_SECRETS:-}" ] || printf '%b\n' "$STUB_SECRETS" ;;
-      set) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi
-        if deleted; then
-          echo "ERROR: (Conflict) Secret $n is currently in a deleted but recoverable state, and its name cannot be reused; in this state, the secret can only be recovered or purged. Code: Conflict Inner error: {\"code\": \"ObjectIsDeletedButRecoverable\"}" >&2; exit 1
-        fi ;;
-      delete) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi
-        if [ -z "${!v+x}" ] || deleted; then
-          echo "ERROR: (SecretNotFound) A secret with (name/id) $n was not found in this key vault." >&2; exit 3; fi
-        echo "$n" >> "$STUB_LOG.deleted" ;;
-      recover) deleted || { echo "ERROR: (SecretNotFound) Deleted Secret not found" >&2; exit 3; }
-        echo "$n" >> "$STUB_LOG.recovered" ;;
-      show) if [ -n "${STUB_SHOW_ERROR:-}" ]; then echo "$STUB_SHOW_ERROR" >&2; exit 1; fi
-        if deleted; then
-          echo "ERROR: (SecretNotFound) A secret with (name/id) $n was not found in this key vault. If you recently deleted this secret you may be able to recover it using the correct recovery command." >&2; exit 3
-        elif [ -n "${!v+x}" ]; then printf '%s\n' "${!v}"
-        else echo "ERROR: (SecretNotFound) A secret with (name/id) $n was not found in this key vault." >&2; exit 3; fi ;;
+      list) if [ -n "$k" ]; then v="STUB_KV_$k"; printf '%s\n' "${!v:-}"
+        else python3 -c 'import json, os
+keys = [k for k in os.environ.get("STUB_KEYS", "").replace("\\n", "\n").split("\n") if k]
+print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k in keys]))'; fi ;;
+      set|delete) ;;
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
+  "deployment sub") echo "what-if: no changes" ;;
   "group list") [ -z "${STUB_GROUPS:-}" ] || printf '%s\n' "$STUB_GROUPS" ;;
   "group exists")
     if [ -n "${STUB_EXISTING_GROUPS+x}" ]; then
@@ -101,6 +94,9 @@ case "$1 $2" in
   "group create") ;;
   "keyvault list-deleted") [ -z "${STUB_DELETED_VAULTS:-}" ] || printf '%b\n' "$STUB_DELETED_VAULTS" ;;
   "keyvault recover") ;;
+  "keyvault show")
+    if [ -n "${STUB_LIVE_VAULT:-}" ] && [ "$4" = "$STUB_LIVE_VAULT" ]; then echo "$4"
+    else echo "ERROR: (ResourceNotFound) The Resource 'Microsoft.KeyVault/vaults/$4' was not found." >&2; exit 3; fi ;;
   "group show")
     if [ -n "${STUB_TAGGED_GROUP:-}" ] && [ "$4" != "$STUB_TAGGED_GROUP" ]; then
       echo "ERROR: (ResourceGroupNotFound) Resource group '$4' could not be found." >&2; exit 3; fi
@@ -539,9 +535,10 @@ class TitlesSeed(Stubbed):
         r = self.seed()
         self.assertEqual(r.returncode, 1)
         self.assertIn("USNM_ARCHIVE_ACCOUNT", r.stderr)
-        # A private setting: the only call looks for the settings vault in
-        # the stack's outputs, which has none.
-        self.assertEqual(self.calls(), ["stack sub show -n usnm-dev --query outputs -o json"])
+        # A private setting: the only call looks for the settings store in
+        # its stack's outputs; there's no stack.
+        # In the environment's recorded subscription.
+        self.assertEqual(self.calls(), ["stack sub show -n usnm-config --query outputs -o json --subscription sub-1"])
 
     def test_needs_the_ingest_job(self):
         self.settings_file(self.SETTINGS.replace('INGEST_JOB="caj-usnm-ingest-dev"\n', ""))
@@ -562,9 +559,23 @@ class TitlesSeed(Stubbed):
 
 
 class CommittedSettings(Stubbed):
-    """infra/env/<env>.json, the vault and the local file (#295)."""
+    """infra/env/<env>.json, the settings store and the local file (#295)."""
 
-    VAULT = {"SETTINGS_KEYVAULT": "usnmcorekvdevabc123"}
+    EP = "https://usnm-config-appcs-abc123.azconfig.io"
+    STORE = {"SETTINGS_STORE_ENDPOINT": EP}
+    OUTPUTS = {"STUB_OUTPUTS": json.dumps({"settingS_STORE_ENDPOINT": {"type": "String", "value": EP}})}
+
+    def read_log(self, suffix):
+        path = self.log + suffix
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return f.read().splitlines()
+
+    def store_calls(self):
+        if not os.path.exists(self.log):
+            return []
+        return [c for c in self.calls() if c.startswith("appconfig")]
 
     def local(self, **values):
         self.settings_file("".join(f'{k}="{v}"\n' for k, v in values.items()))
@@ -621,63 +632,78 @@ class CommittedSettings(Stubbed):
         self.assertNotIn("ran", r.stdout)
         self.assertIn("private", r.stderr)
 
-    def test_private_settings_come_from_the_vault(self):
-        self.local(**self.VAULT)
-        r = self.lib("load_vault; aget USNM_ALERT_EMAILS; aget USNM_OCR_USERS",
-                     STUB_SECRETS="USNM-ALERT-EMAILS\\nusnm-ocr-users",
-                     STUB_SECRET_USNM_ALERT_EMAILS='ops@example.org', STUB_SECRET_usnm_ocr_users='a"b$c')
+    def test_private_settings_come_from_the_store(self):
+        self.local(**self.STORE)
+        r = self.lib("load_store; aget USNM_ALERT_EMAILS; aget USNM_OCR_USERS; aget USNM_OCR_NODE_GROUP",
+                     STUB_KEYS="USNM_ALERT_EMAILS\\nUSNM_OCR_USERS",
+                     STUB_KV_USNM_ALERT_EMAILS='ops@example.org', STUB_KV_USNM_OCR_USERS='a"b$c`d\\e')
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.splitlines(), ["ops@example.org", 'a"b$c'])
-        self.assertTrue(any(c.startswith("keyvault secret list --vault-name usnmcorekvdevabc123") for c in self.calls()))
+        self.assertEqual(r.stdout.splitlines(), ["ops@example.org", 'a"b$c`d\\e', ""])
+        # One request reads them all: the Free tier allows 1,000 a day.
+        self.assertEqual(self.store_calls(), [
+            f"appconfig kv list --endpoint {self.EP} --auth-mode login --label dev --all "
+            "--query [].{key: key, value: value} -o json"])
 
-    def test_other_scripts_read_one_secret(self):
-        # Without load_vault (onboard.sh, group.sh, ...): one secret, by name.
-        self.local(**self.VAULT)
-        r = self.lib("aget USNM_OCR_NODE_GROUP; aget USNM_OCR_USERS",
-                     STUB_SECRET_USNM_OCR_NODE_GROUP="group-1")
+    def test_every_request_names_the_environments_label(self):
+        self.settings_file(f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n', env="prod")
+        r = self.lib("load_store; aset USNM_OCR_NODE_GROUP g; adel USNM_OCR_USERS; aget USNM_ALERT_EMAILS",
+                     env_name="prod")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([c.split()[2] for c in self.read_log(".store")], ["prod"] * 4)
+
+    def test_other_scripts_read_one_key(self):
+        # Without load_store (onboard.sh, group.sh, ...): one key, by name.
+        self.local(**self.STORE)
+        r = self.lib("aget USNM_OCR_NODE_GROUP; aget USNM_OCR_USERS", STUB_KV_USNM_OCR_NODE_GROUP="group-1")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.splitlines(), ["group-1", ""])
-        self.assertFalse(any(c.startswith("keyvault secret list") for c in self.calls()))
+        self.assertEqual(self.store_calls()[0],
+                         f"appconfig kv list --endpoint {self.EP} --auth-mode login --label dev "
+                         "--key USNM_OCR_NODE_GROUP --query [0].value -o tsv")
 
-    def test_an_unreadable_vault_fails_the_read(self):
-        self.local(SETTINGS_KEYVAULT="usnm-no-such")
+    def test_an_unreadable_store_fails_the_read(self):
+        self.local(**self.STORE)
         with open(os.path.join(self.tmp, "bin", "az"), "w") as f:
             f.write('#!/usr/bin/env bash\necho "ERROR: (Forbidden) not allowed" >&2\nexit 1\n')
         r = self.lib("aget USNM_OCR_NODE_GROUP")
         self.assertEqual(r.returncode, 1)
         self.assertIn("can't read USNM_OCR_NODE_GROUP", r.stderr)
 
-    def test_no_vault_yet_reads_nothing(self):
-        # No stack, or a stack without the output: no vault.
+    def test_no_store_yet_reads_nothing(self):
+        # No stack, or a stack without the output: no store.
         for stack in ({}, {"STUB_STACK": "3"}):
-            r = self.lib("load_vault; aget USNM_ALERT_EMAILS", **stack)
+            r = self.lib("load_store; aget USNM_ALERT_EMAILS", **stack)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertFalse(any(c.startswith("keyvault") for c in self.calls()))
+            self.assertEqual(self.store_calls(), [])
 
-    def test_without_a_local_name_the_vault_comes_from_the_stack(self):
-        # Another operator's machine: the stack names the vault.
+    def test_without_a_local_endpoint_the_store_comes_from_its_stack(self):
+        # Another operator's machine: the store's own stack names it.
         self.local(API_URL="x")
-        r = self.lib("load_vault; aget USNM_ALERT_EMAILS",
-                     STUB_OUTPUTS='{"settingS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}',
-                     STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        r = self.lib("load_store; aget USNM_ALERT_EMAILS", **self.OUTPUTS,
+                     STUB_KEYS="USNM_ALERT_EMAILS", STUB_KV_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "ops@example.org")
-        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
+        self.assertIn(f'SETTINGS_STORE_ENDPOINT="{self.EP}"', self.local_text())
+        self.assertIn("stack sub show -n usnm-config --query outputs -o json", self.calls())
 
-    def test_a_single_read_without_a_local_name_asks_the_stack(self):
-        # settings.sh, group.sh, ...: one secret, from the vault the stack
+    def test_a_single_read_without_a_local_endpoint_asks_the_stack(self):
+        # settings.sh, group.sh, ...: one key, from the store the stack
         # names, which is then recorded.
         self.local(API_URL="x")
-        r = self.lib("aget USNM_ALERT_EMAILS; aget USNM_OCR_NODE_GROUP",
-                     STUB_OUTPUTS='{"settingS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}',
-                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        r = self.lib("aget USNM_ALERT_EMAILS; aget USNM_OCR_NODE_GROUP", **self.OUTPUTS,
+                     STUB_KV_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.splitlines(), ["ops@example.org", ""])
-        self.assertIn("keyvault secret show --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS --query value -o tsv",
-                      self.calls())
-        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
+        self.assertIn(f'SETTINGS_STORE_ENDPOINT="{self.EP}"', self.local_text())
         # Recorded once: the second read doesn't ask the stack again.
         self.assertEqual(sum(c.startswith("stack sub show") for c in self.calls()), 1)
+
+    def test_the_store_is_looked_up_in_the_environments_subscription(self):
+        # Whichever subscription az has selected.
+        self.local(AZURE_SUBSCRIPTION_ID="sub-env")
+        r = self.lib("aget USNM_ALERT_EMAILS", **self.OUTPUTS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("stack sub show -n usnm-config --query outputs -o json --subscription sub-env", self.calls())
 
     def test_a_single_read_with_an_unreadable_stack_fails(self):
         # Not "unset": a script never takes an unreadable setting for an
@@ -686,64 +712,65 @@ class CommittedSettings(Stubbed):
         r = self.lib("aget USNM_ALERT_EMAILS",
                      STUB_OUTPUTS_ERROR="ERROR: (AuthorizationFailed) The client does not have authorization")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("can't read the stack usnm-dev's outputs", r.stderr)
-        self.assertFalse(any(c.startswith("keyvault") for c in self.calls()))
+        self.assertIn("can't read the stack usnm-config's outputs", r.stderr)
+        self.assertEqual(self.store_calls(), [])
 
-    def test_a_private_write_without_a_local_name_goes_to_the_stacks_vault(self):
+    def test_a_private_write_without_a_local_endpoint_goes_to_the_store(self):
         self.local(API_URL="x")
-        r = self.lib("aset USNM_ALERT_EMAILS ops@example.org",
-                     STUB_OUTPUTS='{"SETTINGS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}')
+        r = self.lib("aset USNM_ALERT_EMAILS ops@example.org", **self.OUTPUTS)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("set USNM_ALERT_EMAILS in the settings vault usnmcorekvdevabc123", r.stdout)
+        self.assertIn(f"set USNM_ALERT_EMAILS for dev in the settings store {self.EP}", r.stdout)
         self.assertNotIn("USNM_ALERT_EMAILS=", self.local_text())
 
     def test_an_operator_without_access_is_told_how_to_get_it(self):
-        self.local(**self.VAULT)
-        r = self.lib("load_vault", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac",
-                     STUB_EXISTING_GROUPS="usnm-core-rg-dev")
+        self.local(**self.STORE)
+        r = self.lib("load_store", STUB_STORE_ERROR="ERROR: Operation returned an invalid status 'Forbidden'")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("USNM_SETTINGS_VAULT_ADMINS", r.stderr)
-        self.assertIn("--name USNM-SETTINGS-VAULT-ADMINS", r.stderr)
+        self.assertIn("App Configuration Data Owner", r.stderr)
+        self.assertIn('scripts/settings-store.sh --deploy --admins "<ids>"', r.stderr)
         self.assertIn('az role assignment create --assignee-object-id "$(az ad signed-in-user show', r.stderr)
-        # Without one in the local file, the project group that exists.
-        self.assertIn("/resourceGroups/usnm-core-rg-dev\"", r.stderr)
+        self.assertIn("/resourceGroups/usnm-config-rg\"", r.stderr)
 
-    def test_a_vault_secret_that_isnt_a_private_setting_stops(self):
-        self.local(**self.VAULT)
-        for name in ("USNM-JA-LATIN", "rhel-activation-key"):
-            r = self.lib("load_vault", STUB_SECRETS=name)
+    def test_a_store_key_that_isnt_a_private_setting_stops(self):
+        self.local(**self.STORE)
+        for name in ("USNM_JA_LATIN", "rhel-activation-key"):
+            r = self.lib("load_store", STUB_KEYS=name)
             self.assertEqual(r.returncode, 1, name)
             self.assertIn("isn't a private setting", r.stderr)
 
-    def test_a_local_entry_shadows_the_vault(self):
+    def test_a_multi_line_value_stops(self):
+        self.local(**self.STORE)
+        r = self.lib("load_store", STUB_KEYS="USNM_ALERT_EMAILS", STUB_KV_USNM_ALERT_EMAILS="a\nb")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("more than one line", r.stderr)
+
+    def test_a_local_entry_shadows_the_store(self):
         # teardown.sh clears USNM_ARCHIVE_ACCOUNT for its provision.
-        self.local(**self.VAULT, USNM_ARCHIVE_ACCOUNT="")
-        r = self.lib("load_vault; settings_check; aget USNM_ARCHIVE_ACCOUNT",
-                     STUB_SECRETS="USNM-ARCHIVE-ACCOUNT", STUB_SECRET_USNM_ARCHIVE_ACCOUNT="/subscriptions/x")
+        self.local(**self.STORE, USNM_ARCHIVE_ACCOUNT="")
+        r = self.lib("load_store; settings_check; aget USNM_ARCHIVE_ACCOUNT",
+                     STUB_KEYS="USNM_ARCHIVE_ACCOUNT", STUB_KV_USNM_ARCHIVE_ACCOUNT="/subscriptions/x")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "")
 
     def test_a_private_setting_in_two_places_stops(self):
-        self.local(**self.VAULT, USNM_ALERT_EMAILS="old@example.org")
-        r = self.lib("load_vault; settings_check",
-                     STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.local(**self.STORE, USNM_ALERT_EMAILS="old@example.org")
+        r = self.lib("load_store; settings_check",
+                     STUB_KEYS="USNM_ALERT_EMAILS", STUB_KV_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 1)
         self.assertIn("USNM_ALERT_EMAILS is in both", r.stderr)
-        # Keeping the vault's drops only the local copy; --unset would
-        # delete the secret too.
+        # Keeping the store's drops only the local copy; --unset would
+        # delete it from the store too.
         self.assertIn("--key USNM_ALERT_EMAILS --unset-local", r.stderr)
         self.assertNotIn("--unset ", r.stderr)
         self.assertNotIn("ops@example.org", r.stderr)
 
     def test_a_private_setting_still_local_is_a_warning_with_the_move(self):
-        self.local(**self.VAULT, USNM_ALERT_EMAILS="ops@example.org")
-        r = self.lib("load_vault; settings_check")
+        self.local(**self.STORE, USNM_ALERT_EMAILS="ops@example.org")
+        r = self.lib("load_store; settings_check")
         self.assertEqual(r.returncode, 0, r.stderr)
-        # settings.sh writes it to the vault and removes the local copy.
-        self.assertIn('scripts/settings.sh --env dev --key USNM_ALERT_EMAILS --value '
-                      '"$(scripts/settings.sh --env dev --key USNM_ALERT_EMAILS)"', r.stderr)
-        self.assertNotIn("--unset", r.stderr)
-        # The command reads the value; it isn't printed.
+        self.assertIn("USNM_ALERT_EMAILS", r.stderr)
+        self.assertIn("scripts/settings.sh --env dev --migrate", r.stderr)
+        # The value isn't printed.
         self.assertNotIn("ops@example.org", r.stderr)
 
     def test_a_public_setting_in_the_local_file_stops(self):
@@ -754,374 +781,327 @@ class CommittedSettings(Stubbed):
         self.assertIn("--migrate", r.stderr)
 
     def test_provision_checks_before_anything_else(self):
-        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\nUSNM_JA_LATIN="true"\n', env="prod")
+        self.settings_file(f'AZURE_SUBSCRIPTION_ID="sub-1"\nSETTINGS_STORE_ENDPOINT="{self.EP}"\n'
+                           'USNM_JA_LATIN="true"\n', env="prod")
         r = self.lib("provision", env_name="prod")
         self.assertEqual(r.returncode, 1)
         self.assertIn("not provisioning prod", r.stderr)
         self.assertFalse(os.path.exists(self.log) and any(c.startswith("stack sub create") for c in self.calls()))
 
-    # Provision up to the deployment, which the stub can't answer.
-    PROVISION = "deploy_env_guardrails() { :; }; deploy_stack() { :; }; save_outputs() { :; }; provision"
+    # Provision up to the deployment, which the stub can't answer; the
+    # store's script is the stub's too.
+    PROVISION = ("deploy_env_guardrails() { :; }; deploy_stack() { :; }; save_outputs() { :; }\n"
+                 'settings_store_script() { echo "settings-store.sh $*"; }\nprovision')
 
-    def test_a_refused_secret_read_tells_how_to_get_access(self):
-        # Key Vault Reader lists the secrets but can't read their values.
-        self.local(**self.VAULT)
-        r = self.lib("load_vault", STUB_SECRETS="USNM-ALERT-EMAILS",
-                     STUB_SHOW_ERROR="ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac")
+    def test_the_first_provision_creates_the_store(self):
+        # No store in the subscription: its own stack is deployed first, in
+        # the environment's region, then read.
+        self.local(USNM_EXPERIMENT="295", USNM_ALERT_EMAILS="ops@example.org")
+        r = self.lib(self.PROVISION.replace('echo "settings-store.sh $*"',
+                                            'echo "settings-store.sh $*"; local_set SETTINGS_STORE_ENDPOINT '
+                                            + self.EP))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("settings-store.sh --deploy --location eastus2", r.stdout)
+        # The private setting stays local until --migrate, which the warning names.
+        self.assertIn("--migrate", r.stderr)
+        self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
+
+    def test_a_new_stores_role_is_waited_for(self):
+        # The new Data Owner assignment takes a while to apply: the first
+        # reads are refused, then one works.
+        self.local(USNM_EXPERIMENT="295")
+        r = self.lib(self.PROVISION.replace('echo "settings-store.sh $*"',
+                                            'echo "settings-store.sh $*"; local_set SETTINGS_STORE_ENDPOINT '
+                                            + self.EP), STUB_STORE_FAILS="2", STORE_RETRY_SECS="0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.count("may not apply yet"), 2)
+        self.assertEqual(len(self.store_calls()), 3)
+
+    def test_an_existing_stores_refusal_fails_at_once(self):
+        self.local(**self.STORE, USNM_EXPERIMENT="295")
+        r = self.lib(self.PROVISION, STUB_STORE_ERROR="ERROR: Operation returned an invalid status 'Forbidden'")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("can't read USNM-ALERT-EMAILS", r.stderr)
-        self.assertIn("Key Vault Secrets Officer", r.stderr)
+        self.assertIn("App Configuration Data Owner", r.stderr)
+        self.assertEqual(len(self.store_calls()), 1)
+
+    def test_a_store_that_names_no_endpoint_stops_the_provision(self):
+        self.local(USNM_EXPERIMENT="295")
+        r = self.lib(self.PROVISION)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("names no endpoint", r.stderr)
+
+    def test_an_existing_store_isnt_deployed_again(self):
+        self.local(**self.STORE, USNM_EXPERIMENT="295", SETTINGS_KEYVAULT="usnmcorekvdevabc123")
+        r = self.lib(self.PROVISION)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("settings-store.sh", r.stdout)
+        # The settings vault's name from before the store goes.
+        self.assertNotIn("SETTINGS_KEYVAULT", self.local_text())
+
+    def test_a_settings_vault_that_still_exists_stops_the_provision(self):
+        # Its secrets would go with it: they're copied first.
+        self.local(**self.STORE, USNM_EXPERIMENT="295", SETTINGS_KEYVAULT="usnmcorekvdevabc123")
+        r = self.lib(self.PROVISION, STUB_LIVE_VAULT="usnmcorekvdevabc123")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("the settings vault usnmcorekvdevabc123 still exists", r.stderr)
+        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
+        self.assertEqual(self.store_calls(), [])
+
+    def test_what_if_records_nothing(self):
+        # A new checkout: the endpoint comes from the stack and isn't written.
+        self.local(USNM_EXPERIMENT="295")
+        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }; provision_what_if',
+                     STUB_STACK="3", **self.OUTPUTS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.local_text(), 'USNM_EXPERIMENT="295"\n')
+        self.assertIn("deploy_stack --what-if", r.stdout)
 
     @staticmethod
     def deleted(name, group):
         """A soft-deleted vault as the stub lists it: its name and its id."""
         return f"{name}\\t/subscriptions/sub-1/resourceGroups/{group}/providers/Microsoft.KeyVault/vaults/{name}"
 
-    def test_the_access_hint_names_the_recorded_group(self):
-        self.local(**self.VAULT, AZURE_RESOURCE_GROUP="rg-usnm-dev")
-        r = self.lib("load_vault", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("/resourceGroups/rg-usnm-dev\"", r.stderr)
-        # The recorded group wins: az isn't asked which one exists.
-        self.assertFalse(any(c.startswith("group exists") for c in self.calls()))
-
-    def test_without_a_recorded_group_the_access_hint_names_the_one_that_exists(self):
-        # infra/main.bicep pins prod's legacy names only in the current
-        # prod's subscription; a rebuilt prod has ADR-0017's.
-        denied = "ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac"
-        for existing in ("rg-usnm-prod", "usnm-core-rg-prod"):
-            with self.subTest(existing=existing):
-                self.settings_file('SETTINGS_KEYVAULT="usnmcorekvprodabc123"\n', env="prod")
-                r = self.lib("load_vault", env_name="prod", STUB_VAULT_ERROR=denied, STUB_EXISTING_GROUPS=existing)
-                self.assertEqual(r.returncode, 1)
-                self.assertIn(f"grant it to yourself on {existing},", r.stderr)
-                self.assertIn(f"/resourceGroups/{existing}\"", r.stderr)
-        # Neither (or az can't tell): both names.
-        r = self.lib("load_vault", env_name="prod", STUB_VAULT_ERROR=denied, STUB_EXISTING_GROUPS="")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("<group>: usnm-core-rg-prod or rg-usnm-prod", r.stderr)
-        self.assertIn("/resourceGroups/<group>\"", r.stderr)
-
-    def test_a_rebuild_recovers_the_soft_deleted_settings_vault(self):
-        # After a teardown, prod's local file is new: no resource group, no
-        # vault name, and the group is gone; the purge-protected vault holds
-        # its name, so it's recovered into a new group and read.
-        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n', env="prod")
-        r = self.lib(self.PROVISION, env_name="prod",
-                     STUB_DELETED_VAULTS=self.deleted("usnmcorekvprodabc123", "rg-usnm-prod"),
-                     STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+    def test_dev_recovers_the_ocr_vault_into_its_adr_0017_group(self):
+        # Dev's project group is usnm-core-rg-dev (infra/naming.bicep), and
+        # a teardown deleted it: it's created again, under that name, and
+        # the OCR nodes' vault goes back into it.
+        self.committed({"USNM_OCR_NODES": True})
+        self.local(**self.STORE, USNM_EXPERIMENT="295")
+        r = self.lib(self.PROVISION, STUB_DELETED_VAULTS=self.deleted("usnmocrkvdevabc123", "USNM-CORE-RG-DEV"))
         self.assertEqual(r.returncode, 0, r.stderr)
         calls = self.calls()
         listed = next(c for c in calls if c.startswith("keyvault list-deleted"))
-        # Either name form of the project group (ADR-0017).
-        self.assertIn("/resourceGroups/rg-usnm-prod/providers/", listed)
-        self.assertIn("/resourceGroups/usnm-core-rg-prod/providers/", listed)
-        create = calls.index("group create -n rg-usnm-prod -l eastus2 --tags project=usnewsmap environment=prod -o none")
-        recover = calls.index("keyvault recover --name usnmcorekvprodabc123 -o none")
-        listing = calls.index("keyvault secret list --vault-name usnmcorekvprodabc123 --query [].name -o tsv")
-        self.assertLess(create, recover)
-        self.assertLess(recover, listing)
-        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvprodabc123"', self.local_text("prod"))
-        self.assertNotIn("forgetting", r.stdout)
-
-    def test_a_recovery_into_a_group_that_exists_creates_none(self):
-        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n', env="prod")
-        r = self.lib(self.PROVISION, env_name="prod",
-                     STUB_DELETED_VAULTS=self.deleted("usnmcorekvprodabc123", "rg-usnm-prod"),
-                     STUB_GROUP_EXISTS="true")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertFalse(any(c.startswith("group create") for c in self.calls()))
-        self.assertIn("keyvault recover --name usnmcorekvprodabc123 -o none", self.calls())
-
-    def test_a_soft_deleted_recorded_vault_is_recovered_before_its_secrets_are_read(self):
-        self.local(**self.VAULT, AZURE_RESOURCE_GROUP="usnm-core-rg-dev", USNM_EXPERIMENT="295")
-        r = self.lib(self.PROVISION, STUB_DELETED_VAULTS=self.deleted("usnmcorekvdevabc123", "usnm-core-rg-dev"),
-                     STUB_GROUP_EXISTS="true",
-                     STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        calls = self.calls()
-        recover = calls.index("keyvault recover --name usnmcorekvdevabc123 -o none")
-        listing = calls.index("keyvault secret list --vault-name usnmcorekvdevabc123 --query [].name -o tsv")
-        self.assertLess(recover, listing)
-        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
-
-    def test_dev_recovers_into_its_adr_0017_group(self):
-        # Dev's project group is usnm-core-rg-dev (infra/naming.bicep), and
-        # a teardown deleted it: it's created again, under that name, and
-        # both vaults go back into it.
-        self.committed({"USNM_OCR_NODES": True})
-        self.local(USNM_EXPERIMENT="295")
-        vaults = (self.deleted("usnmcorekvdevabc123", "usnm-core-rg-dev") + "\\n"
-                  + self.deleted("usnmocrkvdevabc123", "USNM-CORE-RG-DEV"))
-        r = self.lib(self.PROVISION, STUB_DELETED_VAULTS=vaults)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        calls = self.calls()
+        # Either name form of the project group (ADR-0017); only the OCR vault.
+        self.assertIn("/resourceGroups/rg-usnm-dev/providers/", listed)
+        self.assertIn("/resourceGroups/usnm-core-rg-dev/providers/", listed)
+        self.assertIn("starts_with(name, 'usnmocrkv')", listed)
+        self.assertNotIn("usnmcorekv", listed)
         creates = [c for c in calls if c.startswith("group create")]
         self.assertEqual(creates, ["group create -n usnm-core-rg-dev -l eastus2 --tags project=usnewsmap "
                                    "environment=dev -o none"])
-        self.assertLess(calls.index(creates[0]), calls.index("keyvault recover --name usnmcorekvdevabc123 -o none"))
-        self.assertIn("keyvault recover --name usnmocrkvdevabc123 -o none", calls)
-        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
+        self.assertLess(calls.index(creates[0]), calls.index("keyvault recover --name usnmocrkvdevabc123 -o none"))
 
-    def test_a_stand_up_after_a_teardown_forgets_the_purged_vault(self):
-        # teardown.sh -> stand-up.sh: the kept local file (one from before
-        # teardown dropped the name) names dev's purged vault, and there's
-        # no stack: provision forgets it instead of failing to list it.
-        self.local(**self.VAULT, AZURE_RESOURCE_GROUP="rg-usnm-dev", USNM_EXPERIMENT="295",
-                   USNM_ALERT_EMAILS="ops@example.org")
+    def test_without_ocr_nodes_no_vault_is_recovered(self):
+        self.local(**self.STORE, USNM_EXPERIMENT="295")
         r = self.lib(self.PROVISION)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("forgetting the settings vault usnmcorekvdevabc123", r.stdout)
-        self.assertNotIn("SETTINGS_KEYVAULT", self.local_text())
-        self.assertFalse(any(c.startswith("keyvault secret") for c in self.calls()))
-        # The private setting is still read from the local file.
-        r = self.lib("aget USNM_ALERT_EMAILS")
-        self.assertEqual(r.stdout.strip(), "ops@example.org")
+        self.assertFalse(any(c.startswith("keyvault") for c in self.calls()))
 
-    def test_the_stacks_vault_name_wins_over_a_stale_one(self):
-        self.local(SETTINGS_KEYVAULT="usnmcorekvdevold000", USNM_EXPERIMENT="295")
-        r = self.lib(self.PROVISION,
-                     STUB_OUTPUTS='{"settingS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}')
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
-        self.assertIn("keyvault secret list --vault-name usnmcorekvdevabc123 --query [].name -o tsv", self.calls())
-
-    def test_teardown_drops_the_vault_name_from_the_kept_settings(self):
+    def test_teardown_keeps_the_store_and_its_endpoint(self):
         with open(os.path.join(HERE, "teardown.sh")) as f:
             src = f.read()
-        kept = src.index('mv "$ENV_FILE" "$ENV_FILE.deleted-')
-        self.assertLess(src.index("adel SETTINGS_KEYVAULT"), kept)
+        self.assertNotIn("SETTINGS_STORE_ENDPOINT", src)
+        self.assertNotIn("appconfig", src)
+        # The store's stack doesn't keep the guard-rail stack alive.
+        self.assertEqual(src.count("name != '$SETTINGS_STACK'"), 2)
 
-    def vault_sets(self):
-        return [c for c in self.calls() if c.startswith("keyvault secret set")]
+    def store_sets(self):
+        return [c for c in self.calls() if c.startswith("appconfig kv set")]
 
-    def test_a_script_writes_a_private_setting_to_the_vault_once_it_exists(self):
+    def kv_set(self, key, value, env="dev"):
+        return (f"appconfig kv set --endpoint {self.EP} --auth-mode login --label {env} --key {key} "
+                f"--value {value} --yes -o none")
+
+    def test_a_script_writes_a_private_setting_to_the_store_once_it_exists(self):
         # bootstrap.sh and group.sh set them with aset; a copy left local
-        # (from before the vault) moves into the vault.
-        self.local(**self.VAULT, USNM_GITHUB_REPO_IDS="o@1/r@2")
+        # (from before the store) goes.
+        self.local(**self.STORE, USNM_GITHUB_REPO_IDS="o@1/r@2")
         r = self.lib("aset USNM_GITHUB_REPO_IDS o@1/r@3; aset USNM_OCR_NODE_GROUP group-1")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.vault_sets(), [
-            "keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-GITHUB-REPO-IDS --value o@1/r@3 -o none",
-            "keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-OCR-NODE-GROUP --value group-1 -o none"])
-        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        self.assertEqual(self.store_sets(), [self.kv_set("USNM_GITHUB_REPO_IDS", "o@1/r@3"),
+                                             self.kv_set("USNM_OCR_NODE_GROUP", "group-1")])
+        self.assertEqual(self.local_text(), f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n')
 
     def test_a_bootstrap_rerun_after_migration_leaves_one_copy(self):
-        # The values bootstrap.sh sets again are in the vault already.
-        self.local(**self.VAULT, API_URL="x")
-        vault = {"STUB_SECRETS": "USNM-GITHUB-REPO-IDS\\nUSNM-ALERT-EMAILS\\nUSNM-API-CERT-ID",
-                 "STUB_SECRET_USNM_GITHUB_REPO_IDS": "o@1/r@2", "STUB_SECRET_USNM_ALERT_EMAILS": "ops@example.org",
-                 "STUB_SECRET_USNM_API_CERT_ID": "/subscriptions/x/certificates/api"}
+        # The values bootstrap.sh sets again are in the store already.
+        self.local(**self.STORE, API_URL="x")
+        store = {"STUB_KEYS": "USNM_GITHUB_REPO_IDS\\nUSNM_ALERT_EMAILS\\nUSNM_API_CERT_ID",
+                 "STUB_KV_USNM_GITHUB_REPO_IDS": "o@1/r@2", "STUB_KV_USNM_ALERT_EMAILS": "ops@example.org",
+                 "STUB_KV_USNM_API_CERT_ID": "/subscriptions/x/certificates/api"}
         r = self.lib("aset USNM_GITHUB_REPO_IDS o@1/r@2; aset USNM_ALERT_EMAILS ops@example.org\n"
-                     "aset USNM_API_CERT_ID /subscriptions/x/certificates/api; load_vault; settings_check", **vault)
+                     "aset USNM_API_CERT_ID /subscriptions/x/certificates/api; load_store; settings_check", **store)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.vault_sets(), [])
-        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\nAPI_URL="x"\n')
+        self.assertEqual(self.store_sets(), [])
+        self.assertEqual(self.local_text(), f'SETTINGS_STORE_ENDPOINT="{self.EP}"\nAPI_URL="x"\n')
         self.assertNotIn("warning", r.stderr)
-        # After load_vault (provision's): only a changed value is written.
-        r = self.lib("load_vault; aset USNM_ALERT_EMAILS ops@example.org; aset USNM_ALERT_EMAILS new@example.org",
-                     **vault)
+        # After load_store (provision's): only a changed value is written.
+        r = self.lib("load_store; aset USNM_ALERT_EMAILS ops@example.org; aset USNM_ALERT_EMAILS new@example.org",
+                     **store)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.vault_sets(), ["keyvault secret set --vault-name usnmcorekvdevabc123 "
-                                             "--name USNM-ALERT-EMAILS --value new@example.org -o none"])
+        self.assertEqual(self.store_sets(), [self.kv_set("USNM_ALERT_EMAILS", "new@example.org")])
 
     def test_an_empty_private_value_stays_local(self):
-        # teardown.sh's detach: a local "" shadows the vault.
-        self.local(**self.VAULT)
+        # teardown.sh's detach: a local "" shadows the store.
+        self.local(**self.STORE)
         r = self.lib("aset USNM_ARCHIVE_ACCOUNT ''")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('USNM_ARCHIVE_ACCOUNT=""', self.local_text())
-        self.assertFalse(os.path.exists(self.log) and self.vault_sets())
+        self.assertFalse(os.path.exists(self.log) and self.store_sets())
 
-    def test_a_refused_vault_write_fails_with_the_fix(self):
-        self.local(**self.VAULT)
+    def test_a_refused_store_write_fails_with_the_fix(self):
+        self.local(**self.STORE)
         r = self.lib("aset USNM_ALERT_EMAILS ops@example.org",
-                     STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
+                     STUB_STORE_ERROR="ERROR: Operation returned an invalid status 'Forbidden'")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("can't set USNM_ALERT_EMAILS", r.stderr)
+        self.assertIn("can't read USNM_ALERT_EMAILS", r.stderr)
         self.assertIn("az role assignment create", r.stderr)
         self.assertNotIn("USNM_ALERT_EMAILS", self.local_text())
 
-    def test_a_move_brings_the_old_vaults_settings_back(self):
-        # bootstrap.sh --move: the new subscription gets a new vault.
-        self.local(**self.VAULT, USNM_OCR_USERS="kept-local", API_URL="x")
-        r = self.lib("vault_detach\naset USNM_API_CERT_ID ''; aset USNM_GITHUB_REPO_IDS o@1/r@2\n"
-                     "load_vault; settings_check",
-                     STUB_SECRETS="USNM-ALERT-EMAILS\\nUSNM-API-CERT-ID\\nUSNM-OCR-USERS",
-                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org", STUB_SECRET_USNM_OCR_USERS="vault",
-                     STUB_SECRET_USNM_API_CERT_ID="/subscriptions/old/certificates/api")
+    def test_a_move_brings_the_old_stores_settings_back(self):
+        # bootstrap.sh --move: the new subscription has its own store.
+        self.local(**self.STORE, USNM_OCR_USERS="kept-local", API_URL="x")
+        r = self.lib("store_detach\naset USNM_API_CERT_ID ''; aset USNM_GITHUB_REPO_IDS o@1/r@2\n"
+                     "load_store; settings_check",
+                     STUB_KEYS="USNM_ALERT_EMAILS\\nUSNM_API_CERT_ID\\nUSNM_OCR_USERS",
+                     STUB_KV_USNM_ALERT_EMAILS="ops@example.org", STUB_KV_USNM_OCR_USERS="store",
+                     STUB_KV_USNM_API_CERT_ID="/subscriptions/old/certificates/api")
         self.assertEqual(r.returncode, 0, r.stderr)
         text = self.local_text()
-        self.assertNotIn("SETTINGS_KEYVAULT", text)
+        self.assertNotIn("SETTINGS_STORE_ENDPOINT", text)
         self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', text)
         self.assertIn('USNM_OCR_USERS="kept-local"', text)
         self.assertIn('USNM_API_CERT_ID=""', text)
         self.assertIn('USNM_GITHUB_REPO_IDS="o@1/r@2"', text)
-        self.assertEqual(self.vault_sets(), [])
-        # A rerun once the new vault exists moves what bootstrap sets into it.
-        self.settings_file(text + 'SETTINGS_KEYVAULT="usnmcorekvdevnew456"\n')
-        r = self.lib("aset USNM_GITHUB_REPO_IDS o@1/r@2; load_vault; settings_check")
+        self.assertEqual(self.store_sets(), [])
+        # Once the new store exists, --migrate moves them into it.
+        new = "https://usnm-config-appcs-new456.azconfig.io"
+        self.settings_file(text + f'SETTINGS_STORE_ENDPOINT="{new}"\n')
+        r = self.lib("migrate_settings")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("USNM_GITHUB_REPO_IDS", self.local_text())
-        self.assertEqual(self.vault_sets(), ["keyvault secret set --vault-name usnmcorekvdevnew456 "
-                                             "--name USNM-GITHUB-REPO-IDS --value o@1/r@2 -o none"])
+        self.assertIn('USNM_API_CERT_ID=""', self.local_text())
+        self.assertIn(f"appconfig kv set --endpoint {new} --auth-mode login --label dev --key USNM_GITHUB_REPO_IDS "
+                      "--value o@1/r@2 --yes -o none", self.store_sets())
 
-    def test_a_move_from_an_unreadable_vault_stops(self):
-        self.local(**self.VAULT)
-        r = self.lib("vault_detach", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
+    def test_a_move_from_an_unreadable_store_stops(self):
+        self.local(**self.STORE)
+        r = self.lib("store_detach", STUB_STORE_ERROR="ERROR: Operation returned an invalid status 'Forbidden'")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("SETTINGS_KEYVAULT", self.local_text())
+        self.assertIn("SETTINGS_STORE_ENDPOINT", self.local_text())
 
-    def test_a_move_reads_the_old_vault_in_the_old_subscription(self):
-        # bootstrap.sh --move into another tenant: the old vault is read
+    def test_a_move_reads_the_old_store_in_the_old_subscription(self):
+        # bootstrap.sh --move into another tenant: the old store is read
         # with the old subscription selected, then the new one is again.
-        self.local(**self.VAULT, AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
-        r = self.lib("vault_detach_from sub-old sub-new", STUB_SECRETS="USNM-ALERT-EMAILS",
-                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.local(**self.STORE, AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
+        r = self.lib("store_detach_from sub-old sub-new", STUB_KEYS="USNM_ALERT_EMAILS",
+                     STUB_KV_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
-        with open(self.log + ".vault") as f:
-            self.assertEqual(f.read().splitlines(), ["sub-old list", "sub-old show"])
-        with open(self.log + ".account") as f:
-            self.assertEqual(f.read().strip(), "sub-new")
+        self.assertEqual(self.read_log(".store"), ["sub-old list dev"])
+        self.assertEqual(self.read_log(".account"), ["sub-new"])
         self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
-        self.assertNotIn("SETTINGS_KEYVAULT", self.local_text())
+        self.assertNotIn("SETTINGS_STORE_ENDPOINT", self.local_text())
 
     def test_a_move_from_a_tenant_az_isnt_signed_in_to_says_how(self):
-        self.local(**self.VAULT, AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
-        r = self.lib("vault_detach_from sub-old sub-new", STUB_ACCOUNTS="sub-new")
+        self.local(**self.STORE, AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
+        r = self.lib("store_detach_from sub-old sub-new", STUB_ACCOUNTS="sub-new")
         self.assertEqual(r.returncode, 1)
         self.assertIn("az login --tenant tenant-old", r.stderr)
         self.assertIn("--subscription sub-new", r.stderr)
-        self.assertFalse(os.path.exists(self.log + ".vault"))
-        self.assertIn("SETTINGS_KEYVAULT", self.local_text())
+        self.assertEqual(self.read_log(".store"), [])
+        self.assertIn("SETTINGS_STORE_ENDPOINT", self.local_text())
 
     def test_a_failed_move_selects_the_new_subscription_again(self):
-        self.local(**self.VAULT)
-        r = self.lib("vault_detach_from sub-old sub-new", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
+        self.local(**self.STORE)
+        r = self.lib("store_detach_from sub-old sub-new",
+                     STUB_STORE_ERROR="ERROR: Operation returned an invalid status 'Forbidden'")
         self.assertEqual(r.returncode, 1)
-        with open(self.log + ".account") as f:
-            self.assertEqual(f.read().strip(), "sub-new")
-        self.assertIn("SETTINGS_KEYVAULT", self.local_text())
+        self.assertEqual(self.read_log(".account"), ["sub-new"])
+        self.assertIn("SETTINGS_STORE_ENDPOINT", self.local_text())
 
     def test_bootstrap_detaches_before_selecting_the_new_subscription(self):
         with open(os.path.join(HERE, "bootstrap.sh")) as f:
             text = f.read()
-        detach = text.index('vault_detach_from "$previous" "$SUBSCRIPTION"')
+        detach = text.index('store_detach_from "$previous" "$SUBSCRIPTION"')
         select = text.index('az account set --subscription "$SUBSCRIPTION"')
         self.assertLess(detach, select)
         self.assertEqual(text.count("az account set"), 1)
 
-    def read_log(self, suffix):
-        path = self.log + suffix
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:
-            return f.read().splitlines()
-
-    OLD_STACK = {"STUB_OUTPUTS": '{"settingS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevold123"}}'}
-
-    def test_a_move_without_a_local_vault_name_reads_the_old_stacks_vault(self):
-        # Another operator's machine: the old stack names the old vault,
-        # asked with the old subscription selected.
+    def test_a_move_without_a_local_endpoint_reads_the_old_subscriptions_store(self):
+        # Another operator's machine: the old subscription's store stack
+        # names the old store, asked with the old subscription selected.
         self.local(AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
-        r = self.lib("vault_detach_from sub-old sub-new", **self.OLD_STACK, STUB_SECRETS="USNM-ALERT-EMAILS",
-                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        r = self.lib("store_detach_from sub-old sub-new", **self.OUTPUTS, STUB_KEYS="USNM_ALERT_EMAILS",
+                     STUB_KV_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.read_log(".stack"), ["sub-old"])
-        self.assertEqual(self.read_log(".vault"), ["sub-old list", "sub-old show"])
-        self.assertIn("keyvault secret list --vault-name usnmcorekvdevold123 --query [].name -o tsv", self.calls())
+        self.assertEqual(self.read_log(".store"), ["sub-old list dev"])
         self.assertEqual(self.read_log(".account"), ["sub-new"])
         self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
-        self.assertNotIn("SETTINGS_KEYVAULT", self.local_text())
+        self.assertNotIn("SETTINGS_STORE_ENDPOINT", self.local_text())
 
     def test_a_move_whose_old_stack_cant_be_read_stops(self):
         self.local(AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
-        r = self.lib("vault_detach_from sub-old sub-new",
+        r = self.lib("store_detach_from sub-old sub-new",
                      STUB_OUTPUTS_ERROR="ERROR: (AuthorizationFailed) The client does not have authorization")
         self.assertEqual(r.returncode, 1)
         self.assertEqual(self.read_log(".stack"), ["sub-old"])
-        self.assertEqual(self.read_log(".vault"), [])
+        self.assertEqual(self.read_log(".store"), [])
         self.assertEqual(self.read_log(".account"), ["sub-new"])
 
-    def test_a_move_from_a_subscription_without_a_vault_copies_nothing(self):
+    def test_a_move_from_a_subscription_without_a_store_copies_nothing(self):
         self.local(AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
-        r = self.lib("vault_detach_from sub-old sub-new")
+        r = self.lib("store_detach_from sub-old sub-new")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.read_log(".stack"), ["sub-old"])
-        self.assertEqual(self.read_log(".vault"), [])
+        self.assertEqual(self.read_log(".store"), [])
         self.assertEqual(self.read_log(".account"), ["sub-new"])
 
-    def test_a_move_without_a_local_vault_name_needs_the_old_subscription(self):
-        # Without its name, only the old stack can say whether there's a
-        # vault, so a subscription az can't select stops the move.
+    def test_a_move_without_a_local_endpoint_needs_the_old_subscription(self):
+        # Without its endpoint, only the old stack can say whether there's a
+        # store, so a subscription az can't select stops the move.
         self.local(AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
-        r = self.lib("vault_detach_from sub-old sub-new", STUB_ACCOUNTS="sub-new")
+        r = self.lib("store_detach_from sub-old sub-new", STUB_ACCOUNTS="sub-new")
         self.assertEqual(r.returncode, 1)
         self.assertIn("az login --tenant tenant-old", r.stderr)
         self.assertEqual(self.read_log(".stack"), [])
 
-    def test_an_empty_vault_name_moves_without_the_old_vault(self):
-        # An old subscription that's gone: SETTINGS_KEYVAULT="" says so.
-        self.local(AZURE_SUBSCRIPTION_ID="sub-old", SETTINGS_KEYVAULT="")
-        r = self.lib("vault_detach_from sub-old sub-new", STUB_ACCOUNTS="sub-new")
+    def test_an_empty_endpoint_moves_without_the_old_store(self):
+        # An old subscription that's gone: SETTINGS_STORE_ENDPOINT="" says so.
+        self.local(AZURE_SUBSCRIPTION_ID="sub-old", SETTINGS_STORE_ENDPOINT="")
+        r = self.lib("store_detach_from sub-old sub-new", STUB_ACCOUNTS="sub-new")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(os.path.exists(self.log) and
-                         any(c.startswith(("account set", "stack", "keyvault")) for c in self.calls()))
+                         any(c.startswith(("account set", "stack", "appconfig")) for c in self.calls()))
         self.assertEqual(self.local_text(), 'AZURE_SUBSCRIPTION_ID="sub-old"\n')
 
-    def test_unsetting_a_private_setting_deletes_its_secret(self):
-        # --unset: the setting takes its default, not the vault's value.
-        self.local(**self.VAULT, USNM_ALERT_EMAILS="old@example.org")
-        r = self.lib('adel USNM_ALERT_EMAILS; echo "[$(aget USNM_ALERT_EMAILS)]"',
-                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+    def test_unsetting_a_private_setting_deletes_it_from_the_store(self):
+        # --unset: the setting takes its default, not the store's value.
+        self.local(**self.STORE, USNM_ALERT_EMAILS="old@example.org")
+        r = self.lib('adel USNM_ALERT_EMAILS', STUB_KV_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("keyvault secret delete --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS -o none",
-                      self.calls())
-        self.assertTrue(r.stdout.endswith("[]\n"), r.stdout)
-        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        self.assertIn(f"appconfig kv delete --endpoint {self.EP} --auth-mode login --label dev "
+                      "--key USNM_ALERT_EMAILS --yes -o none", self.calls())
+        self.assertEqual(self.local_text(), f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n')
 
-    def test_unsetting_a_private_setting_the_vault_lacks(self):
-        self.local(**self.VAULT, USNM_ALERT_EMAILS="")
-        r = self.lib("adel USNM_ALERT_EMAILS")
+    def test_unsetting_a_key_the_store_lacks(self):
+        self.local(**self.STORE, USNM_ALERT_EMAILS="")
+        r = self.lib("adel USNM_ALERT_EMAILS",
+                     STUB_STORE_ERROR="ERROR: Key 'USNM_ALERT_EMAILS' with label 'dev' does not exist.")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        self.assertEqual(self.local_text(), f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n')
 
-    def test_unsetting_before_the_vault_exists_is_local(self):
+    def test_unsetting_before_the_store_exists_is_local(self):
         self.local(USNM_ALERT_EMAILS="ops@example.org")
         r = self.lib("adel USNM_ALERT_EMAILS")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.local_text(), "")
-        self.assertFalse(any(c.startswith("keyvault") for c in self.calls()))
+        self.assertEqual(self.store_calls(), [])
 
     def test_a_refused_delete_keeps_the_local_copy(self):
-        self.local(**self.VAULT, USNM_ALERT_EMAILS="old@example.org")
-        r = self.lib("adel USNM_ALERT_EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org",
-                     STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
+        self.local(**self.STORE, USNM_ALERT_EMAILS="old@example.org")
+        r = self.lib("adel USNM_ALERT_EMAILS",
+                     STUB_STORE_ERROR="ERROR: Operation returned an invalid status 'Forbidden'")
         self.assertEqual(r.returncode, 1)
         self.assertIn("can't delete USNM_ALERT_EMAILS", r.stderr)
         self.assertIn("az role assignment create", r.stderr)
         self.assertIn('USNM_ALERT_EMAILS="old@example.org"', self.local_text())
 
-    def test_setting_a_deleted_private_setting_recovers_it_first(self):
-        # Soft delete keeps the name: recover, then set (no purge, which
-        # prod's purge protection refuses).
-        self.local(**self.VAULT)
-        r = self.lib("aset USNM_ALERT_EMAILS new@example.org", STUB_DELETED_SECRETS="USNM-ALERT-EMAILS",
-                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        ops = [c.split()[2] for c in self.calls() if c.startswith("keyvault secret")]
-        self.assertEqual(ops, ["show", "set", "recover", "set"])
-        self.assertIn("keyvault secret recover --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS -o none",
-                      self.calls())
-        self.assertFalse(any("purge" in c for c in self.calls()))
-
     def test_unset_then_set_again(self):
-        self.local(**self.VAULT)
-        r = self.lib("adel USNM_ALERT_EMAILS; aset USNM_ALERT_EMAILS new@example.org",
-                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        # The Free tier keeps no deleted keys: no recovery step.
+        self.local(**self.STORE)
+        r = self.lib("adel USNM_ALERT_EMAILS; aset USNM_ALERT_EMAILS new@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
-        ops = [c.split()[2] for c in self.calls() if c.startswith("keyvault secret")]
-        self.assertEqual(ops, ["delete", "show", "set", "recover", "set"])
+        self.assertEqual([c.split()[1] for c in self.read_log(".store")], ["delete", "list", "set"])
 
     def test_migrate_moves_the_public_settings(self):
         self.local(USNM_JA_LATIN="true", USNM_INGEST_SCRATCH_GIB="64", USNM_API_IMAGE="",
@@ -1132,6 +1112,7 @@ class CommittedSettings(Stubbed):
         self.assertEqual(self.committed_data(), {"$schema": "./schema.json", "USNM_INGEST_SCRATCH_GIB": 64,
                                                  "USNM_JA_LATIN": True})
         self.assertEqual(self.local_text(), 'USNM_ALERT_EMAILS="ops@example.org"\nAPI_URL="x"\n')
+        # No store yet: the private one stays.
         self.assertIn("private, stays", r.stdout)
 
     def test_migrate_stops_on_a_conflict(self):
@@ -1144,8 +1125,111 @@ class CommittedSettings(Stubbed):
         self.assertEqual(self.committed_data(), {"$schema": "./schema.json", "USNM_JA_LATIN": False})
         self.assertIn('USNM_OCR="true"', self.local_text())
 
+    def test_migrate_moves_the_private_settings_once_the_store_exists(self):
+        # prod's four, as the operator's file holds them; an empty one
+        # shadows the store on purpose and stays.
+        self.settings_file(f'SETTINGS_STORE_ENDPOINT="{self.EP}"\nUSNM_OCR_NODE_IPS="203.0.113.7"\n'
+                           'USNM_OCR_NODE_GROUP="group-1"\nUSNM_OCR_KEYVAULT_ADMINS="id-1,id-2"\n'
+                           'USNM_VNET_ADDRESS_PREFIX="198.51.100.0/24"\nUSNM_ARCHIVE_ACCOUNT=""\n'
+                           'API_URL="x"\n', env="prod")
+        # One of them is in the store already, with the same value.
+        r = self.lib("migrate_settings", env_name="prod", STUB_KEYS="USNM_OCR_NODE_GROUP",
+                     STUB_KV_USNM_OCR_NODE_GROUP="group-1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.store_sets(), [self.kv_set("USNM_OCR_NODE_IPS", "203.0.113.7", "prod"),
+                                             self.kv_set("USNM_OCR_KEYVAULT_ADMINS", "id-1,id-2", "prod"),
+                                             self.kv_set("USNM_VNET_ADDRESS_PREFIX", "198.51.100.0/24", "prod")])
+        self.assertEqual(self.local_text("prod"),
+                         f'SETTINGS_STORE_ENDPOINT="{self.EP}"\nUSNM_ARCHIVE_ACCOUNT=""\nAPI_URL="x"\n')
+        self.assertIn("moved 4 private settings", r.stdout)
+        self.assertIn("kept USNM_ARCHIVE_ACCOUNT=\"\"", r.stdout)
+
+    def test_migrate_with_another_value_in_the_store_moves_no_private_one(self):
+        self.local(**self.STORE, USNM_OCR_NODE_GROUP="group-1", USNM_ALERT_EMAILS="ops@example.org")
+        r = self.lib("migrate_settings", STUB_KEYS="USNM_OCR_NODE_GROUP", STUB_KV_USNM_OCR_NODE_GROUP="group-2")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("USNM_OCR_NODE_GROUP", r.stderr)
+        self.assertNotIn("group-", r.stderr)
+        self.assertEqual(self.store_sets(), [])
+        self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
+
+    def test_migrate_names_the_old_admin_list(self):
+        self.local(USNM_SETTINGS_VAULT_ADMINS="id-1")
+        r = self.lib("migrate_settings")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("scripts/settings-store.sh --deploy --admins", r.stdout)
+        self.assertIn('USNM_SETTINGS_VAULT_ADMINS="id-1"', self.local_text())
+
+    def test_what_if_validates_and_deploys_nothing(self):
+        self.local(**self.STORE, USNM_EXPERIMENT="295")
+        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }; provision_what_if', STUB_STACK="3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("deploy_stack --what-if", r.stdout)
+        self.assertNotIn("settings-store", r.stdout)
+        self.assertFalse(any(c.startswith(("stack sub create", "appconfig kv set", "keyvault recover"))
+                             for c in self.calls()))
+
+    def test_what_if_without_a_store_shows_the_stores_too(self):
+        self.local(USNM_ALERT_EMAILS="ops@example.org", USNM_EXPERIMENT="295")
+        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }\n'
+                     'settings_store_script() { echo "settings-store.sh $*"; }; provision_what_if', STUB_STACK="3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("settings-store.sh --what-if --location eastus2", r.stdout)
+        self.assertIn("deploy_stack --what-if", r.stdout)
+
+    def test_what_if_checks_devs_experiment_and_writes_nothing(self):
+        self.local(**self.STORE)
+        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }; provision_what_if', STUB_STACK="3")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("dev exists only during an experiment", r.stderr)
+        # With one: the start goes to the deployment, not the local file.
+        self.local(**self.STORE, USNM_EXPERIMENT="295", USNM_VNET_ADDRESS_PREFIX=self.vnet())
+        r = self.lib("provision_what_if; echo \"started=$EXPERIMENT_STARTED_DRY_RUN\"", STUB_STACK="3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"started=\d{4}-\d\d-\d\dT")
+        self.assertNotIn("USNM_EXPERIMENT_STARTED", self.local_text())
+        self.assertTrue(any(c.startswith("stack sub validate") for c in self.calls()))
+
+    def test_what_if_without_the_guardrail_stack_shows_its_changes(self):
+        # A new subscription: the stack's preflight needs the definitions
+        # the provision deploys first.
+        self.local(**self.STORE, USNM_EXPERIMENT="295")
+        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }; provision_what_if')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no guard-rail stack usnm-guardrails yet", r.stdout)
+        self.assertIn("deployment sub what-if --location eastus2 --template-file infra/guardrails.bicep --only-show-errors",
+                      self.calls())
+        self.assertNotIn("deploy_stack", r.stdout)
+
+    def vnet(self):
+        # A private block, built from its parts (no private address is
+        # written out: scripts/ci/no-private-addresses.sh).
+        return ".".join(str(n) for n in (10, 99, 0, 0)) + "/24"
+
+    def test_deploy_stack_what_if_runs_the_preflight_and_creates_nothing(self):
+        self.local(**self.STORE, USNM_VNET_ADDRESS_PREFIX=self.vnet())
+        r = self.lib("deploy_stack --what-if")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        validate = next(c for c in calls if c.startswith("stack sub validate"))
+        self.assertIn("--name usnm-dev", validate)
+        self.assertIn("--deny-settings-mode denyDelete", validate)
+        self.assertLess(calls.index(validate), next(i for i, c in enumerate(calls)
+                                                    if c.startswith("deployment sub what-if")))
+        self.assertFalse(any(c.startswith("stack sub create") for c in calls))
+
+    def test_a_policy_denial_fails_the_what_if(self):
+        self.local(**self.STORE, USNM_VNET_ADDRESS_PREFIX=self.vnet())
+        r = self.lib("deploy_stack --what-if",
+                     STUB_VALIDATE_ERROR="ERROR: (RequestDisallowedByPolicy) Resource was disallowed by policy.")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("RequestDisallowedByPolicy", r.stderr)
+        self.assertFalse(any(c.startswith("deployment sub what-if") for c in self.calls()))
+
 
 class SettingsScript(Stubbed):
+    EP = "https://usnm-config-appcs-abc123.azconfig.io"
+
     def run_settings(self, *args, **extra):
         return subprocess.run([os.path.join(HERE, "settings.sh"), *args], cwd=ROOT,
                               env={**self.env, **extra}, capture_output=True, text=True)
@@ -1161,91 +1245,89 @@ class SettingsScript(Stubbed):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("USNM_JA_LATIN", self.committed_data())
 
-    def test_a_private_setting_with_a_vault_goes_there(self):
-        # A local copy (from before the vault) goes, so it can't hide the
-        # vault's value and stop the provision.
-        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\nUSNM_ALERT_EMAILS="old@example.org"\n')
+    def test_a_private_setting_with_a_store_goes_there(self):
+        # A local copy (from before the store) goes, so it can't hide the
+        # store's value and stop the provision.
+        self.settings_file(f'SETTINGS_STORE_ENDPOINT="{self.EP}"\nUSNM_ALERT_EMAILS="old@example.org"\n')
         r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("scripts/provision.sh --env dev", r.stdout)
-        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
-        self.assertIn("keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS "
-                      "--value ops@example.org -o none", self.calls())
-        r = self.lib("load_vault; settings_check", STUB_SECRETS="USNM-ALERT-EMAILS",
-                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(self.local_text(), f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n')
+        self.assertIn(f"appconfig kv set --endpoint {self.EP} --auth-mode login --label dev --key USNM_ALERT_EMAILS "
+                      "--value ops@example.org --yes -o none", self.calls())
+        r = self.lib("load_store; settings_check", STUB_KEYS="USNM_ALERT_EMAILS",
+                     STUB_KV_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("USNM_ALERT_EMAILS", r.stderr)
 
-    def test_a_refused_vault_write_keeps_the_local_copy(self):
-        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\nUSNM_ALERT_EMAILS="old@example.org"\n')
+    def test_a_refused_store_write_keeps_the_local_copy(self):
+        self.settings_file(f'SETTINGS_STORE_ENDPOINT="{self.EP}"\nUSNM_ALERT_EMAILS="old@example.org"\n')
         r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "ops@example.org",
-                              STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
+                              STUB_STORE_ERROR="ERROR: Operation returned an invalid status 'Forbidden'")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("can't set USNM_ALERT_EMAILS", r.stderr)
         self.assertIn('USNM_ALERT_EMAILS="old@example.org"', self.local_text())
 
-    def test_unset_clears_a_private_setting_in_the_vault(self):
-        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
-        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--unset",
-                              STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+    def test_unset_clears_a_private_setting_in_the_store(self):
+        self.settings_file(f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n')
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--unset")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("keyvault secret delete --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS -o none",
-                      self.calls())
-        self.assertIn("cleared USNM_ALERT_EMAILS in the settings vault usnmcorekvdevabc123", r.stdout)
+        self.assertIn(f"appconfig kv delete --endpoint {self.EP} --auth-mode login --label dev "
+                      "--key USNM_ALERT_EMAILS --yes -o none", self.calls())
+        self.assertIn(f"cleared USNM_ALERT_EMAILS in the settings store {self.EP}", r.stdout)
         self.assertIn("scripts/provision.sh --env dev", r.stdout)
 
-    def test_a_new_machine_reports_the_stacks_vault(self):
-        # No local name: the stack's vault is resolved before the message.
-        outputs = '{"SETTINGS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}'
+    def test_a_new_machine_reports_the_stacks_store(self):
+        # No local endpoint: the store's stack names it before the message.
+        outputs = json.dumps({"SETTINGS_STORE_ENDPOINT": {"type": "String", "value": self.EP}})
         r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "ops@example.org",
                               STUB_OUTPUTS=outputs)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("USNM_ALERT_EMAILS is in the settings vault usnmcorekvdevabc123", r.stdout)
-        self.assertNotIn("until the settings vault exists", r.stdout)
-        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        self.assertIn(f"USNM_ALERT_EMAILS is in the settings store {self.EP} (label dev)", r.stdout)
+        self.assertNotIn("until the settings store exists", r.stdout)
+        self.assertEqual(self.local_text(), f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n')
         os.remove(os.path.join(self.settings, "dev", ".env"))
         r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "", STUB_OUTPUTS=outputs)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("hides the settings vault's value", r.stdout)
+        self.assertIn("hides the settings store's value", r.stdout)
         os.remove(os.path.join(self.settings, "dev", ".env"))
-        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--unset", STUB_OUTPUTS=outputs,
-                              STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--unset", STUB_OUTPUTS=outputs)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("cleared USNM_ALERT_EMAILS in the settings vault usnmcorekvdevabc123", r.stdout)
-        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        self.assertIn(f"cleared USNM_ALERT_EMAILS in the settings store {self.EP}", r.stdout)
+        self.assertEqual(self.local_text(), f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n')
 
-    def test_unset_before_the_vault_exists(self):
+    def test_unset_before_the_store_exists(self):
         self.settings_file('USNM_ALERT_EMAILS="ops@example.org"\n')
         r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--unset")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("cleared USNM_ALERT_EMAILS in", r.stdout)
-        self.assertNotIn("settings vault", r.stdout)
-        self.assertFalse(any(c.startswith("keyvault") for c in self.calls()))
+        self.assertNotIn("settings store", r.stdout)
+        self.assertFalse(any(c.startswith("appconfig") for c in self.calls()))
 
-    def test_unset_local_keeps_the_vaults_value(self):
-        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\nUSNM_GITHUB_REPO_IDS="o@1/r@1"\n')
+    def test_unset_local_keeps_the_stores_value(self):
+        self.settings_file(f'SETTINGS_STORE_ENDPOINT="{self.EP}"\nUSNM_GITHUB_REPO_IDS="o@1/r@1"\n')
         r = self.run_settings("--env", "dev", "--key", "USNM_GITHUB_REPO_IDS", "--unset-local",
-                              STUB_SECRET_USNM_GITHUB_REPO_IDS="o@1/r@2")
+                              STUB_KV_USNM_GITHUB_REPO_IDS="o@1/r@2")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("now comes from the settings vault", r.stdout)
-        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
-        self.assertFalse(any(c.startswith(("keyvault secret delete", "keyvault secret set")) for c in self.calls()))
+        self.assertIn("now comes from the settings store", r.stdout)
+        self.assertEqual(self.local_text(), f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n')
+        self.assertFalse(any(c.startswith(("appconfig kv delete", "appconfig kv set")) for c in self.calls()))
 
     def test_one_change_at_a_time(self):
         r = self.run_settings("--env", "dev", "--key", "USNM_OCR", "--unset", "--unset-local")
         self.assertEqual(r.returncode, 2)
 
-    def test_a_private_setting_is_read_from_the_vault(self):
-        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+    def test_a_private_setting_is_read_from_the_store(self):
+        self.settings_file(f'SETTINGS_STORE_ENDPOINT="{self.EP}"\n')
         r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS",
-                          STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+                              STUB_KV_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "ops@example.org\n")
 
-    def test_a_private_setting_without_a_vault_stays_local(self):
+    def test_a_private_setting_without_a_store_stays_local(self):
         r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
+        self.assertIn("--migrate", r.stdout)
 
     def test_migrate(self):
         self.settings_file('USNM_OCR="true"\n')
@@ -1253,6 +1335,14 @@ class SettingsScript(Stubbed):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.committed_data()["USNM_OCR"], True)
         self.assertIn("moved 1", r.stdout)
+        self.assertIn("pull request", r.stdout)
+
+    def test_migrate_of_private_settings_only_has_nothing_to_commit(self):
+        self.settings_file(f'SETTINGS_STORE_ENDPOINT="{self.EP}"\nUSNM_OCR_NODE_GROUP="group-1"\n')
+        r = self.run_settings("--env", "dev", "--migrate")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("moved 1 private settings", r.stdout)
+        self.assertNotIn("pull request", r.stdout)
 
     def test_migrate_takes_only_the_environment(self):
         r = self.run_settings("--env", "dev", "--migrate", "--key", "USNM_OCR")

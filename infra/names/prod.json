@@ -76,7 +76,6 @@
   "searchLogRole": "usnm search log writer",
   "searcherApp": "usnm-search-ca-prod",
   "serialSetJob": "usnm-sset-caj-prod",
-  "settingsVault": "usnmcorekvprodffapzy",
   "siteUnavailableAlert": "alert-usnm-site-unavailable-prod",
   "siteWebtest": "webtest-usnm-site-prod",
   "spotRg": "rg-usnm-prod-spot",

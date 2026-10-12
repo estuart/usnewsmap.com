@@ -4,9 +4,9 @@
 Each file holds one environment's public choices (flags, sizes, caps,
 schedules), keys sorted; infra/env/schema.json lists every setting
 infra/main.bicepparam reads and says where each lives (x-usnm-visibility):
-public in the committed file, private in the environment's settings vault,
-local in the local settings file the scripts write. scripts/lib/env.sh
-reads the files through this script; CI runs --check.
+public in the committed file, private in the settings store under the
+environment's label, local in the local settings file the scripts write.
+scripts/lib/env.sh reads the files through this script; CI runs --check.
 
     scripts/lib/env_settings.py --check
     scripts/lib/env_settings.py --env prod --shell
@@ -93,7 +93,7 @@ def check_value(kinds, key, value, where):
         raise Invalid(f"{where}: {key} isn't a setting (infra/env/schema.json)")
     vis = spec["x-usnm-visibility"]
     if vis == "private":
-        raise Invalid(f"{where}: {key} is private: it goes in the environment's settings vault, "
+        raise Invalid(f"{where}: {key} is private: it goes in the settings store, under the environment's label, "
                       "never in the repository (docs/operations.md, \"Settings\")")
     if vis == "local":
         raise Invalid(f"{where}: {key} is local: the scripts keep it in the local settings file")

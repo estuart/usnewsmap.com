@@ -8,10 +8,12 @@
 #
 # - public choices (flags, sizes, caps, schedules) in infra/env/<env>.json,
 #   committed, so a change to them goes through a pull request;
-# - private ones (addresses, principals, resource ids) in the environment's
-#   settings vault, a Key Vault the stack creates (its name is the local
-#   SETTINGS_KEYVAULT), which provision reads with the operator's sign-in
-#   (load_vault); until it exists, they stay in the local file;
+# - private ones (addresses, principals, resource ids) in the settings
+#   store, one App Configuration store for every environment in the
+#   subscription (scripts/settings-store.sh; its endpoint is the local
+#   SETTINGS_STORE_ENDPOINT), under the environment's label, which provision
+#   reads with the operator's sign-in (load_store); until it exists, they
+#   stay in the local file, and --migrate then moves them;
 # - everything else in the local file: the stack's outputs, the
 #   subscription and tenant, and what the scripts keep (local in the
 #   schema). KEY="value" lines (the layout azd used, so older environments
@@ -67,9 +69,11 @@ load_committed() {
   eval "$out"
 }
 load_committed || exit 1
-# The settings vault's private settings as KEY="value" lines, once
-# load_vault has read them (VAULT_LOADED), and their names.
-VAULT_SETTINGS="" VAULT_KEYS="" VAULT_LOADED=false
+# The settings store's private settings for this environment as
+# KEY="value" lines, once load_store has read them (STORE_LOADED), and their
+# names. The store's own stack (infra/settings/main.bicep).
+STORE_SETTINGS="" STORE_KEYS="" STORE_LOADED=false
+SETTINGS_STACK=usnm-config
 in_list() { [[ " $2 " == *" $1 "* ]]; }
 is_public() { in_list "$1" "$SETTINGS_PUBLIC"; }
 is_private() { in_list "$1" "$SETTINGS_PRIVATE"; }
@@ -118,7 +122,7 @@ committed_get() {
   (set +u; unset "$1"; eval "$COMMITTED_SETTINGS"; printf '%s\n' "${!1:-}")
 }
 # Read one setting (empty when unset), wherever it lives: a public one from
-# the committed file; a private one from the local file, else the vault (a
+# the committed file; a private one from the local file, else the store (a
 # local entry wins, even "": teardown clears USNM_ARCHIVE_ACCOUNT that way);
 # anything else from the local file. A public setting still only in the
 # local file (an environment from before #295) is read from there with a
@@ -137,73 +141,55 @@ aget() {
     return 0
   fi
   if is_private "$1" && ! local_has "$1"; then
-    if $VAULT_LOADED; then
-      (set +u; unset "$1"; eval "$VAULT_SETTINGS"; printf '%s\n' "${!1:-}")
+    if $STORE_LOADED; then
+      (set +u; unset "$1"; eval "$STORE_SETTINGS"; printf '%s\n' "${!1:-}")
     else
-      vault_get "$1"
+      store_get "$1"
     fi
     return
   fi
   local_get "$1"
 }
-# One private setting from the settings vault, when load_vault hasn't read
-# them all (the scripts but provision): empty when there's no vault or no
-# such secret, a failure when the vault can't be read, so a script never
-# takes an unreadable setting for an unset one.
-vault_get() {
-  local vault out
-  vault=$(settings_vault_name) || return 1
-  [ -n "$vault" ] || { echo; return 0; }
-  if ! out=$(az keyvault secret show --vault-name "$vault" --name "$(vault_secret_name "$1")" --query value -o tsv 2>&1); then
-    grep -q SecretNotFound <<< "$out" && { echo; return 0; }
-    echo "error: can't read $1 from the settings vault $vault: $out" >&2
-    vault_access_hint "$vault"
+# One private setting from the settings store, when load_store hasn't read
+# them all (the scripts but provision): empty when there's no store or no
+# such key, a failure when the store can't be read, so a script never
+# takes an unreadable setting for an unset one. A list of one key reads as
+# empty when it's missing, where `kv show` fails.
+store_get() {
+  local endpoint out
+  endpoint=$(settings_store_endpoint) || return 1
+  [ -n "$endpoint" ] || { echo; return 0; }
+  if ! out=$(az appconfig kv list --endpoint "$endpoint" --auth-mode login --label "$ENV_NAME" --key "$1" --query "[0].value" -o tsv 2>&1); then
+    echo "error: can't read $1 from the settings store $endpoint: $out" >&2
+    store_access_hint
     return 1
   fi
   printf '%s\n' "$out"
 }
-# How an operator without access to the settings vault gets it, after a
-# refused read or write. Key Vault Secrets Officer goes to the operators in
-# USNM_SETTINGS_VAULT_ADMINS (a list in the vault itself) and to the account
-# that deployed last, so another operator needs one of them to add their
-# object id to the list and provision; or, as an Owner of the subscription,
-# a grant of their own on the resource group (one on the vault would
-# collide with the assignment the stack then makes), removed once the list
-# has them.
-vault_access_hint() {
-  local rg g scope
-  # The stack's group, from the local file; without it, whichever of the
-  # project group's two names (PROJECT_GROUPS) exists: infra/main.bicep
-  # pins the legacy one only in the current prod's subscription, so a
-  # rebuilt prod has ADR-0017's. When neither exists, or az can't tell, both.
-  rg=$(local_get AZURE_RESOURCE_GROUP 2> /dev/null) || rg=""
-  if [ -z "$rg" ]; then
-    for g in $PROJECT_GROUPS; do
-      if [ "$(az group exists -n "$g" -o tsv 2> /dev/null)" = true ]; then rg=$g; break; fi
-    done
-  fi
-  if [ -n "$rg" ]; then
-    scope="on $rg"
-  else
-    rg="<group>"
-    scope="on the project group (<group>: ${PROJECT_GROUPS// / or })"
-  fi
+# How an operator without access to the settings store gets it, after a
+# refused read or write. App Configuration Data Owner goes to the operators
+# in the store's admin list (its stack's parameter) and to the account that
+# deployed it last, so another operator needs one of them to add their
+# object id to the list; or, as an Owner of the subscription, a grant of
+# their own on the store's group (one on the store would collide with the
+# assignment the stack then makes), removed once the list has them.
+store_access_hint() {
   cat >&2 << EOF
-$1 gives Key Vault Secrets Officer to the operators in USNM_SETTINGS_VAULT_ADMINS and to whoever provisioned last. Either:
-  - ask one of them to add your object id (az ad signed-in-user show --query id -o tsv) to that list, comma separated, and provision:
-      az keyvault secret set --vault-name $1 --name $(vault_secret_name USNM_SETTINGS_VAULT_ADMINS) --value "<ids>" -o none
-  - or, as an Owner of the subscription, grant it to yourself $scope, add yourself to the list as above, provision, then delete the grant (a new role takes a few minutes to apply):
-      az role assignment create --assignee-object-id "\$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "Key Vault Secrets Officer" --scope "/subscriptions/\$(az account show --query id -o tsv)/resourceGroups/$rg"
+The settings store gives App Configuration Data Owner to the operators in its admin list and to whoever deployed it last. Either:
+  - ask one of them to add your object id (az ad signed-in-user show --query id -o tsv) to that list, comma separated:
+      scripts/settings-store.sh --deploy --admins "<ids>"
+  - or, as an Owner of the subscription, grant it to yourself on usnm-config-rg, add yourself to the list as above, then delete the grant (a new role takes a few minutes to apply):
+      az role assignment create --assignee-object-id "\$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "App Configuration Data Owner" --scope "/subscriptions/\$(az account show --query id -o tsv)/resourceGroups/usnm-config-rg"
 EOF
 }
 # Write one setting: a public one to the committed file (and out of the
 # local one, where an environment from before #295 kept it); a private one,
-# once the settings vault exists, to the vault (and out of the local file,
+# once the settings store exists, to the store (and out of the local file,
 # so a script that sets it again, like bootstrap.sh, never leaves a second
 # copy); anything else to the local file, quoted so it can be sourced. An
 # empty value removes a public setting, which then takes its default, as an
 # empty one always has; an empty private one is a local "", which shadows
-# the vault (teardown.sh detaches the archive that way).
+# the store (teardown.sh detaches the archive that way).
 aset() {
   valid_key "$1"
   # One setting, one line: the file is edited line by line.
@@ -215,55 +201,35 @@ aset() {
     return
   fi
   if is_private "$1" && [ -n "$2" ]; then
-    local vault
-    vault=$(settings_vault_name) || return 1
-    if [ -n "$vault" ]; then
-      vault_set "$vault" "$1" "$2" || return 1
+    local endpoint
+    endpoint=$(settings_store_endpoint) || return 1
+    if [ -n "$endpoint" ]; then
+      store_set "$endpoint" "$1" "$2" || return 1
       local_del "$1"
       return
     fi
   fi
   local_set "$1" "$2"
 }
-# One private setting into the settings vault $1, with the operator's
-# sign-in (Entra ID, Key Vault Secrets Officer), unless it already holds
-# that value. The vault has soft delete, so a secret an unset deleted
-# (adel) keeps its name until it's recovered or purged, and setting it
-# fails meanwhile: it's recovered first, then set (a purge would fail in
-# prod, whose vault has purge protection). A recovery takes a moment to
-# finish, so the set is tried again for up to a minute.
-vault_set() {
-  local cur out name try=0 recovered=false
-  if $VAULT_LOADED; then
-    cur=$(set +u; unset "$2"; eval "$VAULT_SETTINGS"; printf '%s\n' "${!2:-}")
+# One private setting into the settings store at $1, under this
+# environment's label, with the operator's sign-in (Entra ID, App
+# Configuration Data Owner), unless it already holds that value.
+store_set() {
+  local cur out
+  if $STORE_LOADED; then
+    cur=$(set +u; unset "$2"; eval "$STORE_SETTINGS"; printf '%s\n' "${!2:-}")
   else
-    cur=$(vault_get "$2") || return 1
+    cur=$(store_get "$2") || return 1
   fi
   [ "$cur" != "$3" ] || return 0
-  name=$(vault_secret_name "$2")
-  until out=$(az keyvault secret set --vault-name "$1" --name "$name" --value "$3" -o none 2>&1); do
-    if ! $recovered && grep -qiE 'ObjectIsDeletedButRecoverable|deleted but recoverable' <<< "$out"; then
-      echo "recovering $2's soft-deleted secret in the settings vault $1 before setting it"
-      if ! out=$(az keyvault secret recover --vault-name "$1" --name "$name" -o none 2>&1); then
-        echo "error: can't recover $2's deleted secret in the settings vault $1: $out" >&2
-        vault_access_hint "$1"
-        return 1
-      fi
-      recovered=true
-      continue
-    fi
-    if $recovered && [ $try -lt 12 ] && grep -qiE 'ObjectIsBeingRecovered|being recovered|deleted but recoverable' <<< "$out"; then
-      try=$((try + 1))
-      sleep 5
-      continue
-    fi
-    echo "error: can't set $2 in the settings vault $1: $out" >&2
-    vault_access_hint "$1"
+  if ! out=$(az appconfig kv set --endpoint "$1" --auth-mode login --label "$ENV_NAME" --key "$2" --value "$3" --yes -o none 2>&1); then
+    echo "error: can't set $2 in the settings store $1: $out" >&2
+    store_access_hint
     return 1
-  done
-  echo "set $2 in the settings vault $1"
-  # Read from the vault from now on, not from what load_vault read.
-  VAULT_LOADED=false
+  fi
+  echo "set $2 for $ENV_NAME in the settings store $1"
+  # Read from the store from now on, not from what load_store read.
+  STORE_LOADED=false
 }
 # One setting into the local file, quoted so it can be sourced.
 local_set() {
@@ -281,35 +247,34 @@ local_set() {
 }
 # Remove one setting, so it takes its default: a public one from the
 # committed file (and the local one); a private one from the settings
-# vault, once it exists, and from the local file; anything else from the
+# store, once it exists, and from the local file; anything else from the
 # local file. local_del removes only the local entry (a private setting's
-# vault value then applies).
+# store value then applies).
 adel() {
   valid_key "$1"
   if is_public "$1"; then
     python3 scripts/lib/env_settings.py --env "$ENV_NAME" --unset "$1" || return 1
     load_committed || return 1
   elif is_private "$1"; then
-    local vault
-    vault=$(settings_vault_name) || return 1
-    [ -z "$vault" ] || vault_delete "$vault" "$1" || return 1
+    local endpoint
+    endpoint=$(settings_store_endpoint) || return 1
+    [ -z "$endpoint" ] || store_delete "$endpoint" "$1" || return 1
   fi
   local_del "$1"
 }
-# Delete one private setting's secret from the settings vault $1 (nothing
-# to do when it has none). The vault keeps it soft-deleted, which reads as
-# unset (secret show and list skip it); vault_set recovers the name when the
-# setting is set again.
-vault_delete() {
+# Delete one private setting from the settings store at $1 (nothing to do
+# when it has none: the delete matches no key). The Free tier keeps no
+# deleted keys, so setting it again is a plain set.
+store_delete() {
   local out
-  if ! out=$(az keyvault secret delete --vault-name "$1" --name "$(vault_secret_name "$2")" -o none 2>&1); then
-    grep -q SecretNotFound <<< "$out" && return 0
-    echo "error: can't delete $2 from the settings vault $1: $out" >&2
-    vault_access_hint "$1"
+  if ! out=$(az appconfig kv delete --endpoint "$1" --auth-mode login --label "$ENV_NAME" --key "$2" --yes -o none 2>&1); then
+    grep -qiE 'no matching|not found|does not exist' <<< "$out" && return 0
+    echo "error: can't delete $2 from the settings store $1: $out" >&2
+    store_access_hint
     return 1
   fi
-  echo "deleted $2 from the settings vault $1"
-  VAULT_LOADED=false
+  echo "deleted $2 for $ENV_NAME from the settings store $1"
+  STORE_LOADED=false
 }
 local_del() {
   [ -f "$ENV_FILE" ] || return 0
@@ -319,142 +284,152 @@ local_del() {
     { rm -f "$tmp"; echo "error: can't read $ENV_FILE" >&2; return 1; }
   mv "$tmp" "$ENV_FILE"
 }
-# A private setting's secret in the settings vault: Key Vault names allow
-# letters, digits and hyphens, so USNM_ALERT_EMAILS is USNM-ALERT-EMAILS.
-vault_secret_name() { printf '%s' "${1//_/-}"; }
-# Read the settings vault's secrets into VAULT_SETTINGS, with the
-# operator's sign-in (Key Vault Secrets Officer, which the stack gives the
-# operators in USNM_SETTINGS_VAULT_ADMINS and the account that deploys it).
-# The vault's name is a stack output; before the first provision that
-# creates it, there's nothing to read. A
-# secret that isn't a private setting stops here, like an unknown key in a
-# committed file.
-load_vault() {
-  local vault names n key v lines=""
-  VAULT_SETTINGS="" VAULT_KEYS=""
-  vault=$(settings_vault_name) || return 1
-  [ -n "$vault" ] || { VAULT_LOADED=true; return 0; }
-  names=$(az keyvault secret list --vault-name "$vault" --query "[].name" -o tsv) ||
-    { echo "error: can't list the secrets in the settings vault $vault" >&2; vault_access_hint "$vault"; return 1; }
-  for n in $names; do
-    key=$(tr 'a-z-' 'A-Z_' <<< "$n")
-    is_private "$key" ||
-      { echo "error: $vault holds $n, which isn't a private setting (infra/env/schema.json)" >&2; return 1; }
-    v=$(az keyvault secret show --vault-name "$vault" --name "$n" --query value -o tsv) ||
-      { echo "error: can't read $n from $vault" >&2; vault_access_hint "$vault"; return 1; }
-    [[ $v != *$'\n'* ]] || { echo "error: $vault's $n has more than one line" >&2; return 1; }
-    lines+="$key=\"$(quote_value "$v")\""$'\n'
-    VAULT_KEYS+=" $key"
-  done
-  VAULT_SETTINGS=$lines VAULT_LOADED=true
+# Read this environment's settings from the store into STORE_SETTINGS, in
+# one request (a page holds 100; the Free tier allows 1,000 a day), with
+# the operator's sign-in. Before the store exists there's nothing to read.
+# A key under this label that isn't a private setting stops here, like an
+# unknown key in a committed file.
+load_store() {
+  local endpoint out lines
+  STORE_SETTINGS="" STORE_KEYS=""
+  endpoint=$(settings_store_endpoint) || return 1
+  [ -n "$endpoint" ] || { STORE_LOADED=true; return 0; }
+  out=$(az appconfig kv list --endpoint "$endpoint" --auth-mode login --label "$ENV_NAME" --all --query "[].{key: key, value: value}" -o json) ||
+    { echo "error: can't list $ENV_NAME's settings in the settings store $endpoint" >&2; store_access_hint; return 1; }
+  # KEY="value" lines, quoted as quote_value does, then the keys.
+  lines=$(python3 -c 'import json, sys
+private = set(sys.argv[2].split())
+for kv in json.loads(sys.argv[1] or "[]"):
+    k, v = kv.get("key") or "", kv.get("value") or ""
+    if k not in private:
+        sys.exit(f"error: the settings store holds {k} for {sys.argv[3]}, which isn'"'"'t a private setting (infra/env/schema.json)")
+    if "\n" in v:
+        sys.exit(f"error: the settings store'"'"'s {k} for {sys.argv[3]} has more than one line")
+    for a, b in (("\\", "\\\\"), ("\"", "\\\""), ("$", "\\$"), ("`", "\\`")):
+        v = v.replace(a, b)
+    print(f"{k}=\"{v}\"")' "$out" "$SETTINGS_PRIVATE" "$ENV_NAME") || return 1
+  STORE_SETTINGS=$lines
+  [ -z "$lines" ] || STORE_KEYS=$(cut -d= -f1 <<< "$lines" | tr '\n' ' ')
+  STORE_LOADED=true
 }
-# The settings vault's name: the local file's SETTINGS_KEYVAULT, or, when
-# the local file lacks it (another operator's machine, a new checkout), the
-# stack's output, which is then recorded there. Empty before the first
-# provision that creates the vault. Every read and write of a private
-# setting goes through it, so none takes a vault it can't name for no vault.
-settings_vault_name() {
-  local vault
-  vault=$(local_get SETTINGS_KEYVAULT) || return 1
-  if [ -z "$vault" ]; then
-    vault=$(stack_settings_vault) || return 1
-    [ -z "$vault" ] || local_set SETTINGS_KEYVAULT "$vault" || return 1
+# The settings store's endpoint: the local file's SETTINGS_STORE_ENDPOINT,
+# or, when the local file lacks it (another operator's machine, a new
+# checkout), the store stack's output, which is then recorded there. Empty
+# before the store exists. Every read and write of a private setting goes
+# through it, so none takes a store it can't name for no store.
+# SETTINGS_READ_ONLY (the what-if) records nothing.
+SETTINGS_READ_ONLY=false
+settings_store_endpoint() {
+  local endpoint
+  endpoint=$(local_get SETTINGS_STORE_ENDPOINT) || return 1
+  if [ -z "$endpoint" ]; then
+    endpoint=$(stack_settings_store) || return 1
+    [ -z "$endpoint" ] || $SETTINGS_READ_ONLY || local_set SETTINGS_STORE_ENDPOINT "$endpoint" || return 1
   fi
-  printf '%s\n' "$vault"
+  printf '%s\n' "$endpoint"
 }
-# The settings vault's name from the stack's outputs (SETTINGS_KEYVAULT,
-# whose case the stack may change): empty without a stack or that output.
-stack_settings_vault() {
-  local out err errf
+# The settings store's endpoint from its stack's outputs
+# (SETTINGS_STORE_ENDPOINT, whose case the stack may change), in the
+# environment's recorded subscription, or the selected one before bootstrap
+# records it: empty without the stack or that output.
+stack_settings_store() {
+  local out err errf sub
+  local scope=()
+  sub=$(local_get AZURE_SUBSCRIPTION_ID) || return 1
+  [ -z "$sub" ] || scope=(--subscription "$sub")
   errf=$(mktemp)
-  if ! out=$(az stack sub show -n "usnm-$ENV_NAME" --query outputs -o json 2> "$errf"); then
+  if ! out=$(az stack sub show -n "$SETTINGS_STACK" --query outputs -o json ${scope[@]+"${scope[@]}"} 2> "$errf"); then
     err=$(cat "$errf")
     rm -f "$errf"
-    grep -q DeploymentStackNotFound <<< "$err" && return 0
-    echo "error: can't read the stack usnm-$ENV_NAME's outputs: $err" >&2
+    # az says ResourceNotFound for a stack that doesn't exist.
+    grep -qE 'DeploymentStackNotFound|ResourceNotFound' <<< "$err" && return 0
+    echo "error: can't read the stack $SETTINGS_STACK's outputs: $err" >&2
     return 1
   fi
   rm -f "$errf"
   python3 -c 'import json, sys
 for k, v in (json.loads(sys.argv[1] or "{}") or {}).items():
-    if k.upper() == "SETTINGS_KEYVAULT":
+    if k.upper() == "SETTINGS_STORE_ENDPOINT":
         print(v.get("value") or "")' "$out"
 }
 # Moving an environment to another subscription (bootstrap.sh --move)
-# rebuilds it there with a new settings vault (its name comes from the
-# subscription): the old vault's private settings come back to the local
-# file, where they stay until the new one exists (provision then says how
-# to move them), and the old vault is forgotten. A setting the local file
-# already has is kept.
-vault_detach() {
-  local k v vault
-  vault=$(settings_vault_name) || return 1
-  [ -n "$vault" ] || return 0
-  load_vault || return 1
-  for k in $VAULT_KEYS; do
+# rebuilds it there, with that subscription's settings store: the old
+# store's private settings for this environment come back to the local
+# file, where they stay until the new store exists (then --migrate moves
+# them), and the old store is forgotten. A setting the local file already
+# has is kept. The old store keeps its copy.
+store_detach() {
+  local k v endpoint
+  endpoint=$(settings_store_endpoint) || return 1
+  [ -n "$endpoint" ] || return 0
+  load_store || return 1
+  for k in $STORE_KEYS; do
     local_has "$k" && continue
     v=$(aget "$k") || return 1
     local_set "$k" "$v" || return 1
   done
-  local_del SETTINGS_KEYVAULT || return 1
-  VAULT_SETTINGS="" VAULT_KEYS="" VAULT_LOADED=false
-  echo "the private settings of $vault are in $ENV_FILE until the new settings vault exists"
+  local_del SETTINGS_STORE_ENDPOINT || return 1
+  STORE_SETTINGS="" STORE_KEYS="" STORE_LOADED=false
+  echo "$ENV_NAME's private settings from $endpoint are in $ENV_FILE until the new subscription's settings store exists"
 }
-# vault_detach for a move from subscription $1 to $2: az takes a Key Vault
-# token from the selected subscription's tenant, so the old subscription is
-# selected first (in another tenant, az must be signed in there too; az
-# login keeps the other sign-ins). With it selected, the old vault's name
-# comes from the local file or, when that lacks it (another operator's
-# machine), from the old stack's outputs, and the vault is read; then $2 is
-# selected again, whatever happened. A local SETTINGS_KEYVAULT="" moves
-# without the old vault's settings (for an old subscription that's gone).
-vault_detach_from() {
+# store_detach for a move from subscription $1 to $2. The old store's
+# endpoint comes from the local file or, when that lacks it (another
+# operator's machine), from the old subscription's store stack, so the old
+# subscription is selected first (in another tenant, az must be signed in
+# there too; az login keeps the other sign-ins), and az takes a token in its
+# tenant; then $2 is selected again, whatever happened. A local
+# SETTINGS_STORE_ENDPOINT="" moves without the old store's settings (for an
+# old subscription that's gone).
+store_detach_from() {
   local old=$1 target=$2 tenant rc=0
-  if local_has SETTINGS_KEYVAULT && [ -z "$(local_get SETTINGS_KEYVAULT)" ]; then
-    echo "SETTINGS_KEYVAULT is \"\" in $ENV_FILE: moving without the old settings vault's private settings"
-    local_del SETTINGS_KEYVAULT
+  if local_has SETTINGS_STORE_ENDPOINT && [ -z "$(local_get SETTINGS_STORE_ENDPOINT)" ]; then
+    echo "SETTINGS_STORE_ENDPOINT is \"\" in $ENV_FILE: moving without the old settings store's private settings"
+    local_del SETTINGS_STORE_ENDPOINT
     return
   fi
   tenant=$(local_get AZURE_TENANT_ID) || return 1
   if ! az account set --subscription "$old" 2> /dev/null; then
-    echo "error: az can't select the old subscription $old, whose settings vault holds the private settings: az login --tenant ${tenant:-<its tenant>} (az keeps your other sign-ins), then run this again with --subscription $target" >&2
+    echo "error: az can't select the old subscription $old, whose settings store holds the private settings: az login --tenant ${tenant:-<its tenant>} (az keeps your other sign-ins), then run this again with --subscription $target" >&2
     return 1
   fi
-  vault_detach || rc=1
+  store_detach || rc=1
   az account set --subscription "$target" || return 1
   return $rc
 }
 # Each setting in its place, before a deployment reads them: a public one
-# only in the committed file, a private one in the vault or the local file
-# but not both. A private one still in the local file once the vault exists
-# is a warning, with the commands that move it. load_vault first.
+# only in the committed file, a private one in the store or the local file
+# but not both. A private one still in the local file once the store exists
+# is a warning, with the command that moves it. load_store first.
 settings_check() {
-  local k v errors="" moves=""
+  local k errors="" moves=""
   for k in $(local_keys); do
     if is_public "$k"; then
       errors+="  $k is in $ENV_FILE; public settings are committed, in $COMMITTED_FILE"$'\n'
     elif is_private "$k" && [ -n "$(local_get "$k")" ]; then
-      if in_list "$k" "$VAULT_KEYS"; then
-        errors+="  $k is in both $ENV_FILE and the settings vault; keep the vault's: scripts/settings.sh --env $ENV_NAME --key $k --unset-local; or the local one: scripts/settings.sh --env $ENV_NAME --key $k --value \"\$(scripts/settings.sh --env $ENV_NAME --key $k)\""$'\n'
-      elif [ -n "$(local_get SETTINGS_KEYVAULT)" ]; then
-        moves+="  scripts/settings.sh --env $ENV_NAME --key $k --value \"\$(scripts/settings.sh --env $ENV_NAME --key $k)\""$'\n'
+      if in_list "$k" "$STORE_KEYS"; then
+        errors+="  $k is in both $ENV_FILE and the settings store; keep the store's: scripts/settings.sh --env $ENV_NAME --key $k --unset-local; or the local one: scripts/settings.sh --env $ENV_NAME --key $k --value \"\$(scripts/settings.sh --env $ENV_NAME --key $k)\""$'\n'
+      elif [ -n "$(local_get SETTINGS_STORE_ENDPOINT)" ]; then
+        moves+=" $k"
       fi
     fi
   done
   if [ -n "$moves" ]; then
-    printf 'warning: private settings still in %s; move them to the settings vault:\n%s' "$ENV_FILE" "$moves" >&2
+    echo "warning: private settings still in $ENV_FILE:$moves; move them to the settings store: scripts/settings.sh --env $ENV_NAME --migrate" >&2
   fi
   [ -n "$errors" ] || return 0
   printf 'error: settings in the wrong place:\n%s' "$errors" >&2
   echo "scripts/settings.sh --env $ENV_NAME --migrate moves the public ones into $COMMITTED_FILE, to commit" >&2
   return 1
 }
-# Move an environment from before #295 over: every public setting in the
-# local file into the committed file, unless the committed file already
-# has another value (then nothing moves). Private settings stay local until
-# the vault exists; provision's warning then says how to move them.
+# Move settings to where they belong. First every public setting in the
+# local file into the committed file, unless the committed file already has
+# another value (then nothing moves). Then, once the settings store exists,
+# every private one with a value in the local file into the store, under
+# this environment's label, unless the store already has another value
+# (then no private one moves); until the store exists they stay local. An
+# empty local private one ("") stays: it shadows the store on purpose.
 migrate_settings() {
-  local k v c conflicts="" moved=0
+  local k v c conflicts="" moved=0 endpoint
   for k in $(local_keys); do
     is_public "$k" || continue
     v=$(local_get "$k") || return 1
@@ -479,10 +454,40 @@ migrate_settings() {
     moved=$((moved + 1))
   done
   echo "moved $moved public settings from $ENV_FILE to $COMMITTED_FILE"
+  # The settings vault this replaced (#295) gave its role to a list of its
+  # own; the store's list is its stack's (scripts/settings-store.sh).
+  if local_has USNM_SETTINGS_VAULT_ADMINS; then
+    echo "note: USNM_SETTINGS_VAULT_ADMINS in $ENV_FILE is now the settings store's admin list: pass its value to scripts/settings-store.sh --deploy --admins, then remove it from $ENV_FILE"
+  fi
+  endpoint=$(settings_store_endpoint) || return 1
+  if [ -z "$endpoint" ]; then
+    for k in $(local_keys); do
+      is_private "$k" && echo "private, stays in $ENV_FILE until the settings store exists: $k"
+    done
+    return 0
+  fi
+  load_store || return 1
   for k in $(local_keys); do
-    is_private "$k" && echo "private, stays in $ENV_FILE until the settings vault exists: $k"
+    if ! is_private "$k" || ! in_list "$k" "$STORE_KEYS"; then continue; fi
+    v=$(local_get "$k") || return 1
+    [ -n "$v" ] || continue
+    c=$(set +u; unset "$k"; eval "$STORE_SETTINGS"; printf '%s\n' "${!k:-}")
+    [ "$v" = "$c" ] || conflicts+="  $k"$'\n'
   done
-  return 0
+  if [ -n "$conflicts" ]; then
+    printf 'error: these differ between %s and the settings store; keep one of each (scripts/settings.sh --env %s --key K --unset-local keeps the store'"'"'s):\n%s' "$ENV_FILE" "$ENV_NAME" "$conflicts" >&2
+    return 1
+  fi
+  moved=0
+  for k in $(local_keys); do
+    is_private "$k" || continue
+    v=$(local_get "$k") || return 1
+    [ -n "$v" ] || { echo "kept $k=\"\" in $ENV_FILE: it hides the settings store's value (--unset clears it)"; continue; }
+    store_set "$endpoint" "$k" "$v" > /dev/null || return 1
+    local_del "$k" || return 1
+    moved=$((moved + 1))
+  done
+  echo "moved $moved private settings from $ENV_FILE to the settings store $endpoint (label $ENV_NAME)"
 }
 # Whether the committed file (and the schema) match the checkout's commit:
 # scripts/provision.sh deploys only committed settings, unless --allow-dirty.
@@ -511,6 +516,8 @@ LEGACY_INFRA_GROUP="ME_cae-usnm-${ENV_NAME}_"
 STACK="usnm-$ENV_NAME"
 # The region, with the same default as infra/main.bicepparam.
 stack_location() { local l; l=$(aget AZURE_LOCATION) || return 1; echo "${l:-eastus2}"; }
+# deploy_stack [--what-if]: create or update the environment's stack, or
+# with --what-if validate it and show its changes, deploying nothing.
 deploy_stack() (
   # Export exactly the settings infra/main.bicepparam reads, when they have
   # a value; an unset one takes its default there. Each is read on its own
@@ -530,16 +537,25 @@ deploy_stack() (
     exit 1
   }
   valid_vnet_prefix "$USNM_VNET_ADDRESS_PREFIX" || exit 1
+  [ -z "$EXPERIMENT_STARTED_DRY_RUN" ] || export USNM_EXPERIMENT_STARTED=$EXPERIMENT_STARTED_DRY_RUN
   # The stack's name comes from the environment's; the template's must match.
   export AZURE_ENV_NAME=$ENV_NAME
   local location
   location=$(stack_location) || exit 1
-  az stack sub create --name "$STACK" --location "$location" \
-    --parameters infra/main.bicepparam \
-    --action-on-unmanage deleteResources \
-    --deny-settings-mode denyDelete \
-    --description "usnewsmap $ENV_NAME (scripts/bootstrap.sh, scripts/provision.sh)" \
-    --yes --only-show-errors -o none
+  local stack_args=(--name "$STACK" --location "$location" --parameters infra/main.bicepparam
+    --action-on-unmanage deleteResources --deny-settings-mode denyDelete
+    --description "usnewsmap $ENV_NAME (scripts/bootstrap.sh, scripts/provision.sh)")
+  if [ "${1:-}" = --what-if ]; then
+    # Azure's preflight validation of the stack, as a create runs it first
+    # (policy denials included), then the template's changes: stacks have no
+    # what-if, a deployment's shows the same template's.
+    echo "validating stack $STACK (preflight)"
+    az stack sub validate "${stack_args[@]}" --only-show-errors -o none || exit 1
+    echo "stack $STACK passes preflight; its changes (a deployment's what-if: it doesn't list what the stack deletes because the template dropped it):"
+    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam --only-show-errors
+    exit
+  fi
+  az stack sub create "${stack_args[@]}" --yes --only-show-errors -o none
 )
 # The template's outputs become settings (API_URL, ACR_NAME, ...). One
 # query reads the names and the values from the same object, so they pair
@@ -590,25 +606,19 @@ ocr_nodes_off_check() {
 # reserved name, so recover a soft-deleted vault of this environment first;
 # the stack takes it back over with its secrets. The OCR nodes' vault
 # (usnmocrkv<env><suffix>, ADR-0017) goes when USNM_OCR_NODES goes off, so
-# it's recovered when they're on; the settings vault
-# (usnmcorekv<env><suffix>, #295) always, as the stack always has one.
-# Prod's have purge protection and are recovered the same way.
-# Both are in the environment's project group, in either of its name forms
-# (PROJECT_GROUPS; infra/naming.bicep's rg: usnm-core-rg-<env>, or the
-# current prod's legacy rg-usnm-<env>), so this doesn't need the local
-# file's AZURE_RESOURCE_GROUP: a rebuild after a teardown starts from a
-# local file without it. A vault is recovered into its old group, the one
-# its deleted vault id names, so that group, if the teardown deleted it, is
-# created first, as the stack would (the stack then takes it over, with its
-# tags). A recovered settings vault is recorded (SETTINGS_KEYVAULT,
-# RECOVERED_SETTINGS_VAULT), so load_vault reads it before a stack exists to
-# name it.
-RECOVERED_SETTINGS_VAULT=""
+# it's recovered when they're on (prod's has purge protection and is
+# recovered the same way). It's in the environment's project group, in
+# either of its name forms (PROJECT_GROUPS; infra/naming.bicep's rg:
+# usnm-core-rg-<env>, or the current prod's legacy rg-usnm-<env>), so this
+# doesn't need the local file's AZURE_RESOURCE_GROUP: a rebuild after a
+# teardown starts from a local file without it. A vault is recovered into
+# its old group, the one its deleted vault id names, so that group, if the
+# teardown deleted it, is created first, as the stack would (the stack then
+# takes it over, with its tags).
 vaults_recover() {
-  local nodes out v id g rg exists location in_groups="" checked=" "
-  local want="starts_with(name, 'usnmcorekv')"
+  local nodes out v id lid g rg exists location in_groups="" checked=" "
   nodes=$(aget USNM_OCR_NODES) || return 1
-  [ "$nodes" != true ] || want="($want || starts_with(name, 'usnmocrkv'))"
+  [ "$nodes" = true ] || return 0
   # Only a vault deleted from this environment's own group: the name prefix
   # alone could match another environment's vault (the suffix comes from the
   # full environment name), so the original vault id must name this group.
@@ -616,14 +626,16 @@ vaults_recover() {
     in_groups="${in_groups:+$in_groups || }contains(to_lower(properties.vaultId), to_lower('/resourceGroups/$g/providers/'))"
   done
   out=$(az keyvault list-deleted --resource-type vault \
-    --query "[?$want && ($in_groups)].[name, properties.vaultId]" -o tsv 2>&1) ||
+    --query "[?starts_with(name, 'usnmocrkv') && ($in_groups)].[name, properties.vaultId]" -o tsv 2>&1) ||
     { echo "error: can't list deleted Key Vaults: $out" >&2; return 1; }
   [ -n "$out" ] || return 0
   while IFS=$'\t' read -r v id; do
     [ -n "$v" ] || continue
     rg=""
+    # Case-insensitive, without bash 4's ${x,,} (macOS has bash 3.2).
+    lid=$(tr '[:upper:]' '[:lower:]' <<< "$id")
     for g in $PROJECT_GROUPS; do
-      if [[ ${id,,} == *"/resourcegroups/${g,,}/providers/"* ]]; then rg=$g; break; fi
+      if [[ $lid == *"/resourcegroups/$(tr '[:upper:]' '[:lower:]' <<< "$g")/providers/"* ]]; then rg=$g; break; fi
     done
     [ -n "$rg" ] || { echo "error: can't tell the resource group of the deleted Key Vault $v from its id $id" >&2; return 1; }
     if [[ $checked != *" $rg "* ]]; then
@@ -637,31 +649,54 @@ vaults_recover() {
     fi
     echo "recovering soft-deleted Key Vault $v into $rg before the deployment re-creates it"
     az keyvault recover --name "$v" -o none || return 1
-    if [[ $v == usnmcorekv* ]]; then
-      local_set SETTINGS_KEYVAULT "$v" || return 1
-      RECOVERED_SETTINGS_VAULT=$v
-    fi
   done <<< "$out"
 }
-# The local file's SETTINGS_KEYVAULT is a stack output, which can outlive
-# its vault: teardown.sh purges dev's, and stand-up.sh starts again from the
-# local file a teardown kept. Before provision reads the vault, the stack's
-# output wins; without a stack (or that output), only a vault vaults_recover
-# just brought back is kept, and any other name is forgotten.
-settings_vault_current() {
-  local vault stack
+# The settings store is shared by every environment in the subscription and
+# outside their stacks (infra/settings/main.bicep): the first provision in a
+# subscription creates it, in the environment's region. Its private
+# settings then move in with scripts/settings.sh --migrate (settings_check
+# says so). A local SETTINGS_KEYVAULT, the name of the settings vault the
+# store replaced (#295), goes, unless that vault still exists: its secrets
+# would be lost with it (the stack no longer declares it), so the provision
+# stops until they're copied.
+settings_store_script() { scripts/settings-store.sh "$@"; }
+# Whether settings_store_ensure just created the store, so its new role may
+# not apply yet (load_store_after_create).
+STORE_CREATED=false
+settings_store_ensure() {
+  local endpoint location vault out
   vault=$(local_get SETTINGS_KEYVAULT) || return 1
-  # Without one, load_vault asks the stack itself.
-  [ -n "$vault" ] || return 0
-  [ "$vault" != "$RECOVERED_SETTINGS_VAULT" ] || return 0
-  stack=$(stack_settings_vault) || return 1
-  [ "$stack" != "$vault" ] || return 0
-  if [ -n "$stack" ]; then
-    local_set SETTINGS_KEYVAULT "$stack"
-  else
-    echo "forgetting the settings vault $vault in $ENV_FILE: the stack usnm-$ENV_NAME doesn't name it (a teardown deleted it)"
-    local_del SETTINGS_KEYVAULT
+  if [ -n "$vault" ]; then
+    if out=$(az keyvault show -n "$vault" --query name -o tsv 2>&1); then
+      echo "error: the settings vault $vault still exists, and this provision would delete it with its secrets: copy each to the settings store first (scripts/settings.sh --env $ENV_NAME --key KEY --value \"\$(az keyvault secret show --vault-name $vault --name KEY-WITH-HYPHENS --query value -o tsv)\"), then remove SETTINGS_KEYVAULT from $ENV_FILE" >&2
+      return 1
+    fi
+    grep -qiE 'NotFound|not found' <<< "$out" || { echo "error: can't check the settings vault $vault: $out" >&2; return 1; }
+    local_del SETTINGS_KEYVAULT || return 1
   fi
+  endpoint=$(settings_store_endpoint) || return 1
+  [ -z "$endpoint" ] || return 0
+  location=$(stack_location) || return 1
+  echo "creating the settings store (stack $SETTINGS_STACK), shared by every environment in this subscription"
+  settings_store_script --deploy --location "$location" || return 1
+  endpoint=$(settings_store_endpoint) || return 1
+  [ -n "$endpoint" ] || { echo "error: the settings store's stack $SETTINGS_STACK names no endpoint" >&2; return 1; }
+  STORE_CREATED=true
+}
+# load_store, which right after settings_store_ensure created the store can
+# be refused while the new App Configuration Data Owner assignment
+# propagates (up to about 15 minutes): then it's tried once a minute for 15
+# minutes. On an existing store a refusal fails at once.
+STORE_RETRY_SECS=${STORE_RETRY_SECS:-60}
+load_store_after_create() {
+  local try
+  $STORE_CREATED || { load_store; return; }
+  for try in $(seq 1 15); do
+    load_store 2> /dev/null && return 0
+    echo "the settings store's new role may not apply yet; trying again in ${STORE_RETRY_SECS}s ($try of 15)"
+    sleep "$STORE_RETRY_SECS"
+  done
+  load_store
 }
 # dev exists only while an experiment runs (#275; docs/operations.md, "Dev
 # environment lifecycle"), so its provision needs USNM_EXPERIMENT, the
@@ -670,6 +705,10 @@ settings_vault_current() {
 # the group's own `started` while its `experiment` is the same, otherwise
 # now. teardown.sh's provision sets NO_EXPERIMENT_CHECK, since it only takes
 # the environment apart.
+# experiment_marker [--dry-run]: --dry-run (the what-if) keeps the start in
+# EXPERIMENT_STARTED_DRY_RUN, which deploy_stack exports, and writes
+# nothing.
+EXPERIMENT_STARTED_DRY_RUN=""
 experiment_marker() {
   local exp out g tagged started=""
   [ "$ENV_NAME" = dev ] || return 0
@@ -694,6 +733,7 @@ experiment_marker() {
     fi
   done
   [ -n "$started" ] || started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [ "${1:-}" = --dry-run ]; then EXPERIMENT_STARTED_DRY_RUN=$started; return 0; fi
   aset USNM_EXPERIMENT_STARTED "$started"
 }
 # New roles and permissions take a minute or two to apply everywhere, so a
@@ -709,11 +749,10 @@ deploy_env_guardrails() {
   deploy_guardrails "$location" "$emails" "$dev_location"
 }
 provision() {
-  # A soft-deleted vault can't be read: recover it before reading the
-  # settings vault, and forget one that's gone.
+  # A soft-deleted vault can't be taken over: recover it first.
   vaults_recover || die "not provisioning $ENV_NAME"
-  settings_vault_current || die "not provisioning $ENV_NAME"
-  load_vault || die "not provisioning $ENV_NAME"
+  settings_store_ensure || die "not provisioning $ENV_NAME"
+  load_store_after_create || die "not provisioning $ENV_NAME"
   settings_check || die "not provisioning $ENV_NAME"
   experiment_marker || die "not provisioning $ENV_NAME"
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
@@ -723,4 +762,36 @@ provision() {
     echo "retrying in 60s"
     sleep 60
   done
+}
+# What a provision would deploy, changing nothing (provision.sh --what-if):
+# the settings as provision reads them (from the store when it exists) and
+# checks them, dev's experiment marker included, then Azure's preflight
+# validation of the stack, policy included, and the template's changes.
+# Without a store yet, its own what-if first, and the private settings come
+# from the local file. The stack assigns the guard-rail definitions, so in a
+# subscription without them (no usnm-guardrails stack, which a provision
+# deploys first) only their what-if is shown: the stack's preflight needs
+# them.
+provision_what_if() {
+  local endpoint location out
+  SETTINGS_READ_ONLY=true
+  endpoint=$(settings_store_endpoint) || die "no what-if for $ENV_NAME"
+  location=$(stack_location) || die "no what-if for $ENV_NAME"
+  if [ -z "$endpoint" ]; then
+    echo "no settings store yet: the provision creates it (scripts/settings-store.sh):"
+    settings_store_script --what-if --location "$location" || die "no what-if for $ENV_NAME"
+  fi
+  load_store || die "no what-if for $ENV_NAME"
+  settings_check || die "no what-if for $ENV_NAME"
+  experiment_marker --dry-run || die "no what-if for $ENV_NAME"
+  ocr_nodes_off_check || die "no what-if for $ENV_NAME"
+  if ! out=$(az stack sub show -n "$GUARDRAILS_STACK" --query name -o tsv 2>&1); then
+    grep -qiE 'NotFound|could not be found' <<< "$out" || die "can't check $GUARDRAILS_STACK: $out"
+    echo "no guard-rail stack $GUARDRAILS_STACK yet: the provision deploys it first; its changes:"
+    az deployment sub what-if --location "$location" --template-file infra/guardrails.bicep --only-show-errors ||
+      die "the what-if of $GUARDRAILS_STACK failed"
+    echo "the stack $STACK assigns its definitions, so its preflight runs once they exist"
+    return 0
+  fi
+  deploy_stack --what-if || die "the what-if of $STACK failed"
 }

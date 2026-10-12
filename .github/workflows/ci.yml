@@ -442,6 +442,7 @@ jobs:
       - run: bicep build infra/main.bicep --stdout > /dev/null
       - run: bicep build infra/guardrails.bicep --stdout > /dev/null
       - run: bicep build infra/archive/main.bicep --stdout > /dev/null
+      - run: bicep build infra/settings/main.bicep --stdout > /dev/null
       # The parameters bootstrap deploys the stack with (settings from the
       # environment; unset ones take their defaults). The VNet block has no
       # default; this sample is from RFC 5737's documentation range.

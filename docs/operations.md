@@ -20,25 +20,28 @@ An environment's settings live in three places ([`infra/README.md`](../infra/REA
 
   CI's "stack change needs a provision" warning on the merge stays until you run that provision. Every `scripts/settings.sh` example below that sets a public setting works this way. In dev, an experiment's settings go in its own pull request; to try one before committing it, `scripts/provision.sh --env dev --allow-dirty`.
 
-- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_SETTINGS_VAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the environment's settings vault, `usnmcorekv<env><suffix>`, which only the operators can reach, with Entra ID; CI never reads it. The secret's name is the setting's with hyphens: `USNM_ALERT_EMAILS` is `USNM-ALERT-EMAILS`. `scripts/settings.sh` reads and sets them with your sign-in (in the vault, removing any local copy), or `az` does directly:
+- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, `USNM_VNET_ADDRESS_PREFIX`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the **settings store**, one Azure App Configuration store for every environment in the subscription, `usnm-config-appcs-<suffix>` in `usnm-config-rg`, each environment's under its own label (`dev`, `prod`, ...). The key is the setting's name. Only the operators can reach it, with Entra ID (the store has no access keys); CI never reads it. `scripts/settings.sh` reads and sets them with your sign-in (in the store, removing any local copy), or `az` does directly:
 
   ```sh
   scripts/settings.sh --env prod --key USNM_ALERT_EMAILS --value ops@example.org
-  # or: vault=$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)
-  #     az keyvault secret set --vault-name "$vault" --name USNM-ALERT-EMAILS --value ops@example.org -o none
+  # or: store=$(scripts/settings.sh --env prod --key SETTINGS_STORE_ENDPOINT)
+  #     az appconfig kv set --endpoint "$store" --auth-mode login --label prod --key USNM_ALERT_EMAILS --value ops@example.org --yes
   scripts/provision.sh --env prod
   ```
 
-  `scripts/settings.sh --env prod --key K --unset` clears a private setting everywhere, so it takes its default: it deletes the secret from the vault and any local copy. The vault keeps a deleted secret soft-deleted, which reads as unset, and its name stays reserved until it's recovered or, outside prod, purged; setting it again (`settings.sh`, or any script) recovers it first and then writes the new value, so nothing needs a purge, which prod's purge protection refuses. `--unset-local` removes only the local file's entry, so the vault's value applies again (provision suggests it when a key is in both places). Until the first provision creates the vault, private settings stay in the local file, and later provisions list the commands that move them. Once it exists, a script that sets a private setting (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` the nodes' group; `settings.sh` the one you give it) writes it to the vault, only if the value changed, and removes any local copy, so a re-run never leaves it in two places. An empty value stays a local `""`, which hides the vault's value (`teardown.sh` detaches the archive that way). `teardown.sh` deletes the vault with the environment and drops its name from the local file it keeps: dev's is purged, with its private settings; prod's has purge protection and stays soft-deleted, and the next `provision.sh` recovers it, with its secrets, before reading them (creating `rg-usnm-prod` first if the group is gone). The roles on it went with the old group, so that read may be refused until you grant yourself one on the new group, as the provision's message says. A provision forgets a vault name in the local file that the stack doesn't output, unless it just recovered that vault.
+  `scripts/settings.sh --env prod --key K --unset` clears a private setting everywhere, so it takes its default: it deletes the key from the store and any local copy. `--unset-local` removes only the local file's entry, so the store's value applies again (provision suggests it when a key is in both places). Until the store exists, private settings stay in the local file; once it does, `scripts/settings.sh --env <env> --migrate` moves them in (it stops, moving none, if the store already has a different value for one), and every provision until then warns. A script that sets a private setting (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` the nodes' group; `settings.sh` the one you give it) writes it to the store, only if the value changed, and removes any local copy, so a re-run never leaves it in two places. An empty value stays a local `""`, which hides the store's value (`teardown.sh` detaches the archive that way); `--migrate` leaves those.
 
-  **Who can read the vault.** Key Vault Secrets Officer goes to the Entra object ids in `USNM_SETTINGS_VAULT_ADMINS` (comma separated, kept in the vault itself) and to the account that runs the provision. Any other operator's grant is removed by the next provision someone else runs, so list everyone who provisions the environment; the first provision, before the list exists, gives it to you. A provision reads the vault before it deploys anything, and an operator without access stops there with the commands that fix it. To add someone, one of the operators adds their object id (`az ad signed-in-user show --query id -o tsv`, run by them) and provisions:
+  **The store's lifecycle.** It sits outside every environment's stack, in its own stack `usnm-config` (`infra/settings/main.bicep`), so no provision or teardown of an environment deletes it: `teardown.sh` keeps the environment's private settings under its label, and the next stand-up reads them again. The first provision in a subscription creates it (`scripts/settings-store.sh --deploy`, in that environment's region, registering the `Microsoft.AppConfiguration` provider first if the subscription lacks it), and so does `bootstrap.sh` through its provision; it then waits up to 15 minutes for its new role on the store to apply; `scripts/settings-store.sh --what-if` shows what a deployment would change. It is on the Free tier: $0, 10 MB, 1,000 requests a day. A provision reads an environment's settings in one request and each script's single read is one more, so the cap is far off. The Free tier has no soft delete: a deleted key is gone.
+
+  **Who can read the store.** App Configuration Data Owner goes to the Entra object ids in the store stack's admin list and to the account that last deployed it. The role covers every label: one maintainer operates every environment, so per-environment access isn't worth a store each. A provision reads the store before it deploys anything, and an operator without access stops there with the commands that fix it. To add someone, an operator who has access adds their object id (`az ad signed-in-user show --query id -o tsv`, run by them); `--admins` replaces the list, so give everyone's:
 
   ```sh
-  scripts/settings.sh --env prod --key USNM_SETTINGS_VAULT_ADMINS --value "<id>,<id>"
-  scripts/provision.sh --env prod
+  scripts/settings-store.sh --deploy --admins "<id>,<id>"
   ```
 
-  With no operator left, an Owner of the subscription grants the role to themselves on the resource group (not on the vault, where it would collide with the stack's assignment), adds themselves to the list as above, provisions, then deletes that grant: `az role assignment create --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "Key Vault Secrets Officer" --scope "/subscriptions/<subscription id>/resourceGroups/rg-usnm-prod"`. That is the current prod's group; a rebuilt prod's, like every other environment's, is `usnm-core-rg-<env>` (ADR-0017). The refusal message names the local file's `AZURE_RESOURCE_GROUP`, or else whichever of the two exists, or both when it can't tell. A local file without `SETTINGS_KEYVAULT` (a new machine) takes the vault's name from the stack and records it, for every script that reads or writes a private setting, not only provision, so none takes a vault it can't name for an unset setting.
+  Without `--admins`, `--deploy` keeps the list it has. With no operator left, an Owner of the subscription grants the role to themselves on the store's group (not on the store, where it would collide with the stack's assignment), adds themselves to the list as above, then deletes that grant: `az role assignment create --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "App Configuration Data Owner" --scope "/subscriptions/<subscription id>/resourceGroups/usnm-config-rg"`. A local file without `SETTINGS_STORE_ENDPOINT` (a new machine) takes the endpoint from the store's stack and records it, for every script that reads or writes a private setting, not only provision, so none takes a store it can't find for an unset setting.
+
+  **Why App Configuration, not Key Vault.** These are configuration, not credentials (ADR-0009: there are none), and the Free tier costs nothing. #295 first built a Key Vault per environment; prod's never got past preflight, because the public-network guard-rail policy covers Key Vaults and its exemption was in the same deployment as the vault. No guard-rail definition covers App Configuration, so the store needs no exemption.
 
 - **Everything else** stays in the local file (`~/.config/usnewsmap/<env>/.env` or `.azure/<env>/.env`): the stack's outputs, which every provision rewrites, the subscription and tenant, and what the scripts keep (`USNM_EXPERIMENT`, `USNM_IMAGE_TAG`).
 
@@ -47,8 +50,11 @@ A setting in the wrong place, or in two, stops a provision before it deploys any
 ```sh
 scripts/settings.sh --env prod --migrate   # moves the public settings into infra/env/prod.json
 git diff infra/env/prod.json               # check, commit, pull request, merge
-scripts/provision.sh --env prod            # creates the settings vault; then move the private settings as it says
+scripts/provision.sh --env prod            # creates the settings store if the subscription has none
+scripts/settings.sh --env prod --migrate   # moves the private settings into it
 ```
+
+`scripts/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and prints the template's changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions.
 
 ## Deploy the jobs
 
@@ -643,8 +649,8 @@ It runs on the one-replica job and logs `american stories year written` per year
 The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 14 more. To read it:
 
 ```sh
-az keyvault secret set --vault-name "$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)" \
-  --name USNM-SEARCH-LOG-READERS --value "$(az ad signed-in-user show --query id -o tsv)" -o none   # private (Settings, above)
+scripts/settings.sh --env prod --key USNM_SEARCH_LOG_READERS \
+  --value "$(az ad signed-in-user show --query id -o tsv)"   # private: the settings store (Settings, above)
 scripts/provision.sh --env prod
 scripts/searches.sh --env prod --days 30      # searches per day, top queries, queries that found nothing, date spans
 ```
@@ -674,7 +680,7 @@ scripts/archive-store.sh deploy --subscription <id>     # prints the account's r
 
 ```sh
 scripts/archive-store.sh unlock
-scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --unset   # a private setting: deletes it from the settings vault
+scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --unset   # a private setting: deletes it from the settings store
 scripts/provision.sh --env dev
 scripts/archive-store.sh deploy        # the lock back
 ```
@@ -817,9 +823,7 @@ ARCHIVE_ID=<the id it printed>
 scripts/settings.sh --env dev --key USNM_INGEST_JOBS --value true
 scripts/settings.sh --env dev --key USNM_INGEST_SCRATCH_GIB --value 0            # 1% fits the replica's disk
 scripts/settings.sh --env dev --key USNM_LOG_DAILY_CAP_GB --value 1              # blob write logs; clear afterwards
-scripts/provision.sh --env dev --allow-dirty    # creates dev's settings vault on a first provision
-az keyvault secret set --vault-name "$(scripts/settings.sh --env dev --key SETTINGS_KEYVAULT)" \
-  --name USNM-ARCHIVE-ACCOUNT --value "$ARCHIVE_ID" -o none   # keep every LoC download (Archival storage, above; private)
+scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --value "$ARCHIVE_ID"   # keep every LoC download (Archival storage, above; private: the settings store)
 scripts/provision.sh --env dev --allow-dirty    # the experiment's settings, before they're committed
 RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD)
@@ -979,22 +983,21 @@ The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (a
 
 Local machines re-read badly OCR'd pages (#296, [ADR-0015](design/adr/0015-onprem-ocr-workers.md)). Each node is an Azure Arc-enabled server running RHEL 10 (AlmaLinux 9 is also accepted), with a managed identity and no stored secret. It takes pages from Storage queues in the exchange account `stusnmo<suffix>` and writes its output to that account's `ocr-out` container, which a cloud job copies into `curated`. This section sets up the account, connects and monitors a node, and starts the worker ([`crates/usnm-ocr-worker`](../crates/usnm-ocr-worker/README.md)).
 
-**The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP is a private setting, in the settings vault, never in the repository ([Settings](#settings)). The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
+**The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP is a private setting, in the settings store, never in the repository ([Settings](#settings)). The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
 
 ```sh
-settings_vault=$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)
-az keyvault secret set --vault-name "$settings_vault" --name USNM-OCR-NODE-IPS --value 203.0.113.7 -o none   # the home IP
+scripts/settings.sh --env prod --key USNM_OCR_NODE_IPS --value 203.0.113.7   # the home IP, private: the settings store
 scripts/settings.sh --env prod --key USNM_OCR_NODES --value true   # committed: pull request, merge, then provision from main
 scripts/ocr-node/group.sh --env prod --dry-run
-scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the settings vault (the local file until the vault exists)
+scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the settings store (the local file until the store exists)
 scripts/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 
 **The nodes' Key Vault.** With `USNM_OCR_NODES` on, the provision also creates `usnmocrkv<env><suffix>` (saved as `OCR_KEYVAULT`) for the secrets you hold for setting up nodes: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation key and organization id a RHEL node registers with, and `rhel-offline-token`, a Red Hat API offline token with which `scripts/ocr-node/rhel-image.sh` fetches RHEL images onto the Proxmox hosts through Red Hat's image API (below). Its firewall allows only `USNM_OCR_NODE_IPS`, so run `az` against it from home. Access is Azure RBAC only, and only the object ids in `USNM_OCR_KEYVAULT_ADMINS` get Key Vault Secrets Officer (nodes get nothing). Prod's vault has purge protection: a deleted secret or vault is kept for 90 days and can't be purged. Never paste the secrets into a chat, an issue or a commit, and keep them out of your shell history. The leading space on the `secret set` lines below keeps zsh and bash from saving them when `HIST_IGNORE_SPACE` or `HISTCONTROL=ignorespace` is set; or use `--file` with a file you delete straight after. Grant yourself access, provision, then set the secrets in your own terminal:
 
 ```sh
-az keyvault secret set --vault-name "$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)" \
-  --name USNM-OCR-KEYVAULT-ADMINS --value "$(az ad signed-in-user show --query id -o tsv)" -o none   # private
+scripts/settings.sh --env prod --key USNM_OCR_KEYVAULT_ADMINS \
+  --value "$(az ad signed-in-user show --query id -o tsv)"   # private: the settings store
 scripts/provision.sh --env prod                              # writes OCR_KEYVAULT
 vault=$(scripts/settings.sh --env prod --key OCR_KEYVAULT)   # usnmocrkvprodffapzy
  az keyvault secret set --vault-name "$vault" --name rhel-activation-key --value '<activation key>' -o none

@@ -10,17 +10,17 @@
 #
 # A public setting (infra/env/schema.json) is set in infra/env/<env>.json:
 # commit it, merge it through a pull request, then scripts/provision.sh
-# deploys it. A private one goes in the settings vault, with your az
-# sign-in, and out of the local file; until the vault exists, in the local
-# file. A cleared setting takes its default (infra/main.bicepparam): --unset
-# removes it everywhere, a private one from the vault too (deleted, kept
-# soft-deleted; setting it again recovers it first). --unset-local removes
-# only the local file's entry, so a private setting's vault value applies.
-# The template's outputs (API_URL, ACR_NAME, ...) are rewritten by every
-# deployment. Where the environment lives (subscription, region,
-# repository) is bootstrap's to set: see its --move. --migrate moves an
-# environment's public settings from the local file into
-# infra/env/<env>.json (#295).
+# deploys it. A private one goes in the settings store, under the
+# environment's label, with your az sign-in, and out of the local file;
+# until the store exists, in the local file. A cleared setting takes its
+# default (infra/main.bicepparam): --unset removes it everywhere, a private
+# one from the store too. --unset-local removes only the local file's
+# entry, so a private setting's store value applies. The template's
+# outputs (API_URL, ACR_NAME, ...) are rewritten by every deployment. Where
+# the environment lives (subscription, region, repository) is bootstrap's
+# to set: see its --move. --migrate moves an environment's public settings
+# from the local file into infra/env/<env>.json, and, once the settings
+# store exists, its private ones into the store (#295).
 set -euo pipefail
 usage() { sed -n '2,24s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 # The positional form (`settings.sh prod KEY [VALUE]`, "" clearing) works
@@ -58,26 +58,27 @@ next_steps() {
 }
 if $MIGRATE; then
   migrate_settings || exit 1
-  next_steps
+  # Nothing to commit when no public setting moved.
+  committed_clean 2> /dev/null || next_steps
   exit 0
 fi
 [ -e "$ENV_FILE" ] || [ -e "$COMMITTED_FILE" ] || $SET || $UNSET ||
   { echo "error: no settings for $ENV_NAME" >&2; exit 1; }
 if [ -z "$KEY" ]; then
-  vault=$(local_get SETTINGS_KEYVAULT)
+  endpoint=$(local_get SETTINGS_STORE_ENDPOINT)
   echo "# committed: $COMMITTED_FILE"
   [ -z "$COMMITTED_SETTINGS" ] || printf '%s\n' "$COMMITTED_SETTINGS"
   echo "# local: $ENV_FILE"
   [ ! -f "$ENV_FILE" ] || cat "$ENV_FILE"
-  [ -z "$vault" ] ||
-    echo "# private settings in the settings vault: az keyvault secret list --vault-name $vault --query '[].name' -o tsv"
+  [ -z "$endpoint" ] ||
+    echo "# private settings in the settings store: az appconfig kv list --endpoint $endpoint --auth-mode login --label $ENV_NAME --query '[].key' -o tsv"
   exit 0
 fi
-# A private setting the local file doesn't have is read from the vault.
+# A private setting the local file doesn't have is read from the store.
 if ! $SET && ! $UNSET && ! $UNSET_LOCAL; then aget "$KEY"; exit 0; fi
 # Changing these here would deploy a second copy elsewhere (or rebuild this
 # one in another region), past bootstrap's move checks.
-# (Dropping a private one's local copy leaves the vault's value: no move.)
+# (Dropping a private one's local copy leaves the store's value: no move.)
 if ! { $UNSET_LOCAL && is_private "$KEY"; }; then
   case "$KEY" in
     AZURE_ENV_NAME|AZURE_SUBSCRIPTION_ID|AZURE_LOCATION|USNM_GITHUB_REPO|USNM_GITHUB_REPO_IDS)
@@ -92,31 +93,31 @@ if $UNSET_LOCAL; then
   echo "removed $KEY from $ENV_FILE"
   if is_private "$KEY"; then
     v=$(aget "$KEY")
-    if [ -n "$v" ]; then echo "$KEY now comes from the settings vault"; else echo "$KEY is unset: it takes its default"; fi
+    if [ -n "$v" ]; then echo "$KEY now comes from the settings store"; else echo "$KEY is unset: it takes its default"; fi
   fi
   exit 0
 fi
 # Where a private setting goes, resolved before the change, so the message
-# after it says where it went: the settings vault (named by the local file
-# or, on a machine without that, the stack's output, which this records),
-# or the local file until the vault exists.
-vault=""
-! is_private "$KEY" || vault=$(settings_vault_name)
-# Once the vault exists, aset writes a private setting there, with the
+# after it says where it went: the settings store (named by the local file
+# or, on a machine without that, its stack's output, which this records),
+# or the local file until the store exists.
+store=""
+! is_private "$KEY" || store=$(settings_store_endpoint)
+# Once the store exists, aset writes a private setting there, with the
 # operator's own sign-in, and removes any local copy, which would otherwise
-# hide the vault's value (an empty value stays a local "", which does);
-# adel deletes it from the vault and the local file.
+# hide the store's value (an empty value stays a local "", which does);
+# adel deletes it from the store and the local file.
 if $UNSET; then adel "$KEY"; else aset "$KEY" "$VALUE"; fi
 if is_public "$KEY"; then
   next_steps
-elif is_private "$KEY" && $UNSET && [ -n "$vault" ]; then
-  echo "cleared $KEY in the settings vault $vault and $ENV_FILE; it takes its default. next: scripts/provision.sh --env $ENV_NAME"
+elif is_private "$KEY" && $UNSET && [ -n "$store" ]; then
+  echo "cleared $KEY in the settings store $store and $ENV_FILE; it takes its default. next: scripts/provision.sh --env $ENV_NAME"
 elif is_private "$KEY" && $UNSET; then
   echo "cleared $KEY in $ENV_FILE; it takes its default"
-elif is_private "$KEY" && [ -n "$vault" ] && [ -n "$VALUE" ]; then
-  echo "$KEY is in the settings vault $vault. next: scripts/provision.sh --env $ENV_NAME"
-elif is_private "$KEY" && [ -n "$vault" ]; then
-  echo "note: an empty $KEY stays in $ENV_FILE as \"\", which hides the settings vault's value; --unset clears it everywhere"
+elif is_private "$KEY" && [ -n "$store" ] && [ -n "$VALUE" ]; then
+  echo "$KEY is in the settings store $store (label $ENV_NAME). next: scripts/provision.sh --env $ENV_NAME"
+elif is_private "$KEY" && [ -n "$store" ]; then
+  echo "note: an empty $KEY stays in $ENV_FILE as \"\", which hides the settings store's value; --unset clears it everywhere"
 elif is_private "$KEY"; then
-  echo "note: $KEY is private; it's in $ENV_FILE until the settings vault exists (the next provision creates it)"
+  echo "note: $KEY is private; it's in $ENV_FILE until the settings store exists (the next provision creates it, then --migrate moves it)"
 fi

@@ -5,8 +5,9 @@
 # the archival account (usnm-archive) still assigns it. The data goes with
 # it (a new environment rebuilds it from LoC). Its settings file
 # (scripts/lib/env.sh) is kept, renamed .env.deleted-<time>, without its
-# experiment marker or its settings vault's name, for scripts/stand-up.sh
-# to start from.
+# experiment marker, for scripts/stand-up.sh to start from, and so are its
+# private settings in the settings store (under its label), which the
+# store's own stack (usnm-config) keeps.
 #
 # An environment that uses the archival account (USNM_ARCHIVE_ACCOUNT) is
 # first detached from it: the account's delete lock is lifted, the
@@ -135,8 +136,9 @@ sort_ids() {
 sort_ids
 # The guard-rail definitions go with the last environment in the subscription.
 # Any other usnm- stack keeps them, the archival account's (usnm-archive)
-# too: its group assigns them.
-others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$STACK' && name != '$GUARDRAILS_STACK'].name" -o tsv)
+# too: its group assigns them. The settings store's (usnm-config) assigns
+# none, so it doesn't count.
+others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$STACK' && name != '$GUARDRAILS_STACK' && name != '$SETTINGS_STACK'].name" -o tsv)
 guardrails=false
 if [ -z "$others" ]; then
   if out=$(az stack sub show -n "$GUARDRAILS_STACK" -o none 2>&1); then
@@ -380,7 +382,7 @@ done
 # check again just before deleting.
 if [ "$guardrails" = true ]; then
   # Fail closed: if the list can't be read, keep the stack.
-  others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$GUARDRAILS_STACK'].name" -o tsv) ||
+  others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$GUARDRAILS_STACK' && name != '$SETTINGS_STACK'].name" -o tsv) ||
     die "can't list deployment stacks; kept $GUARDRAILS_STACK (delete it when no environment uses it)"
   if [ -n "$others" ]; then
     echo "keeping $GUARDRAILS_STACK: another stack was created meanwhile ($others)"
@@ -418,13 +420,11 @@ fi
 # Only now is everything gone; until here a re-run resumes from the list.
 rm -f "$resume"
 
-# The next stand-up names its own experiment. The settings vault is
-# purged (dev) or soft-deleted (prod, which provision then recovers), so
-# its name goes too: provision mustn't read a vault that isn't there.
+# The next stand-up names its own experiment. The settings store stays,
+# with the environment's private settings, so its endpoint stays too.
 if [ -f "$ENV_FILE" ]; then
   adel USNM_EXPERIMENT
   adel USNM_EXPERIMENT_STARTED
-  adel SETTINGS_KEYVAULT
   mv "$ENV_FILE" "$ENV_FILE.deleted-$(date -u +%Y%m%dT%H%M%SZ)"
 fi
 echo "deleted environment $ENV_NAME"
