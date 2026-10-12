@@ -16,11 +16,14 @@ User=ocrdash
 Group=ocrdash
 EnvironmentFile=/etc/usnm/ocrdash.env
 ExecStart=/usr/local/bin/usnm-ocrdash
+# Reads the TLS certificate again (home-acme on the host runs this after a
+# renewal).
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10
 SyslogIdentifier=usnm-ocrdash
 StateDirectory=usnm-ocrdash
-# Port 80 without root.
+# Ports 80 and 443 without root.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes

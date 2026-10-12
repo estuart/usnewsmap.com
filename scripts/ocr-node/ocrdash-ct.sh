@@ -11,7 +11,8 @@
 #   ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7> [--ctid 212]
 #   ocrdash-ct.sh --configure [--allow lan|<range>]
 #     [--worker <name>=http://<host>:<port>]... [--host-push <host>=<its name>]...
-#     [--workbook-url URL] [--port 80] [--ctid 212]
+#     [--workbook-url URL] [--port 80]
+#     [--https-name ocr.tjg.fyi [--certs /var/lib/usnm-certs]] [--ctid 212]
 #
 # --create makes the container (onboot, one NIC on --bridge with DHCP,
 # nesting for systemd's sandboxing) with three read-only bind mounts:
@@ -25,20 +26,27 @@
 # --configure installs nftables with an input policy that drops everything
 # but --allow (and loopback, replies and IPv6 neighbour discovery), writes
 # /etc/usnm/ocrdash.env and the unit usnm-ocrdash.service (beside this
-# script), and starts it. --allow lan (the default) is the subnet the
-# container is on, read when it runs; the dashboard reads it too. A
+# script), and starts it. With --https-name, it bind-mounts
+# <certs>/<name> read-only at /etc/usnm/tls (home-acme on this host keeps
+# fullchain.pem and privkey.pem there, the key readable by ocrdash's group
+# only) and the dashboard serves HTTPS on 443 with them; port 80 then only
+# redirects to https://<name>/ and takes the hosts' pushes. home-acme runs
+# `systemctl reload usnm-ocrdash` after a renewal. The nftables rule takes
+# any port from --allow, so 443 needs no rule of its own. --allow lan (the
+# default) is the subnet the container is on, read when it runs; the
+# dashboard reads it too. A
 # --host-push host may PUT its own stats; the dashboard resolves its name
 # and checks the address. No address goes into the repository.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,29s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,39s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 CTID=212 NAME=usnm-ocrdash STORAGE=ssd BRIDGE=vmbr0 CORES=1 MEMORY=768 SWAP=256
 TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst DATA=/tank/ocr
 HOSTSTATS=/var/lib/usnm-hoststats
 CREATE=false INSTALL=false CONFIGURE=false RELEASE=""
-ALLOW=lan PORT=80 WORKBOOK_URL=""
+ALLOW=lan PORT=80 WORKBOOK_URL="" HTTPS_NAME="" CERTS=/var/lib/usnm-certs
 WORKERS=() PUSHERS=()
 REPO=tgoodyear/usnewsmap.com
 DASH_UID=2001
@@ -63,6 +71,8 @@ while [ $# -gt 0 ]; do
     --worker) WORKERS+=("${2:-}"); shift 2 ;;
     --host-push) PUSHERS+=("${2:-}"); shift 2 ;;
     --workbook-url) WORKBOOK_URL=${2:-}; shift 2 ;;
+    --https-name) HTTPS_NAME=${2:-}; shift 2 ;;
+    --certs) CERTS=${2:-}; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
   esac
@@ -140,6 +150,26 @@ if $CONFIGURE; then
   done
   [ -z "$WORKBOOK_URL" ] || [[ $WORKBOOK_URL =~ ^https://portal\.azure\.com/[^[:space:]\"\'\<\>]+$ ]] ||
     die "--workbook-url: an https://portal.azure.com/ link"
+  if [ -n "$HTTPS_NAME" ]; then
+    [[ $HTTPS_NAME =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && $HTTPS_NAME != *..* && ${#HTTPS_NAME} -le 253 ]] ||
+      die "--https-name: a host name"
+    [ -s "$CERTS/$HTTPS_NAME/fullchain.pem" ] && [ -s "$CERTS/$HTTPS_NAME/privkey.pem" ] ||
+      die "no certificate in $CERTS/$HTTPS_NAME: run home-infra's scripts/acme-setup.sh first"
+    mp="$CERTS/$HTTPS_NAME,mp=/etc/usnm/tls,ro=1"
+    # A changed mount point applies only when the container starts again,
+    # so it is rebooted here.
+    if [ "$(pct config "$CTID" | sed -n 's/^mp3: //p')" != "$mp" ]; then
+      pct set "$CTID" --mp3 "$mp"
+      echo "mp3 is $mp now; rebooting CT $CTID to apply it"
+      pct reboot "$CTID"
+      for _ in $(seq 60); do
+        pct status "$CTID" | grep -q running && in_ct test -f /etc/usnm/tls/fullchain.pem 2> /dev/null && break
+        sleep 2
+      done
+    fi
+    in_ct su -s /bin/sh ocrdash -c 'test -r /etc/usnm/tls/privkey.pem' ||
+      die "ocrdash can't read /etc/usnm/tls/privkey.pem (group of the files on the host: ocrdash's mapped gid)"
+  fi
   in_ct bash -c "cat > /etc/nftables.conf.tmp <<NFT
 #!/usr/sbin/nft -f
 # Written by scripts/ocr-node/ocrdash-ct.sh --configure: the LAN only.
@@ -169,6 +199,11 @@ USNM_OCRDASH_WORKER=$(join "${WORKERS[@]}")"
 USNM_OCRDASH_HOST_PUSH=$(join "${PUSHERS[@]}")"
   [ -z "$WORKBOOK_URL" ] || env+="
 USNM_OCRDASH_WORKBOOK_URL=$WORKBOOK_URL"
+  [ -z "$HTTPS_NAME" ] || env+="
+USNM_OCRDASH_TLS_CERT=/etc/usnm/tls/fullchain.pem
+USNM_OCRDASH_TLS_KEY=/etc/usnm/tls/privkey.pem
+USNM_OCRDASH_TLS_LISTEN=0.0.0.0:443
+USNM_OCRDASH_HTTPS_NAME=$HTTPS_NAME"
   printf '%s\n' "$env" | in_ct bash -c 'cat > /etc/usnm/ocrdash.env.tmp && chmod 0644 /etc/usnm/ocrdash.env.tmp && mv /etc/usnm/ocrdash.env.tmp /etc/usnm/ocrdash.env'
   pct push "$CTID" "$HERE/usnm-ocrdash.service" /etc/systemd/system/usnm-ocrdash.service
   in_ct systemctl daemon-reload
@@ -176,5 +211,9 @@ USNM_OCRDASH_WORKBOOK_URL=$WORKBOOK_URL"
   in_ct systemctl restart usnm-ocrdash.service
   sleep 3
   in_ct systemctl --no-pager status usnm-ocrdash.service | head -5
-  echo "dashboard: http://$(in_ct hostname -I | cut -d' ' -f1)$([ "$PORT" = 80 ] || echo ":$PORT")/"
+  if [ -n "$HTTPS_NAME" ]; then
+    echo "dashboard: https://$HTTPS_NAME/"
+  else
+    echo "dashboard: http://$(in_ct hostname -I | cut -d' ' -f1)$([ "$PORT" = 80 ] || echo ":$PORT")/"
+  fi
 fi

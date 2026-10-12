@@ -7,13 +7,14 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context};
+use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use usnm_ocr_dash::fetch::Fetch;
 use usnm_ocr_dash::hosts::Hosts;
 use usnm_ocr_dash::net::{Allow, Source};
 use usnm_ocr_dash::nodes::{check_name, Nodes};
 use usnm_ocr_dash::view::Settings;
-use usnm_ocr_dash::{router, App};
+use usnm_ocr_dash::{redirect_router, router, App};
 
 static VERSION: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -30,9 +31,28 @@ static VERSION: LazyLock<String> = LazyLock::new(|| {
 #[derive(Parser)]
 #[command(version = VERSION.as_str())]
 struct Cli {
-    /// Where to listen.
+    /// Where to listen. With `--tls-cert`, plain HTTP here only redirects
+    /// to `https://<--https-name>` (and takes the hosts' stats pushes).
     #[arg(long, env = "USNM_OCRDASH_LISTEN", default_value = "0.0.0.0:80")]
     listen: SocketAddr,
+    /// The certificate chain (PEM) to serve HTTPS with, on `--tls-listen`.
+    /// Read again on SIGHUP (`systemctl reload`), with `--tls-key`.
+    #[arg(
+        long,
+        env = "USNM_OCRDASH_TLS_CERT",
+        requires_all = ["tls_key", "https_name"]
+    )]
+    tls_cert: Option<PathBuf>,
+    /// The certificate's private key (PEM).
+    #[arg(long, env = "USNM_OCRDASH_TLS_KEY", requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
+    /// Where to serve HTTPS.
+    #[arg(long, env = "USNM_OCRDASH_TLS_LISTEN", default_value = "0.0.0.0:443")]
+    tls_listen: SocketAddr,
+    /// The name in the certificate, which plain HTTP redirects to (with
+    /// `--tls-listen`'s port unless it's 443).
+    #[arg(long, env = "USNM_OCRDASH_HTTPS_NAME", requires = "tls_cert")]
+    https_name: Option<String>,
     /// Who may ask anything: address ranges, host names (resolved at start
     /// and every five minutes) or `lan` (the subnets this machine is on),
     /// comma-separated or repeated.
@@ -176,14 +196,106 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(cli.listen)
         .await
         .with_context(|| format!("listening on {}", cli.listen))?;
-    tracing::info!(listen = %cli.listen, version = VERSION.as_str(), "usnm-ocrdash started");
-    axum::serve(
+    let (Some(cert), Some(key), Some(name)) = (cli.tls_cert, cli.tls_key, cli.https_name) else {
+        tracing::info!(listen = %cli.listen, version = VERSION.as_str(), "usnm-ocrdash started");
+        axum::serve(
+            listener,
+            router(app).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(stop_requested())
+        .await?;
+        return Ok(());
+    };
+    check_name_for_url(&name)?;
+    let tls = RustlsConfig::from_pem_file(&cert, &key)
+        .await
+        .with_context(|| format!("reading {} and {}", cert.display(), key.display()))?;
+    reload_on_sighup(tls.clone(), cert, key)?;
+    let handle = axum_server::Handle::new();
+    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+    {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            stop_requested().await;
+            handle.graceful_shutdown(Some(Duration::from_secs(10)));
+            let _ = stop_tx.send(true);
+        });
+    }
+    tracing::info!(
+        listen = %cli.listen,
+        tls_listen = %cli.tls_listen,
+        https_name = name,
+        version = VERSION.as_str(),
+        "usnm-ocrdash started"
+    );
+    let authority = match cli.tls_listen.port() {
+        443 => name.clone(),
+        port => format!("{name}:{port}"),
+    };
+    let plain = axum::serve(
         listener,
-        router(app).into_make_service_with_connect_info::<SocketAddr>(),
+        redirect_router(app.clone(), &authority)
+            .into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        let _ = tokio::signal::ctrl_c().await;
-    })
-    .await?;
+    .with_graceful_shutdown(async move {
+        let _ = stop_rx.wait_for(|stop| *stop).await;
+    });
+    let https = axum_server::bind_rustls(cli.tls_listen, tls)
+        .handle(handle)
+        .serve(router(app).into_make_service_with_connect_info::<SocketAddr>());
+    tokio::try_join!(async { plain.await.context("plain HTTP") }, async {
+        https
+            .await
+            .with_context(|| format!("HTTPS on {}", cli.tls_listen))
+    },)?;
+    Ok(())
+}
+
+/// SIGINT, or SIGTERM from `systemctl stop` and `restart`.
+async fn stop_requested() {
+    use tokio::signal::unix::{signal, SignalKind};
+    match signal(SignalKind::terminate()) {
+        Ok(mut term) => {
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = tokio::signal::ctrl_c() => {}
+            }
+        }
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+    tracing::info!("stop requested");
+}
+
+/// `--https-name` goes into redirects: a host name only.
+fn check_name_for_url(name: &str) -> anyhow::Result<()> {
+    let ok = !name.is_empty()
+        && name.len() <= 253
+        && name
+            .split('.')
+            .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+    if !ok {
+        bail!("--https-name: a host name, not {name:?}");
+    }
+    Ok(())
+}
+
+/// The certificate is renewed outside (home-acme on the Proxmox host),
+/// which then runs `systemctl reload`: read the files again. A bad pair is
+/// logged and the old one kept.
+fn reload_on_sighup(tls: RustlsConfig, cert: PathBuf, key: PathBuf) -> anyhow::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut hup = signal(SignalKind::hangup()).context("SIGHUP handler")?;
+    tokio::spawn(async move {
+        while hup.recv().await.is_some() {
+            match tls.reload_from_pem_file(&cert, &key).await {
+                Ok(()) => tracing::info!(cert = %cert.display(), "reloaded the certificate"),
+                Err(e) => {
+                    tracing::error!(error = %e, cert = %cert.display(), "can't reload the certificate; keeping the old one")
+                }
+            }
+        }
+    });
     Ok(())
 }

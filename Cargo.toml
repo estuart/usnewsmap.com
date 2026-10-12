@@ -36,6 +36,8 @@ arrow-array = "60"
 arrow-schema = "60"
 async-trait = "0.1"
 axum = "0.8"
+# HTTPS for the OCR dashboard (usnm-ocrdash): rustls with ring, the provider reqwest already uses.
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
 base64 = "0.23"
 blake2 = "0.11"
 bytes = "1"

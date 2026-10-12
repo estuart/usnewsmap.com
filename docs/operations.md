@@ -1126,7 +1126,7 @@ scripts/provision.sh --env prod
 
 ## The OCR dashboard on the LAN (#296)
 
-`usnm-ocrdash` shows the scan fetch, the OCR nodes and the Proxmox hosts on one page that refreshes itself, at `http://ocr.tjg.fyi/`, from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. `ocr.tjg.fyi` is a static record in the LAN gateway's local DNS, with a DHCP reservation for CT 212; internal names never go in the public `tjg.fyi` zone. The commands below name hosts by their LAN DNS names (`pve.tjg.fyi`, `usnm-ocr-node1-arcs-prod.tjg.fyi`), which resolve only through the gateway's local DNS.
+`usnm-ocrdash` shows the scan fetch, the OCR nodes and the Proxmox hosts on one page that refreshes itself, at <https://ocr.tjg.fyi/>, from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. `ocr.tjg.fyi` is a static record in the LAN gateway's local DNS, with a DHCP reservation for CT 212; it has no public A record, and internal names never go in the public `tjg.fyi` zone. The commands below name hosts by their LAN DNS names (`pve.tjg.fyi`, `usnm-ocr-node1-arcs-prod.tjg.fyi`), which resolve only through the gateway's local DNS.
 
 **Host stats.** As root on each Proxmox host, from a checkout of the scripts:
 
@@ -1149,14 +1149,24 @@ scripts/ocr-node/ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
 scripts/ocr-node/ocrdash-ct.sh --configure --allow lan \
   --worker usnm-ocr-node1=http://usnm-ocr-node1-arcs-prod.tjg.fyi:8381 \
   --worker usnm-ocr-node2=http://usnm-ocr-node2-arcs-prod.tjg.fyi:8381 \
-  --host-push pve=pve.tjg.fyi --workbook-url '<the OCR nodes workbook link>'
+  --host-push pve=pve.tjg.fyi --workbook-url '<the OCR nodes workbook link>' \
+  --https-name ocr.tjg.fyi
 ```
 
 `--create` makes CT 212 (unprivileged Debian 12, 1 core, 768 MB, onboot) with `tank/ocr/scans`, `tank/ocr/manifests` and `/var/lib/usnm-hoststats` bind-mounted read-only. `--install` takes `usnm-ocrdash` from a worker release; every release since the dashboard was merged has it. `--configure` sets the nftables input policy to drop everything but `--allow` (`lan`: the container's subnet), writes `/etc/usnm/ocrdash.env` and starts `usnm-ocrdash.service`. The worker link is the OCR nodes workbook's portal link, from `az resource list --resource-group rg-usnm-prod --resource-type microsoft.insights/workbooks`.
+
+**HTTPS.** The certificate for `ocr.tjg.fyi` is a Let's Encrypt one that pve-big gets and renews itself, with home-infra's `home-acme` (lego over the DNS-01 challenge, signed in as pve-big's Arc managed identity; [home-infra README, "Let's Encrypt with DNS-01"](https://github.com/tgoodyear/home-infra#lets-encrypt-with-dns-01)). CT 212 holds no Azure credentials and never talks to Let's Encrypt.
+
+- `home-acme@ocr.tjg.fyi.timer` on pve-big runs daily and renews when fewer than 30 days are left. It writes `fullchain.pem` and `privkey.pem` to `/var/lib/usnm-certs/ocr.tjg.fyi/` on the host (the key 0640, group 102001, which is ocrdash's gid 2001 in the unprivileged container), then runs `pct exec 212 -- systemctl reload-or-restart usnm-ocrdash.service`.
+- `--configure --https-name ocr.tjg.fyi` bind-mounts that directory read-only at `/etc/usnm/tls` (`mp3`) and sets `USNM_OCRDASH_TLS_CERT`, `_TLS_KEY`, `_TLS_LISTEN` (`0.0.0.0:443`) and `_HTTPS_NAME`. The dashboard then serves the page on 443; port 80 answers every request with a 308 to `https://ocr.tjg.fyi/` and the same path, except the NUC's `PUT /api/host/pve`, which stays plain HTTP (it carries no secret, it's checked by address, and `curl` wouldn't follow a redirect). `systemctl reload` (SIGHUP) makes it read the pair again; a pair it can't read is logged and the old one kept.
+- The nftables rule accepts any port from `--allow`, so 443 needs nothing new.
+- The certificate is in the public Certificate Transparency logs, so the name `ocr.tjg.fyi` is public. Its address isn't: only the TXT record `_acme-challenge.ocr.tjg.fyi` is in public DNS, and it holds a placeholder except for the seconds of a challenge.
+- Check: `curl -sv https://ocr.tjg.fyi/healthz` from a LAN machine shows `issuer: C=US; O=Let's Encrypt` and `SSL certificate verify ok`; `journalctl -u home-acme@ocr.tjg.fyi` on pve-big shows each run, with the issuer and expiry.
 
 **When it shows something odd.**
 
 - _A node says "no status"._ The worker isn't answering on port 8381: it is down, or it was installed without `--status-allow ocr.tjg.fyi`, or the name points somewhere else now (the worker resolves it each time its status server starts, the node's nftables rule when `install-worker.sh` runs). `scripts/ocr-node/install-worker.sh --status-allow <address>` sets the worker's settings and the node's nftables rule (`usnm-ocr-status-firewall.service`).
 - _The stats are stale._ `systemctl status usnm-hoststats.timer` on the host. On the NUC, a failed push logs `can't push` in `journalctl -u usnm-hoststats`.
 - _A new manifest._ The dashboard reads the manifest the fetcher's status names, and reads it again when its sha256 changes.
+- _The browser warns about the certificate._ `journalctl -u home-acme@ocr.tjg.fyi -n 50` on pve-big, and `openssl x509 -in /var/lib/usnm-certs/ocr.tjg.fyi/fullchain.pem -noout -enddate`. `systemctl start home-acme@ocr.tjg.fyi` tries again now.
 - _Logs:_ `pct exec 212 -- journalctl -u usnm-ocrdash`. The copies of the workers' journals are in `/var/lib/usnm-ocrdash` in the container; deleting them makes the dashboard copy each worker's journal again from the start.

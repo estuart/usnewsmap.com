@@ -19,9 +19,9 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Request, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, StatusCode, Uri};
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use chrono::Utc;
@@ -188,6 +188,27 @@ pub fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
+/// Plain HTTP when the page itself is served over HTTPS: every request is
+/// redirected to `https://<authority>` (the name, and the port unless 443)
+/// with the same path and query, except
+/// the hosts' stats pushes (`PUT /api/host/{name}`), which carry no secret,
+/// are checked by address, and come from `curl` that doesn't follow
+/// redirects. The same `--allow` as the page.
+pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
+    let base = format!("https://{authority}");
+    let redirect = move |uri: Uri| async move {
+        let path = uri.path_and_query().map_or("/", |p| p.as_str());
+        Redirect::permanent(&format!("{base}{path}"))
+    };
+    Router::new()
+        // Any other method on the push path is redirected too, not a 405.
+        .route("/api/host/{name}", put(put_host).fallback(redirect.clone()))
+        .fallback(redirect)
+        .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
+        .layer(middleware::from_fn_with_state(app.clone(), allow_only))
+        .with_state(app)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,8 +246,18 @@ mod tests {
         uri: &str,
         body: &str,
     ) -> (StatusCode, String) {
+        call_on(router(app), from, method, uri, body).await.0
+    }
+
+    async fn call_on(
+        r: Router,
+        from: &str,
+        method: &str,
+        uri: &str,
+        body: &str,
+    ) -> ((StatusCode, String), Option<String>) {
         let peer: SocketAddr = format!("{from}:40000").parse().unwrap();
-        let r = router(app)
+        let r = r
             .layer(MockConnectInfo(peer))
             .oneshot(
                 HttpRequest::builder()
@@ -238,8 +269,39 @@ mod tests {
             .await
             .unwrap();
         let status = r.status();
+        let location = r
+            .headers()
+            .get(header::LOCATION)
+            .map(|v| v.to_str().unwrap().to_owned());
         let b = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
-        (status, String::from_utf8_lossy(&b).into_owned())
+        ((status, String::from_utf8_lossy(&b).into_owned()), location)
+    }
+
+    #[tokio::test]
+    async fn plain_http_redirects_to_https_but_takes_host_pushes() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let plain = || redirect_router(a.clone(), "ocr.example.org");
+        let ((s, _), to) = call_on(plain(), "198.51.100.50", "GET", "/", "").await;
+        assert_eq!(s, StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(to.as_deref(), Some("https://ocr.example.org/"));
+        let ((s, _), to) =
+            call_on(plain(), "198.51.100.50", "GET", "/api/fetch.json?x=1", "").await;
+        assert_eq!(s, StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(
+            to.as_deref(),
+            Some("https://ocr.example.org/api/fetch.json?x=1")
+        );
+        let ((s, _), to) = call_on(plain(), "198.51.100.50", "GET", "/api/host/pve", "").await;
+        assert_eq!(s, StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(to.as_deref(), Some("https://ocr.example.org/api/host/pve"));
+        let ((s, _), _) = call_on(plain(), "203.0.113.3", "GET", "/", "").await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        let stats = r#"{"schema":1,"host":"pve","pools":[]}"#;
+        let ((s, _), _) = call_on(plain(), "198.51.100.12", "PUT", "/api/host/pve", stats).await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        let ((s, _), _) = call_on(plain(), "198.51.100.50", "PUT", "/api/host/pve", stats).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
