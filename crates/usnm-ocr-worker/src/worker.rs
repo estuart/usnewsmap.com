@@ -505,7 +505,13 @@ impl Worker {
                 t.elapsed().as_secs_f64(),
                 &[
                     KeyValue::new("engine", self.engine.source().to_owned()),
-                    KeyValue::new("models", out.engine.clone()),
+                    // The short key (`tesseract/5.5.0 frak2021`), so the
+                    // attribute doesn't grow with image and model digests.
+                    KeyValue::new(
+                        "models",
+                        usnm_core::ocr_engine::EngineTag::parse(&out.engine)
+                            .map_or_else(|_| out.engine.clone(), |t| t.short_key()),
+                    ),
                     KeyValue::new("language", m.language.clone()),
                 ],
             );

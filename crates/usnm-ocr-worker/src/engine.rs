@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
+use usnm_core::ocr_engine::{Digest, Fields, OcrEngineTag, TagError};
 
 /// What an engine read on a page.
 #[derive(Debug)]
@@ -16,7 +17,9 @@ pub struct EngineOutput {
     pub text: String,
     /// ALTO XML.
     pub alto: Vec<u8>,
-    /// Engine, version and models, e.g. `tesseract-5.5.1/deu_latf+deu`.
+    /// The `ocr_engine` tag (13 §13.8.1): engine, version, models, image
+    /// and route, e.g. `tesseract/5.5.0 profile=frak2021 image=sha256:…
+    /// models=sha256:… route=minimal@r1 contract=0`.
     pub engine: String,
 }
 
@@ -48,13 +51,31 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     ) -> Result<EngineOutput, EngineError>;
 }
 
+/// The route in every `ocr_engine` tag the worker writes (13 §13.8.1):
+/// [`candidates`], version 1. TODO(#371): `engines.toml` and `routes.toml`
+/// replace this hard-coded route, with their gate on which engines and
+/// models a production route may name.
+pub const ROUTE: &str = "minimal";
+pub const ROUTE_VERSION: u32 = 1;
+/// The engine contract's version in the tag: 0, the worker runs Tesseract
+/// directly (ADR-0016's contract isn't built).
+pub const CONTRACT: u32 = 0;
+
+/// The Tesseract image's `models.lock`, built into the worker so the tag's
+/// `models` digest comes from the same file the image checked its models
+/// against.
+pub const MODELS_LOCK: &str = include_str!("../../../ocr/engines/tesseract/models.lock");
+
 /// Tesseract models to try for a language, best first. A `+` joins models
 /// read together; a candidate is used only when all its models are installed.
-/// German: `deu_latf` (Fraktur, tessdata 4.1+) with `deu` for pages that mix
-/// in roman type, else the older `frk`, else `deu`.
+/// German: UB Mannheim's `frak2021` (CC0, the survey's best on German, #370),
+/// else `deu_latf` (Fraktur, tessdata 4.1+) with `deu` for pages that mix
+/// in roman type, else `deu`. Other languages: their tessdata_best model.
+/// A language with no model here isn't read (the worker leaves the page
+/// for a node that has one).
 pub fn candidates(language: &str) -> Vec<String> {
     let list: &[&str] = match language {
-        "deu" => &["deu_latf+deu", "frk+deu", "deu"],
+        "deu" => &["frak2021", "deu_latf+deu", "deu"],
         // Serbian papers print Cyrillic and Latin.
         "srp" => &["srp+srp_latn", "srp"],
         "hrv" | "bos" => &["hrv", "srp_latn"],
@@ -839,8 +860,60 @@ impl Tesseract {
 
     /// The `ocr_engine` value for a language, if it has a model here.
     pub fn engine_for(&self, language: &str) -> Option<String> {
-        route(language, &self.installed).map(|m| format!("tesseract-{}/{m}", self.version))
+        let profile = route(language, &self.installed)?;
+        self.tag(&profile).ok().map(|t| t.to_string())
     }
+
+    /// The `ocr_engine` tag for a read with `profile` (13 §13.8.1); an
+    /// error when Tesseract's version or a model name doesn't fit the
+    /// tag's character sets.
+    pub fn tag(&self, profile: &str) -> Result<OcrEngineTag, TagError> {
+        let (image, models) = match &self.runner {
+            Runner::Podman { image, .. } => (
+                image
+                    .rsplit_once("sha256:")
+                    .and_then(|(_, h)| Digest::short(h).ok())
+                    .unwrap_or(Digest::Local),
+                models_digest(MODELS_LOCK, profile).unwrap_or(Digest::Local),
+            ),
+            // A host binary reads whatever models the host has.
+            Runner::Host(_) => (Digest::Local, Digest::Local),
+        };
+        OcrEngineTag::new(Fields {
+            family: "tesseract",
+            version: &self.version,
+            profile,
+            image,
+            models,
+            route: ROUTE,
+            route_version: ROUTE_VERSION,
+            contract: CONTRACT,
+        })
+    }
+}
+
+/// The sha256 of a profile's model files (`deu_latf+deu`), as sorted lines
+/// `<name> <sha256>` from `models.lock` (13 §13.8.1); none when a model
+/// isn't in the lock.
+pub fn models_digest(lock: &str, profile: &str) -> Option<Digest> {
+    let entries: std::collections::BTreeMap<&str, &str> = lock
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let (name, _url, sum) = (f.next()?, f.next()?, f.next()?);
+            Some((name, sum))
+        })
+        .collect();
+    let mut lines = Vec::new();
+    for m in profile.split('+') {
+        let name = format!("tessdata/{m}.traineddata");
+        let sum = entries.get(name.as_str())?;
+        lines.push(format!("{name} {sum}\n"));
+    }
+    lines.sort();
+    let hex = crate::prefetch::sha256(lines.concat().as_bytes());
+    Digest::short(&hex).ok()
 }
 
 /// Size caps on an engine's files (13 §13.4.7).
@@ -1041,7 +1114,15 @@ impl Tesseract {
         Ok(EngineOutput {
             text,
             alto,
-            engine: format!("tesseract-{}/{models}", self.version),
+            engine: self
+                .tag(models)
+                .with_context(|| {
+                    format!(
+                        "no ocr_engine tag for tesseract {} with {models}",
+                        self.version
+                    )
+                })?
+                .to_string(),
         })
     }
 }
@@ -1058,14 +1139,66 @@ mod tests {
             Some("deu_latf+deu")
         );
         assert_eq!(
-            route("deu", &set(&["deu", "frk"])).as_deref(),
-            Some("frk+deu")
+            route("deu", &set(&["deu", "deu_latf", "frak2021"])).as_deref(),
+            Some("frak2021")
         );
         assert_eq!(route("deu", &set(&["deu"])).as_deref(), Some("deu"));
+        assert_eq!(route("pol", &set(&["deu", "eng"])), None);
         assert_eq!(route("deu", &set(&["eng"])), None);
         assert_eq!(route("srp", &set(&["srp"])).as_deref(), Some("srp"));
         assert_eq!(route("ces", &set(&["ces"])).as_deref(), Some("ces"));
         assert_eq!(route("eng", &set(&["eng", "osd"])).as_deref(), Some("eng"));
+    }
+
+    #[test]
+    fn the_lock_pins_every_model_a_route_names() {
+        let lock: BTreeSet<String> = MODELS_LOCK
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split_whitespace().next())
+            .filter_map(|n| n.strip_prefix("tessdata/")?.strip_suffix(".traineddata"))
+            .map(str::to_owned)
+            .collect();
+        for l in ["ces", "deu", "eng", "pol", "rus", "srp"] {
+            let profile = route(l, &lock).unwrap_or_else(|| panic!("no route for {l}"));
+            assert!(models_digest(MODELS_LOCK, &profile).is_some(), "{profile}");
+        }
+        assert_eq!(route("deu", &lock).as_deref(), Some("frak2021"));
+        assert_eq!(models_digest(MODELS_LOCK, "frk"), None);
+    }
+
+    #[test]
+    fn tags_name_the_image_and_models() {
+        let t = Tesseract {
+            runner: Runner::Podman {
+                podman: "podman".into(),
+                remote: None,
+                image: format!("sha256:{}", "ab".repeat(32)),
+            },
+            sandbox: None,
+            version: "5.5.0".into(),
+            installed: BTreeSet::new(),
+            psm: 3,
+            dpi: 300,
+            threads: 1,
+            timeout: Duration::from_secs(1),
+        };
+        let tag = t.tag("frak2021").unwrap().to_string();
+        let want = models_digest(MODELS_LOCK, "frak2021").unwrap();
+        assert_eq!(
+            tag,
+            format!("tesseract/5.5.0 profile=frak2021 image=sha256:abababababab models={want} route=minimal@r1 contract=0")
+        );
+        // The order of a profile's models doesn't change the digest.
+        assert_eq!(
+            models_digest(MODELS_LOCK, "deu_latf+deu"),
+            models_digest(MODELS_LOCK, "deu+deu_latf")
+        );
+        let host = Tesseract {
+            runner: Runner::Host("tesseract".into()),
+            ..t
+        };
+        assert!(!host.tag("eng").unwrap().pinned());
     }
 
     #[test]
@@ -1310,8 +1443,8 @@ mod tests {
         let img = dir.path().join("line.pgm");
         std::fs::write(&img, crate::testimg::text_image("HELLO WORLD")).unwrap();
         let out = t.ocr(&img, "eng", dir.path()).await.unwrap();
-        assert!(out.engine.starts_with("tesseract-"), "{}", out.engine);
-        assert!(out.engine.ends_with("/eng"));
+        assert!(out.engine.starts_with("tesseract/"), "{}", out.engine);
+        assert!(out.engine.contains(" profile=eng "), "{}", out.engine);
         assert!(out.text.contains("HELLO"), "read {:?}", out.text);
         assert!(String::from_utf8_lossy(&out.alto).contains("<alto"));
         assert!(matches!(

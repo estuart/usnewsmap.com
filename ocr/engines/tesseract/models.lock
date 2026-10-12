@@ -1,12 +1,12 @@
 # Model files for the Tesseract image: file name, URL, sha256. The image's
 # build downloads each one and checks its hash. The same entries as the
 # engine survey's models.lock (#296), less osd (psm 3 doesn't read
-# orientation) and frak2021. frak2021 is cleared (CC0 1.0, 13 §13.7.2), and
-# when a route uses it, pin the file from its Zenodo record,
-# https://zenodo.org/records/10125246/files/frak2021-0.905.traineddata
-# (sha256 1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a,
-# the same file the survey ran), not a checkpoint from UB Mannheim's server.
-# Every model here is Apache-2.0.
+# orientation). frak2021 is cleared (CC0 1.0, 13 §13.7.2) and is the
+# worker's German route (#296's pilot); it comes from its Zenodo record
+# (10125246), the same file the survey ran, not a checkpoint from UB
+# Mannheim's server. Every other model here is Apache-2.0.
+# UB Mannheim frak2021 0.905 (best), Zenodo record 10125246, CC0 1.0.
+tessdata/frak2021.traineddata https://zenodo.org/records/10125246/files/frak2021-0.905.traineddata 1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a
 # Tesseract tessdata_best, pinned to commit e12c65a915945e4c28e237a9b52bc4a8f39a0cec (2024-03-09).
 tessdata/eng.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/eng.traineddata 8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba
 tessdata/deu.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/deu.traineddata 8407331d6aa0229dc927685c01a7938fc5a641d1a9524f74838cdac599f0d06e

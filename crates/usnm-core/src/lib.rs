@@ -16,6 +16,7 @@
 //! - [`params`]: request parameters and canonical cache keys (06 §6.3)
 //! - [`cube`]: the sparse place × bucket cube (06 §6.3.3)
 //! - [`names`]: LoC's language and state names (04 §4.6)
+//! - [`ocr_engine`]: the `ocr_engine` tag of our own OCR's rows (13 §13.8.1, #296)
 //! - [`page_language`]: a page's own language, found from its words (05 §5.5.8, #289)
 //! - [`retry_after`]: the HTTP `Retry-After` header, seconds or a date (#229)
 //! - [`skew`]: where a term is printed more or less than corpus volume predicts (11)
@@ -31,6 +32,7 @@ pub mod ids;
 pub mod ja;
 pub mod lang;
 pub mod names;
+pub mod ocr_engine;
 pub mod ocr_variants;
 pub mod page_language;
 pub mod params;

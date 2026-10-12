@@ -89,7 +89,7 @@ struct EngineArgs {
     #[arg(long, default_value_t = 1)]
     threads_per_page: u32,
     /// Give up on a page after this long.
-    #[arg(long, default_value_t = 600)]
+    #[arg(long, env = "USNM_OCR_PAGE_TIMEOUT_SECS", default_value_t = 600)]
     page_timeout_secs: u64,
 }
 

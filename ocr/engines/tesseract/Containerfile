@@ -1,4 +1,5 @@
-# Tesseract 5.5 with tessdata_best models, for the OCR worker on the nodes
+# Tesseract 5.5 with tessdata_best models and UB Mannheim's frak2021, for the
+# OCR worker on the nodes
 # (#296, 12 Step 2). The worker runs it with podman, one container per page
 # (`usnm-ocr-worker run --tesseract-image`); the engine contract (ADR-0016,
 # #307) later puts an adapter in front of it. Built by CI from the
