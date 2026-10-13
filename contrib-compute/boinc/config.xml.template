@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<!-- Template for the BOINC project's config.xml. No secrets live here. The container start
+     script renders this into the project tree on tmpfs, replacing each @NAME@ from the
+     environment, where the values come from Key Vault. Never commit a rendered copy.
+
+     Placeholders:
+       @DB_HOST@        MySQL flexible server host name
+       @DB_NAME@        database name
+       @DB_USER@        run-time database user
+       @DB_PASSWD@      run-time database password (Key Vault secret)
+       @MASTER_URL@     master URL, with trailing slash
+       @PROJECT_HOST@   host name of this server (not an IP address)
+       @PROJECT_DIR@    absolute project directory
+       @PROJECT@        short project name used in URLs (for example usnmocr)
+       @APP_DAEMONS@    the <daemon> entries of ocr/boinc/daemons.xml (PR #441), pasted in by the
+                        start script: sample_trivial_validator and batch_collect_assimilator
+-->
+<boinc>
+    <config>
+        <db_name>@DB_NAME@</db_name>
+        <db_host>@DB_HOST@</db_host>
+        <db_user>@DB_USER@</db_user>
+        <db_passwd>@DB_PASSWD@</db_passwd>
+        <shmem_key>0x1111aaaa</shmem_key>
+        <host>@PROJECT_HOST@</host>
+        <long_name>usnewsmap OCR</long_name>
+        <master_url>@MASTER_URL@</master_url>
+        <key_dir>@PROJECT_DIR@/keys/</key_dir>
+        <download_url>@MASTER_URL@@PROJECT@_download</download_url>
+        <upload_url>@MASTER_URL@@PROJECT@_cgi/file_upload_handler</upload_url>
+        <cgi_url>@MASTER_URL@@PROJECT@_cgi/</cgi_url>
+        <log_dir>@PROJECT_DIR@/log_@PROJECT_HOST@/</log_dir>
+        <app_dir>@PROJECT_DIR@/apps/</app_dir>
+        <download_dir>@PROJECT_DIR@/download/</download_dir>
+        <upload_dir>@PROJECT_DIR@/upload/</upload_dir>
+        <uldl_dir_fanout>1024</uldl_dir_fanout>
+        <disable_account_creation>0</disable_account_creation>
+        <enable_delete_account>1</enable_delete_account>
+        <enable_privacy_by_default>1</enable_privacy_by_default>
+        <one_result_per_user_per_wu/>
+        <min_sendwork_interval>30</min_sendwork_interval>
+        <max_wus_in_progress>4</max_wus_in_progress>
+        <daily_result_quota>200</daily_result_quota>
+        <max_wus_to_send>8</max_wus_to_send>
+        <delete_delay_hours>168</delete_delay_hours>
+        <dont_generate_upload_certificates>0</dont_generate_upload_certificates>
+    </config>
+    <tasks>
+        <task>
+            <cmd>antique_file_deleter -d 2</cmd>
+            <period>24 hours</period>
+            <disabled>1</disabled>
+            <output>antique_file_deleter.out</output>
+        </task>
+        <task>
+            <cmd>db_dump -d 2 --dump_spec ../db_dump_spec.xml</cmd>
+            <period>24 hours</period>
+            <output>db_dump.out</output>
+        </task>
+        <task>
+            <cmd>update_stats</cmd>
+            <period>1 hour</period>
+            <output>update_stats.out</output>
+        </task>
+        <task>
+            <cmd>run_in_ops ./update_uotd.php</cmd>
+            <period>1 days</period>
+            <disabled>1</disabled>
+        </task>
+    </tasks>
+    <daemons>
+        <daemon>
+            <cmd>feeder -d 2</cmd>
+        </daemon>
+        <daemon>
+            <cmd>transitioner -d 2</cmd>
+        </daemon>
+        <daemon>
+            <cmd>file_deleter -d 2</cmd>
+        </daemon>
+        <daemon>
+            <cmd>db_purge -d 2 --min_age_days 30 --max</cmd>
+        </daemon>
+        @APP_DAEMONS@
+    </daemons>
+</boinc>

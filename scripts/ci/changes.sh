@@ -11,6 +11,8 @@
 # applies), so scripts/provision.sh must run. Documentation (Markdown
 # anywhere, anything under docs/) counts for no output but markdown: a change
 # to it alone runs only the Markdown format check.
+# contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
+# XML and Bicep; ADR-0019), which no other job builds.
 # Everything runs for a workflow_dispatch (scripts/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
 # the changed files can't be worked out; everything but ops, which runs only
@@ -24,7 +26,7 @@ out=${GITHUB_OUTPUT:-/dev/stdout}
 provision=false
 ops=false
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -85,7 +87,10 @@ ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-core|
 # crate's manifest and the lock file, the samples and their test, and the
 # scripts that write the lists and the samples.
 page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
-for part in rust quickwit web image fixtures ocr_worker page_language; do
+# The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
+# documentation, above), and the workflow, which matches earlier.
+contrib='^contrib-compute/'
+for part in rust quickwit web image fixtures ocr_worker page_language contrib; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"

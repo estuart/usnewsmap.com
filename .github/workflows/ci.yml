@@ -38,6 +38,7 @@ jobs:
       markdown: ${{ steps.f.outputs.markdown }}
       ocr_worker: ${{ steps.f.outputs.ocr_worker }}
       page_language: ${{ steps.f.outputs.page_language }}
+      contrib: ${{ steps.f.outputs.contrib }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,6 +70,38 @@ jobs:
       # the workspace turns on yet (12 §12.5 Step 4).
       - run: cargo clippy -p usnm-core --all-targets --features damage --locked -- -D warnings
       - run: cargo test -p usnm-core --features damage --locked
+
+  # The hosting for the stock BOINC server (ADR-0019): shell scripts, XML
+  # templates and Bicep. No Rust: the client and bridge are crates/usnm-boinc.
+  contrib-compute:
+    name: contrib-compute (xml, shell, bicep)
+    needs: changes
+    if: needs.changes.outputs.contrib == 'true'
+    runs-on: ubuntu-latest
+    env:
+      BICEP_VERSION: v0.47.16
+    defaults:
+      run:
+        working-directory: contrib-compute
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Project templates are well-formed XML
+        run: |
+          # config.xml.template carries @NAME@ placeholders, which are valid XML text.
+          for f in boinc/project.xml boinc/plan_class_spec.xml boinc/config.xml.template; do
+            python3 -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$f"
+          done
+      - run: shellcheck -x -S warning scripts/boinc/*.sh
+      - name: Install Bicep
+        working-directory: .
+        run: scripts/ci/install-bicep.sh
+      - name: Bicep builds
+        run: |
+          for f in $(git ls-files 'infra/*.bicep'); do
+            bicep build "$f" --stdout > /dev/null
+          done
 
   # The page-language detector on text of known language (05 §5.5.8): behind
   # #[ignore], so the rust job doesn't run it.

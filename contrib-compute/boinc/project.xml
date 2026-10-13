@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<!-- Input for BOINC's `xadd`: one app, one platform to start. See docs/interface.md.
+     Add further <platform> entries (aarch64-unknown-linux-gnu, ...) when those builds exist. -->
+<boinc>
+    <app>
+        <name>usnm_ocr</name>
+        <user_friendly_name>usnewsmap OCR (Tesseract, one page per task)</user_friendly_name>
+        <min_version>0</min_version>
+        <deprecated>0</deprecated>
+        <homogeneous_redundancy>0</homogeneous_redundancy>
+        <weight>1</weight>
+        <beta>0</beta>
+        <target_nresults>1</target_nresults>
+    </app>
+    <platform>
+        <name>x86_64-pc-linux-gnu</name>
+        <user_friendly_name>Linux running on an AMD x86_64 or Intel EM64T CPU</user_friendly_name>
+    </platform>
+</boinc>
