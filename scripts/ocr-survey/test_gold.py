@@ -185,6 +185,195 @@ class PublicPick(unittest.TestCase):
         self.assertEqual(gold.main(["public-fetch", "--dataset", "austrian", "--src", "/nonexistent-gold-test"]), 2)
 
 
+# PAGE 2010 (Europeana): Point children, text on the region only.
+PAGE_2010 = """<?xml version="1.0"?>
+<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2010-03-19">
+ <Page imageFilename="p1.tif" imageWidth="40" imageHeight="30">
+  <TextRegion id="r1" type="paragraph"><Coords><Point x="2" y="3"/><Point x="22" y="3"/><Point x="22" y="13"/>
+   <Point x="2" y="13"/></Coords><TextEquiv><Unicode>Erſte Zeile
+zweite</Unicode></TextEquiv></TextRegion>
+  <TextRegion id="r2"><Coords><Point x="0" y="0"/><Point x="4" y="4"/></Coords></TextRegion>
+ </Page></PcGts>"""
+
+
+class PageXml2010(unittest.TestCase):
+    def test_points_and_region_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "p.xml"
+            f.write_text(PAGE_2010)
+            name, regs = gold.parse_page_xml(f)
+        self.assertEqual(name, "p1.tif")
+        self.assertEqual([(r["box"], r["text"]) for r in regs], [([2, 3, 22, 13], "Erſte Zeile\nzweite")])
+
+    def test_europeana_is_not_for_scoring(self):
+        self.assertFalse(gold.PUBLIC["enp-berlin"]["scoring"])
+
+
+# Line level, with word text that differs from the corrected line text (as on NZZ pages corrected per line).
+PAGE_WORDS = """<?xml version="1.0"?>
+<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15">
+ <Page imageFilename="p1.png" imageWidth="40" imageHeight="30">
+  <TextRegion id="r1"><Coords points="0,0 40,0 40,30 0,30"/>
+   <TextLine id="l1"><Coords points="2,3 22,3 22,8 2,8"/>
+    <Word id="w1"><Coords points="2,3 8,3 8,8 2,8"/><TextEquiv><Unicode>Zürih</Unicode></TextEquiv></Word>
+    <TextEquiv><Unicode>Zürich, 1. Mai.</Unicode></TextEquiv></TextLine>
+   <TextLine id="l2"><Coords points="2,9 22,9 22,14 2,14"/><TextEquiv><Unicode></Unicode></TextEquiv></TextLine>
+  </TextRegion>
+ </Page></PcGts>"""
+
+
+class LineLevel(unittest.TestCase):
+    def test_lines_use_line_text_never_words(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "p.xml"
+            f.write_text(PAGE_WORDS)
+            _, regs = gold.parse_page_xml(f, "line")
+        self.assertEqual([(r["region"], r["box"], r["text"]) for r in regs], [("r1/l1", [2, 3, 22, 8], "Zürich, 1. Mai.")])
+
+    def test_nzz_reads_only_the_ground_truth_tree(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d)
+            for sub, text in (("NZZ_groundtruth", "Zürich, 1. Mai."), ("ABBYY_FineReader_Server11", "Zürih, l. Mai")):
+                (src / "xml" / sub).mkdir(parents=True)
+                (src / "xml" / sub / "p.xml").write_text(PAGE_WORDS.replace("Zürich, 1. Mai.", text))
+            (src / "img").mkdir()
+            Image.new("L", (40, 30), 200).save(src / "img" / "p1.png")
+            self.assertEqual([r["text"] for r in gold.public_regions("nzz", src)], ["Zürich, 1. Mai."])
+
+    def test_nzz_is_line_level(self):
+        self.assertEqual(gold.PUBLIC["nzz"]["level"], "line")
+
+
+def hipe_doc(doc_id: str, truth: list[str], ocr: list[str], which: str = "dataset3") -> dict:
+    def unit(lines):
+        text, offs, pos = "\n".join(lines), [], 0
+        for ln in lines:
+            offs.append([pos, pos + len(ln)])
+            pos += len(ln) + 1
+        return {"transcription_unit": text, "line_offsets": offs}
+
+    return {"document_metadata": {"document_id": doc_id, "date": "1872", "publication_title": "A TITLE",
+                                  "primary_dataset_filename": f"data/overproof/{which}/x.txt"},
+            "ground_truth": unit(truth), "ocr_hypothesis": unit(ocr)}
+
+
+ALTO = """<?xml version="1.0"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v2#"><Layout><Page WIDTH="400" HEIGHT="300"><PrintSpace>
+ <TextBlock>
+  <TextLine><String HPOS="10" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="Tho"/>
+   <String HPOS="120" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="cat"/></TextLine>
+  <TextLine><String HPOS="10" VPOS="40" WIDTH="200" HEIGHT="20" CONTENT="sat"/><HYP CONTENT="-"/></TextLine>
+  <TextLine><String HPOS="10" VPOS="70" WIDTH="200" HEIGHT="20" CONTENT="down."/></TextLine>
+ </TextBlock></PrintSpace></Page></Layout></alto>"""
+
+
+class Overproof(unittest.TestCase):
+    def test_doc_id(self):
+        self.assertEqual(gold.ca_page("sn88074142-11-00280761485-1872040501-1138"),
+                         {"lccn": "sn88074142", "date": "1872-04-05", "edition": 1,
+                          "tail": "/00280761485/1872040501/1138", "key": "sn88074142-00280761485-1872040501-1138"})
+        self.assertEqual(gold.ca_page("sn85066387-3-noissue-190001011-0003")["tail"], "/190001011/0003")
+        self.assertEqual(gold.ca_page("sn84026749-5-0028076484A-1922030801-0007")["date"], "1922-03-08")
+        self.assertIsNone(gold.ca_page("13990000"))
+
+    def test_soft_hyphen_becomes_a_hyphen(self):
+        self.assertEqual(gold.hipe_lines(hipe_doc("x", ["in¬", "stalled"], ["a", "b"]), "ground_truth"), ["in-", "stalled"])
+
+    def test_match_lines(self):
+        alto = [{"text": t} for t in ("Tho cat", "sat", "down.", "other line entirely")]
+        self.assertEqual(gold.match_lines(["Tho  cat", "sat-", "d0wn.", "nothing like it"], alto), [0, 1, None, None])
+        long = [{"text": "the quick brown fox jumps"}, {"text": "over the lazy dog again"}]
+        self.assertEqual(gold.match_lines(["the quick brown fox jumps", "ovor the lazy dog again"], long), [0, 1])
+
+    def test_regions_from_matched_lines(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d)
+            (src / "hipe").mkdir()
+            (src / "loc").mkdir()
+            key = "sn1-00001-1872040501-0002"
+            doc = hipe_doc("sn1-11-00001-1872040501-0002", ["The cat", "sat-", "down.", "Lost line"],
+                           ["Tho cat", "sat-", "down.", "zzzz qqqq"])
+            smh = hipe_doc("999000", ["Text only"], ["Tcxt only"], "dataset2")
+            (src / "hipe" / "a.jsonl").write_text(json.dumps(doc) + "\n" + json.dumps(smh) + "\n")
+            (src / "loc" / f"{key}.xml").write_text(ALTO)
+            Image.new("L", (400, 300), 200).save(src / "loc" / f"{key}.jpg")
+            (src / "loc" / "pages.json").write_text(json.dumps({key: {"image": f"{key}.jpg", "alto": f"{key}.xml"}}))
+            regs, stats = gold.overproof_ca_regions(src)
+            self.assertEqual(stats, {"articles": 1, "articles_with_page": 1, "lines": 4, "lines_matched": 3})
+            self.assertEqual([(r["box"], r["text"]) for r in regs], [([10, 10, 220, 90], "The cat\nsat-\ndown.")])
+            smh_regs = gold.public_regions("overproof-smh", src)
+            self.assertEqual([(r["image"], r["text"]) for r in smh_regs], [(None, "Text only")])
+
+    def test_text_only_rows_validate(self):
+        p = {"page_id": "overproof-smh-1", "region": "1", "text": "Some text", "box": None, "image": None}
+        m, t = gold.public_rows("overproof-smh", p, 1, None, None, None, None)
+        self.assertIsNone(m["image"])
+        self.assertFalse(t["for_scoring"])
+        self.assertEqual(gold.validate_rows([t], [m])[0], [])
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(gold.validate_rows([t], [m], Path(d)), ([], []))
+
+    def test_matches_are_one_to_one(self):
+        self.assertEqual(gold.match_lines(["foo", "foo"], [{"text": "foo"}]), [0, None])
+
+
+class Bln600(unittest.TestCase):
+    def test_fetch_checks_the_checksum(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "BLN600.zip").write_bytes(b"not the real zip")  # download() keeps a file that is there
+            self.assertEqual(gold.main(["public-fetch", "--dataset", "bln600", "--src", d, "--confirm-download"]), 1)
+            self.assertFalse((Path(d) / "BLN600").exists())
+
+    def test_fetch_needs_the_download_flag(self):
+        self.assertEqual(gold.main(["public-fetch", "--dataset", "bln600", "--src", "/nonexistent-gold-test"]), 2)
+
+    def test_convert_copies_the_original_image_and_the_licence(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        with tempfile.TemporaryDirectory() as d:
+            src, out = Path(d) / "src", Path(d) / "out"
+            root = src / "BLN600"
+            (root / "Ground Truth").mkdir(parents=True)
+            (root / "Images").mkdir()
+            text = "A made-up excerpt for the test.\r\nIt is not from the dataset, and it is long enough." * 5
+            (root / "Ground Truth" / "1000000001.txt").write_text(text, encoding="utf-8")
+            (root / "Ground Truth" / "1000000002.txt").write_text("no image for this one", encoding="utf-8")
+            Image.new("L", (30, 20), 255).save(root / "Images" / "1000000001.tif")
+            (root / "metadata.json").write_text(json.dumps([{"short_id": "1000000001", "date": "18820527",
+                                                              "publication": "A Weekly"}]))
+            (root / "LICENSE").write_text("licence text")
+            self.assertEqual(gold.main(["public-convert", "--dataset", "bln600", "--src", str(src), "--out", str(out)]), 0)
+            man = gold.read_jsonl(out / "manifest.jsonl")
+            rows = gold.read_jsonl(out / "crops.jsonl")
+            self.assertEqual(len(man), 1)
+            self.assertEqual(man[0]["image"], "images/pub-bln600-001.tif")
+            self.assertEqual((out / man[0]["image"]).read_bytes(), (root / "Images" / "1000000001.tif").read_bytes())
+            self.assertEqual(man[0]["box"], [0, 0, 30, 20])
+            self.assertEqual(rows[0]["date"], "1882-05-27")
+            self.assertNotIn("\r", rows[0]["transcription"])
+            self.assertEqual(gold.validate_rows(rows, man, out / "images"), ([], []))
+            self.assertEqual((out / "LICENSES" / "LICENSE").read_text(), "licence text")
+            self.assertEqual(json.loads((out / "LICENSES" / "SOURCE.json").read_text())["dataset"], "bln600")
+
+
+class NewsEye(unittest.TestCase):
+    def test_subset_flag_and_download_gate(self):
+        self.assertEqual(gold.main(["public-fetch", "--dataset", "newseye-nlf-fi", "--subset", "validation",
+                                    "--src", "/nonexistent-gold-test"]), 2)
+        self.assertEqual(set(gold.NEWSEYE), {"austrian", "newseye-bnf", "newseye-nlf-fi", "newseye-nlf-sv"})
+
+
+
 try:
     import PIL  # noqa: F401
 except ImportError:
