@@ -2,6 +2,7 @@
 //! overlay part, delete the message. Messages are hidden for a fixed time
 //! when taken and never renewed (ADR-0015).
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,8 +17,8 @@ use usnm_core::ids::PageKey;
 use usnm_overlay::OverlayRow;
 use usnm_store::{ObjectStore, StoreError};
 
-use crate::engine::{set_alto_source, Engine, EngineError};
-use crate::loc::{FetchError, LocClient, Scan};
+use crate::engine::{exited_136, set_alto_source, Engine, EngineError, EngineOutput};
+use crate::loc::{FetchError, LocClient, Scan, ScanFormat};
 use crate::message::{self, Cause, DeadLetter, OcrMessage};
 use crate::queue::{random_token, LeaseLost, Queue, Received, BULK, DEADLETTER, PRIORITY};
 use crate::status::{Completion, Tracker};
@@ -32,6 +33,9 @@ pub trait ScanSource: Send + Sync + std::fmt::Debug {
     fn held_until(&self) -> Option<tokio::time::Instant> {
         None
     }
+    /// The page's full-size IIIF JPEG (`<iiif_base>/full/full/0/default.jpg`),
+    /// read when the engine crashes on its JP2 (#454).
+    async fn jpeg(&self, key: &PageKey, batch: &str, iiif_base: &str) -> Result<Scan, FetchError>;
     /// Delete a buffer-set scan the page no longer needs (best effort).
     async fn evict(&self, _url: &str) {}
 }
@@ -40,6 +44,16 @@ pub trait ScanSource: Send + Sync + std::fmt::Debug {
 impl ScanSource for LocClient {
     async fn scan(&self, key: &PageKey, _batch: &str) -> Result<Scan, FetchError> {
         LocClient::scan(self, key).await
+    }
+
+    async fn jpeg(
+        &self,
+        _key: &PageKey,
+        _batch: &str,
+        iiif_base: &str,
+    ) -> Result<Scan, FetchError> {
+        self.iiif_scan(iiif_base.to_owned(), crate::loc::ImageSize::Full)
+            .await
     }
 
     fn held_until(&self) -> Option<tokio::time::Instant> {
@@ -139,6 +153,29 @@ pub struct Done {
     pub chars: usize,
     pub status: &'static str,
     pub engine: String,
+    /// The engine crashed on the JP2, and the IIIF JPEG was read (#454).
+    pub jpeg_fallback: bool,
+}
+
+/// A scratch-file failure inside [`Worker::read_scan`], told apart from
+/// the engine's own.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct ScratchError(String);
+
+/// The page's failure for an engine error.
+fn engine_failure(e: EngineError, node: &str) -> Failure {
+    match e {
+        // Another node may have the model: leave it, and let the dequeue
+        // count dead-letter it if no node does.
+        EngineError::Unsupported(l) => {
+            Failure::Transient("no_model", format!("no model for `{l}` on node {node}"))
+        }
+        EngineError::Failed(e) if e.is::<ScratchError>() => {
+            Failure::Transient("scratch", e.to_string())
+        }
+        EngineError::Failed(e) => Failure::Transient("engine", format!("{e:#}")),
+    }
 }
 
 /// A page's output names, unique per node and moment (the nodes can create
@@ -193,6 +230,7 @@ struct Ended {
     engine: String,
     uploaded: bool,
     error_kind: Option<&'static str>,
+    jpeg_fallback: bool,
 }
 
 impl Ended {
@@ -212,6 +250,7 @@ impl Ended {
             engine: String::new(),
             uploaded: false,
             error_kind: Some(error_kind),
+            jpeg_fallback: false,
         }
     }
 }
@@ -439,6 +478,7 @@ impl Worker {
             c.outcome = ended.outcome.into();
             c.uploaded = ended.uploaded;
             c.error_kind = ended.error_kind.map(Into::into);
+            c.jpeg_fallback = ended.jpeg_fallback;
             self.tracker.end(&g, c);
         }
     }
@@ -495,12 +535,14 @@ impl Worker {
                     engine: done.engine.clone(),
                     uploaded: true,
                     error_kind: None,
+                    jpeg_fallback: done.jpeg_fallback,
                 };
                 self.metrics.pages_done.add(1, &attrs);
                 outcome("done");
                 tracing::info!(
                     page, queue = %msg.queue, reason = m.reason.as_str(), language = %m.language,
                     engine = %done.engine, status = done.status, chars = done.chars,
+                    jpeg_fallback = done.jpeg_fallback,
                     alto = %done.alto, part = %done.part,
                     secs = received.elapsed().as_secs_f64(), "page done"
                 );
@@ -590,31 +632,43 @@ impl Worker {
             let scan = scan?;
             self.tracker.scanned(token, scan.from_cache);
             self.tracker.stage(token, "ocr");
-            let scan_sha256 = crate::prefetch::sha256(&scan.bytes);
             if scan.from_cache {
                 tracing::debug!(doc_id = %key.doc_id(), format = scan.format.name(), "scan read from the cache");
             }
-            // The extension names the format: Tesseract (Leptonica) reads
-            // JPEG and, through OpenJPEG, JP2.
-            let image = work.path().join(format!("page.{}", scan.format.ext()));
-            tokio::fs::write(&image, &scan.bytes)
-                .await
-                .map_err(|e| Failure::Transient("scratch", format!("scratch image: {e}")))?;
             let t = Instant::now();
-            let out = match self.engine.ocr(&image, &m.language, work.path()).await {
-                Ok(o) => o,
-                // Another node may have the model: leave it, and let the
-                // dequeue count dead-letter it if no node does.
-                Err(EngineError::Unsupported(l)) => {
-                    return Err(Failure::Transient(
-                        "no_model",
-                        format!("no model for `{l}` on node {}", self.cfg.node_id),
-                    ))
+            let mut jpeg_fallback = false;
+            let mut evict_jp2 = None;
+            let (scan, out) = match self.read_scan(&scan, m, work.path()).await {
+                Ok(out) => (scan, out),
+                // Some intact JP2s crash the engine with status 136 (#454);
+                // their IIIF JPEG reads. One more run on it; no second
+                // fallback, and its failure is the page's, retried as any.
+                Err(EngineError::Failed(e)) if scan.format == ScanFormat::Jp2 && exited_136(&e) => {
+                    tracing::warn!(
+                        doc_id = %key.doc_id(), error = format!("{e:#}"),
+                        "the engine crashed on the JP2 (status 136); reading the IIIF JPEG instead"
+                    );
+                    let jpeg = self.scans.jpeg(key, &m.batch, &scan.iiif_base).await?;
+                    // The scan read is the JPEG now, wherever it came from.
+                    self.tracker.scanned(token, jpeg.from_cache);
+                    // A directory of its own, so nothing the crashed run
+                    // left behind is read as this run's output.
+                    let again = work.path().join("jpeg");
+                    tokio::fs::create_dir(&again)
+                        .await
+                        .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
+                    let out = self
+                        .read_scan(&jpeg, m, &again)
+                        .await
+                        .map_err(|e| engine_failure(e, &self.cfg.node_id))?;
+                    // The JP2's buffer copy goes with the JPEG's, after the upload.
+                    evict_jp2 = scan.evict.clone();
+                    jpeg_fallback = true;
+                    (jpeg, out)
                 }
-                Err(EngineError::Failed(e)) => {
-                    return Err(Failure::Transient("engine", format!("{e:#}")))
-                }
+                Err(e) => return Err(engine_failure(e, &self.cfg.node_id)),
             };
+            let scan_sha256 = crate::prefetch::sha256(&scan.bytes);
             self.metrics.ocr_seconds.record(
                 t.elapsed().as_secs_f64(),
                 &[
@@ -636,9 +690,11 @@ impl Worker {
                 scan.md5,
                 scan.evict,
                 out,
+                jpeg_fallback,
+                evict_jp2,
             ))
         };
-        let (iiif_base, scan_url, scan_sha256, scan_md5, evict, out) =
+        let (iiif_base, scan_url, scan_sha256, scan_md5, evict, out, jpeg_fallback, evict_jp2) =
             tokio::time::timeout_at(deadline.into(), read)
                 .await
                 .map_err(|_| Failure::Abandoned)??;
@@ -678,7 +734,7 @@ impl Worker {
                 .map_err(|_| Failure::Abandoned)??;
         // The output is uploaded: a buffer-set scan isn't needed any more.
         // Best effort; a failure is logged, never the page's.
-        if let Some(url) = evict {
+        for url in evict.into_iter().chain(evict_jp2) {
             // Within the page's deadline, so a slow server can't push the
             // message past its hide.
             let _ = tokio::time::timeout_at(deadline.into(), self.scans.evict(&url)).await;
@@ -689,7 +745,24 @@ impl Worker {
             chars,
             status,
             engine: out.engine,
+            jpeg_fallback,
         })
+    }
+
+    /// Write `scan` to the scratch dir and read it.
+    async fn read_scan(
+        &self,
+        scan: &Scan,
+        m: &OcrMessage,
+        work: &Path,
+    ) -> Result<EngineOutput, EngineError> {
+        // The extension names the format: Tesseract (Leptonica) reads
+        // JPEG and, through OpenJPEG, JP2.
+        let image = work.join(format!("page.{}", scan.format.ext()));
+        tokio::fs::write(&image, &scan.bytes)
+            .await
+            .map_err(|e| anyhow::anyhow!(ScratchError(format!("scratch image: {e}"))))?;
+        self.engine.ocr(&image, &m.language, work).await
     }
 
     /// Write a page's ALTO, then its part, create-only under fresh names.
@@ -728,15 +801,15 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::EngineOutput;
     use crate::message::Reason;
     use crate::queue::LocalQueue;
-    use std::path::Path;
 
     /// Counts scan requests; a hold, when set, is reported as loc.gov's.
+    /// Pages 95 to 97 come as JP2s (see [`FakeEngine`]).
     #[derive(Debug, Default)]
     struct FakeScans {
         requests: std::sync::atomic::AtomicUsize,
+        jpeg_requests: std::sync::atomic::AtomicUsize,
         held_until: std::sync::Mutex<Option<tokio::time::Instant>>,
     }
 
@@ -759,6 +832,25 @@ mod tests {
                 "https://tile.loc.gov/image-services/iiif/service:ndnp:x:{}",
                 key.seq
             );
+            if (95..=97).contains(&key.seq) {
+                let body: &'static [u8] = match key.seq {
+                    95 => b"jp2 exit 1",
+                    _ => b"jp2 exit 136",
+                };
+                return Ok(Scan {
+                    url: format!(
+                        "https://tile.loc.gov/storage-services/service/x/{}.jp2",
+                        key.seq
+                    ),
+                    iiif_base,
+                    format: crate::loc::ScanFormat::Jp2,
+                    bytes: bytes::Bytes::from_static(body),
+                    md5: Some("0123".into()),
+                    download: std::time::Duration::ZERO,
+                    from_cache: false,
+                    evict: None,
+                });
+            }
             Ok(Scan {
                 url: format!("{iiif_base}/full/full/0/default.jpg"),
                 iiif_base,
@@ -770,8 +862,43 @@ mod tests {
                 evict: None,
             })
         }
+
+        /// Page 96's JPEG crashes the engine too.
+        async fn jpeg(
+            &self,
+            key: &PageKey,
+            _batch: &str,
+            iiif_base: &str,
+        ) -> Result<Scan, FetchError> {
+            self.jpeg_requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Scan {
+                url: format!("{iiif_base}/full/full/0/default.jpg"),
+                iiif_base: iiif_base.into(),
+                format: crate::loc::ScanFormat::Jpeg,
+                bytes: bytes::Bytes::from_static(if key.seq == 96 {
+                    b"jpeg exit 136"
+                } else {
+                    b"jpeg"
+                }),
+                md5: None,
+                download: std::time::Duration::ZERO,
+                from_cache: false,
+                evict: None,
+            })
+        }
     }
 
+    /// An engine exit with `code`, as Tesseract's would be.
+    fn exited(code: i32) -> EngineError {
+        use std::os::unix::process::ExitStatusExt;
+        EngineError::Failed(anyhow::Error::new(crate::engine::Exited {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stderr: String::new(),
+        }))
+    }
+
+    /// Reads `jpeg`; a scan whose bytes say `exit <code>` exits with it.
     #[derive(Debug)]
     struct FakeEngine;
 
@@ -790,7 +917,15 @@ mod tests {
             language: &str,
             _: &Path,
         ) -> Result<EngineOutput, EngineError> {
-            assert_eq!(std::fs::read(image).unwrap(), b"jpeg");
+            let bytes = std::fs::read(image).unwrap();
+            if let Some(code) = std::str::from_utf8(&bytes)
+                .unwrap()
+                .split_once(" exit ")
+                .map(|(_, c)| c.parse().unwrap())
+            {
+                return Err(exited(code));
+            }
+            assert_eq!(bytes, b"jpeg");
             if language == "haw" {
                 return Err(EngineError::Unsupported(language.into()));
             }
@@ -1078,6 +1213,89 @@ mod tests {
         let (_tx, rx) = watch::channel(false);
         w.clone().run(rx).await.unwrap();
         assert_eq!(out.list("pages").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_jp2_that_crashes_the_engine_is_read_from_its_jpeg() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out, scans) = worker_with_scans(dir.path());
+        queue
+            .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-97", "deu"))
+            .await
+            .unwrap();
+        let m = queue.receive(BULK, Duration::ZERO).await.unwrap().unwrap();
+        w.handle(m, Instant::now()).await;
+        assert_eq!(scans.jpeg_requests.load(SeqCst), 1);
+        // Done on its first receive: deleted, not retried.
+        assert_eq!(queue.approximate_count(BULK).await.unwrap(), 0);
+        let st = w.tracker.status();
+        assert_eq!(st.since_start.done, 1);
+        assert!(st.recent[0].jpeg_fallback);
+        // The ALTO names the JPEG read, with no bag md5.
+        let altos = out.list("alto").await.unwrap();
+        let alto = String::from_utf8(out.get(&altos[0]).await.unwrap().unwrap()).unwrap();
+        assert!(
+            alto.contains("service:ndnp:x:97/full/full/0/default.jpg</fileName>"),
+            "{alto}"
+        );
+        assert!(alto.contains(&crate::prefetch::sha256(b"jpeg")), "{alto}");
+        assert!(!alto.contains("md5"), "{alto}");
+        assert_eq!(st.since_start.from_loc, 1);
+        assert_eq!(out.list("pages").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_jpeg_fallback_or_another_exit_takes_the_retry_path() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out, scans) = worker_with_scans(dir.path());
+        // 96: the JPEG crashes too, and isn't retried a second way. 95: an
+        // exit other than 136 gets no fallback.
+        for (page, jpegs) in [("seq-96", 1), ("seq-95", 1)] {
+            queue
+                .send(
+                    BULK,
+                    &msg(&format!("sn83045462/1890-05-03/ed-1/{page}"), "deu"),
+                )
+                .await
+                .unwrap();
+            let m = queue.receive(BULK, Duration::ZERO).await.unwrap().unwrap();
+            w.handle(m, Instant::now()).await;
+            assert_eq!(scans.jpeg_requests.load(SeqCst), jpegs, "{page}");
+            let st = w.tracker.status();
+            assert_eq!(st.recent[0].outcome, "failed");
+            assert_eq!(st.recent[0].error_kind.as_deref(), Some("engine"));
+            assert!(!st.recent[0].jpeg_fallback);
+            // Left on the queue, to reappear when its visibility runs out.
+            assert_eq!(queue.approximate_count(BULK).await.unwrap(), 1);
+            let again = queue
+                .receive(BULK, Duration::from_secs(600))
+                .await
+                .unwrap()
+                .unwrap();
+            queue.delete(&again).await.unwrap();
+        }
+        assert!(out.list("alto").await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn status_136_is_told_apart() {
+        use std::os::unix::process::ExitStatusExt;
+        let e = |status| {
+            anyhow::Error::new(crate::engine::Exited {
+                status,
+                stderr: String::new(),
+            })
+        };
+        // From a container: 128 + SIGFPE.
+        assert!(exited_136(&e(std::process::ExitStatus::from_raw(136 << 8))));
+        // From a host process: the signal itself.
+        assert!(exited_136(&e(std::process::ExitStatus::from_raw(8))));
+        assert!(!exited_136(&e(std::process::ExitStatus::from_raw(1 << 8))));
+        assert!(!exited_136(&anyhow::anyhow!(
+            "tesseract exited with exit status: 136"
+        )));
     }
 
     #[test]

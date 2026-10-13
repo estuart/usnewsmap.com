@@ -245,6 +245,24 @@ impl ScanSource for CachedScans {
         self.inner.scan(key, batch).await
     }
 
+    /// The cache's JPEG of the page, keep set then buffer set, else LoC's.
+    async fn jpeg(&self, key: &PageKey, batch: &str, iiif_base: &str) -> Result<Scan, FetchError> {
+        let lookup = async {
+            for set in [Set::Keep, Set::Buffer] {
+                match self.lookup_as(set, key, batch, ScanFormat::Jpeg).await {
+                    Found::Scan(s) => return Some(*s),
+                    Found::Missing => continue,
+                    Found::GiveUp => break,
+                }
+            }
+            None
+        };
+        if let Ok(Some(s)) = tokio::time::timeout(REQUEST_TIMEOUT, lookup).await {
+            return Ok(s);
+        }
+        self.inner.jpeg(key, batch, iiif_base).await
+    }
+
     /// Never: a LoC hold doesn't stop pages being read from the cache, so
     /// the worker keeps taking messages. A page that misses the cache
     /// during a hold waits in LoC's pacer, and may be abandoned if the hold
@@ -298,6 +316,10 @@ mod tests {
                 from_cache: false,
                 evict: None,
             })
+        }
+
+        async fn jpeg(&self, key: &PageKey, batch: &str, _: &str) -> Result<Scan, FetchError> {
+            self.scan(key, batch).await
         }
     }
 

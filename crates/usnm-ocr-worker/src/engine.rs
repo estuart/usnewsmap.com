@@ -23,6 +23,40 @@ pub struct EngineOutput {
     pub engine: String,
 }
 
+/// Tesseract exited unsuccessfully on a page (not a timeout or a kill for
+/// memory). Carried in [`EngineError::Failed`], so the worker can tell a
+/// crash from other failures.
+#[derive(Debug, thiserror::Error)]
+#[error("tesseract exited with {status}: {stderr}")]
+pub struct Exited {
+    pub status: std::process::ExitStatus,
+    /// The end of what Tesseract wrote to stderr.
+    pub stderr: String,
+}
+
+impl Exited {
+    /// Exit status 136 (128 + SIGFPE, as a container reports it), or the
+    /// signal itself from a host process: the crash some JP2s cause in
+    /// the engine's JPEG 2000 path (#454). The IIIF JPEG of such a page
+    /// reads normally.
+    pub fn is_status_136(&self) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if self.status.signal() == Some(8) {
+                return true;
+            }
+        }
+        self.status.code() == Some(136)
+    }
+}
+
+/// Whether `e` is Tesseract exiting with status 136 ([`Exited::is_status_136`]).
+pub fn exited_136(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<Exited>()
+        .is_some_and(Exited::is_status_136)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     /// No model for the language on this node: retrying here won't help.
@@ -1089,11 +1123,10 @@ impl Tesseract {
         }
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
-            return Err(anyhow::anyhow!(
-                "tesseract exited with {}: {}",
-                out.status,
-                tail(&err, 400)
-            )
+            return Err(anyhow::Error::new(Exited {
+                status: out.status,
+                stderr: tail(&err, 400),
+            })
             .into());
         }
         // What Tesseract said, for a run that exits 0 but writes nothing.

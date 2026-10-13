@@ -215,6 +215,10 @@ pub struct Completion {
     /// `scratch`, `permanent`, `invalid`, `dequeue_count`); never the
     /// message.
     pub error_kind: Option<String>,
+    /// The engine crashed on the page's JP2 (status 136), and its IIIF JPEG
+    /// was read instead (#454). Left out of a line when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub jpeg_fallback: bool,
 }
 
 const OUTCOMES: [&str; 4] = ["done", "failed", "abandoned", "dead_lettered"];

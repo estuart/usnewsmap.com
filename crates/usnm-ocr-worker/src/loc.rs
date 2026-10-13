@@ -888,7 +888,8 @@ impl LocClient {
         self.iiif_scan(base, size).await
     }
 
-    async fn iiif_scan(&self, base: String, size: ImageSize) -> Result<Scan, FetchError> {
+    /// The JPEG at `size` of the page with IIIF base `base`.
+    pub async fn iiif_scan(&self, base: String, size: ImageSize) -> Result<Scan, FetchError> {
         let url = image_url(&base, size);
         let got = self.get(&url, Server::Tile, MAX_IMAGE_BYTES, None).await?;
         Ok(Scan {
