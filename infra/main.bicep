@@ -236,8 +236,8 @@ param ocrKeyVaultAdmins string = ''
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
-@description('Name of the dedicated resource group for the BOINC server stack (ADR-0019). It must already exist and hold only BOINC resources. Non-empty: assigns the guardrails to it and waives the shared-key storage and monitor local-auth policies for every resource in that group. Empty: no exemption.')
-param boincResourceGroup string = ''
+@description('Create the dedicated resource group for the BOINC server stack (ADR-0019), named by infra/naming.bicep, which must hold only BOINC resources. True: creates the group, assigns the guardrails to it and waives the shared-key storage and monitor local-auth policies for every resource in that group. False: no group and no exemption.')
+param deployBoincGroup bool = false
 
 @description('Seconds between availability test runs of the site and API from each of 3 locations (tests exist only with dnsZoneName and alert emails). 300, 600 or 900. Each run costs $0.0005: 300 is about $13 a month per URL.')
 @allowed(['300', '600', '900'])
@@ -312,6 +312,12 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
 
 resource spotRg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: n.spotRg
+  location: location
+  tags: tags
+}
+
+resource boincRg 'Microsoft.Resources/resourceGroups@2024-03-01' = if (deployBoincGroup) {
+  name: n.boincRg
   location: location
   tags: tags
 }
@@ -932,12 +938,13 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   }
 }
 
-// ADR-0019 decision 5: the BOINC server's own group (it must already exist and
-// hold only BOINC resources) gets the same guardrails as the others, so the
+// ADR-0019 decision 5: the BOINC server's own group (created above; it holds
+// only BOINC resources) gets the same guardrails as the others, so the
 // waivers below are meaningful. No public accounts live here.
-module boincPolicies 'modules/policy-assignments.bicep' = if (deployPolicies && !empty(boincResourceGroup)) {
-  scope: resourceGroup(boincResourceGroup)
+module boincPolicies 'modules/policy-assignments.bicep' = if (deployPolicies && deployBoincGroup) {
+  scope: resourceGroup(n.boincRg)
   name: 'policy-assignments-boinc'
+  dependsOn: [boincRg]
   params: {
     definitionIds: guardrailPolicyIds
     definitionParameters: {
@@ -949,19 +956,19 @@ module boincPolicies 'modules/policy-assignments.bicep' = if (deployPolicies && 
 // The Files mount and Container Apps log configuration need keys. These two
 // waivers cover every resource in the BOINC group, for those two policies
 // only. Deployed before the BOINC stack, to the group itself.
-module boincExemptions 'modules/boinc-exemptions.bicep' = if (deployPolicies && !empty(boincResourceGroup)) {
-  scope: resourceGroup(boincResourceGroup)
+module boincExemptions 'modules/boinc-exemptions.bicep' = if (deployPolicies && deployBoincGroup) {
+  scope: resourceGroup(n.boincRg)
   name: 'boinc-exemptions'
   params: {
     noStorageKeysAssignmentId: resourceId(
       subscription().subscriptionId,
-      boincResourceGroup,
+      n.boincRg,
       'Microsoft.Authorization/policyAssignments',
       guardrailPolicyNames.noStorageKeys
     )
     noMonitorKeysAssignmentId: resourceId(
       subscription().subscriptionId,
-      boincResourceGroup,
+      n.boincRg,
       'Microsoft.Authorization/policyAssignments',
       guardrailPolicyNames.noMonitorKeys
     )

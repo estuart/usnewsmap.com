@@ -18,6 +18,7 @@
   "backfillJob": "caj-usnm-backfill-prod",
   "backfillReplicaSilentAlert": "alert-usnm-backfill-replica-silent-prod",
   "backfillStalledAlert": "alert-usnm-backfill-stalled-prod",
+  "boincRg": "usnm-boinc-rg-prod",
   "budget": "budget-usnm-prod",
   "ciIdentity": "id-usnm-ci-prod",
   "congressJob": "usnm-cong-caj-prod",

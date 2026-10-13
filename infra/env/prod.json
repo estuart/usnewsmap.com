@@ -2,6 +2,7 @@
   "$schema": "./schema.json",
   "USNM_AMERICAN_STORIES": true,
   "USNM_AMERICAN_STORIES_SEARCH": true,
+  "USNM_BOINC_GROUP": true,
   "USNM_BUDGET_START": "2026-10-01",
   "USNM_COSMOS_FREE_TIER": true,
   "USNM_DNS_ZONE": "usnewsmap.com",

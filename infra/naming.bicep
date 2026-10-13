@@ -69,6 +69,7 @@ var functionWords = [
   'api'
   'archive'
   'backfill'
+  'boinc'
   'ci'
   'cong'
   'core'
@@ -145,6 +146,7 @@ var nameTypes = {
   backfillJob: 'caj'
   backfillReplicaSilentAlert: 'alert'
   backfillStalledAlert: 'alert'
+  boincRg: 'rg'
   budget: 'budget'
   ciIdentity: 'id'
   congressJob: 'caj'
@@ -235,6 +237,7 @@ type Names = {
   backfillJob: string
   backfillReplicaSilentAlert: string
   backfillStalledAlert: string
+  boincRg: string
   budget: string
   ciIdentity: string
   congressJob: string
@@ -320,6 +323,7 @@ func names(env string, sfx string, pinned bool) Names => {
     ? 'alert-usnm-backfill-replica-silent-${env}'
     : usnmName('backfill-replica-silent', 'alert', env)
   backfillStalledAlert: pinned ? 'alert-usnm-backfill-stalled-${env}' : usnmName('backfill-stalled', 'alert', env)
+  boincRg: usnmName('boinc', 'rg', env)
   budget: pinned ? 'budget-usnm-${env}' : usnmName('core', 'budget', env)
   ciIdentity: pinned ? 'id-usnm-ci-${env}' : usnmName('ci', 'id', env)
   congressJob: usnmName('cong', 'caj', env)
