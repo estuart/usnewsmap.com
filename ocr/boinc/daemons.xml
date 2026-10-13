@@ -1,0 +1,6 @@
+<!-- Fragment: merge these entries into the stock project daemons section.
+     Retain feeder, transitioner, file_deleter, db_purge and other stock daemons. -->
+<!-- Insert inside the project's existing daemons section. Native validation
+     occurs centrally before publication; this pilot assumes trusted friends. -->
+<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd></daemon>
+<daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd></daemon>

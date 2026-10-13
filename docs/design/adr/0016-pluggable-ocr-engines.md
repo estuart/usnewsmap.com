@@ -132,3 +132,7 @@ We compared three full designs. This decision is the one with a container per en
 - **Engine outages cost receives.** While some engines are down, pages for them use up to 3 of their 5 receives and then wait for the seeder to queue them again. Limits set on cgroups above an engine's own scope are checked too, so a systemd slice can't leave an engine less memory than the scheduler assumes.
 - **Contract changes are expensive.** A breaking change means rebuilding every image, so the worker supports versions N and N-1 while it happens.
 - **Two ALTO unit systems.** The stored ALTO is in pixels, while LoC's and the Japanese job's are in inch1200. Readers must check `MeasurementUnit`.
+
+## Optional BOINC batch transport (#438)
+
+The [BOINC pilot](../../boinc.md) is a separate, file-based single-page transport for trusted volunteers. It reuses the current Tesseract models/routing and native ingestion checks, retains `contract=0`, and records its route as `boinc@r1`. It does not implement or replace the long-lived adapter protocol above. Migration to that protocol remains a later change. Only the central bridge reserves native work and publishes results; volunteers hold no Azure identity.

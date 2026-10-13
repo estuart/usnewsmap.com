@@ -162,3 +162,7 @@ podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
 ## Tests
 
 `cargo test -p usnm-ocr-worker` covers message parsing (a catalog code such as `ger` is refused), each dead-letter cause and the strict dead-letter reader, pacing, Retry-After and 408 retries, a 403 that holds rather than dead-letters, a refused issue that isn't cached, a page with no model that makes no image request, a long hold that takes no messages, an end-to-end page whose part the ingest reader reads, dead-lettering (and that a refused message's content isn't kept), abandoning a page over its time, and shutdown. One test runs the real Tesseract on a rendered line when Tesseract and `eng` are installed, and skips otherwise. With no connection string, telemetry stays off. The queue client (local and Azure, with the approximate message count) is in `usnm-store` (`usnm_store::queue`) and tested there against a stand-in service. The Arc challenge, and its token for Azure Monitor, are tested in `usnm-store` against a stand-in agent.
+
+## Optional BOINC batch pool
+
+The [BOINC pilot](../../docs/boinc.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO/Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing; volunteers receive no Azure credentials. The existing `run` command is unchanged.

@@ -1,0 +1,32 @@
+[package]
+name = "usnm-boinc"
+version = "0.1.0"
+description = "Opt-in stock BOINC batch transport for the newspaper OCR pipeline"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+usnm-core.workspace = true
+usnm-ocr-contract.workspace = true
+usnm-overlay.workspace = true
+usnm-store.workspace = true
+usnm-state.workspace = true
+usnm-alto.workspace = true
+usnm-ocr-worker = { path = "../usnm-ocr-worker" }
+usnm-ingest = { path = "../usnm-ingest" }
+anyhow.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clap.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+
+[lints]
+workspace = true

@@ -12,3 +12,6 @@ pub mod fetched;
 pub mod message;
 pub mod prefetch;
 pub mod status;
+
+/// File-based jobs for the opt-in stock BOINC pilot.
+pub mod boinc;

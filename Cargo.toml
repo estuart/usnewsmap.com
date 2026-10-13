@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/usnm-alto",
+    "crates/usnm-boinc",
     "crates/usnm-core",
     "crates/usnm-search",
     "crates/usnm-store",
