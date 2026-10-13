@@ -80,6 +80,39 @@ enum Commands {
         #[arg(long)]
         out_url: String,
     },
+    /// Verify the gold bundle and download the original files it refers to (network; outside the
+    /// job container).
+    GoldStage {
+        /// The bundle directory, or its tar.
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        cache: PathBuf,
+        #[arg(long)]
+        work: PathBuf,
+    },
+    /// Score this host's Tesseract on the gold bundle, offline; writes counts only, no text.
+    GoldRun {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        cache: PathBuf,
+        #[arg(long)]
+        work: PathBuf,
+        /// Where gold-result.json goes.
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value = "tesseract")]
+        tesseract: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        psm: u8,
+        #[arg(long, default_value_t = 300)]
+        dpi: u32,
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u32,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// The JP2 against IIIF JPEG assessment (#456), app `usnm_assess`.
     #[command(subcommand)]
     Assess(Assess),
@@ -255,6 +288,40 @@ async fn main() -> anyhow::Result<()> {
             let curated = usnm_store::open(&curated_url)?;
             let out = usnm_store::open(&out_url)?;
             usnm_boinc::collect(&root, &spool, &job, curated.as_ref(), out.as_ref()).await?;
+        }
+        Commands::GoldStage {
+            bundle,
+            cache,
+            work,
+        } => {
+            let s = usnm_boinc::gold::stage(&bundle, &cache, &work).await?;
+            println!("{}", serde_json::to_string(&s)?);
+            anyhow::ensure!(s.failed.is_empty(), "{} downloads failed", s.failed.len());
+        }
+        Commands::GoldRun {
+            bundle,
+            cache,
+            work,
+            out,
+            tesseract,
+            psm,
+            dpi,
+            timeout_secs,
+            limit,
+        } => {
+            let report = usnm_boinc::gold::run(&usnm_boinc::gold::RunOptions {
+                bundle,
+                cache,
+                work,
+                tesseract,
+                psm,
+                dpi,
+                timeout_secs,
+                limit,
+            })
+            .await?;
+            usnm_boinc::atomic(&out, &serde_json::to_vec_pretty(&report)?)?;
+            println!("{}", serde_json::to_string(&report.summary)?);
         }
         Commands::Assess(a) => assess(a).await?,
         Commands::Status { root } => {

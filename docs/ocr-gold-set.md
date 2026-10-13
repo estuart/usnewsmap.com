@@ -92,7 +92,11 @@ scripts/ocr-survey/gold.py validate --crops OUT/crops.jsonl --manifest OUT/manif
 
 ## CER and WER
 
-`gold.py score` compares each hypothesis text with the transcription. This is the CER the plan describes in 13 §13.9, minus the part that finds the crop's span in a whole page's text; that part needs the engine runs' word boxes, and belongs in `usnm-ocr-survey score`, which doesn't exist yet (the crates have no `usnm-ocr-survey`, so there is nothing to extend). Until then the Python scorer is the reference for the arithmetic: edit distance over the normalized transcription's length, summed over crops (a crop's weight is its length), reported for all crops and per group. WER is the same over whitespace-separated words.
+`usnm-ocr-survey score` (the `crates/usnm-ocr-survey` crate, [#457](https://github.com/tgoodyear/usnewsmap.com/issues/457)) compares each hypothesis text with the transcription. It replaces `gold.py score`, which stays in the repository as the reference: both take the same flags and write the same files, byte for byte. This is the CER the plan describes in 13 §13.9, minus the part that finds the crop's span in a whole page's text; that part needs the engine runs' word boxes and is not built. The arithmetic: edit distance over the normalized transcription's length, summed over crops (a crop's weight is its length), reported for all crops and per group. WER is the same over whitespace-separated words.
+
+Characters are Unicode scalar values, as Python's `str` counts them, and whitespace is what Python's `str.isspace` accepts (Rust's `White_Space` plus U+001C to U+001F). The edit distance is Myers' bit-parallel algorithm in Hyyrö's multi-word form, about n·m/64 word operations instead of gold.py's n·m Python steps. On the 600 BLN600 excerpts against Gale's OCR (1,696,781 reference characters), `gold.py score` took 880 s and `usnm-ocr-survey score` 0.66 s, with identical output files.
+
+**Golden test.** `scripts/ocr-survey/golden_score.py` writes seeded synthetic crops and hypotheses into `crates/usnm-ocr-survey/tests/golden/` with gold.py's output for three runs (`--hyp`, `--hyp` plus `--hints`, `--hints --allow-unreviewed`). The inputs cover the edge cases: every Python whitespace character, line-end hyphens with CR and tabs, nested guess markers, combining characters, characters outside the Basic Multilingual Plane, a rounding tie, quotes and commas in CSV fields, an empty group, and each validation failure. The Rust test `tests/golden.rs` must reproduce the files byte for byte (the rust CI job), and the infra job runs `golden_score.py --check` whenever gold.py changes, so a change to either scorer that the other doesn't share fails CI. After a deliberate change to gold.py, regenerate with `scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden`.
 
 Normalization, on both sides:
 
@@ -105,7 +109,7 @@ In the transcription only, `[?x]` counts as `x` and `[?]` is dropped.
 Hypotheses are the hint texts in `crops.jsonl` (`--hints`), or per-engine files of `{"crop_id", "text"}` lines (`--hyp tesseract-5.5=FILE.jsonl`). Crops that fail validation are left out and counted.
 
 ```sh
-scripts/ocr-survey/gold.py score --crops OUT/crops.jsonl --hints --out OUT/scores
+cargo run --release -p usnm-ocr-survey -- score --crops OUT/crops.jsonl --hints --out OUT/scores
 ```
 
 ## Public ground truth
@@ -120,7 +124,7 @@ Other people use this repository, so every source used for scoring must be one a
 
 1. **Public download.** Anyone can download it without a login, request form or agreement.
 2. **High confidence.** The transcriptions were made or verified by people, and the source documents how.
-3. **Usable for this research, with nothing redistributed that the licence forbids.** No dataset content is committed, and fixtures are synthetic. `public-fetch` downloads the data at run time and keeps its licence and attribution beside it (`SOURCE.json` plus the dataset's own licence files), and `public-convert` copies them into the output's `LICENSES/`. NonCommercial terms are fine: this is research use. NoDerivatives terms (BLN600) mean no derived crops or re-encoded images are shared at all, so the converted image is the dataset's own file, unchanged. BOINC clients ([#457](https://github.com/tgoodyear/usnewsmap.com/issues/457)) must download the original files and cut crops locally; the project cannot ship crops of such a set.
+3. **Usable for this research, with nothing redistributed that the licence forbids.** No dataset content is committed, and fixtures are synthetic. `public-fetch` downloads the data at run time and keeps its licence and attribution beside it (`SOURCE.json` plus the dataset's own licence files), and `public-convert` copies them into the output's `LICENSES/`. NonCommercial terms are fine: this is research use. NoDerivatives terms (BLN600) mean no derived crops or re-encoded images are shared at all, so the converted image is the dataset's own file, unchanged. BOINC clients download the original files and cut crops locally; the project cannot ship crops of such a set ([Volunteer bundle](#volunteer-bundle)).
 
 Checked on 13 October 2026 against each source's own licence and download pages:
 
@@ -205,7 +209,7 @@ scripts/ocr-survey/gold.py public-fetch --dataset reichsanzeiger --src DATA/reic
 scripts/ocr-survey/gold.py public-convert --dataset reichsanzeiger --src DATA/reichsanzeiger --out OUT/reichsanzeiger --count 60
 scripts/ocr-survey/gold.py validate --crops OUT/reichsanzeiger/crops.jsonl --manifest OUT/reichsanzeiger/manifest.jsonl --images OUT/reichsanzeiger/images
 # engines' texts for the crops go in as --hyp ENGINE=FILE.jsonl, as for the own crops
-scripts/ocr-survey/gold.py score --crops OUT/reichsanzeiger/crops.jsonl --hyp tesseract-5.5=tess.jsonl --out OUT/reichsanzeiger/scores
+cargo run --release -p usnm-ocr-survey -- score --crops OUT/reichsanzeiger/crops.jsonl --hyp tesseract-5.5=tess.jsonl --out OUT/reichsanzeiger/scores
 ```
 
 `--dataset` is `bln600`, `overproof-ca`, `reichsanzeiger`, `austrian`, `newseye-bnf`, `newseye-nlf-fi`, `newseye-nlf-sv` or `nzz` for scoring. The NewsEye sets take `--subset validation|training|all` (default `validation`, 16 to 122 MB; the Finnish training zip is 5.4 GB). `bln600` checks the zip's sha256 before opening it; the zip is AES-encrypted with the password `BLN600` printed on the dataset page, which Python's zipfile can't read, so it needs `bsdtar` or 7-Zip. `overproof-ca` fetches loc.gov's issue JSON, then each page's ALTO and full image, paced as `locfetch` does, and `public-convert` writes the line match rate to `match.json`. `overproof-smh`, `enp-berlin`, `americanstories` and `ndl-pdm` fail the [source policy](#source-policy); `public-convert` refuses them unless `--not-for-scoring` is given, and their rows then carry `for_scoring: false`. Don't quote their numbers as accuracy. A crop is one transcribed region (a block of lines for the first three, one line for NDL), chosen by seed: regions inside a length window (200 to 2,500 normalized characters; 12 to 300 for NDL lines, overridable with `--min-chars` and `--max-chars`), at most `--per-page` (3) per page, taking one from each page before a second from any. Each crop row carries `source_dataset`, `source_url` and `source_license`, and `transcriber` reads "`<dataset>`: published ground truth" with `reviewer` "not applicable: published ground truth", which is what lets `validate` accept it. Nobody here reviewed those transcriptions; the dataset's authors did, by the process they describe.
@@ -225,15 +229,47 @@ Real runs on 13 October 2026 (`public-fetch`, then `public-convert`, then `valid
 | nzz            | 472 MB zip                | 43,160 lines                                       | 60                                |
 | enp-berlin     | 32 MB                     | 2,458                                              | 60 (comparison only)              |
 
-A sample score: Gale's own OCR for the first 20 BLN600 excerpts against the transcriptions gave CER 0.049 and WER 0.164 over 53,636 characters.
+A sample score: Gale's own OCR for the first 20 BLN600 excerpts against the transcriptions gave CER 0.049 and WER 0.164 over 53,636 characters. For all 600 excerpts it gave CER 0.0684 and WER 0.2151 over 1,696,781 characters.
 
 Caveats when reading the CER of a public set:
 
 - The scorer folds nothing but the line-end hyphen `-`. Reichsanzeiger and Austrian text uses the double oblique hyphen `⸗` for a word broken across lines, and keeps long s and other old forms. An engine that prints `-` or `s` is charged for it. Read the numbers as "against this transcription convention", and compare engines with each other on the same crops.
-- BLN600 crops are whole excerpts of up to 7,000 characters, and `score`'s edit distance is pure Python, so scoring all 600 takes a long time.
 - NZZ marks a line-end hyphen with `¬` and transcribes long s as `s`; Overproof's `¬` is turned into `-` on conversion.
 - The NDL text is "as seen", old character forms included, and has no spaces, so WER is meaningless for `jpn`; use CER.
 - A crop is a region of a page, and a region of a Reichsanzeiger page can be mostly figures and tables. The window above filters by length only.
+
+## Volunteer bundle
+
+BOINC volunteers score their engine on a fixed subset of the public sets, the gold bundle ([#457](https://github.com/tgoodyear/usnewsmap.com/issues/457)). It is versioned and checksummed, so every reported score names the exact crops it was measured on.
+
+**Contents.** `usnm-ocr-gold-v<N>/` holds `manifest.json`, `crops/` and `licenses/<source>/`, and ships as a tar with a `.sha256` beside it. The manifest carries `bundle_version`, the seed, `files` (path, size and sha256 of every other file in the bundle), `sources` (licence, URL, attribution, how it ships, and its licence files), `remotes` (the original files the client downloads: URL, sha256, and the published password of BLN600's zip) and `crops` (id, source, language, group, where the image comes from and where the transcription comes from). The client reports `bundle_version` and the manifest's sha256 with every score.
+
+**What ships is decided by the licence** (`bundle::policy` in the crate; a source not listed there can't go into a bundle):
+
+| Source                                           | Licence                                  | Ships                                                                                                                                                       |
+| ------------------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bln600`                                         | CC BY-NC-ND 4.0                          | References only: the zip's URL and sha256, the image and transcription members' names and checksums. The client downloads the zip and reads both unchanged. |
+| `overproof-ca`                                   | CC BY-NC-SA 4.0 (text); LoC images       | The transcription and the box. The client downloads the LoC page image (URL and sha256 in the manifest) and cuts the box.                                   |
+| `newseye-*`, `nzz`, `austrian`, `reichsanzeiger` | CC BY 4.0, CC0, CC BY-NC (NZZ's archive) | The crops and transcriptions.                                                                                                                               |
+
+Every source's licence files go in `licenses/<source>/`, unchanged, with `SOURCE.json` and an `ATTRIBUTION.txt` that names the source, licence, licence deed, attribution and the changes made (for shipped crops: cut, converted to greyscale, re-encoded as JPEG). The builder refuses a source with no attribution, so `gold.py` now carries attribution for Reichsanzeiger (UB Mannheim) and Austrian (NewsEye/READ, ONB) as well. ShareAlike text (Overproof) ships with its licence and readme files. Nothing derived from BLN600 ships: no crop, no image, no text; only its own LICENSE and readme, unchanged.
+
+**Building.** From `gold.py public-convert` outputs, reproducibly: the same inputs, version and seed give the same tar, byte for byte (no timestamps in the manifest; tar entries sorted, mtime 0, fixed modes). The pick spreads over pages: pages and the crops in each page in a seeded order, then round robin, up to `--per-source`. Overproof needs `page_image_url` in its manifest rows, which `public-convert` now writes from `loc/pages.json`.
+
+```sh
+cargo run --release -p usnm-ocr-survey -- bundle-build --version 1 --per-source 30 --out OUT/bundle \
+  --source bln600=OUT/bln600 --original bln600=SRC/bln600/BLN600.zip \
+  --source overproof-ca=OUT/overproof-ca --source newseye-bnf=OUT/newseye-bnf \
+  --source newseye-nlf-fi=OUT/newseye-nlf-fi --source newseye-nlf-sv=OUT/newseye-nlf-sv --source nzz=OUT/nzz \
+  --lock fixtures/ocr-gold/bundle-v1.lock.json
+cargo run --release -p usnm-ocr-survey -- bundle-verify --bundle OUT/bundle/usnm-ocr-gold-v1.tar
+```
+
+`--original` is the downloaded archive of a reference-only source; the builder checks it against `SOURCE.json` and reads the members to record their checksums, and copies nothing from it. No dataset content is committed. The repository holds only the lock, `fixtures/ocr-gold/bundle-v1.lock.json`: version, seed, crop ids, file checksums, remotes, the manifest's and the tar's sha256.
+
+**Version 1** (built 2026-10-13, seed 457, 30 per source): 142 crops, 30 BLN600, 30 Overproof CA (from 18 LoC pages), 24 NewsEye BnF, 18 NewsEye NLF Finnish, 10 NewsEye NLF Swedish and 30 NZZ lines. The tar is 9.6 MB (9.1 MB of shipped crops, a 140 KB manifest, 128 KB of licence files). A client also downloads 19 remotes: the 68 MB BLN600 zip and 18 page images. All 18 LoC page images matched the checksums recorded at conversion when fetched again on the same day.
+
+**Client.** `usnm-boinc gold-stage` (network) and `usnm-boinc gold-run` (offline), in [boinc.md](boinc.md#gold-check). A run with Tesseract 5.5.1 and only `eng` installed scored the 60 English crops (CER 0.0932 on BLN600, 0.0276 on Overproof CA) and reported the other 82 as skipped for lack of a model.
 
 ## Licensing
 
@@ -252,6 +288,6 @@ Checked in public documentation only, nobody contacted.
 
 - A person transcribes the 60 crops and the Japanese crops, or the 60 stay scored as agreement only.
 - Run `public-fetch` and `public-convert` for Reichsanzeiger and Austrian, and check the readers against the real files.
-- BOINC ([#457](https://github.com/tgoodyear/usnewsmap.com/issues/457)): clients download each set from its source and cut crops locally; the project ships no crops of BLN600.
+- BOINC: send the gold check as BOINC work and collect its reports ([Volunteer bundle](#volunteer-bundle); [#462](https://github.com/tgoodyear/usnewsmap.com/issues/462)).
 - Decide whether to commit the images once `cut` has run and the total is known.
 - `usnm-ocr-survey score` takes over the span-finding for whole-page runs and reads this format as `--truth`.

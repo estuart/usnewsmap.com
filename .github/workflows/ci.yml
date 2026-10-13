@@ -482,6 +482,9 @@ jobs:
         run: |
           python3 -m pip install --quiet --break-system-packages pillow==11.3.0
           python3 -m unittest -v scripts/ocr-survey/test_gold.py
+      - name: The Rust scorer's golden files match gold.py (#457)
+        if: needs.changes.outputs.ocr_gold == 'true'
+        run: python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
       - name: The search cluster report's tests pass
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # Against a stub az: the dev experiment marker, the guard-rail budget's

@@ -4,12 +4,13 @@ This guide is for people who run their own OCR engine and want its character err
 
 The design, the source policy and the dataset survey are in [ocr-gold-set.md](ocr-gold-set.md). This guide covers the steps. Where it says UNVERIFIED, neither the code nor that document confirms the point.
 
-A faster scorer written in Rust is in progress in [#457](https://github.com/tgoodyear/usnewsmap.com/issues/457). When it lands it replaces `gold.py score`, and the scoring commands in this guide will change. Fetching, converting and the hypothesis format stay as described here.
+Scoring uses `usnm-ocr-survey score`, the Rust scorer in `crates/usnm-ocr-survey` ([#457](https://github.com/tgoodyear/usnewsmap.com/issues/457)). It replaces `gold.py score`: same flags, same normalization, same output files byte for byte, and a golden test in CI keeps the two equal. `gold.py score` still works and stays as the reference. Fetching, converting and validating stay in `gold.py`.
 
 ## Prerequisites
 
 - **A checkout of this repository.** `gold.py` imports `locfetch.py`, `crops.py` and `altotext.py` beside it, and `locfetch.py` imports `ja-ocr/jaocr.py`, so run it from the checkout rather than copying the script out.
 - **Python 3.9 or later.** The scripts use only the standard library apart from Pillow, and the newest feature in `gold.py` is `str.removesuffix` (3.9). It was run here on 3.14; 3.9 itself is UNVERIFIED.
+- **A Rust toolchain** (`cargo`), for the scorer. The version is pinned in `rust-toolchain.toml`.
 - **Pillow**, for `public-convert`, which opens the page images and cuts the crops (`pip install Pillow`). `validate` and `score` don't need it.
 - **bsdtar or 7-Zip**, for BLN600 only. Its zip is AES-encrypted and Python's `zipfile` can't open it, so `public-fetch` calls `bsdtar` (libarchive) or `7z`/`7zz`, and stops with an error if neither is on the `PATH`.
 - **Network access** to Zenodo, figshare, GitHub, the UB Mannheim image server, Hugging Face and loc.gov, depending on the dataset.
@@ -118,7 +119,7 @@ A minimal example with Tesseract. It reads `crops.jsonl`, runs `tesseract` on ea
 
 ```python
 #!/usr/bin/env python3
-"""Runs Tesseract over a converted gold-set directory and writes a hypothesis file for gold.py score.
+"""Runs Tesseract over a converted gold-set directory and writes a hypothesis file for usnm-ocr-survey score.
 
     run_tesseract.py --crops OUT/bln600/crops.jsonl --lang eng --out tess.jsonl
 """
@@ -153,7 +154,7 @@ def main() -> int:
             if r.returncode != 0:
                 print(f"tesseract failed on {row['crop_id']}: {r.stderr.strip()}", file=sys.stderr)
                 continue
-            # The raw text, line breaks and all: gold.py score normalizes both sides itself.
+            # The raw text, line breaks and all: the scorer normalizes both sides itself.
             out.write(json.dumps({"crop_id": row["crop_id"], "text": r.stdout}, ensure_ascii=False) + "\n")
             done += 1
     print(f"{done} crops read; wrote {a.out}", file=sys.stderr)
@@ -174,7 +175,7 @@ Tested with Tesseract 5.5.1 on a synthetic set of two rendered English crops in 
 
 ```sh
 scripts/ocr-survey/gold.py validate --crops OUT/bln600/crops.jsonl --manifest OUT/bln600/manifest.jsonl --images OUT/bln600/images
-scripts/ocr-survey/gold.py score --crops OUT/bln600/crops.jsonl --hyp tesseract-5.5=OUT/bln600/tesseract.jsonl --out OUT/bln600/scores
+cargo run --release -p usnm-ocr-survey -- score --crops OUT/bln600/crops.jsonl --hyp tesseract-5.5=OUT/bln600/tesseract.jsonl --out OUT/bln600/scores
 ```
 
 `validate` checks the transcriptions and that each image is present. It prints each error and warning, then a count, and exits with status 1 on any error. `crop_sha256` in the manifest is the checksum of the bytes `public-convert` wrote, so a warning that an image differs from it means the file changed after conversion; convert again. The real runs listed in [ocr-gold-set.md](ocr-gold-set.md#fetch-and-convert) validated with 0 errors.
@@ -206,7 +207,7 @@ scripts/ocr-survey/gold.py score --crops OUT/bln600/crops.jsonl --hyp tesseract-
 
 CER and WER are rounded to 4 decimal places. Because edits and lengths are summed before dividing, a long crop weighs more than a short one. Either can exceed 1 when your text is much longer than the transcription.
 
-The edit distance is pure Python. BLN600 crops run up to 7,000 characters, so scoring all 600 takes a long time; the Rust scorer from #457 is meant to fix that.
+BLN600 crops run up to 7,000 characters. Scoring all 600 against Gale's OCR took 0.66 s with `usnm-ocr-survey score` and 880 s with `gold.py score`, with identical output.
 
 ## Reading results
 

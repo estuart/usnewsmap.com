@@ -69,7 +69,9 @@ MAX_UNKNOWN_SHARE = 0.02
 
 
 def read_jsonl(p: Path) -> list[dict]:
-    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+    # Split on "\n" only: str.splitlines also splits on U+001C..U+001E, U+0085 and U+2028, which
+    # json.dumps(ensure_ascii=False) leaves unescaped inside strings.
+    return [json.loads(x) for x in p.read_text(encoding="utf-8").split("\n") if x.strip()]
 
 
 def write_jsonl(p: Path, rows: list[dict]) -> None:
@@ -503,11 +505,17 @@ PUBLIC: dict[str, dict] = {
         "group": "pub-reichsanzeiger", "lang": "deu",
         "license": "CC0-1.0 (GitHub LICENSE file); CC-BY-4.0 (Zenodo record); images Public Domain Mark 1.0",
         "url": "https://doi.org/10.5281/zenodo.10144094",
+        "attribution": "Reichsanzeiger ground truth (UB-Mannheim/reichsanzeiger-gt) by Thomas Schmidt, Jan Kamlah, "
+                       "Stefan Weil and Renat Shigapov, Mannheim University Library; page images from the library's "
+                       "digital edition of the Deutscher Reichsanzeiger und Preussischer Staatsanzeiger",
         "chars": (200, 2500), "scoring": True, "policy": "passes",
     },
     "austrian": {
         "group": "pub-austrian", "lang": "deu", "license": "CC-BY-4.0 (Zenodo record)",
         "url": "https://doi.org/10.5281/zenodo.3387369",
+        "attribution": "NewsEye / READ OCR training dataset from Austrian Newspapers (19th C.) by Guenter Muehlberger "
+                       "(University of Innsbruck) and Guenter Hackl (READ-COOP SCE), from newspapers of the Austrian "
+                       "National Library (ONB), CC BY 4.0",
         "chars": (200, 2500), "scoring": True, "policy": "passes",
     },
     "ndl-pdm": {
@@ -820,7 +828,8 @@ def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dic
                             "box": [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes),
                                     max(b[3] for b in boxes)],
                             "text": "\n".join(truth[i] for i in run), "date": pg["date"],
-                            "title": d["document_metadata"].get("publication_title"), "page_url": info.get("page_url")})
+                            "title": d["document_metadata"].get("publication_title"), "page_url": info.get("page_url"),
+                            "image_url": info.get("image_url")})
             run.clear()
 
         for i, h in enumerate(hits):
@@ -928,6 +937,8 @@ def public_rows(dataset: str, pick: dict, n: int, crop: bytes | None, box: list[
          "source_attribution": meta.get("attribution"), "for_scoring": meta["scoring"]}
     if pick.get("page_url"):
         m["page_url"] = pick["page_url"]
+    if pick.get("image_url"):  # the page image the crop is cut from; BOINC clients fetch it (#457)
+        m["page_image_url"] = pick["image_url"]
     t = {"crop_id": crop_id, "group": meta["group"], "lang": meta["lang"], "date": pick.get("date"),
          "title": pick.get("title") or pick["page_id"],
          "image": image, "hints": {"is_truth": False, "note": "none: the truth is the dataset's own", "texts": {}},

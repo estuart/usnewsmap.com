@@ -337,3 +337,36 @@ Upstream references:
 - [Stock validator result and retry handling](https://github.com/BOINC/boinc/blob/master/sched/validator.cpp)
 - [Stock Docker wrapper source](https://github.com/BOINC/boinc/blob/master/samples/docker_wrapper/docker_wrapper.cpp)
 - [Stock scheduler plan-class sample](https://github.com/BOINC/boinc/blob/master/sched/plan_class_spec.xml.sample)
+
+## Gold check
+
+A volunteer host can score its engine on the public gold bundle
+([ocr-gold-set.md](ocr-gold-set.md#volunteer-bundle), #457) and report CER and
+WER together with the bundle version. Two steps, because the task container
+runs with `--network=none`:
+
+```sh
+# On the host, with network: verify the bundle, download the original files it
+# names (BLN600's zip from figshare, page images from loc.gov) into a cache, and
+# keep each only if its sha256 matches. Downloads are one at a time, 1 s apart.
+usnm-boinc gold-stage --bundle usnm-ocr-gold-v1.tar --cache CACHE --work WORK
+
+# Offline: verify the bundle again, check the cache, cut the crops locally, run
+# Tesseract on each, score as gold.py does, and write the report.
+usnm-boinc gold-run --bundle usnm-ocr-gold-v1.tar --cache CACHE --work WORK \
+  --out gold-result.json [--tesseract tesseract] [--psm 3] [--dpi 300] [--limit N]
+```
+
+`gold-result.json` holds `bundle_version`, the manifest's sha256, the engine
+(name, version, psm, dpi), one row per crop (counts only: reference characters,
+character edits, reference words, word edits, the model profile and the time),
+a summary per source and overall, the `--limit` if one was given (a limited
+run is partial), and the crops that were skipped with the
+reason (not staged, checksum mismatch, no installed model, engine error,
+over the limit). It
+holds no page text and no transcription. The project ships no BLN600 crop and
+no LoC image: the client gets them from their publishers and cuts them itself.
+
+Not built yet: sending the gold check as BOINC work (an app version or a task
+type, how the bundle and cache reach the container, and where the reports go).
+That is tracked in #462.

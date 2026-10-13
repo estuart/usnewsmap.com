@@ -10,6 +10,7 @@ members = [
     "crates/usnm-ingest",
     "crates/usnm-ocr-contract",
     "crates/usnm-ocr-dash",
+    "crates/usnm-ocr-survey",
     "crates/usnm-ocr-worker",
     "crates/usnm-overlay",
     "crates/usnm-state",
@@ -26,6 +27,7 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 usnm-alto = { path = "crates/usnm-alto" }
 usnm-core = { path = "crates/usnm-core" }
 usnm-ocr-contract = { path = "crates/usnm-ocr-contract" }
+usnm-ocr-survey = { path = "crates/usnm-ocr-survey" }
 usnm-overlay = { path = "crates/usnm-overlay" }
 usnm-search = { path = "crates/usnm-search" }
 usnm-store = { path = "crates/usnm-store" }

@@ -1,0 +1,24 @@
+[package]
+name = "usnm-ocr-survey"
+version = "0.1.0"
+description = "OCR gold-set scoring (CER/WER, the same as scripts/ocr-survey/gold.py) and the checksummed gold bundle for BOINC volunteers (#457)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "time"] }
+unicode-normalization.workspace = true
+zip = { version = "2", default-features = false, features = ["aes-crypto", "deflate"] }
+
+[lints]
+workspace = true

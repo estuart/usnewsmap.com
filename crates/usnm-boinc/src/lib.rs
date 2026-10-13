@@ -28,6 +28,7 @@ use usnm_state::state::State;
 use usnm_store::ObjectStore;
 
 pub mod assess;
+pub mod gold;
 pub mod submit;
 pub mod worker;
 

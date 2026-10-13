@@ -1,0 +1,835 @@
+{
+  "bundle_version": 1,
+  "crops": [
+    "pub-bln600-063",
+    "pub-bln600-088",
+    "pub-bln600-103",
+    "pub-bln600-144",
+    "pub-bln600-176",
+    "pub-bln600-185",
+    "pub-bln600-191",
+    "pub-bln600-203",
+    "pub-bln600-229",
+    "pub-bln600-249",
+    "pub-bln600-286",
+    "pub-bln600-289",
+    "pub-bln600-293",
+    "pub-bln600-315",
+    "pub-bln600-322",
+    "pub-bln600-333",
+    "pub-bln600-371",
+    "pub-bln600-386",
+    "pub-bln600-402",
+    "pub-bln600-421",
+    "pub-bln600-428",
+    "pub-bln600-451",
+    "pub-bln600-465",
+    "pub-bln600-469",
+    "pub-bln600-482",
+    "pub-bln600-493",
+    "pub-bln600-550",
+    "pub-bln600-556",
+    "pub-bln600-563",
+    "pub-bln600-594",
+    "pub-newseye-bnf-001",
+    "pub-newseye-bnf-002",
+    "pub-newseye-bnf-003",
+    "pub-newseye-bnf-004",
+    "pub-newseye-bnf-005",
+    "pub-newseye-bnf-006",
+    "pub-newseye-bnf-007",
+    "pub-newseye-bnf-008",
+    "pub-newseye-bnf-009",
+    "pub-newseye-bnf-010",
+    "pub-newseye-bnf-011",
+    "pub-newseye-bnf-012",
+    "pub-newseye-bnf-013",
+    "pub-newseye-bnf-014",
+    "pub-newseye-bnf-015",
+    "pub-newseye-bnf-016",
+    "pub-newseye-bnf-017",
+    "pub-newseye-bnf-018",
+    "pub-newseye-bnf-019",
+    "pub-newseye-bnf-020",
+    "pub-newseye-bnf-021",
+    "pub-newseye-bnf-022",
+    "pub-newseye-bnf-023",
+    "pub-newseye-bnf-024",
+    "pub-newseye-nlf-fi-001",
+    "pub-newseye-nlf-fi-002",
+    "pub-newseye-nlf-fi-003",
+    "pub-newseye-nlf-fi-004",
+    "pub-newseye-nlf-fi-005",
+    "pub-newseye-nlf-fi-006",
+    "pub-newseye-nlf-fi-007",
+    "pub-newseye-nlf-fi-008",
+    "pub-newseye-nlf-fi-009",
+    "pub-newseye-nlf-fi-010",
+    "pub-newseye-nlf-fi-011",
+    "pub-newseye-nlf-fi-012",
+    "pub-newseye-nlf-fi-013",
+    "pub-newseye-nlf-fi-014",
+    "pub-newseye-nlf-fi-015",
+    "pub-newseye-nlf-fi-016",
+    "pub-newseye-nlf-fi-017",
+    "pub-newseye-nlf-fi-018",
+    "pub-newseye-nlf-sv-001",
+    "pub-newseye-nlf-sv-002",
+    "pub-newseye-nlf-sv-003",
+    "pub-newseye-nlf-sv-004",
+    "pub-newseye-nlf-sv-005",
+    "pub-newseye-nlf-sv-006",
+    "pub-newseye-nlf-sv-007",
+    "pub-newseye-nlf-sv-008",
+    "pub-newseye-nlf-sv-009",
+    "pub-newseye-nlf-sv-010",
+    "pub-nzz-003",
+    "pub-nzz-004",
+    "pub-nzz-005",
+    "pub-nzz-006",
+    "pub-nzz-008",
+    "pub-nzz-009",
+    "pub-nzz-011",
+    "pub-nzz-013",
+    "pub-nzz-014",
+    "pub-nzz-017",
+    "pub-nzz-022",
+    "pub-nzz-023",
+    "pub-nzz-024",
+    "pub-nzz-027",
+    "pub-nzz-029",
+    "pub-nzz-030",
+    "pub-nzz-031",
+    "pub-nzz-033",
+    "pub-nzz-034",
+    "pub-nzz-036",
+    "pub-nzz-038",
+    "pub-nzz-040",
+    "pub-nzz-042",
+    "pub-nzz-044",
+    "pub-nzz-045",
+    "pub-nzz-047",
+    "pub-nzz-050",
+    "pub-nzz-053",
+    "pub-nzz-054",
+    "pub-nzz-060",
+    "pub-overproof-ca-001",
+    "pub-overproof-ca-018",
+    "pub-overproof-ca-019",
+    "pub-overproof-ca-028",
+    "pub-overproof-ca-031",
+    "pub-overproof-ca-035",
+    "pub-overproof-ca-036",
+    "pub-overproof-ca-052",
+    "pub-overproof-ca-061",
+    "pub-overproof-ca-069",
+    "pub-overproof-ca-083",
+    "pub-overproof-ca-091",
+    "pub-overproof-ca-106",
+    "pub-overproof-ca-133",
+    "pub-overproof-ca-136",
+    "pub-overproof-ca-165",
+    "pub-overproof-ca-174",
+    "pub-overproof-ca-179",
+    "pub-overproof-ca-185",
+    "pub-overproof-ca-199",
+    "pub-overproof-ca-208",
+    "pub-overproof-ca-224",
+    "pub-overproof-ca-231",
+    "pub-overproof-ca-234",
+    "pub-overproof-ca-244",
+    "pub-overproof-ca-250",
+    "pub-overproof-ca-284",
+    "pub-overproof-ca-295",
+    "pub-overproof-ca-313",
+    "pub-overproof-ca-331"
+  ],
+  "crops_per_source": {
+    "bln600": 30,
+    "newseye-bnf": 24,
+    "newseye-nlf-fi": 18,
+    "newseye-nlf-sv": 10,
+    "nzz": 30,
+    "overproof-ca": 30
+  },
+  "files": [
+    {
+      "bytes": 189992,
+      "path": "crops/pub-newseye-bnf-001.jpg",
+      "sha256": "efa931edd59c13f9f3297f6752dc2138ca804a245d724de35fe9435b7e0922a8"
+    },
+    {
+      "bytes": 37077,
+      "path": "crops/pub-newseye-bnf-002.jpg",
+      "sha256": "11e1b4a1dcb38dae35c93cc706d4317a2ff15f4d9025a74fb85f4201eb275082"
+    },
+    {
+      "bytes": 149386,
+      "path": "crops/pub-newseye-bnf-003.jpg",
+      "sha256": "8c761afa91f77e5c3785b0ca6da0a4256a14536a5a4b206068b810d586a5b79f"
+    },
+    {
+      "bytes": 43654,
+      "path": "crops/pub-newseye-bnf-004.jpg",
+      "sha256": "01e18342d0b2027c62d2799c7d58eee3d8ccd4975edbcbdb745ae633ce37376c"
+    },
+    {
+      "bytes": 214306,
+      "path": "crops/pub-newseye-bnf-005.jpg",
+      "sha256": "81f9ffd22ea2208fae5c7977cb937728217b49e102bbfaa3182f5ed295b6bace"
+    },
+    {
+      "bytes": 155083,
+      "path": "crops/pub-newseye-bnf-006.jpg",
+      "sha256": "a5d669e9d1f59d0b84de42ee982a8c09f83cc22a86e18b89d87ada1856294aa9"
+    },
+    {
+      "bytes": 58993,
+      "path": "crops/pub-newseye-bnf-007.jpg",
+      "sha256": "d57e53ea074d41bd697b34ca30fa0f0a09031bb8e2cb225ee127ced46159aaeb"
+    },
+    {
+      "bytes": 231281,
+      "path": "crops/pub-newseye-bnf-008.jpg",
+      "sha256": "f08fc78811e5b2235b55afc948ea99c217dd744d011e213a8297a45a2dff8ed8"
+    },
+    {
+      "bytes": 128908,
+      "path": "crops/pub-newseye-bnf-009.jpg",
+      "sha256": "8efbd63a149c16a3201efac22ca61c2f98c98b3d34f2ca9ba5b26128108473dd"
+    },
+    {
+      "bytes": 34917,
+      "path": "crops/pub-newseye-bnf-010.jpg",
+      "sha256": "71ac9702277d41a1190c65009fd74108de515d264d84f6a49df4a3302c2ce0a8"
+    },
+    {
+      "bytes": 95513,
+      "path": "crops/pub-newseye-bnf-011.jpg",
+      "sha256": "8d73fe00328661c911cb484ebbe665218ec22f658c8bb4b52f91c68095b408c7"
+    },
+    {
+      "bytes": 40501,
+      "path": "crops/pub-newseye-bnf-012.jpg",
+      "sha256": "49fc4688c45795c6e6de08dfc3dc5461b5b86231c0d9b28dc3cdd39b814abf0e"
+    },
+    {
+      "bytes": 93105,
+      "path": "crops/pub-newseye-bnf-013.jpg",
+      "sha256": "81e5495f2ddfed94bfc3f6fd33d164fb4f2b0e3ef9bb76e747baef970c890381"
+    },
+    {
+      "bytes": 92926,
+      "path": "crops/pub-newseye-bnf-014.jpg",
+      "sha256": "cf702d96699e1c5e5756e2114a9558d39dc6b1fe4a54649fe3308f2605466ee5"
+    },
+    {
+      "bytes": 253785,
+      "path": "crops/pub-newseye-bnf-015.jpg",
+      "sha256": "9466fc0d33f19049d86da30d9394503d0b2f39067435b62e04c28d73e719306d"
+    },
+    {
+      "bytes": 108663,
+      "path": "crops/pub-newseye-bnf-016.jpg",
+      "sha256": "8c0469b8a9e22ad3c05278508d9a648f5e7ed7e1eff94abc6593d47bea9d6148"
+    },
+    {
+      "bytes": 250567,
+      "path": "crops/pub-newseye-bnf-017.jpg",
+      "sha256": "97b2dc36acfa298a1991258cb5c39a6b83dd84ad9b4eb3698dc0d3f57b7f2bf8"
+    },
+    {
+      "bytes": 46354,
+      "path": "crops/pub-newseye-bnf-018.jpg",
+      "sha256": "45625c8b0205eee2b7a1ceed7ec2f3d2d80539bca98b4b05071cbeb205230f89"
+    },
+    {
+      "bytes": 239427,
+      "path": "crops/pub-newseye-bnf-019.jpg",
+      "sha256": "671155e12d1bc74b4272751aa86af40f2b4abefd93f7f6065b629d3ae9d5c403"
+    },
+    {
+      "bytes": 27507,
+      "path": "crops/pub-newseye-bnf-020.jpg",
+      "sha256": "147cf5744e96313f776657cdb1a8efe44ef7eb265bf114f7f61c35fc2b23ebdf"
+    },
+    {
+      "bytes": 67941,
+      "path": "crops/pub-newseye-bnf-021.jpg",
+      "sha256": "4b098d732e0d6cf08baef89bd1598c2b8354e914d77bf39c2306b1741ec99b87"
+    },
+    {
+      "bytes": 249771,
+      "path": "crops/pub-newseye-bnf-022.jpg",
+      "sha256": "ddc6b3eed313a78143499a1080be74b2a8c262797697eff55f9740bec9971c1a"
+    },
+    {
+      "bytes": 55382,
+      "path": "crops/pub-newseye-bnf-023.jpg",
+      "sha256": "1642e5728622c03439022fa4312f5e5938d3eea00845452241fdda85226676d9"
+    },
+    {
+      "bytes": 153853,
+      "path": "crops/pub-newseye-bnf-024.jpg",
+      "sha256": "e7558567ead3dbb4c55a590d7a24765ef60295c23ea0dec33495daac4f66d84a"
+    },
+    {
+      "bytes": 103581,
+      "path": "crops/pub-newseye-nlf-fi-001.jpg",
+      "sha256": "db12cf22c0885d3298f552aaaf1a7b9f56e01b15e0012e2ff913bf9974bd3afb"
+    },
+    {
+      "bytes": 67865,
+      "path": "crops/pub-newseye-nlf-fi-002.jpg",
+      "sha256": "de767792af81b8e738b5e220168a96e74f8df10090911626cb4792e3934c18eb"
+    },
+    {
+      "bytes": 203878,
+      "path": "crops/pub-newseye-nlf-fi-003.jpg",
+      "sha256": "36bf1984915e10819a277c62041911922eee84da935edbda25372e47657e941b"
+    },
+    {
+      "bytes": 230653,
+      "path": "crops/pub-newseye-nlf-fi-004.jpg",
+      "sha256": "270f780d7721f35e6b67a69edd1b54f613fd5cc6c0849bbe64c4a863cf0d3301"
+    },
+    {
+      "bytes": 49084,
+      "path": "crops/pub-newseye-nlf-fi-005.jpg",
+      "sha256": "58057bb3e11d2957cfd3dc4922d84b3878972587129df102b9f77deb4ccf55f7"
+    },
+    {
+      "bytes": 155144,
+      "path": "crops/pub-newseye-nlf-fi-006.jpg",
+      "sha256": "21fb652dc04e2785771ef91932b17b08456a4e1327eef96dcee974e9684c5af9"
+    },
+    {
+      "bytes": 111681,
+      "path": "crops/pub-newseye-nlf-fi-007.jpg",
+      "sha256": "b6a50ff17d5b5c0e9d81c7a2402ae8661ce9f5abefaa366b0063db8b5dd9456b"
+    },
+    {
+      "bytes": 214304,
+      "path": "crops/pub-newseye-nlf-fi-008.jpg",
+      "sha256": "ed5a3946f60827822ab4d8acda959a702bbb17c2717167192967c27859e3da10"
+    },
+    {
+      "bytes": 151094,
+      "path": "crops/pub-newseye-nlf-fi-009.jpg",
+      "sha256": "8afeceb5b1cabbf4676cfce75d7d10daa71b15d13cd378d3d89ac34de1d32932"
+    },
+    {
+      "bytes": 175521,
+      "path": "crops/pub-newseye-nlf-fi-010.jpg",
+      "sha256": "62e934e4ae5347e36bc413e34b4b2880cc410e396e5c1f716adfb779ccbaf229"
+    },
+    {
+      "bytes": 107049,
+      "path": "crops/pub-newseye-nlf-fi-011.jpg",
+      "sha256": "87f19fc0f88fd786494d3c34100ae8bd80d78c64512aa63b637bd827886b0303"
+    },
+    {
+      "bytes": 211695,
+      "path": "crops/pub-newseye-nlf-fi-012.jpg",
+      "sha256": "1b4c961bda6af14449cd529cac2f1540ea705e8a7bc65b126cdb83117fe0808e"
+    },
+    {
+      "bytes": 113946,
+      "path": "crops/pub-newseye-nlf-fi-013.jpg",
+      "sha256": "e438b570a03fe349fbe816c4122655432a8972f78658be365dcbe9fe8f3da0b9"
+    },
+    {
+      "bytes": 552259,
+      "path": "crops/pub-newseye-nlf-fi-014.jpg",
+      "sha256": "bca2a6be7b08a020a27b1740740128f6d610bb7d44f8f53e248d9a644dc75531"
+    },
+    {
+      "bytes": 195435,
+      "path": "crops/pub-newseye-nlf-fi-015.jpg",
+      "sha256": "be9c7663a288c74da6166c6f65b75cbd5071eb695817278c01dd28206d7be4de"
+    },
+    {
+      "bytes": 358215,
+      "path": "crops/pub-newseye-nlf-fi-016.jpg",
+      "sha256": "0b687105f5045026cd3ba4455ce560a885f0c37a85403edc0dc23ff7df8b5aab"
+    },
+    {
+      "bytes": 108266,
+      "path": "crops/pub-newseye-nlf-fi-017.jpg",
+      "sha256": "f2661cc842cfbfa42105461b9b77586bad1c75c009c0601d4da61fc3d659b941"
+    },
+    {
+      "bytes": 61980,
+      "path": "crops/pub-newseye-nlf-fi-018.jpg",
+      "sha256": "bce047207b9fedc3fd9ec9b631f1da096d049d268dc8a42c11886590324ee668"
+    },
+    {
+      "bytes": 224466,
+      "path": "crops/pub-newseye-nlf-sv-001.jpg",
+      "sha256": "147cef0f2727b8ea0f37f65f409895a39f2bc08b8b4efbcffe20bde99c030fd7"
+    },
+    {
+      "bytes": 144008,
+      "path": "crops/pub-newseye-nlf-sv-002.jpg",
+      "sha256": "fbb9f4e74c3d9997a6e1de6b3c016f49d7db97f7b908b1b43d5e8d5912d1eee4"
+    },
+    {
+      "bytes": 525350,
+      "path": "crops/pub-newseye-nlf-sv-003.jpg",
+      "sha256": "e22bba13277fbe191ec0536b298e94ca638d2b13c5de35f6247fea33e25b4972"
+    },
+    {
+      "bytes": 49447,
+      "path": "crops/pub-newseye-nlf-sv-004.jpg",
+      "sha256": "4c2be6fee75e1ce1d0b05e9855f5a47c2e9f9f5f80de420c40c528d592512cc1"
+    },
+    {
+      "bytes": 592036,
+      "path": "crops/pub-newseye-nlf-sv-005.jpg",
+      "sha256": "e5071a0ba2e2564bbe102b1c2deb44cdfbdafb1b998388705c96602ad9dfa611"
+    },
+    {
+      "bytes": 149333,
+      "path": "crops/pub-newseye-nlf-sv-006.jpg",
+      "sha256": "682781dbff27189c432daf3d4ff4ef53023a8dc942d7856abef116b21755403b"
+    },
+    {
+      "bytes": 202816,
+      "path": "crops/pub-newseye-nlf-sv-007.jpg",
+      "sha256": "4ca0ae8b831b8102fe061476a448b93dadb344dfdea5d25c0d8566a99a860011"
+    },
+    {
+      "bytes": 242095,
+      "path": "crops/pub-newseye-nlf-sv-008.jpg",
+      "sha256": "d0f434aef96b06c1b418bccdb2c82a9577c186d5d63d437c1ca4eabc092445f5"
+    },
+    {
+      "bytes": 99396,
+      "path": "crops/pub-newseye-nlf-sv-009.jpg",
+      "sha256": "d70c228507d31ef08fd69b0d2bee18d8c16f6796a8d6e96ca327295e401dc79f"
+    },
+    {
+      "bytes": 358217,
+      "path": "crops/pub-newseye-nlf-sv-010.jpg",
+      "sha256": "9ffc3a23f0f1cfe1a17d2d9286dce9fc10a42b1e08c7c1c2875cd1673ca3c9d4"
+    },
+    {
+      "bytes": 14598,
+      "path": "crops/pub-nzz-003.jpg",
+      "sha256": "6e42dafbd15ac009094d83b0ec76acaf0da1374b2b68acd636c7ecae9bb1b0c0"
+    },
+    {
+      "bytes": 21958,
+      "path": "crops/pub-nzz-004.jpg",
+      "sha256": "508219d73ca2a78a4c1099315a61e684050800044a8aa4369dd8d54dd84ab301"
+    },
+    {
+      "bytes": 14898,
+      "path": "crops/pub-nzz-005.jpg",
+      "sha256": "47b0cd589eadf835f0dcf2062ba84647e365dfc52cfc409952ded656eff0c8bd"
+    },
+    {
+      "bytes": 24163,
+      "path": "crops/pub-nzz-006.jpg",
+      "sha256": "3063e24d7aa626a9758404c0e9a407a2f0d8b6115c660362b00438a79c90454d"
+    },
+    {
+      "bytes": 21418,
+      "path": "crops/pub-nzz-008.jpg",
+      "sha256": "0b17d300e46e7f2081d3ad1ca1f34baf30f34efcf449cdf16460e86e5d834332"
+    },
+    {
+      "bytes": 12022,
+      "path": "crops/pub-nzz-009.jpg",
+      "sha256": "f0c502fcc83bd8f08741968558751561d371b0de233194dddd01c743523751a2"
+    },
+    {
+      "bytes": 20471,
+      "path": "crops/pub-nzz-011.jpg",
+      "sha256": "aece9f514a22a796c50b73ae154ddbffd6c41b687decfe7651562b86484887f4"
+    },
+    {
+      "bytes": 10814,
+      "path": "crops/pub-nzz-013.jpg",
+      "sha256": "137841f8daafc7bd0fbeceb7992f62741ea9f0bf779e87cf991be3feb7aa3511"
+    },
+    {
+      "bytes": 18438,
+      "path": "crops/pub-nzz-014.jpg",
+      "sha256": "a9af6abb42b0a0b2a8eb7e14473d1c8fb33a4117bc601e1640a3106fa94a8047"
+    },
+    {
+      "bytes": 24277,
+      "path": "crops/pub-nzz-017.jpg",
+      "sha256": "371472d7968145a3f699ea65793b8c139e4fb09880859d5e0f96e1134c1fe634"
+    },
+    {
+      "bytes": 28492,
+      "path": "crops/pub-nzz-022.jpg",
+      "sha256": "68e25e45a1dec8a5d1c5aaecd695d3a090ebebf501cf90c40340b7d5c95dbb5c"
+    },
+    {
+      "bytes": 23523,
+      "path": "crops/pub-nzz-023.jpg",
+      "sha256": "ffb99dfb50c360f4a779d15bdb22fd1e415eec53d9127d65e4022cefea242ddd"
+    },
+    {
+      "bytes": 13948,
+      "path": "crops/pub-nzz-024.jpg",
+      "sha256": "57588711d1b66bc1b60488ceffe05680cdbe90ab6e203278d0e101ceefc21920"
+    },
+    {
+      "bytes": 12249,
+      "path": "crops/pub-nzz-027.jpg",
+      "sha256": "ef5b9158015db162dce94e0f032f98abdcbbd41681e5a5bad7a6fd5d3e200ed5"
+    },
+    {
+      "bytes": 11779,
+      "path": "crops/pub-nzz-029.jpg",
+      "sha256": "3ecb48076237bdbcaa8e2494e0609abe5cf1b38ae8d5933e1f94048dfa9d310d"
+    },
+    {
+      "bytes": 26417,
+      "path": "crops/pub-nzz-030.jpg",
+      "sha256": "c1692328356ca205e625a16033d2e90c90fa3136689e2fb233c6724818294d20"
+    },
+    {
+      "bytes": 7710,
+      "path": "crops/pub-nzz-031.jpg",
+      "sha256": "4775ff52445d84ab25eae06e5afd0e96a98c2b83311ecfa30f3ded78e3d2093e"
+    },
+    {
+      "bytes": 20542,
+      "path": "crops/pub-nzz-033.jpg",
+      "sha256": "c7b5290ba6f64809ebd14a40c78eb5f3833be2446fb8ef205824c53d96191a52"
+    },
+    {
+      "bytes": 21754,
+      "path": "crops/pub-nzz-034.jpg",
+      "sha256": "4374609dfb01dca97e99cf73678f112da67acabe24d2815ea7d8cb0188431ca4"
+    },
+    {
+      "bytes": 25672,
+      "path": "crops/pub-nzz-036.jpg",
+      "sha256": "cc428346234dedeabb16f4ce0b82d6b6925728bcf1f4e34ae188eb8d4035c2f8"
+    },
+    {
+      "bytes": 15672,
+      "path": "crops/pub-nzz-038.jpg",
+      "sha256": "159ca785e4505b0258ce37499f4c7c612f110508b6d66acddef1c67a700cbab4"
+    },
+    {
+      "bytes": 26333,
+      "path": "crops/pub-nzz-040.jpg",
+      "sha256": "3bd5c0d0e92ca176ebb844a6ddcf37377a3e79e966627989020d575d69c57a17"
+    },
+    {
+      "bytes": 12955,
+      "path": "crops/pub-nzz-042.jpg",
+      "sha256": "7004b564d6a2968bf73dbe84c15d4057eb64e54dbcba20912bad2a1aa252d921"
+    },
+    {
+      "bytes": 21021,
+      "path": "crops/pub-nzz-044.jpg",
+      "sha256": "30b898e17d30904d51e448371d9b99f32bcda5fd247745505c3682d466eecc8d"
+    },
+    {
+      "bytes": 5906,
+      "path": "crops/pub-nzz-045.jpg",
+      "sha256": "98f8a3be0ac3ba3cd752c3f11a3372ad9244fdf7dfc7a6411d8965068a24efbb"
+    },
+    {
+      "bytes": 10976,
+      "path": "crops/pub-nzz-047.jpg",
+      "sha256": "4dd5abcaba6ecee8a1aa8acc7f0d25a59ca4819b04c383150b25fb5dce9a335c"
+    },
+    {
+      "bytes": 22500,
+      "path": "crops/pub-nzz-050.jpg",
+      "sha256": "319f8101543ab596997a602e007b8cabcc2f3e284c009ddd5d73ac4a9b35bb38"
+    },
+    {
+      "bytes": 26913,
+      "path": "crops/pub-nzz-053.jpg",
+      "sha256": "6b18107234b4590d3710b300b289c4424f71073fd16a0e4dda446386bc0bbdcb"
+    },
+    {
+      "bytes": 23234,
+      "path": "crops/pub-nzz-054.jpg",
+      "sha256": "7a8d8787d3521ee57f3f0119284844f7206c8c67a1f5158e9ffa937b1285c567"
+    },
+    {
+      "bytes": 22190,
+      "path": "crops/pub-nzz-060.jpg",
+      "sha256": "08e69da9d613b5ade6ab3e43263127c2f7935c1b12af0d207bad30dcf20011cb"
+    },
+    {
+      "bytes": 510,
+      "path": "licenses/bln600/ATTRIBUTION.txt",
+      "sha256": "c4cce1bbe66cf348f66d3b1d629377155c9f45831144d8cc3bdbe415267fd72f"
+    },
+    {
+      "bytes": 19127,
+      "path": "licenses/bln600/LICENSE",
+      "sha256": "38762e3777f4ec00a6f769062a7c3f704fb78ce08303ecff88558da4c49cf9ea"
+    },
+    {
+      "bytes": 602,
+      "path": "licenses/bln600/SOURCE.json",
+      "sha256": "f9bd74834d9c6c53aebd7182f207ed76a1aa0d3e0ca97df70665fd618cc89401"
+    },
+    {
+      "bytes": 4902,
+      "path": "licenses/bln600/readme.md",
+      "sha256": "c4b30649dfabada62811a6b201a347b6d2b2f0c9e7e36456086996e5e8f3a2a8"
+    },
+    {
+      "bytes": 404,
+      "path": "licenses/newseye-bnf/ATTRIBUTION.txt",
+      "sha256": "0c3258a95fdfd247999bd9ffe64378476f8d16f118c5d87cb2ad321ac74b19b7"
+    },
+    {
+      "bytes": 261,
+      "path": "licenses/newseye-bnf/SOURCE.json",
+      "sha256": "958a6eb4018c7e80a892c957dbb6b263b6819966948eba11f4972835c8106bd9"
+    },
+    {
+      "bytes": 432,
+      "path": "licenses/newseye-nlf-fi/ATTRIBUTION.txt",
+      "sha256": "0a74409cc121b130a3efd60892663cb415cf103168f70df13a41c92a9d21dd35"
+    },
+    {
+      "bytes": 289,
+      "path": "licenses/newseye-nlf-fi/SOURCE.json",
+      "sha256": "0365ddd6c7002c08613faed5fb401236657117f14f121b82ad1c64f0ed83c09c"
+    },
+    {
+      "bytes": 432,
+      "path": "licenses/newseye-nlf-sv/ATTRIBUTION.txt",
+      "sha256": "384b7e74fa8acba09c533a85622b5056a66c8d68016dccd9734412378658e31f"
+    },
+    {
+      "bytes": 289,
+      "path": "licenses/newseye-nlf-sv/SOURCE.json",
+      "sha256": "99d726e6167ba4420138916da14b32f79c665152d23ee88c991e485f64642b5f"
+    },
+    {
+      "bytes": 508,
+      "path": "licenses/nzz/ATTRIBUTION.txt",
+      "sha256": "7d7d953f25283110a18e69eb92dd49f2c089e410da5f2c807722610fdeb527d0"
+    },
+    {
+      "bytes": 19346,
+      "path": "licenses/nzz/LICENSE.txt",
+      "sha256": "3711f963c05d0be80d53e5923308a6dee31b203da23435c9cfb7c7b6e4dd5e19"
+    },
+    {
+      "bytes": 6512,
+      "path": "licenses/nzz/README.md",
+      "sha256": "529763bb5634a6493368a78d71931302d7d2045b94e4796be960d9b8f887da6a"
+    },
+    {
+      "bytes": 326,
+      "path": "licenses/nzz/SOURCE.json",
+      "sha256": "fe3002595eafd89addbc73623cd79b752762d0fe30169bf69c9d05c27534f4a5"
+    },
+    {
+      "bytes": 632,
+      "path": "licenses/overproof-ca/ATTRIBUTION.txt",
+      "sha256": "a5caf01d64c0198806afb739bd0428b1f3f1c068c81c3e3854f9ed8a126c4b5f"
+    },
+    {
+      "bytes": 5691,
+      "path": "licenses/overproof-ca/README-hipe.md",
+      "sha256": "699e70c99a74d75644b322cd5e91cd77a0a8cc8f20257271eff43cec19c23a1a"
+    },
+    {
+      "bytes": 14254,
+      "path": "licenses/overproof-ca/README-overproof.md",
+      "sha256": "8e88e36209b6268652f56d323160c4bda9659c388cfa364580c87dbd887dc80f"
+    },
+    {
+      "bytes": 1086,
+      "path": "licenses/overproof-ca/SOURCE.json",
+      "sha256": "d6e203a1ebb5a1592acecb5656149d86cc8e17832c2c85d3b21862efb921c48c"
+    }
+  ],
+  "format": "usnm-ocr-gold-bundle",
+  "manifest_sha256": "150e20d75a5357caeeb6eb63911a3d94348e617879f7b0de16c7b1a54670fe3a",
+  "remotes": [
+    {
+      "bytes": 68051422,
+      "id": "bln600-archive",
+      "kind": "zip",
+      "password": "BLN600",
+      "sha256": "1ed1d12959c1adfccab66a2b96a59eb219a7e73086f06f03a48d41c6a5825aad",
+      "source": "bln600",
+      "url": "https://ndownloader.figshare.com/files/49365928"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-1bbcf8196839a292",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "1bbcf8196839a292d2635a7ab7400430c0e00f90e0dae792c11c8495d1dde98e",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:iune:batch_iune_kilo_ver01:data:sn88074142:00280761485:1871062101:0216/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-2724f0587284b4ae",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "2724f0587284b4ae1027cda380708eb060e9c4615f9034583c59c2ed1878bd23",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:hihouml:batch_hihouml_angel_ver01:data:sn85047097:00211100357:1896072101:0077/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-27cef372c74e8285",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "27cef372c74e828568822f2e2bee980159b7851acb82ba8ba19699ea1a82a56b",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:curiv:batch_curiv_albion_ver01:data:sn85066387:190003011:0003/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-33e7af713d9ae542",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:az:batch_az_agave_ver01:data:sn84024828:00211100606:1887061801:0101/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-39528a51259a0adb",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "39528a51259a0adbe510ef21245e51edd9ebad627f7775fbb63b4924735ccb2f",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:az:batch_az_agave_ver01:data:sn84024828:00211100667:1899061701:0241/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-3ed6e3f12879e43e",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "3ed6e3f12879e43ea070755c5fa798a444f0ea733aae279f0923d5d97488966e",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:dlc:batch_dlc_bordercollie_ver02:data:sn84026749:00280764772:1921062101:0457/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-473f77ba0725c29c",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "473f77ba0725c29c90ced6162052e42db2378b7df89d78999ad8e54c6122dba0",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:iune:batch_iune_kilo_ver01:data:sn88074142:00280761485:1872040501:1138/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-71f8bd8efe01f97c",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "71f8bd8efe01f97c1d6b8b02bce24b191e473d4cc6ce6503894e850c2e0cf6f0",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:curiv:batch_curiv_albion_ver01:data:sn85066387:190004011:0003/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-72770912e4e4a1cd",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "72770912e4e4a1cde38d3c4d86908bf80dcfbaee8181b05ee6f6ebe3aead61a4",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:az:batch_az_agave_ver01:data:sn84024828:00211100618:1894062301:0285/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-74b961c17dedbba6",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "74b961c17dedbba6b7ed4de548ced48c1e05e9698219cc58e43bcbc5ecd30a26",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:iune:batch_iune_kilo_ver01:data:sn88074142:00280761485:1871122101:0816/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-a213fc582e87968e",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "a213fc582e87968e3e46188fb987b103fe3ecc0ec9cc88e3d407ac1c3528522e",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:hihouml:batch_hihouml_angel_ver01:data:sn85047097:00211100333:1895062501:0016/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-bbc15956b71beb04",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "bbc15956b71beb04d4528b55198c9cbf79c491e2c9b967065728a734e4d65c23",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:az:batch_az_agave_ver01:data:sn84024828:00211100679:1903062001:0536/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-c1b94bedb9ccf757",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "c1b94bedb9ccf7570594228495227ba336b6c61f190fed95fc4bad81f789fecc",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:curiv:batch_curiv_albion_ver01:data:sn85066387:190001011:0003/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-da02c951c55e85cb",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "da02c951c55e85cbf147ad1108ce36894ceb33d1feaf7ac98841a4de3a660e78",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:hihouml:batch_hihouml_angel_ver01:data:sn85047097:00211100369:1897062101:0628/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-df6696ab6e7a1413",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "df6696ab6e7a1413db1894c79bdba98ffa1f4861098f73d7aca533fbbf9b4306",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:curiv:batch_curiv_albion_ver01:data:sn85066387:190002011:0003/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-e83ae2c841b63402",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "e83ae2c841b63402c8ad0945ed47fb1a9c375bd3844e778fe8730ebd0a391c56",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:hihouml:batch_hihouml_angel_ver01:data:sn85047097:00211100382:1898062101:0610/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-e840837c18753578",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "e840837c18753578b51c31f3eefca64702429db305d5c62373d3174339a37229",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:hihouml:batch_hihouml_angel_ver01:data:sn85047097:00211100357:1896072101:0078/full/full/0/default.jpg"
+    },
+    {
+      "bytes": null,
+      "id": "overproof-ca-e9c61bcbee8bdd9e",
+      "kind": "page-image",
+      "password": null,
+      "sha256": "e9c61bcbee8bdd9ef711dc94c798195db3c5d13eb0c8dd4252d896ce1694462d",
+      "source": "overproof-ca",
+      "url": "https://tile.loc.gov/image-services/iiif/service:ndnp:dlc:batch_dlc_bordercollie_ver02:data:sn84026749:0028076484A:1922030801:0007/full/full/0/default.jpg"
+    }
+  ],
+  "seed": 457,
+  "tar_bytes": 9635328,
+  "tar_sha256": "42520de42c7597bef4ea0ef3508797bfb7db129dd09c31e3d5a2236222be9183"
+}

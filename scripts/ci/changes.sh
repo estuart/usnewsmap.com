@@ -11,8 +11,9 @@
 # applies), so scripts/provision.sh must run. Documentation (Markdown
 # anywhere, anything under docs/) counts for no output but markdown: a change
 # to it alone runs only the Markdown format check.
-# ocr_gold: the OCR gold set (scripts/ocr-survey/, fixtures/ocr-gold/), whose
-# unit tests run in the infra job. fixtures/ocr-gold/ is read by no build, test
+# ocr_gold: the OCR gold set (scripts/ocr-survey/, fixtures/ocr-gold/, and the
+# Rust scorer's golden files that gold.py writes), whose unit tests and golden
+# check run in the infra job. fixtures/ocr-gold/ is read by no build, test
 # or generator, so it counts for none of rust/quickwit/web/image/fixtures.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
 # XML and Bicep; ADR-0019), which no other job builds.
@@ -122,7 +123,7 @@ page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
 contrib='^(contrib-compute/|crates/usnm-boinc/|scripts/ci/check-boinc-server-image\.sh$)'
-ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/)'
+ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 for part in rust quickwit web image fixtures; do
   if matches_built "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
