@@ -84,6 +84,23 @@ def pick_box(words, size: tuple[int, int], rnd: random.Random):
             min(H, int(y0 + 0.06 * H)))
 
 
+def engine_texts(work: Path, results: list, pid: str, loc, box, image_width: int) -> dict:
+    """The text inside the box from LoC's ALTO and from each engine run of the page that has word boxes."""
+    texts = {"loc": lines_in_box(loc, box)}
+    for j in results:
+        if j["page_id"] != pid or j["status"] != "ok" or j.get("scale", 1.0) != 1.0:
+            continue
+        d = work / "out" / j["engine"]
+        key = f"{j['engine']} {j['variant']}"
+        if (d / f"{j['job_id']}.xml").exists():
+            texts[key] = lines_in_box(alto_words(d / f"{j['job_id']}.xml", image_width), box)
+        elif (d / f"{j['job_id']}.words.json").exists():
+            ws = json.loads((d / f"{j['job_id']}.words.json").read_text())
+            # docTR: [x0, y0, x1, y1, text, confidence]
+            texts[key] = lines_in_box([(a, b, c - a, d - b, t, 0) for a, b, c, d, t, _ in ws], box)
+    return texts
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sample", type=Path, required=True)
@@ -116,18 +133,7 @@ def main() -> None:
             n += 1
             crop_id = f"{group}-{n}"
             img.crop(box).convert("L").save(a.out / f"{crop_id}.jpg", quality=85)
-            texts = {"loc": lines_in_box(loc, box)}
-            for j in results:
-                if j["page_id"] != pid or j["status"] != "ok" or j.get("scale", 1.0) != 1.0:
-                    continue
-                d = a.work / "out" / j["engine"]
-                key = f"{j['engine']} {j['variant']}"
-                if (d / f"{j['job_id']}.xml").exists():
-                    texts[key] = lines_in_box(alto_words(d / f"{j['job_id']}.xml", img.width), box)
-                elif (d / f"{j['job_id']}.words.json").exists():
-                    ws = json.loads((d / f"{j['job_id']}.words.json").read_text())
-                    # docTR: [x0, y0, x1, y1, text, confidence]
-                    texts[key] = lines_in_box([(a, b, c - a, d - b, t, 0) for a, b, c, d, t, _ in ws], box)
+            texts = engine_texts(a.work, results, pid, loc, box, img.width)
             rows.append({"crop_id": crop_id, "group": group, "page_id": pid, "lang": r["lang"],
                          "title": r.get("title"), "date": r["date"], "box": list(box), "image": f"{crop_id}.jpg",
                          "texts": dict(sorted(texts.items())), "transcription": None})

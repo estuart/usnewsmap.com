@@ -39,6 +39,7 @@ jobs:
       ocr_worker: ${{ steps.f.outputs.ocr_worker }}
       page_language: ${{ steps.f.outputs.page_language }}
       contrib: ${{ steps.f.outputs.contrib }}
+      ocr_gold: ${{ steps.f.outputs.ocr_gold }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -476,6 +477,11 @@ jobs:
         run: |
           scripts/ci/no-positional-args.py
           python3 -m unittest -v scripts/ci/test_no_positional_args.py
+      - name: The OCR gold set's tests pass (#296)
+        if: needs.changes.outputs.ocr_gold == 'true'
+        run: |
+          python3 -m pip install --quiet --break-system-packages pillow==11.3.0
+          python3 -m unittest -v scripts/ocr-survey/test_gold.py
       - name: The search cluster report's tests pass
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # Against a stub az: the dev experiment marker, the guard-rail budget's

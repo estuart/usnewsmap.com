@@ -1,0 +1,227 @@
+# OCR gold set
+
+Part of [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296). The [engine survey](reports/2026-10-ocr-engine-survey/report.md) has no ground truth, so it can't report a character error rate (CER) or word error rate (WER); it relies on the damage metric. The gold set is a fixed set of crops with a person's transcription, so any engine, profile or route change can be scored by CER and WER on the same text. The plan in [13 §13.9](design/13-ocr-engines.md#139-how-the-survey-and-production-share-engine-images) already names `score --truth <crops dir>`; this is what goes in that directory.
+
+The transcriptions of the 60 crops are not written yet. Every `transcription` field is empty, and none may be filled from an engine's output. Until they are, the 60 are scored as engine agreement only (`gold.py agree`), and the accuracy numbers come from public datasets that already have human transcriptions, described in [Public ground truth](#public-ground-truth).
+
+## Selection
+
+- **Source.** The survey's 80 scored pages (`data/scores.jsonl`; the sample's images are not in the repository). One crop per page.
+- **Target.** 60 crops. The target is shared equally between the survey's groups; a group with fewer pages gives all of them and the others share the rest. The first selection is 10 each for German, worst-English, Serbian, Czech and control, and 5 each for Polish and Russian (all their pages).
+- **Strata.** Group (which stands for language and print type: the survey groups were chosen as the worst-read cases per language, and the control is well-read English dailies), then era. Inside a group the picks cycle through decades in a seeded order, so a group spans as many decades as it has pages in. The era runs from the 1850s to the 1960s.
+- **Seeded.** `gold.py select` with seed 296 reproduces `fixtures/ocr-gold/selection.jsonl`.
+- **Not stratified by typeface.** The sample records no typeface (Fraktur or Antiqua, for German). Record it in `notes` when transcribing; if a stratum turns out to hold one typeface only, add pages.
+- **Crop box.** One text region per page, chosen as the survey's `crops.py` does (a line of LoC's ALTO with 4 or more words in a block at least 600 pixels wide, and the region below it, up to 1,600 pixels wide and 6% of the page high), seeded per page. The box is fixed in the manifest.
+
+```sh
+scripts/ocr-survey/gold.py select --scores docs/reports/2026-10-ocr-engine-survey/data/scores.jsonl \
+  --out fixtures/ocr-gold/selection.jsonl --target 60 --seed 296
+# where the survey's sample and work directories are:
+scripts/ocr-survey/gold.py cut --selection fixtures/ocr-gold/selection.jsonl --sample SAMPLE --work WORK --out OUT
+```
+
+`select` with `--manifest SAMPLE/manifest-final.jsonl` gives the same choice and carries the image and ALTO URLs and checksums.
+
+## Japanese crops
+
+The 24 Japanese crops of the [#128](https://github.com/tgoodyear/usnewsmap.com/issues/128) comparison are not in the 60. Reference texts exist for them outside the repository: 23 files, and one more set aside. What their files and logs show about provenance:
+
+- No script, log or note beside them or in the repository records how the refs were made. `ja-ocr/crops.py` says "transcribe each crop into refs/<page_id>.txt" and nothing more; the commit that added it has no message beyond its title.
+- None is identical to any engine's text for the crop (best similarity per file 0.36 to 0.93 against NDLOCR-Lite, the prototype NDLOCR run, or Azure), so they are not copies of one engine's output.
+- The files were written between 10:35:20 and 10:50:46 on 4 October, 20 to 60 seconds apart, some of 1,400 to 1,700 characters, and two in the same second. That pace is not typing by a person. It fits transcription by a program or an AI model reading the images, but nothing on disk says which.
+- Fifteen lines contain the geta mark 〓 for an unreadable character. No engine's output contains it.
+
+Verdict: not verified as hand-made, and most likely machine-made. They are not ground truth. The survey report is right that no crops were hand-transcribed. Until a person transcribes them from the images, they are a hint, like an engine's text. The crop images are not in the repository, so they are not in the manifest yet.
+
+Needs transcription (crop from `sample.csv`, all unverified):
+
+| page                                | group   | reference text                          |
+| ----------------------------------- | ------- | --------------------------------------- |
+| `sn83025518_1945-06-16_ed-1_seq-2`  | typeset | ref                                     |
+| `sn83025518_1945-08-14_ed-1_seq-3`  | typeset | ref                                     |
+| `sn83025518_1945-10-27_ed-1_seq-3`  | typeset | ref                                     |
+| `sn83025517_1944-11-08_ed-1_seq-2`  | typeset | ref                                     |
+| `sn83025517_1944-08-23_ed-1_seq-2`  | typeset | ref                                     |
+| `sn83025518_1945-10-27_ed-1_seq-2`  | typeset | ref                                     |
+| `sn83025518_1945-06-07_ed-1_seq-3`  | typeset | ref                                     |
+| `sn83025517_1945-10-29_ed-1_seq-2`  | typeset | ref                                     |
+| `sn83025517_1944-11-08_ed-1_seq-3`  | typeset | ref                                     |
+| `sn83025517_1945-10-29_ed-1_seq-3`  | typeset | ref                                     |
+| `sn83025517_1944-09-25_ed-1_seq-3`  | typeset | ref                                     |
+| `sn83025517_1945-06-20_ed-1_seq-3`  | typeset | ref                                     |
+| `sn85040043_1943-09-30_ed-1_seq-3`  | camp    | ref                                     |
+| `sn94050512_1945-03-03_ed-1_seq-2`  | camp    | ref                                     |
+| `sn84024049_1943-08-21_ed-1_seq-9`  | camp    | ref                                     |
+| `sn83025352_1945-09-08_ed-1_seq-4`  | camp    | ref                                     |
+| `sn83025521_1942-10-21_ed-1_seq-8`  | camp    | excluded (4 lines; why is not recorded) |
+| `sn84025952_1944-04-20_ed-1_seq-8`  | camp    | ref                                     |
+| `sn83025353_1943-11-20_ed-1_seq-8`  | camp    | ref                                     |
+| `sn85040043_1943-09-21_ed-1_seq-5`  | camp    | ref                                     |
+| `sn83025353_1942-10-14_ed-1_seq-8`  | camp    | ref                                     |
+| `sn83025522_1943-09-01_ed-1_seq-10` | camp    | ref                                     |
+| `sn83025333_1943-04-24_ed-1_seq-9`  | camp    | ref                                     |
+| `sn84025952_1944-04-20_ed-1_seq-7`  | camp    | ref                                     |
+
+The scorer for these is `scripts/ja-ocr/score.py`, which folds old character forms and also reports bigram F1. Japanese text has no spaces, so `gold.py`'s WER doesn't apply to it; once transcribed, the crops can be added to `crops.jsonl` with `lang` `jpn` and scored by CER.
+
+## Crop format
+
+- `manifest.jsonl`, one row per crop: `crop_id` (`<group>-<nn>`), `page_id`, `group`, `lang`, `era`, `stratum`, `lccn`, `date`, `edition`, `seq`, `title`, `box` (x0, y0, x1, y1 in the page image's pixels), `image`, `crop_sha256`, `encoder`, `page_url` (the loc.gov page), `page_image_url` (the IIIF full-size JPEG the survey used), `page_image_sha256`, `alto_url`.
+- `images/<crop_id>.jpg`: the box cut from the page, grayscale, JPEG quality 85.
+- `crops.jsonl`, the transcription template, one row per crop: `crop_id`, `group`, `lang`, `date`, `title`, `image`, `hints`, `transcription` (null until a person fills it in), `transcriber`, `reviewer`, `hint_copy_reviewed` (false), `notes`.
+- `hints.texts` holds what LoC's ALTO and each engine read in the box, in visual line order. `hints.is_truth` is false and `hints.note` says so. A hint is there to find the passage on the page, not to be corrected. The CER of a hint against the transcription is a result, so a transcription that copies a hint spoils it.
+
+## Where the images live
+
+The page checksum pins the pixels. `page_image_sha256` is the checksum of the page JPEG the survey fetched, and `gold.py fetch` downloads each page (paced as the survey's `locfetch.py` does), checks it, and cuts the box. The crop JPEGs themselves are committed under `fixtures/ocr-gold/` only if the total is under about 10 MB; `cut` prints the total. Otherwise the repository holds the manifest, and `fetch` rebuilds the images. JPEG bytes can differ between Pillow versions, so a differing `crop_sha256` with a matching page checksum is a warning, not an error. 60 pages are about 60 full-resolution downloads from loc.gov, so run `fetch` on a machine with the bandwidth and disk for them.
+
+## Transcription rules
+
+1. **Verbatim.** Type what is printed, including errors, old spellings, long s (ſ), ligatures and printed punctuation. Don't correct, modernize or normalize. Serbian stays in the script printed (Cyrillic or Latin).
+2. **Lines.** One line of the transcription per printed line in the crop, in reading order for the crop's column. If the crop cuts through a line at its edge, transcribe only the characters wholly inside the crop and note it in `notes`.
+3. **Hyphenation.** Keep the hyphen at the end of a line as printed and don't join the word. The scorer joins it (see below).
+4. **Uncertain characters.** `[?]` stands for one character that can't be read. `[?x]` stands for characters read as `x` with doubt. More than 2% of a crop's characters marked this way fails validation; drop the crop and add another page instead.
+5. **Out of scope.** Leave out ornaments, rules and the text of images. Don't skip printed text inside the crop. The scorer can't align around a gap, so validation rejects a `[...]` marker; drop such a crop and add another page instead.
+6. **Who.** The maintainer transcribes, or a person they name. Set `transcriber` to that person. An engine's text, or a model's reading of the image, is never the transcription.
+7. **Second pass.** A different person reads every transcription against the image, fixes it, and sets `reviewer`. The validator rejects a reviewer equal to the transcriber. If only one person is available, run validate with `--allow-unreviewed`, and say so wherever scores are quoted.
+8. **Hint copies.** A transcription equal to a hint after normalization fails validation. If the hint really is right, check the image and set `hint_copy_reviewed` to true.
+
+```sh
+scripts/ocr-survey/gold.py validate --crops OUT/crops.jsonl --manifest OUT/manifest.jsonl --images OUT/images
+```
+
+## CER and WER
+
+`gold.py score` compares each hypothesis text with the transcription. This is the CER the plan describes in 13 §13.9, minus the part that finds the crop's span in a whole page's text; that part needs the engine runs' word boxes, and belongs in `usnm-ocr-survey score`, which doesn't exist yet (the crates have no `usnm-ocr-survey`, so there is nothing to extend). Until then the Python scorer is the reference for the arithmetic: edit distance over the normalized transcription's length, summed over crops (a crop's weight is its length), reported for all crops and per group. WER is the same over whitespace-separated words.
+
+Normalization, on both sides:
+
+1. Unicode NFC. Case, punctuation, diacritics, long s and ligatures are not folded.
+2. A hyphen at the end of a line, followed by the line break, is removed and the line joined. The survey's text does the same.
+3. Line breaks and runs of whitespace become one space.
+
+In the transcription only, `[?x]` counts as `x` and `[?]` is dropped.
+
+Hypotheses are the hint texts in `crops.jsonl` (`--hints`), or per-engine files of `{"crop_id", "text"}` lines (`--hyp tesseract-5.5=FILE.jsonl`). Crops that fail validation are left out and counted.
+
+```sh
+scripts/ocr-survey/gold.py score --crops OUT/crops.jsonl --hints --out OUT/scores
+```
+
+## Public ground truth
+
+The 60-page selection stays untranscribed: the maintainer will not hand-transcribe pages. For those crops `gold.py agree` compares the engines' texts for the same box with each other. That number is agreement, not accuracy: two engines can agree and both be wrong. It says which engine is the odd one out on our pages, and nothing about how close any of them is to the printed text.
+
+Accuracy needs a human transcription, so this section looks for public datasets that have one. Checked on 13 October 2026 from public documentation, dataset cards and repository metadata only; nobody was contacted. Anything I could not confirm is marked UNVERIFIED. Licences are quoted from the source named in the table.
+
+### Source policy
+
+Other people use this repository, so every source used for scoring must be one anyone can check and that we can publish. A source is used for scoring only if all three hold:
+
+1. **Public download.** Anyone can download it without a login, request form or agreement.
+2. **High confidence.** The transcriptions were made or verified by people, and the source documents how.
+3. **Redistributable.** The licence allows public redistribution, so the files or fixtures derived from them can be committed or published.
+
+Checked on 13 October 2026 against each source's own licence and download pages:
+
+| Source                    | URL                                                                                                           | Licence                                                                                                           | Provenance                                                                                                                                             | Confidence | Policy                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- | -------------------------------------------------------- |
+| Reichsanzeiger-GT         | [GitHub](https://github.com/UB-Mannheim/reichsanzeiger-gt), [Zenodo](https://doi.org/10.5281/zenodo.10144094) | CC0-1.0 on GitHub, CC-BY-4.0 on Zenodo; images Public Domain Mark 1.0. We follow CC-BY-4.0 and credit UB Mannheim | Transcribed in Transkribus to the OCR-D Level 2 guidelines, documented in the README and paper                                                         | High       | Passes. Used for scoring                                 |
+| Austrian newspapers       | [Zenodo](https://doi.org/10.5281/zenodo.3387369)                                                              | CC-BY-4.0; credit ONB, NewsEye and READ                                                                           | Page images from the Austrian National Library; text corrected by people in Transkribus for NewsEye and READ, per the record                           | High       | Passes. Used for scoring                                 |
+| American Stories gold set | [Hugging Face](https://huggingface.co/datasets/dell-research-harvard/AmericanStoriesTraining)                 | `apache-2.0` in repository metadata only; the card is empty                                                       | The paper says two annotators hand-entered 10 pages, but nothing says where the pages come from or what years, so the rights in the images are unknown | Medium     | Fails (b) and, for the images, (c). Not used for scoring |
+| NDL PDM OCR set           | [GitHub](https://github.com/ndl-lab/pdmocrdataset-part1)                                                      | Public Domain Mark 1.0                                                                                            | The README says characters were "entered as visually recognized" but not who entered or checked them. Books, not newspapers                            | Unknown    | Fails (b). Not used for scoring                          |
+
+Our own 60-page selection has empty transcriptions, so it gives engine agreement only, never accuracy. Its page images come from Chronicling America and are public; see [Licensing](#licensing).
+
+### What American Stories evaluated on
+
+The [GitHub README](https://github.com/dell-research-harvard/AmericanStories) says: "Its vast size and silver quality make it ideal for innovation and research in this domain." It mentions no test data. The paper ([arXiv:2308.12477](https://arxiv.org/abs/2308.12477), read as the [ar5iv HTML](https://ar5iv.labs.arxiv.org/html/2308.12477) through a summarising fetch tool, so check the wording against the paper before quoting it elsewhere) and the Hugging Face repositories say this:
+
+- **Dataset card** ([dell-research-harvard/AmericanStories](https://huggingface.co/datasets/dell-research-harvard/AmericanStories)): licence CC-BY 4.0, data split by year, annotation section "Not Applicable", no test set, no CER.
+- **Layout detector.** Trained on "2,202 labeled newspaper images, consisting of 48,874 layout objects". The labels were "created by undergraduate research assistants". "Scans from Chronicling America comprise 13% of the training sample", so most of the layout training data is not Chronicling America. The paper describes no held-out layout test split; it reports mAP 91.31 for articles and 88.64 for headlines.
+- **Line OCR.** Compared on "64 textlines drawn randomly from random scans in the Chronicling America collection" (the Carlson et al. sample, CER 0.015 for the EffOCR-Word model the dataset used) and on a hand-transcribed "randomly selected sample of 50 lines for each decade between 1850-1920" (CER 0.043 over the whole sample; 8.9% in the 1850s to 1.8% in the 1910s). These line samples are not released in the repositories I found.
+- **End to end.** "Two student annotators labeled layout regions and hand-entered the texts for 10 full page scans, resolving all discrepancies by hand. The set consists of 597 content regions and 196,655 characters." CER 0.051 (0.044 after spell-checking), which includes layout errors.
+- **Where the human-labelled set is hosted.** [dell-research-harvard/AmericanStoriesTraining](https://huggingface.co/datasets/dell-research-harvard/AmericanStoriesTraining), folder `gold_data/`: `gold_hand_transcription.json` (COCO format, 471,216 bytes) and 10 page images (1.7 to 8.1 MB each, 44.4 MB in `gold_imgs.zip`). Repository metadata: licence `apache-2.0`; the card text is empty. I checked the JSON: 10 images, 597 annotations, 196,655 characters of text, matching the paper's numbers, so this is that set. Annotation classes include article (307 regions with text), headline (199) and others.
+- **Not confirmed.** The paper does not say where the 10 pages come from or what years they cover. Given that Chronicling America is 13% of the layout training sample, they are not necessarily Chronicling America pages: UNVERIFIED. The README is "silver" about the full dataset; this 10-page set is the only hand-made evaluation text in the repositories.
+
+So American Stories evaluated its OCR on hand-transcribed text lines and 10 hand-transcribed full pages. The 10 pages are small but real ground truth, and they are public.
+
+### Datasets surveyed
+
+| Dataset                                                    | URL                                                                                                                               | Licence (as stated)                                                                                                                                       | Size                                                                                                                                                                                                                                                                                 | Format                                                                           | Language, period                                                                                                                                             | Images with transcription?                                                                                                                                              | Fits the pilot?                                                                                                  |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Reichsanzeiger-GT** (UB Mannheim)                        | [10.5281/zenodo.10144094](https://doi.org/10.5281/zenodo.10144094); [GitHub](https://github.com/UB-Mannheim/reichsanzeiger-gt)    | GitHub LICENSE file: "CC0 1.0 Universal". Zenodo record: `cc-by-4.0`. Paper: images under "Public Domain Mark 1.0". The two repository licences disagree. | Zenodo zip 26.1 MB (PAGE XML only; images come from Mannheim's server by `download_images.sh`). 101 PAGE files and 101 image URLs in the repository; the README says 197 pages, METADATA.yml 117, the paper 101, so the count in the files is the one to trust. About 119,400 lines. | PAGE XML, line level, with baselines                                             | German (also English, French, Portuguese, Italian, Latin); Fraktur and Latin; 1820 to 1939                                                                   | Yes: line transcriptions and page images. Transkribus, OCR-D Level 2 guidelines (long s kept)                                                                           | German Fraktur: yes. A government gazette, not a daily paper                                                     |
+| **American Stories gold set** (Dell Research)              | [HF AmericanStoriesTraining](https://huggingface.co/datasets/dell-research-harvard/AmericanStoriesTraining)                       | Hugging Face metadata: `apache-2.0` (card empty)                                                                                                          | 10 pages, 44.4 MB of images, JSON 0.47 MB                                                                                                                                                                                                                                            | COCO JSON, text per region (article, headline)                                   | English, 19th and 20th century newspapers; exact years and source UNVERIFIED                                                                                 | Yes: region boxes with hand-entered text, and page images                                                                                                               | English: yes, years uncertain                                                                                    |
+| **NDL public-domain OCR set** (National Diet Library)      | [GitHub](https://github.com/ndl-lab/pdmocrdataset-part1)                                                                          | README: "PDM (パブリック・ドメイン・マーク)", Public Domain Mark 1.0, with a request to keep the free-use notice                                          | JSON form 5.2 GB (Content-Length from a HEAD request); PascalVOC form 1.8 GB (README)                                                                                                                                                                                                | JSON boxes with `text`, `orientation` vertical or horizontal; images beside them | Japanese, printed books from 1870 to the 1940s (directories by decade); books, not newspapers                                                                | Yes: line boxes with transcription                                                                                                                                      | Japanese: yes, as typeset print of the period; no newspaper layout                                               |
+| NewsEye / READ Austrian Newspapers (ONB)                   | [10.5281/zenodo.3387369](https://doi.org/10.5281/zenodo.3387369)                                                                  | Zenodo record: `cc-by-4.0`                                                                                                                                | Training zip 166 MB, validation zip 16.5 MB; 148 + 13 pages                                                                                                                                                                                                                          | PAGE XML (Transkribus), images included                                          | German, 19th and early 20th century (the Mannheim revision says 1864 to 1911), Fraktur                                                                       | Yes: "carefully corrected text" at line level                                                                                                                           | German Fraktur: yes, and real newspapers. Wired too, with the same page reader, but the zip layout is UNVERIFIED |
+| Europeana Newspapers GT (Berlin State Library, PRImA PAGE) | [10.5281/zenodo.2583866](https://zenodo.org/records/2583866)                                                                      | "Creative Commons Zero v1.0 Universal"                                                                                                                    | 50 pages; `img_full.zip` 31.0 MB, `gt_page.zip` 0.8 MB                                                                                                                                                                                                                               | PAGE XML (2010 schema), region level                                             | German, Fraktur ("Font class: gothic" in the XML)                                                                                                            | Images yes. The text in the XML I opened (50 files) looks like uncorrected OCR (garbled words, 1,415 lines with U+FFFD), so it is layout ground truth. Not used for CER | Layout only                                                                                                      |
+| NZZ black-letter GT (impresso)                             | [10.5281/zenodo.7053264](https://zenodo.org/records/7053264); [GitHub](https://github.com/impresso/NZZ-black-letter-ground-truth) | LICENSE.txt: "Attribution-NonCommercial 4.0 International" (Zenodo says `other-open`)                                                                     | 472.6 MB zip; 167 front pages                                                                                                                                                                                                                                                        | PAGE XML, line level (word level for 134 years)                                  | German, Fraktur, 1780 to 1947, Swiss daily                                                                                                                   | Yes. But the guidelines normalise: long s becomes s, "sz" becomes ß, I/J spelled by modern rules                                                                        | Fits Fraktur newspapers well; not wired: non-commercial, and it normalises what our scorer counts                |
+| BLN600 (British Library Newspapers, Sheffield)             | [10.15131/shef.data.25439023](https://doi.org/10.15131/shef.data.25439023)                                                        | "CC BY-NC-ND 4.0"                                                                                                                                         | `BLN600.zip` 68.1 MB (password protected; the password is in the record's description)                                                                                                                                                                                               | Cropped JPG/TIFF images, text files of the human transcription and of Gale's OCR | English, 1800 to 1900, 600 excerpts                                                                                                                          | Yes: image excerpts with transcription                                                                                                                                  | English to 1900 only. Not wired: NoDerivatives sits badly with cropping and converting                           |
+| GT4HistOCR                                                 | [10.5281/zenodo.1344132](https://zenodo.org/records/1344132)                                                                      | `cc-by-4.0`                                                                                                                                               | 4.0 GB tar; 313,173 lines                                                                                                                                                                                                                                                            | Line image (PNG) and `.gt.txt` pairs                                             | German Fraktur and Early Modern Latin, books, 15th to 19th century                                                                                           | Yes, line level                                                                                                                                                         | Fraktur typeface, but books, not newspapers. Too large for the benefit; not wired                                |
+| ICDAR 2019 post-OCR competition                            | [10.5281/zenodo.3515403](https://zenodo.org/records/3515403)                                                                      | `cc-by-4.0`                                                                                                                                               | 54.3 MB zip                                                                                                                                                                                                                                                                          | Text: OCR and gold standard side by side                                         | Several languages; the record says the documents come from collections including BnF and the British Library, and that Finnish material is not redistributed | No images. Text only: cannot score our engines                                                                                                                          | No                                                                                                               |
+| ICDAR 2017 post-OCR competition                            | not found on Zenodo                                                                                                               | UNVERIFIED                                                                                                                                                | UNVERIFIED                                                                                                                                                                                                                                                                           | UNVERIFIED                                                                       | UNVERIFIED                                                                                                                                                   | UNVERIFIED                                                                                                                                                              | Not checked: post-OCR competition data, so probably no images                                                    |
+| Beyond Words (LoC) and Newspaper Navigator                 | [GitHub](https://github.com/LibraryOfCongress/newspaper-navigator), `beyond_words_data/`                                          | Repository licence: The Unlicense. A search summary says the annotations are CC0 / public domain (UNVERIFIED on the primary page)                         | 3,437 images, 6,732 verified annotations (README, as of 1 December 2019)                                                                                                                                                                                                             | COCO boxes for photographs, illustrations, cartoons, maps; captions              | English, World War I era Chronicling America                                                                                                                 | Boxes plus corrected captions only, not running text; the paper counts about 10,000 corrected annotations (UNVERIFIED)                                                  | English, but captions of pictures, not article text. Not used                                                    |
+| KB historical newspapers OCR ground truth                  | [lab.kb.nl](https://lab.kb.nl/dataset/historical-newspapers-ocr-ground-truth)                                                     | "In copyright"                                                                                                                                            | 2,000 pages                                                                                                                                                                                                                                                                          | JP2 and ALTO                                                                     | Dutch, 1700 to 1995                                                                                                                                          | Yes                                                                                                                                                                     | Not available without writing to the KB, so not used                                                             |
+| CODH modern magazines                                      | [codh.rois.ac.jp](https://codh.rois.ac.jp/modern-magazine/dataset/)                                                               | "CC BY 4.0"                                                                                                                                               | 2.2 GB; 1,985 pages, 59,465 lines                                                                                                                                                                                                                                                    | NDLOCR XML, line level                                                           | Japanese, Meiji era, two magazines                                                                                                                           | Yes                                                                                                                                                                     | Japanese print, magazines not newspapers; an alternative to the NDL set, not wired                               |
+
+No public Japanese newspaper dataset with line transcriptions turned up (UNVERIFIED: this is absence in my searches, not proof). The NDL's own evaluation set is described as not public. Chronicling America itself has no human-corrected full-page text that I could find; see the last section.
+
+### Recommendation
+
+1. **Reichsanzeiger-GT, for German Fraktur.** Line-level human transcription, page images fetched on demand, and a licence that allows redistribution under either statement. Its pages are a gazette, so layouts are denser and plainer than a daily paper's.
+2. **Austrian newspapers, for German Fraktur newspaper layouts.** Real newspapers, corrected by people, CC-BY-4.0.
+
+There is no English or Japanese scoring source yet. American Stories and NDL fail the source policy below and are kept only as comparison readers. BLN600, NZZ and GT4HistOCR are held back for licence or fit, as the table says. The Europeana set cannot give CER.
+
+### How it complements the 60 crops
+
+|                 | Own 60 crops                                | Public sets                                                                                   |
+| --------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Pages           | Ours: the worst-read cases per language     | Someone else's, not chosen for difficulty                                                     |
+| Truth           | None yet                                    | Human transcription                                                                           |
+| Number it gives | Agreement between engines, labelled as such | CER and WER: accuracy                                                                         |
+| Use             | Which engine is the outlier on our material | Whether an engine is any good at the language and script, and whether a profile change helped |
+
+The two do not substitute. A public-set CER says nothing certain about our worst pages, and agreement on our pages says nothing about accuracy. Report them in separate tables with those labels. `score` prints the group per row (`pub-reichsanzeiger`, `pub-austrian`), so the public rows can't be read as the own-crop rows.
+
+### Fetch and convert
+
+`public-fetch` downloads a dataset to `--src`. It will not run without `--confirm-download`, because some downloads are large: the Reichsanzeiger images are 101 page JPEGs from Mannheim's server (paced one second apart, `--pages N` of them, 20 by default, in a fixed seeded order), the Austrian zips 183 MB, and the NDL zip 5.2 GB. Run it on any machine with network access and room for the files. `public-convert` reads what was downloaded and writes the layout `score` reads: `images/`, `manifest.jsonl`, `crops.jsonl`, with the dataset's transcription in `transcription`.
+
+```sh
+scripts/ocr-survey/gold.py public-fetch --dataset reichsanzeiger --src DATA/reichsanzeiger --confirm-download --pages 20
+scripts/ocr-survey/gold.py public-convert --dataset reichsanzeiger --src DATA/reichsanzeiger --out OUT/reichsanzeiger --count 60
+scripts/ocr-survey/gold.py validate --crops OUT/reichsanzeiger/crops.jsonl --manifest OUT/reichsanzeiger/manifest.jsonl --images OUT/reichsanzeiger/images
+# engines' texts for the crops go in as --hyp ENGINE=FILE.jsonl, as for the own crops
+scripts/ocr-survey/gold.py score --crops OUT/reichsanzeiger/crops.jsonl --hyp tesseract-5.5=tess.jsonl --out OUT/reichsanzeiger/scores
+```
+
+`--dataset` is `reichsanzeiger` or `austrian` for scoring. `americanstories` and `ndl-pdm` fail the [source policy](#source-policy); `public-convert` refuses them unless `--not-for-scoring` is given, and their rows then carry `for_scoring: false`. Don't quote their numbers as accuracy. A crop is one transcribed region (a block of lines for the first three, one line for NDL), chosen by seed: regions inside a length window (200 to 2,500 normalized characters; 12 to 300 for NDL lines, overridable with `--min-chars` and `--max-chars`), at most `--per-page` (3) per page, taking one from each page before a second from any. Each crop row carries `source_dataset`, `source_url` and `source_license`, and `transcriber` reads "`<dataset>`: published ground truth" with `reviewer` "not applicable: published ground truth", which is what lets `validate` accept it. Nobody here reviewed those transcriptions; the dataset's authors did, by the process they describe.
+
+What was tested: unit tests on tiny synthetic inputs for every reader, the pick, and the end-to-end conversion (the last one needs Pillow, so it is skipped where Pillow is missing), and a real run of `public-convert` on the American Stories JSON and one of its page images (0015.jpg, 1.7 MB), which cut readable crops that line up with their text. Not run against real data: the Reichsanzeiger conversion (its PAGE files were read, its images were not downloaded), and the Austrian and NDL ones (the zips are too big to fetch here; the NDL reader follows the README's example and expects `json/<dir>/<name>.json` beside `img/<dir>/<name>.jpg`, UNVERIFIED until it runs on the real files).
+
+Caveats when reading the CER of a public set:
+
+- The scorer folds nothing but the line-end hyphen `-`. Reichsanzeiger and Austrian text uses the double oblique hyphen `⸗` for a word broken across lines, and keeps long s and other old forms. An engine that prints `-` or `s` is charged for it. Read the numbers as "against this transcription convention", and compare engines with each other on the same crops.
+- The NDL text is "as seen", old character forms included, and has no spaces, so WER is meaningless for `jpn`; use CER.
+- A crop is a region of a page, and a region of a Reichsanzeiger page can be mostly figures and tables. The window above filters by length only.
+
+## Licensing
+
+The library believes the newspapers in Chronicling America are in the public domain or have no known copyright restrictions, and that those published more than 95 years ago are in the public domain in their entirety; newer ones may hold copyrighted third-party material ([Rights and Access](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/)). Pages in the sample run to 1963, so in 2026 crops from pages published in 1931 or later carry that caveat. Transcriptions are original work and go in under the repository's licence.
+
+## Human-corrected text from LoC
+
+Checked in public documentation only, nobody contacted.
+
+- **Confirmed.** LoC's OCR text and ALTO for Chronicling America pages are machine-made. The survey's own LoC text is that.
+- **Partly confirmed.** The Newspaper Navigator paper ([arXiv:2005.01583](https://arxiv.org/abs/2005.01583)) says its training annotations were collected in LoC's Beyond Words crowdsourcing initiative. A search summary of the paper describes volunteers drawing boxes around photographs, illustrations, comics, cartoons and maps in World War 1-era pages and correcting the OCR of their captions, about 10,000 corrected annotations. That covers captions on illustrations in one era, not running article text, and the abstract page I fetched did not carry those details. UNVERIFIED: the count, the exact era, and whether the corrected captions can be matched to the sample's pages.
+- **UNVERIFIED.** Whether LoC publishes corrected full-page text for any Chronicling America page. I found none in the documentation I could reach; the About page returned HTTP 403 to the fetch tool.
+- **Not used.** None of this is in the gold set. Even if it were, volunteer corrections would need the same second-pass review before counting as truth.
+
+## Open
+
+- A person transcribes the 60 crops and the Japanese crops, or the 60 stay scored as agreement only.
+- Run `public-fetch` and `public-convert` for Reichsanzeiger and Austrian, and check the readers against the real files.
+- Decide whether to commit the images once `cut` has run and the total is known.
+- `usnm-ocr-survey score` takes over the span-finding for whole-page runs and reads this format as `--truth`.
