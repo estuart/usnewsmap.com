@@ -1,0 +1,2 @@
+workdir = "/work"
+create_args = "--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --cpus=1 --memory=1536m --memory-swap=1536m --pids-limit=64 --tmpfs=/tmp:rw,size=512m"

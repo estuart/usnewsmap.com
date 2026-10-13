@@ -116,3 +116,6 @@ mod tests;
 
 #[cfg(test)]
 mod seed_tests;
+
+/// Opt-in BOINC batch reservation under the native OCR lock.
+pub mod boinc;

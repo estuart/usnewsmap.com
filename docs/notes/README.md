@@ -30,3 +30,5 @@ Copy [`template.md`](template.md) to `YYYY-MM-DD-slug.md`, fill it in, and add a
 - **The same rules as [CONTRIBUTING](../../CONTRIBUTING.md).** No real search queries from the search log, no production logs with identifiers, no secrets. Aggregate counts from `/v1/status`, the benchmark searches (05 §5.8), the home page examples and the fixtures are all fine.
 
 The notes are plain Markdown, rendered by GitHub. The site is served by the API from its own image ([ADR-0010](../design/adr/0010-site-served-by-the-api.md)), so publishing them on usnewsmap.com would mean building them into the web app; nothing here assumes that.
+
+- [Stock BOINC batch pilot](2026-10-13-boinc-pilot.md): cached-page transport, native ingestion, and validation boundaries.

@@ -19,3 +19,5 @@ The [design documents](design/README.md) (01–11) record the background, requir
 ## Notes
 
 The [technical notes](notes/README.md) are dated write-ups of work on the index, the OCR and the corpus's coverage: what was tried, what was measured, what was decided and what is left. The design documents say how the system stands now; a note says what was true when.
+
+- [BOINC batch pilot](boinc.md): opt-in cached-page volunteer processing and recovery.

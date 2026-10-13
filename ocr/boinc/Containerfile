@@ -1,0 +1,20 @@
+# Build with the existing Tesseract image's immutable digest. Model bytes
+# and routing are shared with the on-prem worker; no nested container runtime.
+ARG TESSERACT_IMAGE
+FROM rust:1-bookworm AS build
+ARG BUILD_JOBS=2
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
+
+FROM ${TESSERACT_IMAGE}
+# The base's package sources are already pinned to its Debian snapshot.
+USER 0
+RUN apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
+# Stock docker_wrapper mounts the slot at /work. UID 0 can write that
+# mount; capabilities are dropped by job.toml. Outputs are readable by BOINC.
+ENTRYPOINT []
+CMD ["/usr/local/bin/usnm-boinc", "work", "--dir", "/work"]
