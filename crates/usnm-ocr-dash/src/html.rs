@@ -152,6 +152,11 @@ h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:16px; margin:0 0 10px; } h
 section { background:var(--surface); border:1px solid var(--ring); border-radius:8px; padding:14px 16px; overflow-x:auto;
   break-inside:avoid; margin:0 0 16px; }
 section > :last-child { margin-bottom:0; }
+/* The diagrams need the page's width. */
+section.wide { column-span:all; }
+section.wide figure { overflow-x:auto; }
+section.wide svg { margin:6px 0 10px; min-width:760px; }
+.sr { position:absolute; width:1px; height:1px; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 /* Long lists scroll inside their panel, under a header that stays put. */
 .scroll { max-height:360px; overflow:auto; border-bottom:1px solid var(--grid); }
 .scroll th { position:sticky; top:0; background:var(--surface); box-shadow:inset 0 -1px var(--grid); z-index:1; }
@@ -393,6 +398,9 @@ pub fn render(v: &View) -> String {
         );
     }
     o.push_str("</table></section>");
+
+    // 0b. Pipelines, one diagram for each data set.
+    o.push_str(&crate::diagrams::section(v));
 
     // 1. Pool and hosts.
     o.push_str("<section><h2>Pool and hosts</h2>");

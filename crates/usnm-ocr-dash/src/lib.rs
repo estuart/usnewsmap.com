@@ -4,6 +4,7 @@
 //! and serves one HTML page and the same data as JSON. It never shows page
 //! text: pages appear by doc_id, with counts, sizes, times and engine tags.
 
+pub mod diagrams;
 pub mod fetch;
 pub mod hosts;
 pub mod html;

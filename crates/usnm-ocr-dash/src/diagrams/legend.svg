@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="dg" viewBox="0 0 1100 70" width="1100" height="70" role="img" aria-labelledby="legend-t legend-d">
+<title id="legend-t">Diagram key</title>
+<desc id="legend-d">Local boxes sit in the home network band and Azure boxes in the Azure band. The bar on a box shows its state: green done, blue running, amber waiting, grey unknown; a dashed border means not built.</desc>
+<style>
+.dg { --k:#0b0b0b; --k2:#52514e; --bg:#fcfcfb; --lx:#f4f1e6; --lh:#f1f1ee; --la:#e8f0fb; --bx:#ffffff;
+  --good:#0ca30c; --run:#2a78d6; --wait:#fab219; --none:#898781; width:100%; height:auto; max-width:1100px; display:block;
+  font: 12px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--k); }
+@media (prefers-color-scheme: dark) { .dg { --k:#ffffff; --k2:#c3c2b7; --bg:#1a1a19; --lx:#2a2820; --lh:#262625;
+  --la:#17233a; --bx:#0d0d0d; --run:#3987e5; } }
+.dg text { fill:var(--k); } .dg .sub, .dg .lane { fill:var(--k2); }
+.dg .lane { font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; }
+.dg .band { stroke:var(--none); stroke-width:1; stroke-opacity:0.35; }
+.dg .band.x { fill:var(--lx); } .dg .band.h { fill:var(--lh); } .dg .band.a { fill:var(--la); }
+.dg .card { fill:var(--bx); stroke:var(--k2); stroke-width:1.5; }
+.dg .azure .card { stroke-dasharray:none; }
+.dg .ttl { font-weight:700; font-size:13px; }
+.dg .st { font-style:italic; fill:var(--k2); }
+.dg .bar { fill:var(--none); }
+.dg [data-state="done"] .bar { fill:var(--good); } .dg [data-state="running"] .bar { fill:var(--run); }
+.dg [data-state="waiting"] .bar { fill:var(--wait); }
+.dg [data-state="not-built"] .card { stroke-dasharray:6 4; }
+.dg .arrow { fill:none; stroke:var(--k2); stroke-width:1.5; }
+.dg .tip { fill:var(--k2); }
+.dg .al { font-size:11px; fill:var(--k2); }
+</style>
+<defs><marker id="ah-legend" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="tip" d="M0 0 L10 5 L0 10 z"/></marker></defs>
+<rect x="0" y="0" width="1100" height="70" fill="none"/>
+<g class="azure">
+<g class="box" data-state="done"><rect class="card" x="14" y="10" width="40" height="22" rx="4"/><rect class="bar" x="14" y="11" width="6" height="20" rx="2"/></g>
+<text x="62" y="26">done</text>
+<g class="box" data-state="running"><rect class="card" x="130" y="10" width="40" height="22" rx="4"/><rect class="bar" x="130" y="11" width="6" height="20" rx="2"/></g>
+<text x="178" y="26">running</text>
+<g class="box" data-state="waiting"><rect class="card" x="260" y="10" width="40" height="22" rx="4"/><rect class="bar" x="260" y="11" width="6" height="20" rx="2"/></g>
+<text x="308" y="26">waiting</text>
+<g class="box" data-state="none"><rect class="card" x="390" y="10" width="40" height="22" rx="4"/><rect class="bar" x="390" y="11" width="6" height="20" rx="2"/></g>
+<text x="438" y="26">not tracked here</text>
+<g class="box" data-state="not-built"><rect class="card" x="560" y="10" width="40" height="22" rx="4"/><rect class="bar" x="560" y="11" width="6" height="20" rx="2"/></g>
+<text x="608" y="26">not built</text>
+<text class="sub" x="14" y="58">Bands show where a step runs: Library of Congress, home network, or Azure. A line in italics is the live state from this dashboard.</text>
+</g>
+</svg>

@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="dg" viewBox="0 0 1100 380" width="1100" height="380" role="img" aria-labelledby="loc-kept-t loc-kept-d">
+<title id="loc-kept-t">LoC pages whose OCR text is kept</title>
+<desc id="loc-kept-d">Library of Congress page text goes through the Azure ingest job into curated storage, the release builds the search index from it, and the damage pass scores each page. Pages scored above 0.25 also take the keep-set and buffer-set paths.</desc>
+<style>
+.dg { --k:#0b0b0b; --k2:#52514e; --bg:#fcfcfb; --lx:#f4f1e6; --lh:#f1f1ee; --la:#e8f0fb; --bx:#ffffff;
+  --good:#0ca30c; --run:#2a78d6; --wait:#fab219; --none:#898781; width:100%; height:auto; max-width:1100px; display:block;
+  font: 12px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--k); }
+@media (prefers-color-scheme: dark) { .dg { --k:#ffffff; --k2:#c3c2b7; --bg:#1a1a19; --lx:#2a2820; --lh:#262625;
+  --la:#17233a; --bx:#0d0d0d; --run:#3987e5; } }
+.dg text { fill:var(--k); } .dg .sub, .dg .lane { fill:var(--k2); }
+.dg .lane { font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; }
+.dg .band { stroke:var(--none); stroke-width:1; stroke-opacity:0.35; }
+.dg .band.x { fill:var(--lx); } .dg .band.h { fill:var(--lh); } .dg .band.a { fill:var(--la); }
+.dg .card { fill:var(--bx); stroke:var(--k2); stroke-width:1.5; }
+.dg .azure .card { stroke-dasharray:none; }
+.dg .ttl { font-weight:700; font-size:13px; }
+.dg .st { font-style:italic; fill:var(--k2); }
+.dg .bar { fill:var(--none); }
+.dg [data-state="done"] .bar { fill:var(--good); } .dg [data-state="running"] .bar { fill:var(--run); }
+.dg [data-state="waiting"] .bar { fill:var(--wait); } .dg [data-state="failed"] .bar { fill:#d03b3b; }
+.dg [data-state="not-built"] .card { stroke-dasharray:6 4; }
+.dg .arrow { fill:none; stroke:var(--k2); stroke-width:1.5; }
+.dg .tip { fill:var(--k2); }
+.dg .al { font-size:11px; fill:var(--k2); }
+</style>
+<defs><marker id="ah-loc-kept" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="tip" d="M0 0 L10 5 L0 10 z"/></marker></defs>
+<rect x="0" y="0" width="1100" height="380" fill="none"/>
+<rect class="band x" x="4" y="6" width="1092" height="112" rx="6"/>
+<text class="lane" x="14" y="22">Library of Congress</text>
+<rect class="band a" x="4" y="126" width="1092" height="246" rx="6"/>
+<text class="lane" x="14" y="142">Azure (data lake, private)</text>
+<g id="loc-kept-k-loc" class="box x" data-state="none">
+<rect class="card" x="10" y="28" width="200" height="64" rx="4"/>
+<rect class="bar" x="10" y="29" width="6" height="62" rx="2"/>
+<text class="ttl" x="24" y="47">Chronicling America</text>
+<text x="24" y="62">batches on loc.gov, with</text>
+<text x="24" y="77">LoC's own OCR text per page</text>
+</g>
+<g id="loc-kept-k-ingest" class="box azure" data-state="@@cls:ingest@@">
+<rect class="card" x="10" y="150" width="200" height="94" rx="4"/>
+<rect class="bar" x="10" y="151" width="6" height="92" rx="2"/>
+<text class="ttl" x="24" y="169">1  Ingest job</text>
+<text x="24" y="184">enqueue and curate: each</text>
+<text x="24" y="199">batch read once, paced</text>
+<text x="24" y="214">(Azure Container Apps job)</text>
+<text class="st" x="24" y="229">@@lbl:ingest@@</text>
+</g>
+<g id="loc-kept-k-cur" class="box azure" data-state="none">
+<rect class="card" x="230" y="150" width="200" height="79" rx="4"/>
+<rect class="bar" x="230" y="151" width="6" height="77" rx="2"/>
+<text class="ttl" x="244" y="169">2  Curated text</text>
+<text x="244" y="184">curated/ Parquet, LoC</text>
+<text x="244" y="199">text, one copy of each</text>
+<text x="244" y="214">page (zstd)</text>
+</g>
+<g id="loc-kept-k-rel" class="box azure" data-state="@@cls:release-loc@@">
+<rect class="card" x="450" y="150" width="200" height="94" rx="4"/>
+<rect class="bar" x="450" y="151" width="6" height="92" rx="2"/>
+<text class="ttl" x="464" y="169">3  Release</text>
+<text x="464" y="184">usnm-ingest release builds</text>
+<text x="464" y="199">the index and reference</text>
+<text x="464" y="214">snapshot from curated</text>
+<text class="st" x="464" y="229">@@lbl:release-loc@@</text>
+</g>
+<g id="loc-kept-k-idx" class="box azure" data-state="@@cls:index-loc@@">
+<rect class="card" x="670" y="150" width="200" height="94" rx="4"/>
+<rect class="bar" x="670" y="151" width="6" height="92" rx="2"/>
+<text class="ttl" x="684" y="169">4  Search index</text>
+<text x="684" y="184">qw-index (Quickwit) and</text>
+<text x="684" y="199">reference/&lt;version&gt;;</text>
+<text x="684" y="214">the API searches these</text>
+<text class="st" x="684" y="229">@@lbl:index-loc@@</text>
+</g>
+<g id="loc-kept-k-dmg" class="box azure" data-state="@@cls:damage@@">
+<rect class="card" x="230" y="268" width="200" height="94" rx="4"/>
+<rect class="bar" x="230" y="269" width="6" height="92" rx="2"/>
+<text class="ttl" x="244" y="287">5  Damage pass</text>
+<text x="244" y="302">usnm-ingest ocr-damage</text>
+<text x="244" y="317">scores every page; tables in</text>
+<text x="244" y="332">curated/audit/damage/v2</text>
+<text class="st" x="244" y="347">@@lbl:damage@@</text>
+</g>
+<g id="loc-kept-k-next" class="box azure" data-state="none">
+<rect class="card" x="450" y="268" width="240" height="94" rx="4"/>
+<rect class="bar" x="450" y="269" width="6" height="92" rx="2"/>
+<text class="ttl" x="464" y="287">6  Pages above 0.25</text>
+<text x="464" y="302">go on to the keep-set and</text>
+<text x="464" y="317">buffer-set paths; LoC's text</text>
+<text x="464" y="332">stays in the index until the</text>
+<text x="464" y="347">full rebuild replaces it</text>
+</g>
+<path class="arrow" d="M110 92 L110 150" marker-end="url(#ah-loc-kept)"/>
+<path class="arrow" d="M210 197 L230 189.5" marker-end="url(#ah-loc-kept)"/>
+<path class="arrow" d="M430 189.5 L450 197" marker-end="url(#ah-loc-kept)"/>
+<path class="arrow" d="M650 197 L670 197" marker-end="url(#ah-loc-kept)"/>
+<path class="arrow" d="M330 229 L330 268" marker-end="url(#ah-loc-kept)"/>
+<path class="arrow" d="M430 315 L450 315" marker-end="url(#ah-loc-kept)"/>
+</svg>

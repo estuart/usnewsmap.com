@@ -2723,6 +2723,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "quick-xml",
  "reqwest",
  "serde",
  "serde_json",
