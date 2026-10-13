@@ -27,6 +27,17 @@ Verification during implementation:
   Regression tests count snapshot/ledger reads, exercise a lost reservation
   response and partial journal updates, and refuse conflicting cohorts or a
   changed published snapshot without writing new requests.
+- A second review follow-up validates version IDs before constructing object
+  paths and loads title languages only from the published snapshot. Regression
+  tests reject unsafe IDs before reference-store reads and refuse catalog-only
+  titles in both export and reservation.
+- An OCI permission check used a synthetic slot with mode 0771 owned by a different
+  container UID and input files mode 0600. Dropping all capabilities failed with
+  `Permission denied`; retaining only `DAC_OVERRIDE` returned `HELLO WORLD` and
+  mode-0644 outputs/progress. This used the previously built worker image (worker
+  execution code unchanged) and rootless Podman, not a BOINC client. The job
+  configuration now retains that capability; live wrapper verification remains
+  required.
 
 The synthetic page establishes execution and format compatibility, not historical
 OCR accuracy or general throughput. No live BOINC server/client task, OS idle

@@ -19,12 +19,33 @@ impl Snapshot {
             .current_version()
             .await?
             .ok_or_else(|| anyhow::anyhow!("no published index version"))?;
+        anyhow::ensure!(
+            usnm_store::is_safe_segment(&version),
+            "invalid published version id"
+        );
         let bytes = reference
             .get(&format!("{version}/batches.json"))
             .await?
             .ok_or_else(|| anyhow::anyhow!("published batch list missing"))?;
         let batches = serde_json::from_slice(&bytes)?;
-        let titles = crate::ocr_damage::title_languages(reference, &version).await?;
+        #[derive(serde::Deserialize)]
+        struct Title {
+            lccn: String,
+            #[serde(default)]
+            languages: Vec<String>,
+        }
+        let bytes = reference
+            .get(&format!("{version}/titles.json"))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("published title list missing"))?;
+        let published: Vec<Title> = serde_json::from_slice(&bytes)?;
+        let mut titles = HashMap::new();
+        for title in published {
+            anyhow::ensure!(
+                titles.insert(title.lccn, title.languages).is_none(),
+                "duplicate published title"
+            );
+        }
         Ok(Self {
             version,
             batches,

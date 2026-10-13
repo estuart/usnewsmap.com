@@ -14,7 +14,8 @@ RUN apt-get -o Acquire::Check-Valid-Until=false update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
-# Stock docker_wrapper mounts the slot at /work. UID 0 can write that
-# mount; capabilities are dropped by job.toml. Outputs are readable by BOINC.
+# Stock docker_wrapper mounts a BOINC-owned slot at /work. job.toml drops
+# capabilities except DAC_OVERRIDE so UID 0 can access that foreign-owned
+# mount. Only the slot is mounted; outputs are mode 0644 for the host client.
 ENTRYPOINT []
 CMD ["/usr/local/bin/usnm-boinc", "work", "--dir", "/work"]

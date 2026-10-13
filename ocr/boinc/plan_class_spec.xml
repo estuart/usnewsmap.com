@@ -1,0 +1,7 @@
+<!-- Merge the docker class into the existing project plan_class_spec.xml. -->
+<plan_classes>
+  <plan_class>
+    <name>docker</name>
+    <docker/>
+  </plan_class>
+</plan_classes>

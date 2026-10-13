@@ -593,6 +593,7 @@ async fn cohort_filters_unrelated_pages_and_reads_snapshot_and_ledger_once() {
     assert_eq!(ids.len(), 3);
     assert_eq!(reference.count("get:v1/batches.json"), 1);
     assert_eq!(reference.count("get:v1/titles.json"), 1);
+    assert_eq!(reference.count("get:catalog/titles.json"), 0);
     assert_eq!(curated.count("list:ocr-local/queued"), 1);
     assert_eq!(curated.count("list:ocr-local/outcomes"), 1);
     assert_eq!(
@@ -774,6 +775,117 @@ async fn snapshot_change_prevents_reservation() {
     .await
     .unwrap_err();
     assert!(error.to_string().contains("snapshot changed"));
+    assert_eq!(
+        fx.stores
+            .curated
+            .list("ocr-local/queued")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn snapshot_rejects_unsafe_version_before_reading_reference_paths() {
+    for version in ["v1/other", "../v1", "", "/v1", "v1?other"] {
+        let fx = Fixture::new("eng").await;
+        fx.state.set_current_version(version).await.unwrap();
+        let reference = ObservedStore::new(fx.stores.reference.clone());
+        let error = usnm_boinc::export(
+            &fx.options,
+            &fx.state,
+            fx.stores.curated.as_ref(),
+            &reference,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("invalid published version"),
+            "{error:#}"
+        );
+        assert!(reference.calls.lock().unwrap().is_empty());
+        assert!(ledger::load(fx.stores.curated.as_ref())
+            .await
+            .unwrap()
+            .queued
+            .is_empty());
+    }
+}
+
+#[tokio::test]
+async fn unpublished_catalog_title_cannot_route_or_reserve_a_page() {
+    let fx = Fixture::new("eng").await;
+    fx.stores
+        .reference
+        .put("v1/titles.json", b"[]".to_vec(), "application/json")
+        .await
+        .unwrap();
+    fx.stores
+        .reference
+        .put_new(
+            "catalog/titles.json",
+            br#"[{"lccn":"sn00000001","languages":["eng"]}]"#.to_vec(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let reference = ObservedStore::new(fx.stores.reference.clone());
+    let error = usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &reference,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("title is not published"),
+        "{error:#}"
+    );
+    assert_eq!(reference.count("get:catalog/titles.json"), 0);
+    assert!(ledger::load(fx.stores.curated.as_ref())
+        .await
+        .unwrap()
+        .queued
+        .is_empty());
+
+    // The native helper must enforce the same rule independently of export.
+    fx.stores
+        .reference
+        .put(
+            "v1/titles.json",
+            br#"[{"lccn":"sn00000001","languages":["eng"]}]"#.to_vec(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let id = fx.export().await;
+    let row = usnm_boinc::load(&fx.options.root, &id)
+        .unwrap()
+        .queued()
+        .unwrap();
+    fx.stores
+        .reference
+        .put("v1/titles.json", b"[]".to_vec(), "application/json")
+        .await
+        .unwrap();
+    let snapshot = usnm_ingest::ocr_local::boinc::Snapshot::load(&fx.state, &reference)
+        .await
+        .unwrap();
+    let error = usnm_ingest::ocr_local::boinc::reserve(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &[row],
+        "unpublished-title",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("title is not published"),
+        "{error:#}"
+    );
     assert_eq!(
         fx.stores
             .curated
