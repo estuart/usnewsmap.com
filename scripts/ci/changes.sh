@@ -25,6 +25,7 @@ out=${GITHUB_OUTPUT:-/dev/stdout}
 # Known only once the changed files are; "run everything" keeps them.
 provision=false
 ops=false
+forced=
 all() {
   printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
@@ -59,14 +60,39 @@ if [ -n "$files" ] && grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwi
 fi
 # The index version snapshots and the index history must match their schemas
 # (and what writes them); searches.sh's date-span summary has its tests there too.
-matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history|test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$|\.github/workflows/ci\.yml$)' && ops=true
-matches '^\.github/' && all "workflow changed"
+matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history|test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$)' && ops=true
+# Another workflow or dependabot.yml defines no job here. An edit to ci.yml
+# outside a job (triggers, env) or to the changes job runs everything; an edit
+# inside other jobs forces just the flags those jobs' `if:` lines read.
+matches '^\.github/workflows/ci\.yml$' && {
+  lines=$(mktemp)
+  forced=$(git diff -U0 "$range" -- .github/workflows/ci.yml | awk '
+    /^@@/ { split($3, a, ","); start = substr(a[1], 2) + 0; n = (a[2] == "" ? 1 : a[2] + 0)
+            for (i = 0; i < n; i++) changed[start + i] = 1; if (n == 0) changed[start] = 1; next }
+    END { for (l in changed) print l }' | sort -n > "$lines"
+    awk -v list="$lines" '
+      BEGIN { while ((getline l < list) > 0) hit[l] = 1 }
+      /^jobs:/ { injobs = 1; next }
+      !injobs { if (hit[NR]) print "ALL"; next }
+      /^  [a-z0-9_-]+:$/ { job = $1; if (job == "changes:") job = "ALL"; hitjob[job] = hitjob[job] || hit[NR]; cur = job; next }
+      { if (hit[NR]) hitjob[cur] = 1
+        while (match($0, /outputs\.[a-z_]+/)) { flags[cur] = flags[cur] " " substr($0, RSTART + 8, RLENGTH - 8); $0 = substr($0, RSTART + RLENGTH) } }
+      END { for (j in hitjob) if (hitjob[j]) { if (j == "ALL") print "ALL"; else print flags[j] } }' .github/workflows/ci.yml | tr -s ' \n' ' ')
+  rm -f "$lines"
+  case " $forced " in *" ALL "*) ops=true; all "workflow changed" ;; esac
+  for flag in markdown ops provision; do
+    if [[ " $forced " == *" $flag "* ]]; then printf -v "$flag" true; fi
+  done
+  echo "workflow jobs changed, forcing:$forced"
+}
+# Workflow files are settled above; they are not code for the file rules below.
+files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # The Rust build and tests: the crates, the files compiled into binaries
 # (index config, place overrides, the example searches the API warms, the
 # reconstructed index history), the fixtures the tests read, and the Python
 # metric the damage port is checked against (its tables, its word lists and
 # their sha256).
-rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/(ci/|quickwit-fixtures\.sh))'
+rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/quickwit-fixtures\.sh)'
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer): the code those tests run and what they load. Not catalog/,
 # web/src/examples.json, ops/index-history.json or other CI scripts, which
@@ -74,9 +100,9 @@ rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickw
 # is asked to do.
 quickwit='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$)'
 # The web job also checks the format, so Prettier's config counts.
-web='^(web/|fixtures/|scripts/ci/|\.prettier(rc\.json|ignore)$)'
+web='^(web/|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
-image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$)"
+image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
@@ -92,11 +118,11 @@ ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-core|
 page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^(contrib-compute/|crates/usnm-boinc/)'
+contrib='^(contrib-compute/|crates/usnm-boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 for part in rust quickwit web image fixtures ocr_worker page_language contrib; do
-  if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
+  if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"
 echo "markdown=$markdown" >> "$out"
-if [ -n "$files" ]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
+if [ -n "$files" ] || [[ " $forced " == *" code "* ]]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
 echo "provision=$provision" >> "$out"
