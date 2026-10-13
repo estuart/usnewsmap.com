@@ -22,6 +22,11 @@ Verification during implementation:
 - Integration tests exercise native `ocr-sync` pickup, reservation replay,
   ambiguous submission, terminal spool errors, malformed/mismatched output,
   publishing crash recovery, and duplicate collection after pickup.
+- Review follow-up adds filtered manifest decoding, native title-language fallback
+  for `und`/missing detection, and one cohort reservation under a renewable lease.
+  Regression tests count snapshot/ledger reads, exercise a lost reservation
+  response and partial journal updates, and refuse conflicting cohorts or a
+  changed published snapshot without writing new requests.
 
 The synthetic page establishes execution and format compatibility, not historical
 OCR accuracy or general throughput. No live BOINC server/client task, OS idle

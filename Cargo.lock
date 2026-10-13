@@ -2642,6 +2642,7 @@ name = "usnm-boinc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytes",
  "chrono",
  "clap",

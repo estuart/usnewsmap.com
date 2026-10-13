@@ -119,6 +119,8 @@ impl Record {
     }
     pub fn paths(&self) -> anyhow::Result<(String, String)> {
         let key = self.job.message.key()?;
+        // Short IDs keep native filenames compact. put_same refuses differing
+        // bytes at an existing path, so a collision fails rather than overwrites.
         Ok((
             format!(
                 "alto/{}.boinc-{}.{}.xml",
@@ -256,8 +258,14 @@ pub async fn export(
         let k: PageKey = s.parse()?;
         ensure!(k.to_string() == *s, "noncanonical page key");
     }
-    let rows =
-        usnm_ocr_contract::prefetch::decode(bytes::Bytes::from(read(&opts.manifest, 128 << 20)?))?;
+    let selected_docs: BTreeSet<String> = selected
+        .iter()
+        .map(|page| page.parse::<PageKey>().map(|key| key.doc_id()))
+        .collect::<Result<_, _>>()?;
+    let rows = usnm_ocr_contract::prefetch::decode_where(
+        bytes::Bytes::from(read(&opts.manifest, 128 << 20)?),
+        |row| row.batch == opts.batch && selected_docs.contains(&row.doc_id),
+    )?;
     let mut chosen = BTreeMap::new();
     for row in rows {
         if row.batch == opts.batch && selected.contains(&row.key()?.to_string()) {
@@ -278,11 +286,16 @@ pub async fn export(
         .filter_map(|s| s.strip_prefix("tessdata/")?.strip_suffix(".traineddata"))
         .map(str::to_owned)
         .collect();
-    let mut ids = Vec::new();
+    let snapshot = ocr_local::boinc::Snapshot::load(state, reference).await?;
+    let mut records = Vec::new();
     for (page, row) in chosen {
         let (scan, side) = cached(&opts.scans, &row)?;
-        let language = ocr_local::enqueue::message_language(row.lang.as_deref(), &[])
-            .context("page has no mapped detected language")?;
+        let title_languages = snapshot
+            .titles
+            .get(&row.lccn)
+            .context("selected title is not published")?;
+        let language = ocr_local::enqueue::message_language(row.lang.as_deref(), title_languages)
+            .context("page has no mapped detected or title language")?;
         let profile = engine::route(&language, &installed)
             .context("no locked Tesseract model for page language")?;
         let now = Utc::now();
@@ -321,7 +334,7 @@ pub async fn export(
         job.id = job.identity()?;
         job.validate()?;
         let job_dir = dir(&opts.root, &job.id)?;
-        let mut record = if job_dir.join("record.json").exists() {
+        let record = if job_dir.join("record.json").exists() {
             let old = load(&opts.root, &job.id)?;
             ensure!(
                 old.plan == opts.plan,
@@ -344,21 +357,30 @@ pub async fn export(
             save(&opts.root, &record)?;
             record
         };
-        if record.stage == Stage::Prepared {
-            // Record already exists locally: retrying a lost reservation response is safe.
-            ocr_local::boinc::reserve(
-                state,
-                curated,
-                reference,
-                &record.queued()?,
-                &format!("boinc-{}", record.job.id),
-            )
-            .await?;
-            record.stage = Stage::Reserved;
-            save(&opts.root, &record)?;
-        }
-        ids.push(record.job.id);
+        records.push(record);
     }
+    let pending: Vec<_> = records
+        .iter()
+        .filter(|r| r.stage == Stage::Prepared)
+        .collect();
+    if !pending.is_empty() {
+        let rows = pending
+            .iter()
+            .map(|r| r.queued())
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        // Deterministic cohort name from full IDs; request times remain in the
+        // persisted records. A retry can contain already-written reservations.
+        let ids: Vec<_> = pending.iter().map(|r| &r.job.id).collect();
+        let run = format!("boinc-{}", boinc::sha256(&serde_json::to_vec(&ids)?));
+        ocr_local::boinc::reserve(state, curated, &snapshot, &rows, &run).await?;
+        for record in &mut records {
+            if record.stage == Stage::Prepared {
+                record.stage = Stage::Reserved;
+                save(&opts.root, record)?;
+            }
+        }
+    }
+    let ids = records.into_iter().map(|r| r.job.id).collect();
     Ok(ids)
 }
 

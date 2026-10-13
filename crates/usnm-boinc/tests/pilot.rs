@@ -1,7 +1,10 @@
 use chrono::{NaiveDate, Utc};
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use usnm_boinc::{ExportOptions, Stage};
 use usnm_core::ids::PageKey;
@@ -161,6 +164,48 @@ impl Fixture {
             stores,
             options,
         }
+    }
+    // Selected pages have cached scans; unrelated manifest rows deliberately
+    // have neither caches nor a supported language.
+    fn cohort(&self, selected: u16, unrelated: u16) {
+        let base = prefetch::decode(bytes::Bytes::from(
+            std::fs::read(&self.options.manifest).unwrap(),
+        ))
+        .unwrap()
+        .remove(0);
+        let source = scan_path(
+            &self.options.scans,
+            &base,
+            ImageSize::Full,
+            ScanFormat::Jpeg,
+        );
+        let scan = std::fs::read(&source).unwrap();
+        let side: Sidecar =
+            serde_json::from_slice(&std::fs::read(sidecar_path(&source)).unwrap()).unwrap();
+        let mut rows = Vec::new();
+        let mut pages = Vec::new();
+        for seq in 1..=selected + unrelated {
+            let key = PageKey::new(&base.lccn, base.date, base.edition, seq).unwrap();
+            let row = ManifestRow::new(
+                &key,
+                &base.batch,
+                base.batch_version,
+                Some(if seq <= selected { "eng" } else { "jpn" }.into()),
+                "detected",
+                0.5,
+            );
+            if seq <= selected {
+                let path = scan_path(&self.options.scans, &row, ImageSize::Full, ScanFormat::Jpeg);
+                std::fs::write(&path, &scan).unwrap();
+                let mut side = side.clone();
+                side.doc_id = key.doc_id();
+                std::fs::write(sidecar_path(&path), serde_json::to_vec(&side).unwrap()).unwrap();
+                pages.push(key.to_string());
+            }
+            rows.push(row);
+        }
+        std::fs::write(&self.options.manifest, prefetch::encode(&rows).unwrap()).unwrap();
+        std::fs::write(&self.options.pages, pages.join("\n")).unwrap();
     }
     async fn export(&self) -> String {
         usnm_boinc::export(
@@ -473,4 +518,269 @@ async fn changed_cached_scan_and_oversized_return_are_rejected() {
     std::fs::write(&files.1, vec![b'a'; boinc::MAX_TEXT + 1]).unwrap();
     assert!(fx.import(&id, &files).await.is_err());
     assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
+}
+
+#[derive(Debug)]
+struct ObservedStore {
+    inner: Arc<dyn ObjectStore>,
+    calls: Mutex<Vec<String>>,
+    lose_write_response: AtomicBool,
+}
+impl ObservedStore {
+    fn new(inner: Arc<dyn ObjectStore>) -> Self {
+        Self {
+            inner,
+            calls: Mutex::new(Vec::new()),
+            lose_write_response: AtomicBool::new(false),
+        }
+    }
+    fn count(&self, call: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| *s == call)
+            .count()
+    }
+}
+#[async_trait::async_trait]
+impl ObjectStore for ObservedStore {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        self.calls.lock().unwrap().push(format!("get:{path}"));
+        self.inner.get(path).await
+    }
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        self.calls.lock().unwrap().push(format!("put_new:{path}"));
+        let written = self.inner.put_new(path, body, content_type).await?;
+        if path.starts_with("ocr-local/queued/")
+            && written
+            && self.lose_write_response.swap(false, Ordering::SeqCst)
+        {
+            return Err(usnm_store::StoreError::Io(
+                "lost reservation response".into(),
+            ));
+        }
+        Ok(written)
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.inner.put(path, body, content_type).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.calls.lock().unwrap().push(format!("list:{prefix}"));
+        self.inner.list(prefix).await
+    }
+}
+
+#[tokio::test]
+async fn cohort_filters_unrelated_pages_and_reads_snapshot_and_ledger_once() {
+    let fx = Fixture::new("eng").await;
+    fx.cohort(3, 1000);
+    let curated = ObservedStore::new(fx.stores.curated.clone());
+    let reference = ObservedStore::new(fx.stores.reference.clone());
+    let ids = usnm_boinc::export(&fx.options, &fx.state, &curated, &reference)
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 3);
+    assert_eq!(reference.count("get:v1/batches.json"), 1);
+    assert_eq!(reference.count("get:v1/titles.json"), 1);
+    assert_eq!(curated.count("list:ocr-local/queued"), 1);
+    assert_eq!(curated.count("list:ocr-local/outcomes"), 1);
+    assert_eq!(
+        fx.stores
+            .curated
+            .list("ocr-local/queued")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        ledger::load(fx.stores.curated.as_ref())
+            .await
+            .unwrap()
+            .queued
+            .len(),
+        3
+    );
+    for id in ids {
+        assert_eq!(
+            usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+            Stage::Reserved
+        );
+    }
+}
+
+#[tokio::test]
+async fn undetected_language_uses_published_title_fallback() {
+    for detected in [None, Some("und".into())] {
+        let fx = Fixture::new("ger").await;
+        let mut rows = prefetch::decode(bytes::Bytes::from(
+            std::fs::read(&fx.options.manifest).unwrap(),
+        ))
+        .unwrap();
+        rows[0].lang = detected;
+        std::fs::write(&fx.options.manifest, prefetch::encode(&rows).unwrap()).unwrap();
+        let id = fx.export().await;
+        let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+        assert_eq!(record.job.message.language, "deu");
+        assert_eq!(record.job.engine.profile, "frak2021");
+        assert_eq!(
+            ledger::load(fx.stores.curated.as_ref())
+                .await
+                .unwrap()
+                .queued[&rows[0].doc_id]
+                .language,
+            "deu"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cohort_reservation_replays_lost_response_and_partial_journal_updates() {
+    let fx = Fixture::new("eng").await;
+    fx.cohort(3, 0);
+    let curated = ObservedStore::new(fx.stores.curated.clone());
+    curated.lose_write_response.store(true, Ordering::SeqCst);
+    assert!(usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        &curated,
+        fx.stores.reference.as_ref()
+    )
+    .await
+    .is_err());
+    let prepared = usnm_boinc::records(&fx.options.root).unwrap();
+    assert_eq!(prepared.len(), 3);
+    assert!(prepared.iter().all(|r| r.stage == Stage::Prepared));
+    let mut first = prepared[0].clone();
+    first.stage = Stage::Reserved; // Simulate one journal update succeeding before a crash.
+    usnm_boinc::save(&fx.options.root, &first).unwrap();
+    let ids = usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        &curated,
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ids.len(), 3);
+    assert_eq!(
+        fx.stores
+            .curated
+            .list("ocr-local/queued")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(usnm_boinc::records(&fx.options.root)
+        .unwrap()
+        .iter()
+        .all(|r| r.stage == Stage::Reserved));
+    for old in prepared {
+        assert_eq!(
+            usnm_boinc::load(&fx.options.root, &old.job.id)
+                .unwrap()
+                .queued()
+                .unwrap(),
+            old.queued().unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn conflicting_cohort_does_not_reserve_its_fresh_pages_and_unlocks() {
+    let fx = Fixture::new("eng").await;
+    fx.cohort(2, 0);
+    // Only the second page has prior work: the first row of the next cohort
+    // is fresh, so a per-page writer would incorrectly reserve it before failing.
+    let second = std::fs::read_to_string(&fx.options.pages)
+        .unwrap()
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_owned();
+    std::fs::write(&fx.options.pages, second).unwrap();
+    fx.export().await;
+    fx.cohort(3, 0);
+    let mut options = fx.options.clone();
+    options.root = fx.tmp.path().join("another-dispatch");
+    options.plan = "other-plan".into();
+    assert!(usnm_boinc::export(
+        &options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref()
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        ledger::load(fx.stores.curated.as_ref())
+            .await
+            .unwrap()
+            .queued
+            .len(),
+        1
+    );
+    // Returning to the original plan proves the rejected cohort released its lease.
+    usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        ledger::load(fx.stores.curated.as_ref())
+            .await
+            .unwrap()
+            .queued
+            .len(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn snapshot_change_prevents_reservation() {
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let snapshot =
+        usnm_ingest::ocr_local::boinc::Snapshot::load(&fx.state, fx.stores.reference.as_ref())
+            .await
+            .unwrap();
+    let row = usnm_boinc::load(&fx.options.root, &id)
+        .unwrap()
+        .queued()
+        .unwrap();
+    fx.state.set_current_version("v2").await.unwrap();
+    let error = usnm_ingest::ocr_local::boinc::reserve(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &[row],
+        "test-changed",
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("snapshot changed"));
+    assert_eq!(
+        fx.stores
+            .curated
+            .list("ocr-local/queued")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }

@@ -8,7 +8,10 @@ Parquet to `ocr-out`; `ocr-sync` and the release keep their existing decisions.
 
 ## Boundaries
 
-- Linux x86-64 first, with compatible recent stock BOINC and Docker.
+- Linux x86-64 first, with compatible recent stock BOINC and Docker. The stock
+  Docker wrapper is the only app type in this pilot. Volunteers need permission
+  to run Docker containers; hosts without that capability (including restricted
+  or unprivileged containers) cannot participate. A native app is future work.
 - Explicit cohorts of 1-100 pages from one batch, selected from the prefetch
   manifest. No automatic consumption of Azure queues or LoC fetching.
 - Central bridge: native work reservations, BOINC staging/submission, validation
@@ -52,6 +55,16 @@ publish the BOINC image to a registry they can pull, and use its registry digest
 pin, not the engine base's pin. Rebuild/sign a new BOINC app version when changing
 code, models, image, or runtime configuration. The Rust build uses the repository's
 locked dependencies; capture the build revision and compiler in your release.
+
+Before changing the installed worker image, stop creating new cohorts. Finish
+exporting/submitting already allocated cohorts with their original image, and
+drain all existing workunits through collection. Resolve uncertain and failed tasks before
+rolling the app version; do not send their existing requests to a different image.
+The worker checks the exact Tesseract version, profile and model bytes, and the
+collector checks the result against the job's immutable engine metadata. Installing
+a new app version does not rewrite existing requests or bind `create_work` to an
+image automatically. Resume with fresh cohorts and the new image pin after the
+old cohort is drained. Retain old signed files and journals for recovery.
 
 ## Local synthetic demonstration
 
@@ -104,7 +117,10 @@ python3 -m unittest discover -s scripts/boinc -p 'test_*.py'
 
 ## Connect a stock BOINC project
 
-Create a stock Linux BOINC server using the upstream setup documentation.
+Create your own Linux BOINC project server using the upstream setup documentation.
+Stock means unmodified upstream BOINC software: BOINC Central hosting or public
+project registration is not required. Friends attach manually to your server's
+project URL. Registering `usnm_ocr` below means registering it on your own server.
 This repository does not provision its web server/database or ship BOINC binaries.
 Use BOINC 9.0+ clients and a recent Linux x86-64 `docker_wrapper` supporting
 `workdir` and `create_args`. Install/merge upstream's Docker plan class and test
@@ -157,12 +173,23 @@ it has replaced searchable text. Continue with the existing `ocr-sync` and relea
 
 ## Allocation and recovery
 
-Export reserves pages under the same renewable `ocr-sync` lock and writes the
-native requested-work ledger. It verifies the selected batch/version and title
-against the published reference snapshot, and leaves Japanese titles to their
+Export filters the manifest while decoding, retaining only selected batch/page
+rows (the native decoder still validates all rows). Undetected page languages
+use the title's first catalog language from the published reference snapshot,
+with the same catalog fallback and MARC-to-ISO mapping as native enqueue.
+
+Export stages all selected jobs locally before reserving the cohort under one
+renewable `ocr-sync` lock. It reads the published metadata and native ledger once,
+validates the whole cohort, and writes one create-only queued part for fresh
+reservations. If any row conflicts, no new reservations are written. It verifies
+that the published version has not changed since staging, checks batch/version
+and title against that snapshot, and leaves Japanese titles to their
 existing pipeline. It refuses pages with prior native work, except an
-exact replay of its own reservation. The ledger remains outstanding across BOINC
-processing; no Azure queue lease is held or renewed. Allocate a fresh small cohort,
+exact replay of its own reservation. "Fresh cohort" means different page keys
+without prior native work. Both outstanding and completed native work make a
+page ineligible; changing the plan, image pin, timeout or job ID does not bypass
+this check. The ledger remains
+outstanding across BOINC processing; no Azure queue lease is held or renewed. Allocate a fresh small cohort,
 and exclude it from overlapping seeder plans: the existing seeder may reconsider
 old outstanding work under its own policy. This pilot does not add a global
 long-lived BOINC ownership field to that policy.
@@ -172,7 +199,9 @@ The local journal has `prepared`, `reserved`, `submitting`, `submitted`,
 up. An advisory lock serializes bridge processes sharing that directory.
 
 - Repeating export completes a reservation interrupted by a crash, without writing
-  another request. The original request time is retained at native microsecond precision.
+  another request. A lost cohort-write response or partially updated local
+  journals replay the exact existing rows and reserve only still-fresh pages.
+  The original request time is retained at native microsecond precision.
 - Before `create_work`, submission records `submitting`. After an error or crash
   it never automatically submits again. Inspect BOINC for `usnm_JOB_ID`. Only
   after verifying existence/absence run `reconcile --root DIR --job ID --found
@@ -189,17 +218,33 @@ present` (mark submitted) or `--found absent` (permit submission again).
 --found present` to permit collection of its recovered output. A failed job
   cannot be marked absent to create a duplicate workunit. Alternatively arrange
   a new native allocation through the existing pipeline. Do not reset a
-  submitted/failed task blindly.
+  submitted/failed task blindly. There is no supported "re-export this failed
+  page with a new BOINC job ID" command. To move the page back to the native pool,
+  first ensure BOINC can no longer return or collect it, retain its journal and
+  spool for audit, then use the existing
+  [native enqueue/requeue procedure](operations.md#ocr-pickup-ocr-sync-296) with an
+  operator-approved `ocr-enqueue --include-outstanding` retry for that page.
+  `ocr-requeue` targets native dead letters, not BOINC spool error markers. Never
+  delete ledger history to make the page appear fresh.
 - Keep `keep/` scans. Do not delete `buffer/` scans from a volunteer claim or task
   completion. The exporter snapshots inputs centrally and never deletes originals.
 - No in-page checkpointing: restart can repeat a page. BOINC resource estimates
   are initial bounds; calibrate them on real scans. One-hour maximum configurable
-  OCR deadline, default 600 seconds, one Tesseract thread, PSM 3/DPI 300.
+  OCR deadline, default 600 seconds, one Tesseract thread, PSM 3/DPI 300. The
+  fixed `rsc_fpops_est=1e12` is provisional, so client ETA and credit are rough;
+  use `elapsed_ms` from returned manifests across real JPEG/JP2 scans to calibrate
+  it. `target_nresults=1` requests one result. `max_success_results=3` is a failure
+  ceiling, not a request for three copies; stock BOINC cancels unsent copies once
+  it finds a canonical result. These retry ceilings remain unchanged pending
+  live recovery measurements.
 
 Result identity/provenance fields and checksums establish transport consistency,
 not proof that a volunteer actually ran the declared image. Trusted friends are
-a prerequisite; public enrollment requires stronger validation. No hand-transcribed
-historical accuracy measurement is implied by the synthetic smoke test.
+a prerequisite; public enrollment requires stronger validation. Raising quorum
+alone with `sample_trivial_validator` does not compare OCR output. A future audit
+or comparative validator could rerun sampled pages and compare text, after
+measuring determinism across supported hosts, or check a trusted reference set.
+No hand-transcribed historical accuracy measurement is implied by the synthetic smoke test.
 
 ## Live acceptance exercise
 
@@ -216,3 +261,4 @@ Upstream references:
 - [Docker app cookbook](https://github.com/BOINC/boinc/wiki/Docker-app-cookbook)
 - [Code signing](https://github.com/BOINC/boinc/wiki/Code-signing)
 - [Batch collector](https://github.com/BOINC/boinc/blob/master/sched/batch_collect_assimilator.cpp)
+- [Stock validator result and retry handling](https://github.com/BOINC/boinc/blob/master/sched/validator.cpp)
