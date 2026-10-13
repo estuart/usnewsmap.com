@@ -341,7 +341,7 @@ pub fn render(v: &View) -> String {
     );
 
     // 0. At a glance.
-    o.push_str("<section><h2>At a glance</h2><table><tr><th>What</th><th>State</th><th>Progress</th><th class=\"r\">Per hour</th><th class=\"r\">Done in</th></tr>");
+    o.push_str("<section class=\"wide\"><h2>At a glance</h2><table><tr><th>What</th><th>State</th><th>Progress</th><th class=\"r\">Per hour</th><th class=\"r\">Done in</th></tr>");
     {
         let f = &v.fetch;
         let (state, per_hour) = match &f.status {

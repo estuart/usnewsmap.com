@@ -3,12 +3,13 @@
 <desc id="serial-set-d">GovInfo's Serial Set sitemaps, metadata and PDFs are read by usnm-sset on an OCR node, which takes each PDF's text layer with pdftotext, keeps the metadata and page text in a local raw store, writes curated/congress/serialset in Azure, and the release with the Congress option builds the Congress index.</desc>
 <style>
 .dg { --k:#0b0b0b; --k2:#52514e; --bg:#fcfcfb; --lx:#f4f1e6; --lh:#f1f1ee; --la:#e8f0fb; --bx:#ffffff;
-  --good:#0ca30c; --run:#2a78d6; --wait:#fab219; --none:#898781; width:100%; height:auto; max-width:1100px; display:block;
+  --good:#0ca30c; --run:#2a78d6; --wait:#fab219; --none:#898781; width:100%; height:auto; max-width:1500px; display:block;
   font: 12px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--k); }
 @media (prefers-color-scheme: dark) { .dg { --k:#ffffff; --k2:#c3c2b7; --bg:#1a1a19; --lx:#2a2820; --lh:#262625;
   --la:#17233a; --bx:#0d0d0d; --run:#3987e5; } }
 .dg text { fill:var(--k); } .dg .sub, .dg .lane { fill:var(--k2); }
-.dg .lane { font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; }
+.dg .lane.x { stroke:var(--lx); } .dg .lane.h { stroke:var(--lh); } .dg .lane.a { stroke:var(--la); }
+.dg .lane { paint-order:stroke; stroke-width:5; stroke-linejoin:round; font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; }
 .dg .band { stroke:var(--none); stroke-width:1; stroke-opacity:0.35; }
 .dg .band.x { fill:var(--lx); } .dg .band.h { fill:var(--lh); } .dg .band.a { fill:var(--la); }
 .dg .card { fill:var(--bx); stroke:var(--k2); stroke-width:1.5; }
@@ -26,11 +27,8 @@
 <defs><marker id="ah-serial-set" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="tip" d="M0 0 L10 5 L0 10 z"/></marker></defs>
 <rect x="0" y="0" width="1100" height="470" fill="none"/>
 <rect class="band x" x="4" y="6" width="1092" height="112" rx="6"/>
-<text class="lane" x="14" y="22">GovInfo (U.S. Government Publishing Office)</text>
 <rect class="band h" x="4" y="126" width="1092" height="178" rx="6"/>
-<text class="lane" x="14" y="142">Home network (OCR node 3)</text>
 <rect class="band a" x="4" y="312" width="1092" height="150" rx="6"/>
-<text class="lane" x="14" y="328">Azure (data lake, private)</text>
 <g id="serial-set-g" class="box x" data-state="none">
 <rect class="card" x="10" y="28" width="200" height="79" rx="4"/>
 <rect class="bar" x="10" y="29" width="6" height="77" rx="2"/>
@@ -96,4 +94,7 @@
 <path class="arrow" d="M110 289 L130 336" marker-end="url(#ah-serial-set)"/>
 <path class="arrow" d="M250 398 L450 390.5" marker-end="url(#ah-serial-set)"/>
 <path class="arrow" d="M650 390.5 L670 390.5" marker-end="url(#ah-serial-set)"/>
+<text class="lane x" x="14" y="22">GovInfo (U.S. Government Publishing Office)</text>
+<text class="lane h" x="14" y="142">Home network (OCR node 3)</text>
+<text class="lane a" x="14" y="328">Azure (data lake, private)</text>
 </svg>
