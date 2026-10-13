@@ -1,0 +1,15 @@
+# Monthly full check of the scan archive: every blob's properties against
+# the local file (size, md5, tier, sha256 metadata). It reads and hashes
+# every local scan and makes one properties request per blob, so it runs
+# rarely; the daily upload does not. Not enabled by anything in this
+# repository: docs/operations.md, "The scan archive".
+[Unit]
+Description=usnewsmap scan archive verify, monthly
+
+[Timer]
+OnCalendar=*-*-01 06:00:00
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

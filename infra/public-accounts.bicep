@@ -4,8 +4,8 @@
 // (the step provision runs before the stack, #336) both take the list from
 // here, so the two deployments write the same assignment.
 //
-// - with ocrNodes, the OCR exchange account and the OCR nodes' Key Vault,
-//   whose firewalls allow only the node IPs (ADR-0015);
+// - with ocrNodes, the OCR exchange account, the scan archive account and
+//   the OCR nodes' Key Vault, whose firewalls allow only the node IPs (ADR-0015);
 // - with lakeOpen, the data lake, whose firewall allows only the node IPs
 //   while the on-prem Serial Set runner writes to it (ADR-0008, amendment
 //   of October 2026).
@@ -18,6 +18,7 @@ func publicAccountIds(subscriptionId string, n Names, ocrNodes bool, lakeOpen bo
     ocrNodes
       ? [
           resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.ocrExchange)
+          resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.scansAccount)
           resourceId(subscriptionId, n.rg, 'Microsoft.KeyVault/vaults', n.ocrVault)
         ]
       : [],

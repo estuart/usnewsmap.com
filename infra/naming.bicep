@@ -81,6 +81,7 @@ var functionWords = [
   'ocrs'
   'pipeline'
   'qw'
+  'scans'
   'scratch'
   'search'
   'searchlog'
@@ -184,6 +185,8 @@ var nameTypes = {
   registry: 'cr'
   releaseStalledAlert: 'alert'
   rg: 'rg'
+  scansAccount: 'st'
+  scansWriterRole: 'role'
   scratch: 'st'
   scratchEndpoint: 'pep'
   scratchEndpointNic: 'nic'
@@ -273,6 +276,8 @@ type Names = {
   registry: string
   releaseStalledAlert: string
   rg: string
+  scansAccount: string
+  scansWriterRole: string
   scratch: string
   scratchEndpoint: string
   scratchEndpointNic: string
@@ -360,6 +365,8 @@ func names(env string, sfx string, pinned bool) Names => {
   registry: pinned ? 'crusnm${env}${sfx}' : usnmCompactName('core', 'cr', env, sfx)
   releaseStalledAlert: pinned ? 'alert-usnm-release-stalled-${env}' : usnmName('ingest-release-stalled', 'alert', env)
   rg: pinned ? 'rg-usnm-${env}' : usnmName('core', 'rg', env)
+  scansAccount: usnmCompactName('scans', 'st', env, sfx)
+  scansWriterRole: usnmName('scans-writer', 'role', env)
   scratch: pinned ? 'stusnms${sfx}' : usnmCompactName('scratch', 'st', env, sfx)
   scratchEndpoint: pinned ? 'pe-usnm-file' : usnmName('scratch-file', 'pep', env)
   scratchEndpointNic: pinned ? '' : usnmName('scratch-file', 'nic', env)

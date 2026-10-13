@@ -1,0 +1,50 @@
+# The scan archive upload (#442, ADR-0018): `usnm-ocr-worker archive-scans`
+# on the host that holds /tank/ocr/scans, as the host's Arc identity (a
+# member of the OCR nodes' Entra group), never through a laptop. It uploads
+# the keep set's scans that aren't in the archive yet, on the Cold tier,
+# create-only, and exits non-zero if any scan failed or didn't match its
+# sidecar (the timer starts it again). Not enabled by anything in this
+# repository: docs/operations.md, "The scan archive".
+#
+# Settings in /etc/usnm/scan-archive.env (never committed):
+#   USNM_ARCHIVE_URL   https://<account>.blob.core.windows.net/scans
+#   USNM_ARCHIVE_SCANS the scans root, if not /tank/ocr/scans
+[Unit]
+Description=usnewsmap scan archive upload
+Wants=network-online.target himdsd.service
+After=network-online.target himdsd.service
+ConditionFileIsExecutable=/usr/local/bin/usnm-ocr-worker
+RequiresMountsFor=/tank/ocr/scans
+
+[Service]
+Type=oneshot
+User=usnm
+Group=usnm
+# himds: the Arc agent's token challenge.
+SupplementaryGroups=himds
+Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
+Environment=IMDS_ENDPOINT=http://localhost:40342
+EnvironmentFile=/etc/usnm/scan-archive.env
+# The state file lists the scans already archived (name, size, mtime); a
+# listed, unchanged scan is not read or looked up again. The lock file in
+# the same directory serializes this unit with usnm-scan-archive-verify.
+StateDirectory=usnm-scan-archive
+ExecStart=/usr/bin/flock --exclusive /var/lib/usnm-scan-archive/lock /usr/local/bin/usnm-ocr-worker archive-scans --concurrency 4 --state /var/lib/usnm-scan-archive/archived.tsv
+# The first upload of the keep set is days of transfer.
+TimeoutStartSec=infinity
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Nice=10
+IOSchedulingClass=idle
+SyslogIdentifier=usnm-scan-archive
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+# Reads only: the upload never writes to the scans.
+ReadOnlyPaths=/tank/ocr/scans
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

@@ -364,6 +364,38 @@ enum Command {
         #[arg(long, env = "USNM_SCANSERVE_ALLOW_REFRESH_SECS", default_value_t = 300)]
         allow_refresh_secs: u64,
     },
+    /// Upload the keep-set scans to the scan archive (#442, ADR-0018): Cold
+    /// tier, create-only, checked against each scan's sidecar. Prints a JSON
+    /// report; exits non-zero if anything was wrong or failed (run it again).
+    ArchiveScans {
+        /// `/tank/ocr/scans`, holding `keep/`.
+        #[arg(long, env = "USNM_ARCHIVE_SCANS", default_value = "/tank/ocr/scans")]
+        scans: PathBuf,
+        /// The archive container: `https://<account>.blob.core.windows.net/scans`.
+        #[arg(long, env = "USNM_ARCHIVE_URL")]
+        archive_url: String,
+        /// The set to archive. Only `keep` is meant for the archive.
+        #[arg(long, default_value = "keep")]
+        set: String,
+        /// Say what would be uploaded; write nothing.
+        #[arg(long, conflicts_with = "verify")]
+        dry_run: bool,
+        /// Compare each blob's size, md5 and tier with the local file, by
+        /// properties only (no download, so no Cold retrieval charge).
+        #[arg(long)]
+        verify: bool,
+        /// Stop after this many scans (0: all).
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+        /// Scans in flight.
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+        /// File of the scans already archived. A scan recorded there with
+        /// the same size and mtime is not read or looked up again; an
+        /// upload run appends to it. Ignored by --verify.
+        #[arg(long, env = "USNM_ARCHIVE_STATE")]
+        state: Option<PathBuf>,
+    },
     /// Project a manifest's size and fetch time from a sample's index
     /// (`index-<tag>.jsonl` from `prefetch --sample`). Prints JSON.
     PrefetchEstimate {
@@ -730,6 +762,43 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 stop_signal(),
             )
             .await
+        }
+        Command::ArchiveScans {
+            scans,
+            archive_url,
+            set,
+            dry_run,
+            verify,
+            limit,
+            concurrency,
+            state,
+        } => {
+            let mode = if verify {
+                usnm_ocr_worker::archive::Mode::Verify
+            } else if dry_run {
+                usnm_ocr_worker::archive::Mode::DryRun
+            } else {
+                usnm_ocr_worker::archive::Mode::Upload
+            };
+            let report = usnm_ocr_worker::archive::run(
+                usnm_ocr_worker::archive::Options {
+                    scans,
+                    set,
+                    container_url: archive_url,
+                    mode,
+                    limit,
+                    concurrency,
+                    state,
+                },
+                usnm_store::credential::from_env(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&report)?);
+            if report.clean() {
+                Ok(())
+            } else {
+                anyhow::bail!("the archive run found problems; see the report")
+            }
         }
         Command::PrefetchEstimate {
             manifest,

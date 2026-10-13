@@ -428,6 +428,24 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
   }
 }
 
+// The scan archive (#442, ADR-0018): Cold-tier copies of the keep-set scans.
+// Public network access behind a firewall like the exchange account, so the
+// policy exempts it by resource id and its assignment goes first.
+module scanArchive 'modules/scan-archive.bicep' = if (ocrNodes) {
+  scope: rg
+  name: 'scan-archive'
+  dependsOn: [policies]
+  params: {
+    location: location
+    tags: tags
+    name: n.scansAccount
+    nodeIps: nodeIpList(ocrNodeIps)
+    subnetId: network.outputs.caeSubnetId
+    nodeGroupId: trim(ocrNodeGroupId)
+    writerRoleLabel: n.scansWriterRole
+  }
+}
+
 // The OCR nodes' Key Vault (#296, #295): secrets the operator holds for
 // setting up nodes (the Red Hat activation key), which onboard.sh reads with
 // the operator's sign-in. Nodes have no access. Its firewall allows only the
@@ -568,6 +586,7 @@ module diagnostics 'modules/diagnostics.bicep' = {
     dataStorageName: storage.outputs.name
     scratchStorageName: nfsAccount ? scratch!.outputs.accountName : ''
     exchangeStorageName: ocrNodes ? ocrExchange!.outputs.name : ''
+    scansStorageName: ocrNodes ? scanArchive!.outputs.name : ''
     ocrNodeWorkspaceId: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceId : ''
     ocrNodeWorkspaceName: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceName : ''
     ocrNodeDcrName: ocrNodes ? ocrNodeMonitoring!.outputs.ruleName : ''
@@ -1027,6 +1046,8 @@ output SEARCH_COMPARE_URLS string = searchClusterOn ? join(searchClusterModule!.
 output OCR_EXCHANGE_ACCOUNT string = ocrNodes ? ocrExchange!.outputs.name : ''
 output OCR_QUEUE_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
 output OCR_BLOB_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
+output SCAN_ARCHIVE_ACCOUNT string = ocrNodes ? scanArchive!.outputs.name : ''
+output SCAN_ARCHIVE_BLOB_ENDPOINT string = ocrNodes ? scanArchive!.outputs.blobEndpoint : ''
 // The OCR nodes' Key Vault: onboard.sh reads the Red Hat secrets from it.
 output OCR_KEYVAULT string = ocrNodes ? ocrVault!.outputs.name : ''
 // The nodes' data collection rule; onboard.sh associates each node with it.

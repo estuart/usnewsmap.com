@@ -1,0 +1,44 @@
+# The full scan archive check (#442, ADR-0018), monthly: `archive-scans
+# --verify` compares every blob's properties (size, md5, tier, sha256
+# metadata) with the local file. It writes nothing and ignores the upload's
+# state file. Same user, group and settings as usnm-scan-archive.service.
+# Exits non-zero if anything is missing or differs.
+[Unit]
+Description=usnewsmap scan archive verify
+Wants=network-online.target himdsd.service
+After=network-online.target himdsd.service
+ConditionFileIsExecutable=/usr/local/bin/usnm-ocr-worker
+RequiresMountsFor=/tank/ocr/scans
+
+[Service]
+Type=oneshot
+User=usnm
+Group=usnm
+# himds: the Arc agent's token challenge.
+SupplementaryGroups=himds
+Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
+Environment=IMDS_ENDPOINT=http://localhost:40342
+EnvironmentFile=/etc/usnm/scan-archive.env
+ExecStart=/usr/bin/flock --exclusive /var/lib/usnm-scan-archive/lock /usr/local/bin/usnm-ocr-worker archive-scans --verify --concurrency 4
+# The upload and this check hold one lock (flock on the lock file in the
+# shared state directory), so the check waits for a running upload instead
+# of reporting scans it has not reached as missing.
+StateDirectory=usnm-scan-archive
+# Reads and hashes every local scan: hours.
+TimeoutStartSec=infinity
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Nice=10
+IOSchedulingClass=idle
+SyslogIdentifier=usnm-scan-archive
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+# Reads only: the upload never writes to the scans.
+ReadOnlyPaths=/tank/ocr/scans
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

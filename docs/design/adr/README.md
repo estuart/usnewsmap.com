@@ -21,4 +21,5 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0015](0015-onprem-ocr-workers.md)              | On-prem OCR workers: Azure Arc identities, an exchange account with a firewall, Storage queues                         | Proposed                                |
 | [0016](0016-pluggable-ocr-engines.md)           | Pluggable OCR engines: a versioned contract, one pinned container per engine, Rust around it                           | Proposed                                |
 | [0017](0017-resource-naming.md)                 | Resource naming: usnm-{function}-{type}-{env}, adopted at natural points, stateful prod names kept until a rebuild     | Proposed                                |
+| [0018](0018-scan-archive.md)                    | Scan archive: Cold-tier blobs, read through a small API with signed tickets                                            | Proposed                                |
 | [0019](0019-boinc-server-hosting.md)            | Hosting for the stock BOINC server that #441's pilot submits to: Container App, MySQL, Azure Files, a bridge job       | Proposed                                |

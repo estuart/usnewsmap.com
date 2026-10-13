@@ -1,0 +1,14 @@
+# Daily, after the scan prefetcher has added more keep-set scans. The upload
+# keeps a state file of what it has archived and skips those scans without
+# reading them or sending a request, so a day with nothing new costs
+# nothing. The full check is usnm-scan-archive-verify.timer, monthly.
+[Unit]
+Description=usnewsmap scan archive upload, daily
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

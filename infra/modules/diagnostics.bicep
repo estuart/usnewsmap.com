@@ -43,6 +43,8 @@ param dataStorageName string
 param scratchStorageName string = ''
 @description('The on-prem OCR exchange account (ocr-exchange.bicep); empty if there is none.')
 param exchangeStorageName string = ''
+@description('The scan archive account (scan-archive.bicep); empty if there is none.')
+param scansStorageName string = ''
 @description('The OCR nodes\' workspace (ocr-node-monitoring.bicep), as a resource id; empty if there is none.')
 param ocrNodeWorkspaceId string = ''
 @description('The OCR nodes\' workspace\'s name; empty if there is none.')
@@ -171,6 +173,17 @@ module exchangeStorageLogs 'storage-diagnostics.bicep' = if (!empty(exchangeStor
     storageName: exchangeStorageName
     workspaceId: workspaceId
     queueWorkspaceId: ocrNodeWorkspaceId
+    settingName: name
+  }
+}
+
+// The scan archive: writes and deletes only; reads would log every BOINC
+// fetch, and the API's own logs count those.
+module scansStorageLogs 'storage-diagnostics.bicep' = if (!empty(scansStorageName)) {
+  name: 'diagnostics-${scansStorageName}'
+  params: {
+    storageName: scansStorageName
+    workspaceId: workspaceId
     settingName: name
   }
 }

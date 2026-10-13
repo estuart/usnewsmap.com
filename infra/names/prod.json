@@ -68,6 +68,8 @@
   "registry": "crusnmprodffapzy",
   "releaseStalledAlert": "alert-usnm-release-stalled-prod",
   "rg": "rg-usnm-prod",
+  "scansAccount": "usnmscansstprodffapzy",
+  "scansWriterRole": "usnm-scans-writer-role-prod",
   "scratch": "stusnmsffapzy",
   "scratchEndpoint": "pe-usnm-file",
   "scratchEndpointNic": "",

@@ -19,6 +19,7 @@ base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 md-5.workspace = true
+httpdate.workspace = true
 clap.workspace = true
 moka.workspace = true
 opentelemetry.workspace = true

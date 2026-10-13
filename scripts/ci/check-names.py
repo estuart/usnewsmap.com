@@ -65,6 +65,7 @@ WORD_RE = re.compile(r"^[a-z][a-z0-9]{1,8}$")
 FROZEN_SEEDS = {
     "usnm-archive-writer",
     "usnm-ocr-node-writer",
+    "usnm-scans-writer",
     "usnm-search-log-writer",
     "usnm-sset-writer",
     "usnm-swa-deployer",
