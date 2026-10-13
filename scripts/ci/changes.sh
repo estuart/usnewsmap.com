@@ -25,6 +25,7 @@ out=${GITHUB_OUTPUT:-/dev/stdout}
 # Known only once the changed files are; "run everything" keeps them.
 provision=false
 ops=false
+forced=
 all() {
   printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
@@ -60,7 +61,28 @@ fi
 # The index version snapshots and the index history must match their schemas
 # (and what writes them); searches.sh's date-span summary has its tests there too.
 matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history|test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$|\.github/workflows/ci\.yml$)' && ops=true
-matches '^\.github/' && all "workflow changed"
+# Another workflow or dependabot.yml defines no job here. An edit to ci.yml
+# outside a job (triggers, env) or to the changes job runs everything; an edit
+# inside other jobs forces just the flags those jobs' `if:` lines read.
+matches '^\.github/workflows/ci\.yml$' && {
+  lines=$(mktemp)
+  forced=$(git diff -U0 "$range" -- .github/workflows/ci.yml | awk '
+    /^@@/ { split($3, a, ","); start = substr(a[1], 2) + 0; n = (a[2] == "" ? 1 : a[2] + 0)
+            for (i = 0; i < n; i++) changed[start + i] = 1; if (n == 0) changed[start] = 1; next }
+    END { for (l in changed) print l }' | sort -n > "$lines"
+    awk -v list="$lines" '
+      BEGIN { while ((getline l < list) > 0) hit[l] = 1 }
+      /^jobs:/ { injobs = 1; next }
+      !injobs { if (hit[NR]) print "ALL"; next }
+      /^  [a-z0-9_-]+:$/ { job = $1; if (job == "changes:") job = "ALL"; hitjob[job] = hitjob[job] || hit[NR]; cur = job; next }
+      { if (hit[NR]) hitjob[cur] = 1
+        while (match($0, /outputs\.[a-z_]+/)) { flags[cur] = flags[cur] " " substr($0, RSTART + 8, RLENGTH - 8); $0 = substr($0, RSTART + RLENGTH) } }
+      END { for (j in hitjob) if (hitjob[j]) { if (j == "ALL") print "ALL"; else print flags[j] } }' .github/workflows/ci.yml | tr -s ' \n' ' ')
+  rm -f "$lines"
+  case " $forced " in *" ALL "*) all "workflow changed" ;; esac
+  [[ " $forced " == *" markdown "* ]] && markdown=true
+  echo "workflow jobs changed, forcing:$forced"
+}
 # The Rust build and tests: the crates, the files compiled into binaries
 # (index config, place overrides, the example searches the API warms, the
 # reconstructed index history), the fixtures the tests read, and the Python
@@ -91,7 +113,7 @@ page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.
 # documentation, above), and the workflow, which matches earlier.
 contrib='^(contrib-compute/|crates/usnm-boinc/)'
 for part in rust quickwit web image fixtures ocr_worker page_language contrib; do
-  if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
+  if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"
 echo "markdown=$markdown" >> "$out"
