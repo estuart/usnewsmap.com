@@ -62,6 +62,17 @@ Each step is the operator's. `bootstrap.sh` without `--apply` prints this plan w
 6. App version, offline signing, `update_versions` (bootstrap step 4).
 7. `curl` the project config and submit one reserved job (bootstrap step 5).
 
+## Submission file permissions
+
+The bridge CLI stages public download inputs with mode `0644` before publication
+and before `create_work`, so Apache can read them immediately. The hand-off
+journal and original input snapshots remain owner-only. The bridge wrapper
+executes the CLI directly; it performs no post-submission chmod/chgrp scan.
+Rebuild and deploy the bridge image with the updated CLI and wrapper together.
+Ensure the Apache identity can traverse the existing download fan-out directories
+and read a staged scan and request on the deployed Azure Files mount. Local
+POSIX-mode regressions do not verify Azure Files ACLs or mount behavior.
+
 ## Known blockers and risks
 
 - **Guardrails.** The stack needs a storage account with shared-key access and a Log Analytics workspace with local auth (ADR-0019, decision 5). Until `infra/guardrails.bicep` has an exception, the deployment is denied in a guarded group. The what-if in step 3 shows the denial before anything is created.

@@ -1,5 +1,5 @@
 //! Stock create_work integration with a write-ahead submission state.
-use crate::{atomic, dir, load, read, save, Lock, Stage};
+use crate::{atomic_download, dir, load, read, save, Lock, Stage};
 use anyhow::ensure;
 use std::path::Path;
 use tokio::process::Command;
@@ -46,7 +46,7 @@ pub async fn submit(root: &Path, project: &Path, id: &str) -> anyhow::Result<()>
             } else {
                 project.join(path)
             };
-            atomic(&path, &read(&dir(root, id)?.join(logical), limit)?)?;
+            atomic_download(&path, &read(&dir(root, id)?.join(logical), limit)?)?;
         }
         let status = Command::new(project.join("bin/create_work"))
             .current_dir(&project)

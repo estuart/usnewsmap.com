@@ -77,6 +77,9 @@ quickwit='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/qu
 web='^(web/|fixtures/|scripts/ci/|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
 image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$)"
+# The BOINC integration tests execute this wrapper at run time. Its changes
+# need the Rust tests, but it is not an input to the serving/ingest images above.
+rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
 # The OCR worker's release: the worker and the LAN dashboard, the crates they use, the workspace's

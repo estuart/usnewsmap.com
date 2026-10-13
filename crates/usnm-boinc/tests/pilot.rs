@@ -896,3 +896,215 @@ async fn unpublished_catalog_title_cannot_route_or_reserve_a_page() {
         1
     );
 }
+
+#[cfg(unix)]
+mod download_permissions {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn executable(path: &Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fn shell_path(path: &Path) -> String {
+        format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
+    }
+    fn python_path(path: &Path) -> String {
+        // A JSON string is also a Python string literal; this is not shell quoting.
+        serde_json::to_string(path.to_str().unwrap()).unwrap()
+    }
+    fn project(fx: &Fixture, id: &str, fail_staging: bool) -> PathBuf {
+        let project = fx.tmp.path().join("BOINC project's files");
+        let download = project.join("download");
+        std::fs::create_dir_all(project.join("bin")).unwrap();
+        std::fs::create_dir_all(&download).unwrap();
+        let mapping = if fail_staging {
+            let blocker = project.join("not-a-directory");
+            std::fs::write(&blocker, b"block parent creation").unwrap();
+            format!(
+                "case \"$*\" in *_request_json) printf '%s\\n' {} ;; *) printf '%s/%s\\n' {} \"$*\" ;; esac",
+                shell_path(&blocker.join("request")), shell_path(&download)
+            )
+        } else {
+            format!("printf '%s/%s\\n' {} \"$*\"", shell_path(&download))
+        };
+        // These fixtures implement the stock tools' interfaces, not new project CLIs.
+        executable(
+            &project.join("bin/dir_hier_path"),
+            &format!("#!/bin/sh\n{mapping}\n"),
+        );
+        executable(
+            &project.join("bin/create_work"),
+            &format!(
+                r#"#!/usr/bin/env python3
+import json, pathlib, stat
+source = pathlib.Path({source})
+download = pathlib.Path({download})
+record = source / "record.json"
+assert json.loads(record.read_text())["stage"] == "submitting"
+assert stat.S_IMODE(record.stat().st_mode) & 0o077 == 0
+for logical, physical in [("page", "{id}_page"), ("request.json", "{id}_request_json")]:
+    public = download / physical
+    mode = stat.S_IMODE(public.stat().st_mode)
+    assert mode & stat.S_IROTH, "web-server identity cannot read staged input"
+    assert mode & (stat.S_IWGRP | stat.S_IWOTH) == 0, "public input is writable by another identity"
+    assert public.read_bytes() == (source / logical).read_bytes()
+    assert stat.S_IMODE((source / logical).stat().st_mode) & 0o077 == 0
+pathlib.Path({marker}).write_text("inputs readable when create_work started")
+"#,
+                source = python_path(&fx.options.root.join("jobs").join(id)),
+                download = python_path(&download),
+                marker = python_path(&project.join("dispatched")),
+            ),
+        );
+        project
+    }
+    async fn submit_with_private_umask(
+        fx: &Fixture,
+        project: &Path,
+        id: &str,
+    ) -> std::process::Output {
+        // Change only the child process's umask; parallel Rust tests keep theirs.
+        tokio::process::Command::new("sh")
+            .args(["-c", "umask 077; exec \"$@\"", "boinc-submit"])
+            .arg(env!("CARGO_BIN_EXE_usnm-boinc"))
+            .arg("submit")
+            .arg("--root")
+            .arg(&fx.options.root)
+            .arg("--project")
+            .arg(project)
+            .arg("--job")
+            .arg(id)
+            .output()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn downloads_are_readable_at_dispatch_with_private_umask_and_replacement() {
+        for replace in [false, true] {
+            let fx = Fixture::new("eng").await;
+            let id = fx.export().await;
+            let project = project(&fx, &id, false);
+            if replace {
+                for suffix in ["page", "request_json"] {
+                    let path = project.join("download").join(format!("{id}_{suffix}"));
+                    usnm_boinc::atomic(&path, b"old private input").unwrap();
+                }
+            }
+            let output = submit_with_private_umask(&fx, &project, &id).await;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(project.join("dispatched").exists());
+            assert_eq!(
+                usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+                Stage::Submitted
+            );
+            for name in ["record.json", "request.json", "page"] {
+                let mode = std::fs::metadata(fx.options.root.join("jobs").join(&id).join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o077, 0, "{name} became readable outside its owner");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn staging_failure_never_dispatches_or_exposes_the_journal() {
+        let fx = Fixture::new("eng").await;
+        let id = fx.export().await;
+        let project = project(&fx, &id, true);
+        let output = submit_with_private_umask(&fx, &project, &id).await;
+        assert!(!output.status.success());
+        assert!(!project.join("dispatched").exists());
+        assert_eq!(
+            usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+            Stage::Submitting
+        );
+        let mode = std::fs::metadata(fx.options.root.join("jobs").join(&id).join("record.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0);
+    }
+
+    #[test]
+    fn server_wrapper_keeps_updated_journals_private_and_propagates_submit_exit() {
+        for exit_code in [0, 37] {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("project");
+            let handoff = tmp.path().join("handoff");
+            let bin = tmp.path().join("bin");
+            for dir in [&project, &handoff, &bin] {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            std::fs::write(project.join(".usnm-initialised"), b"fixture").unwrap();
+            let library = tmp.path().join("lib.sh");
+            std::fs::write(&library, format!(
+                "PROJ={}\nfetch_secrets() {{ :; }}\nrender_config() {{ :; }}\nfail() {{ exit 1; }}\n",
+                shell_path(&project)
+            )).unwrap();
+            let journal = handoff.join("record.json");
+            executable(
+                &bin.join("usnm-boinc"),
+                &format!(
+                    r#"#!/usr/bin/env python3
+import argparse, os, sys
+parser = argparse.ArgumentParser()
+submit = parser.add_subparsers(dest="command", required=True).add_parser("submit")
+submit.add_argument("--root", required=True)
+submit.add_argument("--project", required=True)
+submit.add_argument("--job", required=True)
+args = parser.parse_args()
+assert (args.root, args.project, args.job) == ({handoff}, {project}, "fixture")
+fd = os.open({journal}, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f: f.write("updated private journal")
+sys.exit({exit_code})
+"#,
+                    handoff = python_path(&handoff),
+                    project = python_path(&project),
+                    journal = python_path(&journal)
+                ),
+            );
+            // The previous wrapper's chmod ran even if its chgrp target was unavailable.
+            // Supply the dependency so this regression does not depend on host groups.
+            executable(&bin.join("chgrp"), "#!/bin/sh\nexit 0\n");
+            let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../contrib-compute/images/server/bridge-job.sh");
+            let script = std::fs::read_to_string(source).unwrap();
+            let include = ". /usr/local/lib/usnm-boinc/lib.sh";
+            assert!(script.contains(include));
+            let wrapper = tmp.path().join("bridge-job.sh");
+            std::fs::write(
+                &wrapper,
+                script.replace(include, &format!(". {}", shell_path(&library))),
+            )
+            .unwrap();
+            let output = std::process::Command::new("bash")
+                .arg(&wrapper)
+                .env(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                )
+                .env("JOB_ID", "fixture")
+                .env("HANDOFF_DIR", &handoff)
+                .env("BRIDGE_STEP", "submit")
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(exit_code),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                std::fs::metadata(&journal).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+    }
+}
