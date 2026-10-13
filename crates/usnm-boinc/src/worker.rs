@@ -10,6 +10,9 @@ use usnm_ocr_worker::engine::{self, Engine, Runner, Tesseract, TesseractOptions}
 
 pub async fn run(work: &Path) -> anyhow::Result<()> {
     let work = work.canonicalize()?;
+    if work.join(crate::assess::JOB_FILE).exists() {
+        return crate::assess::work::run(&work).await;
+    }
     for name in ["result.json", "text.txt", "layout.xml", "fraction_done"] {
         let p = work.join(name);
         if p.exists() {
@@ -23,37 +26,7 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
         image.len() as u64 == job.scan.bytes && boinc::sha256(&image) == job.scan.sha256,
         "input scan checksum mismatch"
     );
-    let models = std::env::var_os("TESSDATA_PREFIX")
-        .context("TESSDATA_PREFIX must point to the locked image's models")?;
-    for name in job.engine.profile.split('+') {
-        let physical = format!("tessdata/{name}.traineddata");
-        let expected = engine::MODELS_LOCK
-            .lines()
-            .filter(|s| !s.starts_with('#'))
-            .find_map(|s| {
-                let fields: Vec<_> = s.split_whitespace().collect();
-                if fields.len() == 3 && fields[0] == physical {
-                    Some(fields[2])
-                } else {
-                    None
-                }
-            })
-            .context("model not in lock")?;
-        ensure!(
-            boinc::sha256(&read(
-                &Path::new(&models).join(format!("{name}.traineddata")),
-                64 << 20
-            )?) == expected,
-            "installed model checksum mismatch"
-        );
-    }
-    ensure!(
-        engine::models_digest(engine::MODELS_LOCK, &job.engine.profile)
-            .context("model digest")?
-            .to_string()
-            == job.engine.models,
-        "profile digest mismatch"
-    );
+    check_models(&job.engine)?;
     let engine = Tesseract::detect(TesseractOptions {
         runner: Runner::Host("tesseract".into()),
         psm: job.engine.psm,
@@ -102,5 +75,42 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
             std::fs::set_permissions(work.join(name), std::fs::Permissions::from_mode(0o644))?;
         }
     }
+    Ok(())
+}
+
+/// Checks the installed models of `engine.profile` against the lock and
+/// the job's profile digest.
+pub fn check_models(spec: &usnm_ocr_contract::boinc::Engine) -> anyhow::Result<()> {
+    let models = std::env::var_os("TESSDATA_PREFIX")
+        .context("TESSDATA_PREFIX must point to the locked image's models")?;
+    for name in spec.profile.split('+') {
+        let physical = format!("tessdata/{name}.traineddata");
+        let expected = engine::MODELS_LOCK
+            .lines()
+            .filter(|s| !s.starts_with('#'))
+            .find_map(|s| {
+                let fields: Vec<_> = s.split_whitespace().collect();
+                if fields.len() == 3 && fields[0] == physical {
+                    Some(fields[2])
+                } else {
+                    None
+                }
+            })
+            .context("model not in lock")?;
+        ensure!(
+            boinc::sha256(&read(
+                &Path::new(&models).join(format!("{name}.traineddata")),
+                64 << 20
+            )?) == expected,
+            "installed model checksum mismatch"
+        );
+    }
+    ensure!(
+        engine::models_digest(engine::MODELS_LOCK, &spec.profile)
+            .context("model digest")?
+            .to_string()
+            == spec.models,
+        "profile digest mismatch"
+    );
     Ok(())
 }

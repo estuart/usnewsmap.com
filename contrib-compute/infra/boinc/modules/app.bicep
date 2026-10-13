@@ -13,6 +13,8 @@ param logAnalyticsSharedKey string
 param identityId string
 param identityClientId string
 param image string
+@description('Entry point and arguments to run instead of the image\'s own; empty keeps the image\'s.')
+param command array = []
 @description('Registry login server, taken from the image reference. The app pulls with its identity (AcrPull); the registry has no admin user or anonymous pull.')
 param registryServer string
 param keyVaultName string
@@ -80,6 +82,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'boinc'
           image: image
+          command: empty(command) ? null : command
           resources: { cpu: json(cpu), memory: memory }
           env: [
             { name: 'AZURE_CLIENT_ID', value: identityClientId }

@@ -8,6 +8,9 @@ COPY . .
 RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
 
 FROM ${TESSERACT_IMAGE}
+# The assessment (#456) checks each unit against the engine image this one is built on.
+ARG TESSERACT_IMAGE
+ENV USNM_TESSERACT_IMAGE=${TESSERACT_IMAGE}
 # The base's package sources are already pinned to its Debian snapshot.
 USER 0
 RUN apt-get -o Acquire::Check-Valid-Until=false update \

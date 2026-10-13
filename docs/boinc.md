@@ -5,6 +5,8 @@ Design issue: [#438](https://github.com/tgoodyear/usnewsmap.com/issues/438).
 The pilot uses stock BOINC, one cached page per task, and the repository's
 Tesseract 5.5.0/model lock and language routing. It publishes native ALTO and
 Parquet to `ocr-out`; `ocr-sync` and the release keep their existing decisions.
+A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison
+(#456); see [boinc-assessment.md](boinc-assessment.md).
 
 ## Boundaries
 

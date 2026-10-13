@@ -1,0 +1,5 @@
+#!/bin/sh
+# script_validator's init script for usnm_assess (#456), called as `usnm_assess_check files`:
+# script_validator passes one result's three files, in output template order.
+# Exit 0 when the result is well formed. Linked into the project's bin/.
+exec /usr/local/bin/usnm-boinc assess check --files "$@"

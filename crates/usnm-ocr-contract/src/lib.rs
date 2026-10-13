@@ -15,3 +15,6 @@ pub mod status;
 
 /// File-based jobs for the opt-in stock BOINC pilot.
 pub mod boinc;
+
+/// File-based jobs for the JP2 against IIIF JPEG assessment (#456).
+pub mod assess;

@@ -1,0 +1,10 @@
+<output_template>
+  <file_info><name><OUTFILE_0/></name><generated_locally/><upload_when_present/><max_nbytes>524288</max_nbytes><url><UPLOAD_URL/></url></file_info>
+  <file_info><name><OUTFILE_1/></name><generated_locally/><upload_when_present/><max_nbytes>524288</max_nbytes><url><UPLOAD_URL/></url></file_info>
+  <file_info><name><OUTFILE_2/></name><generated_locally/><upload_when_present/><max_nbytes>16384</max_nbytes><url><UPLOAD_URL/></url></file_info>
+  <result>
+    <file_ref><file_name><OUTFILE_0/></file_name><open_name>text-jp2.txt</open_name></file_ref>
+    <file_ref><file_name><OUTFILE_1/></file_name><open_name>text-jpeg.txt</open_name></file_ref>
+    <file_ref><file_name><OUTFILE_2/></file_name><open_name>result.json</open_name></file_ref>
+  </result>
+</output_template>

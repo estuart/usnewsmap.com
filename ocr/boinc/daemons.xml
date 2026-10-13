@@ -4,3 +4,9 @@
      occurs centrally before publication; this pilot assumes trusted friends. -->
 <daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd></daemon>
 <daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd></daemon>
+<!-- The JP2 against IIIF JPEG assessment (#456). Redundancy 2: script_validator runs
+     `usnm-boinc assess check` on each result and `assess compare` on pairs (exit 0 = valid /
+     equivalent). Needs usnm-boinc in the server container (images/server/lib.sh adds these
+     entries only when it is there). -->
+<daemon><cmd>script_validator --app usnm_assess --init_script "usnm_assess_check files" --compare_script "usnm_assess_compare files files2"</cmd></daemon>
+<daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd></daemon>

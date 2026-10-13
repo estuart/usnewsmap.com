@@ -6,20 +6,20 @@ Where this page and #441 differ, #441 wins; it is the client base.
 
 ## Names (all from #441)
 
-| Item             | Value                                                                                                                                                |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| App name         | `usnm_ocr` (`boinc/project.xml` registers it with `target_nresults` 1)                                                                               |
-| App type         | Docker wrapper; the worker image is built from `ocr/boinc/Containerfile` and runs `usnm-boinc work`                                                  |
-| App version      | installed by `scripts/boinc/install.py --project --wrapper --image --version` into `apps/usnm_ocr/<version>/x86_64-pc-linux-gnu__docker`             |
-| Plan class       | `docker`, from `boinc/plan_class_spec.xml` here (minimum client 9.0)                                                                                 |
-| Workunit shape   | one page per task; templates `usnm_ocr_in` and `usnm_ocr_out` in `ocr/boinc/`; inputs `page` and `request.json`                                      |
-| Daemons          | `sample_trivial_validator` and `batch_collect_assimilator`, from `ocr/boinc/daemons.xml`, in place of `@APP_DAEMONS@` in `boinc/config.xml.template` |
-| Spool            | `<project>/results/<batch>/<workunit>__file_<logical name>`, written by `batch_collect_assimilator`                                                  |
-| Submission       | `usnm-boinc submit --root --project --job`, which runs `bin/dir_hier_path` and `bin/create_work`                                                     |
-| Publication      | `usnm-boinc collect --root --spool --job --curated-url --out-url`                                                                                    |
-| Task limits      | `delay_bound` 259200 s; `rsc_memory_bound` 1.5 GiB; `rsc_disk_bound` 1 GiB; container capped at 1536 MiB and one CPU by `job.toml`                   |
-| File size limits | scan 128 MiB, ALTO 32 MiB, text 512 KiB, JSON 16 KiB (`usnm-ocr-contract/src/boinc.rs`)                                                              |
-| Client needs     | BOINC 9.0 or later, Docker, outbound HTTPS to the project URL, and to the registry holding the worker image. No inbound ports                        |
+| Item             | Value                                                                                                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| App name         | `usnm_ocr` (`boinc/project.xml` registers it with `target_nresults` 1); `usnm_assess` for #456, redundancy 2 ([docs/boinc-assessment.md](../../docs/boinc-assessment.md)) |
+| App type         | Docker wrapper; the worker image is built from `ocr/boinc/Containerfile` and runs `usnm-boinc work`                                                                       |
+| App version      | installed by `scripts/boinc/install.py --project --wrapper --image --version` into `apps/usnm_ocr/<version>/x86_64-pc-linux-gnu__docker`                                  |
+| Plan class       | `docker`, from `boinc/plan_class_spec.xml` here (minimum client 9.0)                                                                                                      |
+| Workunit shape   | one page per task; templates `usnm_ocr_in` and `usnm_ocr_out` in `ocr/boinc/`; inputs `page` and `request.json`                                                           |
+| Daemons          | `sample_trivial_validator` and `batch_collect_assimilator`, from `ocr/boinc/daemons.xml`, in place of `@APP_DAEMONS@` in `boinc/config.xml.template`                      |
+| Spool            | `<project>/results/<batch>/<workunit>__file_<logical name>`, written by `batch_collect_assimilator`                                                                       |
+| Submission       | `usnm-boinc submit --root --project --job`, which runs `bin/dir_hier_path` and `bin/create_work`                                                                          |
+| Publication      | `usnm-boinc collect --root --spool --job --curated-url --out-url`                                                                                                         |
+| Task limits      | `delay_bound` 259200 s; `rsc_memory_bound` 1.5 GiB; `rsc_disk_bound` 1 GiB; container capped at 1536 MiB and one CPU by `job.toml`                                        |
+| File size limits | scan 128 MiB, ALTO 32 MiB, text 512 KiB, JSON 16 KiB (`usnm-ocr-contract/src/boinc.rs`)                                                                                   |
+| Client needs     | BOINC 9.0 or later, Docker, outbound HTTPS to the project URL, and to the registry holding the worker image. No inbound ports                                             |
 
 ## What this directory provides to #441
 

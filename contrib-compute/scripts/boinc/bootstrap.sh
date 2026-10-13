@@ -80,6 +80,8 @@ Apply only:
 Options:
   --bridge-image IMAGE   (required) bridge job image (images/bridge), by digest, same registry as --image
                          (default: --image, which has no usnm-boinc binary)
+  --assessment           run the server from --bridge-image, so the usnm_assess validator (#456)
+                         can run (docs/boinc-assessment.md); off by default
   --registry-resource-group RG
                          resource group of the image's registry, if not --resource-group
                          (the identity gets AcrPull on that one registry)
@@ -92,13 +94,14 @@ Options:
 USAGE
 }
 
-what_if=0 apply=0 confirm=0 subscription="" bridge_image="" runtime="" rg="" image="" worker_image="" key_dir="" location="eastus" name="boinc" project_url="" operator_oid="" operator_login="" registry_rg=""
+what_if=0 apply=0 confirm=0 assessment=false subscription="" bridge_image="" runtime="" rg="" image="" worker_image="" key_dir="" location="eastus" name="boinc" project_url="" operator_oid="" operator_login="" registry_rg=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --what-if) what_if=1; shift ;;
     --apply) apply=1; shift ;;
     --yes-deploy) confirm=1; shift ;;
+    --assessment) assessment=true; shift ;;
     --subscription) [ $# -ge 2 ] || die "$1 needs a value"; subscription="$2"; shift 2 ;;
     --bridge-image) [ $# -ge 2 ] || die "$1 needs a value"; bridge_image="$2"; shift 2 ;;
     --container-runtime) [ $# -ge 2 ] || die "$1 needs a value"; runtime="$2"; shift 2 ;;
@@ -195,13 +198,13 @@ apply_all() {
   note "A. Deployment: what-if, then create (resource group $rg)"
   genpw > "$work/admin-pw"
   jq -n --rawfile pw "$work/admin-pw" --arg n "$name" --arg l "$location" --arg i "$image" --arg b "$bridge_image" \
-        --arg h "$domain" --arg r "$registry_rg" --arg o "$operator_oid" '{
+        --arg h "$domain" --arg r "$registry_rg" --arg o "$operator_oid" --argjson a "$assessment" '{
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
     contentVersion: "1.0.0.0",
     parameters: {
       name: {value: $n}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b},
       masterHost: {value: $h}, registryResourceGroup: {value: $r}, operatorPrincipalIds: {value: [$o]},
-      mysqlAdminPassword: {value: $pw}
+      mysqlAdminPassword: {value: $pw}, assessment: {value: $a}
     }}' > "$work/params.json"
   az_ deployment group what-if --resource-group "$rg" --template-file "$contrib_root/infra/boinc/main.bicep" \
       --parameters "@$work/params.json" --no-pretty-print --query 'properties.changes[].{op:changeType,id:resourceId}' -o tsv ||
@@ -260,7 +263,7 @@ az deployment group what-if \\
   --resource-group $rg \\
   --template-file $contrib_root/infra/boinc/main.bicep \\
   --parameters name=$name location=$location image=$image bridgeImage=$bridge_image \\
-               masterHost=$domain registryResourceGroup=$registry_rg \\
+               masterHost=$domain registryResourceGroup=$registry_rg assessment=$assessment \\
                operatorPrincipalIds='["$operator_oid"]' \\
                mysqlAdminPassword=<generated, from Key Vault>
    The registry is ${registry_host%%.*} (the identity gets AcrPull on it only). Key Vault and the

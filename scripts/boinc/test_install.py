@@ -39,6 +39,14 @@ class InstallTest(unittest.TestCase):
                 module.install(self.project, self.wrapper, image, "1.0")
         self.assertFalse((self.project / "apps").exists())
 
+    def test_assessment_app_gets_its_templates(self):
+        target = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_assess")
+        self.assertEqual(target.parts[-3], "usnm_assess")
+        for name in ["usnm_assess_in", "usnm_assess_crash_in", "usnm_assess_out"]:
+            self.assertTrue((self.project / "templates" / name).is_file())
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "other")
+
 
 if __name__ == "__main__":
     unittest.main()
