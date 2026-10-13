@@ -29,16 +29,17 @@ Where this page and #441 differ, #441 wins; it is the client base.
 | The `docker` plan class            | `boinc/plan_class_spec.xml`                                                               |
 | Project and daemon configuration   | `boinc/config.xml.template` and `boinc/project.xml`                                       |
 | Where `submit` and `reconcile` run | the manual-trigger Container Apps Job in `infra/boinc/modules/bridge-job.bicep`           |
-| The set-up plan                    | `scripts/boinc/bootstrap.sh` (preview only)                                               |
+| The set-up plan and deployment     | `scripts/boinc/bootstrap.sh` (`--what-if` default; `--apply` deploys)                     |
+| The server and bridge images       | `images/server`, `images/bridge` ([images.md](images.md))                                 |
 
 ## Paths on the share
 
-| Path                          | Content                                                              |
-| ----------------------------- | -------------------------------------------------------------------- |
-| `/project/download`, `upload` | BOINC's fan-out trees: staged scans and volunteers' uploads          |
-| `/project/results/<batch>`    | the assimilator's spool; keep until `collect` reports `published`    |
-| `/project/apps/usnm_ocr`      | app versions written by `install.py`, then signed                    |
-| `/project/handoff/jobs/<id>`  | an exported job, copied here for `submit`; its record is copied back |
+| Path                                  | Content                                                              |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| `/project/usnmocr/download`, `upload` | BOINC's fan-out trees: staged scans and volunteers' uploads          |
+| `/project/usnmocr/results/<batch>`    | the assimilator's spool; keep until `collect` reports `published`    |
+| `/project/usnmocr/apps/usnm_ocr`      | app versions written by `install.py`, then signed                    |
+| `/project/handoff/jobs/<id>`          | an exported job, copied here for `submit`; its record is copied back |
 
 ## Account creation and privacy
 

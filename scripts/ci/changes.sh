@@ -89,7 +89,7 @@ ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-core|
 page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^contrib-compute/'
+contrib='^(contrib-compute/|crates/usnm-boinc/)'
 for part in rust quickwit web image fixtures ocr_worker page_language contrib; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done

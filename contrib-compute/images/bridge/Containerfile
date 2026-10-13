@@ -1,0 +1,16 @@
+# The bridge job image: the server image (the stock project tools, create_work, config rendering
+# and /usr/local/bin/bridge-job) plus the usnm-boinc binary from PR #441's crate.
+# Build from the repository root, after #441 is merged (crates/usnm-boinc must exist):
+#
+#   docker build -f contrib-compute/images/bridge/Containerfile \
+#     --build-arg SERVER_IMAGE=REGISTRY/NAME@sha256:<server image digest> .
+ARG SERVER_IMAGE
+FROM mirror.gcr.io/library/rust:1-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS build
+ARG BUILD_JOBS=2
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
+
+FROM ${SERVER_IMAGE}
+COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
+ENTRYPOINT ["/usr/local/bin/bridge-job"]

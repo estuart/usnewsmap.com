@@ -193,9 +193,10 @@ choices were:
 - **A VM or a Cloud Shell session.** Rejected: ADR-0005 keeps IaaS out, and the shell would
   need the database credential on a person's machine.
 
-The job's image is the server image plus the bridge binary. Building it is not done here
-(`bridge-job` runs `/usr/local/bin/bridge-job`, a wrapper that renders `config.xml` and
-execs `usnm-boinc`; it is part of the server image work, section 9).
+The job's image is the server image plus the bridge binary (`images/bridge/Containerfile`;
+`bridgeImage` in `main.bicep`, a required parameter with no default; `bootstrap.sh` requires `--bridge-image`). `bridge-job` (`images/server/bridge-job.sh`) renders `config.xml`
+into tmpfs and runs `usnm-boinc submit` or `reconcile` for the job id in `JOB_ID`. Written, not run
+(docs/images.md).
 
 ### 4.3 The hand-off and the spool
 
@@ -255,7 +256,7 @@ every volunteer's attachment and cannot change.
 - Registry and operator access: both Container App resources pull the image with the shared
   identity, which has AcrPull scoped to the one registry named by the image (the registry has no
   admin user and no anonymous pull). The operator named by `--operator-object-id` gets Key Vault
-  Secrets Officer, to create the four secrets, and is made the MySQL Entra administrator in the separate step above. Because the
+  Secrets Officer, to create the five secrets, and is made the MySQL Entra administrator in the separate step above. Because the
   vault and the Files account are private, the operator needs a network path into the VNet to
   create secrets or copy to the share; none is provisioned here (open question 11).
 - Policy: the repository's guardrails deny a storage account with shared key access and a
@@ -263,8 +264,8 @@ every volunteer's attachment and cannot change.
   in decision 5 of ADR-0019). `infra/main.bicep` waives exactly those two policies for the
   dedicated BOINC resource group when `USNM_BOINC_GROUP` is set. The group must hold only
   BOINC resources, and provisioning runs before this stack is deployed.
-- Images: our own build from the BOINC `server_release/1.6/1.6.2` tag; the Docker Hub images
-  are stale.
+- Images: our own build (`images/`) from a pinned BOINC master commit, because the 1.6.2 tag has no
+  `batch_collect_assimilator`; the Docker Hub images are stale.
 
 Privacy:
 
@@ -366,8 +367,8 @@ credits drain); the retention of staged scans.
    them.
 5. **`install.py` needs a `docker` plan class** that the repository did not provide.
    `boinc/plan_class_spec.xml` here supplies it.
-6. **No registry is named for the worker image.** Volunteers' Docker must pull it by digest;
-   where it lives is open (section 9).
+6. **The worker image's registry.** Volunteers' Docker must pull it by digest, without our
+   credentials: a public GHCR package (ADR-0019, addendum). Not published yet.
 7. **`daemons.xml` has no standard daemons.** It lists only the validator and the assimilator;
    the template here adds the feeder, transitioner, file_deleter and db_purge.
 8. **Azure Files semantics.** BOINC wants setgid directories, umask 0002 and file locking;
@@ -400,11 +401,11 @@ the images would be preferred if one exists. It is not planned until the maintai
 4. Does a Container Apps Job accept per-run argument overrides at start (the job id to
    submit), or does each run need a new execution template?
 5. Does the BOINC client follow a redirect for `get_project_config.php`?
-6. Which registry holds the worker image, and who may pull from it?
+6. ~~Which registry holds the worker image?~~ Proposed: public GHCR package (ADR-0019, addendum); the maintainer sets its visibility.
 7. Code-signing key custody: which offline machine, and who holds the backup?
 8. The project's name, domain and terms of use. The master URL, once volunteers attach, cannot
    change.
-9. Who builds the server image and `bridge-job` wrapper, and where does the build live?
+9. ~~Who builds the server image and `bridge-job`?~~ `images/`, built by CI without pushing; the operator pushes to the registry (docs/images.md).
 10. Should `submit` get a remote mode in #441, or is the manual hand-off enough for the pilot?
 11. What network path does the operator use into the VNet to create the Key Vault secrets and to
     reach the Files share (for the hand-off in section 4)? Candidates: `az containerapp exec`

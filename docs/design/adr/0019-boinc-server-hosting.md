@@ -27,7 +27,8 @@ This ADR covers that missing piece, the Azure hosting of a stock server, so the 
 
    The upload-signing key pair is kept apart from the code-signing key, which stays offline. `scripts/ci/no-shared-keys.sh` doesn't scan `contrib-compute/`; these are the places it would flag.
 
-6. **Where #441 and this hosting may not fit are recorded, not worked around**: the Docker wrapper on the client side needs Docker only on volunteers' machines, not on the server (`docs/verified-facts.md`); the bridge's single `--root`, the permissions of the Docker job under `--cap-drop=ALL`, and Azure Files semantics are open (`docs/design.md`, section 7).
+6. **The images are built from `contrib-compute/images/`** (the server and the bridge job; [docs/images.md](../../../contrib-compute/docs/images.md)), from a pinned BOINC commit, because the tag the design first named lacks `batch_collect_assimilator`. The worker image's registry is in the addendum.
+7. **Where #441 and this hosting may not fit are recorded, not worked around**: the Docker wrapper on the client side needs Docker only on volunteers' machines, not on the server (`docs/verified-facts.md`); the bridge's single `--root`, the permissions of the Docker job under `--cap-drop=ALL`, and Azure Files semantics are open (`docs/design.md`, section 7).
 
 ## Alternatives
 
@@ -41,3 +42,24 @@ This ADR covers that missing piece, the Azure hosting of a stock server, so the 
 - The project gains a public scheduler, an upload handler and a web UI, and the work to keep them patched. The design's section 5 covers the controls.
 - #441's pilot trusts its friends: the default validator checks nothing. Anything open to anonymous volunteers needs more validation, which is out of scope here.
 - Nothing is deployed. The design lists what is unverified: the MySQL flexible server's fit with BOINC's tables, Azure Files semantics under Container Apps, and the Docker-wrapper plan class on a current server build.
+
+## Addendum (2026-10-13): where the worker image is published
+
+Not implemented. This records the decision so the first deployment does not stall on it; no workflow publishes the image yet.
+
+**Problem.** Each volunteer's Docker pulls the worker image: the app version's `Dockerfile` is `FROM <image>` (`scripts/boinc/install.py` in PR #441). Volunteers have no credentials for us. The project's Azure Container Registry has no anonymous pull and no admin user (design.md, 5.2), and that is right for the server images, so it cannot serve volunteers.
+
+**Decision.** Publish the worker image as a public GHCR package under this repository: `ghcr.io/tgoodyear/usnm-boinc-worker`, linked to the repository. It is built the way #441 describes (`docs/boinc.md`, "Build the worker image"): first the engine image from `ocr/engines/tesseract/Containerfile`, then `ocr/boinc/Containerfile` with `--build-arg TESSERACT_IMAGE=sha256:<engine image id>`. The app version records the registry digest of the pushed worker image (`ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>`), not the local image id and not the engine's pin.
+
+- The image holds Tesseract, its pinned models, and the `usnm-boinc` binary. It holds no credential, no data and no scan, so a public package discloses nothing that the repository does not already publish.
+- A GHCR package is private by default. Its visibility is set once in the package settings by the maintainer; a workflow cannot do it. Before the first task is sent, verify an anonymous pull from a logged-out Docker on a host that is not the maintainer's (#441 asks for the same check from the volunteer runtime).
+- Publishing is a separate, later workflow on pushes of a version tag, using the repository token, with permission to write packages. Rolling the image means a new app version and a drained cohort (#441, "Build the worker image").
+
+**Alternatives.**
+
+- _Azure Container Registry with anonymous pull._ A registry-wide setting that exposes every repository in it, and its availability depends on the registry's SKU (UNVERIFIED). Rejected: the server images share that registry.
+- _A second registry in Azure just for the worker._ Adds a fixed monthly cost for one image, against a free public package.
+- _Docker Hub._ Anonymous pulls are rate limited per client address (UNVERIFIED for current limits), which fails for volunteers behind shared addresses.
+- _Ship the image from the project server as a file._ BOINC's Docker wrapper does not do that.
+
+**Consequences.** The registry digest exists only after the first push, so `bootstrap.sh --worker-image` cannot be run for real until then. GHCR's terms and retention for public packages are the maintainer's to check (UNVERIFIED).

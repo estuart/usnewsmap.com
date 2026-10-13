@@ -1,0 +1,58 @@
+# The stock BOINC server as ONE image: Apache with PHP, the scheduler and upload CGIs, and
+# the daemons, all in one container because the feeder and the scheduler share a System V
+# shared-memory segment (docs/design.md, section 2.1). BOINC is built from source at a pinned
+# commit with no patches. See contrib-compute/docs/images.md.
+#
+#   docker build -f contrib-compute/images/server/Containerfile contrib-compute   (context: contrib-compute/)
+#
+# The BOINC commit is master, not the server_release/1.6/1.6.2 tag: that tag has no
+# batch_collect_assimilator, which PR #441's daemons.xml runs (checked by grep of both trees on
+# 2026-10-13). Move to the first release tag that has it, when one exists.
+ARG BASE=mirror.gcr.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+
+FROM ${BASE} AS build
+ARG BOINC_COMMIT=22bbebe08e2eaac5d5e88a6d93b88e800cb6341c
+ARG BUILD_JOBS=2
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl dh-autoreconf g++ git libcurl4-gnutls-dev default-libmysqlclient-dev \
+      libssl-dev libzip-dev libfmt-dev nlohmann-json3-dev m4 make pkg-config python3 python3-dev \
+      python3-distutils python3-setuptools \
+ && rm -rf /var/lib/apt/lists/*
+RUN git init /usr/local/boinc \
+ && cd /usr/local/boinc \
+ && git remote add origin https://github.com/BOINC/boinc.git \
+ && git fetch --depth 1 origin "${BOINC_COMMIT}" \
+ && git checkout --detach FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = "${BOINC_COMMIT}" \
+ && ./_autosetup \
+ && ./configure --disable-client --disable-manager \
+ && make -j "${BUILD_JOBS}" \
+ && make -C api \
+ && make -C samples/docker_wrapper \
+ && rm -rf .git
+
+FROM ${BASE}
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      apache2 ca-certificates curl default-mysql-client jq libapache2-mod-php8.2 libcurl3-gnutls \
+      libfmt9 libmariadb3 libzip4 openssl php8.2-cli php8.2-curl php8.2-gd php8.2-mbstring \
+      php8.2-mysql php8.2-xml procps python3 python3-mysqldb python3-requests supervisor \
+ && a2dismod -q mpm_event && a2enmod -q mpm_prefork php8.2 cgi headers \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --uid 1000 boincadm \
+ && adduser www-data boincadm
+COPY --from=build /usr/local/boinc /usr/local/boinc
+COPY images/server/lib.sh images/server/entrypoint.sh images/server/apache-project.conf.template \
+     images/server/supervisord.conf images/server/boinc-daemons.sh /usr/local/lib/usnm-boinc/
+COPY images/server/bridge-job.sh /usr/local/bin/bridge-job
+COPY boinc/config.xml.template boinc/project.xml boinc/plan_class_spec.xml /usr/local/lib/usnm-boinc/
+# The docker_wrapper that install.py (PR #441) puts in the signed app version: built here from the
+# same pinned source, so the wrapper has the workdir and create_args settings job.toml needs.
+# (the Makefile may add a release suffix to the binary's name, so find it)
+RUN w="$(find /usr/local/boinc/samples/docker_wrapper -maxdepth 1 -type f -perm -u+x -name 'docker_wrapper*' | head -n 1)" \
+ && test -n "$w" && cp "$w" /usr/local/lib/usnm-boinc/docker_wrapper \
+ && chmod 0755 /usr/local/lib/usnm-boinc/entrypoint.sh /usr/local/lib/usnm-boinc/boinc-daemons.sh /usr/local/bin/bridge-job
+EXPOSE 80
+ENTRYPOINT ["/usr/local/lib/usnm-boinc/entrypoint.sh"]
+CMD ["--serve"]

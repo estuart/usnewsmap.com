@@ -5,7 +5,7 @@
 // endpoint in the project's VNet. The workload identity reads it from there; the operator
 // needs a network path into the VNet to create the secrets (docs/design.md, section 5.2).
 // Expected secret names: mysql-admin-password, mysql-runtime-password,
-// upload-private-key, upload-public-key. The code-signing private key is NOT here.
+// upload-private-key, upload-public-key, code-sign-public-key. The code-signing private key is NOT here.
 param name string
 param location string
 param readerPrincipalId string

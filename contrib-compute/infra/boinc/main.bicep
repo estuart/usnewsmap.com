@@ -16,6 +16,9 @@ param location string = resourceGroup().location
 @description('Server image, by digest, for example registry/name@sha256:...')
 param image string
 
+@description('Bridge job image (images/bridge), by digest, in the same registry as the server image. There is deliberately no default: the server image does not contain the usnm-boinc binary, so the job would fail.')
+param bridgeImage string
+
 @secure()
 @description('MySQL admin password. The bootstrap script generates it and keeps it in Key Vault.')
 param mysqlAdminPassword string
@@ -140,7 +143,7 @@ module bridgeJob 'modules/bridge-job.bicep' = {
     environmentId: app.outputs.environmentId
     identityId: identity.id
     identityClientId: identity.properties.clientId
-    image: image
+    image: bridgeImage
     registryServer: registryServer
     keyVaultName: vault.outputs.name
     mysqlHost: mysql.outputs.host
