@@ -64,3 +64,7 @@ The search experiment's share (`qw-search`, #251) is the same exception for a te
 - Nothing in the stack can be reached with a leaked key, because no service here accepts one.
 - Portal features that rely on keys stop working. For example, the Log Analytics "agents" key blade, and the legacy Application Insights ingestion by instrumentation key. Telemetry, if the API ever sends it, must use the Azure Monitor OpenTelemetry exporter with a managed identity (Monitoring Metrics Publisher on the component).
 - The Quickwit fallback in 08 §8.2 changes. If the sidecar can't authenticate with its managed identity, it can't fall back to a user-delegation SAS. The fallback is a localhost proxy in the `api` container that adds the app identity's bearer token.
+
+## Addendum: BOINC server exemptions (ADR-0019)
+
+The BOINC server's Azure Files mount takes the account key, and its Container Apps environment takes the Log Analytics shared key. Two Waiver exemptions, one per policy (shared-key storage and monitor local-auth), are group-wide within the dedicated BOINC resource group, which must hold only BOINC resources and gets the same guardrail assignments. `infra/main.bicep` writes them only when `boincResourceGroup` is set; it is empty by default. The definitions are not weakened, and the keys live only in the platform configuration.

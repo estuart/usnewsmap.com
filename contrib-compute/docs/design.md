@@ -260,8 +260,9 @@ every volunteer's attachment and cannot change.
   create secrets or copy to the share; none is provisioned here (open question 11).
 - Policy: the repository's guardrails deny a storage account with shared key access and a
   Log Analytics workspace with local auth. This stack needs both (the three ADR-0009 exceptions
-  in decision 5 of ADR-0019). The guardrail definitions have no way to exempt a resource yet, so
-  the stack cannot be deployed into a guarded group until the maintainer decides how to add one.
+  in decision 5 of ADR-0019). `infra/main.bicep` waives exactly those two policies for the
+  dedicated BOINC resource group when `USNM_BOINC_RESOURCE_GROUP` is set. The group must hold only
+  BOINC resources, and provisioning runs before this stack is deployed.
 - Images: our own build from the BOINC `server_release/1.6/1.6.2` tag; the Docker Hub images
   are stale.
 
@@ -408,9 +409,9 @@ the images would be preferred if one exists. It is not planned until the maintai
 11. What network path does the operator use into the VNet to create the Key Vault secrets and to
     reach the Files share (for the hand-off in section 4)? Candidates: `az containerapp exec`
     into the bridge job's environment, a point-to-site VPN, or a jump host. None is chosen.
-12. How are the three ADR-0009 exceptions expressed in the guardrail policies (ADR-0019,
-    decision 5)? Not implemented: the maintainer decides whether to add an exempt-ids parameter
-    to the two definitions, as the public-network policy has.
+12. ~~How are the three ADR-0009 exceptions expressed in the guardrail policies?~~ Resolved
+    (ADR-0019, decision 5): group-scoped Waiver exemptions in `infra/modules/boinc-exemptions.bicep`;
+    the definitions are unchanged.
 13. Does the maintainer accept `require_secure_transport = OFF` inside the private network if
     the BOINC clients cannot use TLS?
 

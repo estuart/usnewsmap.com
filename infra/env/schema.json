@@ -58,6 +58,10 @@
       "x-usnm-visibility": "public",
       "type": "integer"
     },
+    "USNM_BOINC_RESOURCE_GROUP": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
     "USNM_BROWSE_PAGES": {
       "x-usnm-visibility": "public",
       "type": "boolean"
