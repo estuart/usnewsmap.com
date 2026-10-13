@@ -1,4 +1,5 @@
-//! The page: one server-rendered HTML document that refreshes itself.
+//! The page: one server-rendered HTML document. Its script fetches it again
+//! on a timer and swaps in the panels that changed.
 //! Every value from outside goes through [`esc`].
 
 use std::fmt::Write as _;
@@ -146,6 +147,7 @@ body { margin:0; padding:16px 20px 40px; background:var(--plane); color:var(--in
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:16px; margin:0 0 10px; } h3 { font-size:14px; margin:14px 0 6px; }
 .sub { color:var(--ink2); margin-bottom:16px; }
+.stale { color:var(--critical); }
 /* Panels flow down columns at least 560px wide, each as tall as its own
    content, so a short panel never stretches beside a tall one. */
 .grid { columns:560px; column-gap:16px; }
@@ -207,13 +209,102 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
 }
 "#;
 
-/// Turns each `<time>` into the reader's local time.
-const SCRIPT: &str = r#"
-for (const t of document.querySelectorAll('time[datetime]')) {
-  const d = new Date(t.getAttribute('datetime'));
-  if (!isNaN(d)) t.textContent = d.toLocaleString('en-US', {timeZone:'America/New_York', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short'});
-}
-"#;
+/// Turns each `<time>` into US Eastern time, then keeps the page
+/// current: every `data-refresh` seconds it fetches the page again in the
+/// background and swaps in only the panels that changed, keeping each
+/// list's scroll position, open rows and any text being selected, so
+/// nothing flashes. A failed fetch leaves the old data and says so.
+const SCRIPT: &str = r##"
+const localTimes = (root) => {
+  for (const t of root.querySelectorAll('time[datetime]')) {
+    const d = new Date(t.getAttribute('datetime'));
+    if (!isNaN(d)) t.textContent = d.toLocaleString('en-US', {timeZone:'America/New_York', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short'});
+  }
+};
+const panels = () => [...document.querySelectorAll('.grid > section')];
+const titleOf = (s) => (s.querySelector('h2') || {}).textContent || '';
+let rawSub = (document.querySelector('.sub time') || {outerHTML: ''}).outerHTML;
+let raw = panels().map((s) => s.outerHTML);
+localTimes(document);
+
+const selecting = (el) => {
+  const sel = window.getSelection();
+  return !!sel && !sel.isCollapsed && sel.containsNode(el, true);
+};
+const rowKeys = (panel) => {
+  const texts = [...panel.querySelectorAll('details')].map((d) => (d.querySelector('summary') || {}).textContent || '');
+  return texts.map((t, i) => texts.indexOf(t) === texts.lastIndexOf(t) ? t : i + ':' + t);
+};
+const swap = (old, fresh) => {
+  const scrolls = [...old.querySelectorAll('.scroll')].map((e) => [e.getAttribute('aria-label'), e.scrollTop, e.scrollLeft]);
+  const open = rowKeys(old).filter((k, i) => old.querySelectorAll('details')[i].open).filter(Boolean);
+  const focused = old.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
+  const left = old.scrollLeft;
+  const node = document.importNode(fresh, true);
+  localTimes(node);
+  const keys = rowKeys(node);
+  node.querySelectorAll('details').forEach((d, i) => { if (open.includes(keys[i])) d.open = true; });
+  old.replaceWith(node);
+  node.scrollLeft = left;
+  for (const [label, top, lf] of scrolls) {
+    const e = [...node.querySelectorAll('.scroll')].find((x) => x.getAttribute('aria-label') === label);
+    if (e) { e.scrollTop = top; e.scrollLeft = lf; if (label === focused) e.focus({preventScroll:true}); }
+  }
+  return node;
+};
+
+let busy = false;
+const update = async () => {
+  if (busy || document.hidden) return;
+  busy = true;
+  const sub = document.querySelector('.sub');
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 20000);
+  try {
+    const r = await fetch(location.pathname + location.search, {cache:'no-store', signal:ctl.signal});
+    if (!r.ok) throw new Error('status ' + r.status);
+    const next = new DOMParser().parseFromString(await r.text(), 'text/html');
+    const now = panels();
+    const then = [...next.querySelectorAll('.grid > section')];
+    const nextSub = next.querySelector('.sub');
+    if (!nextSub || !then.length) throw new Error('not the dashboard');
+    const t = sub.querySelector('time'), nt = nextSub.querySelector('time');
+    if (t && nt && nt.outerHTML !== rawSub) {
+      t.setAttribute('datetime', nt.getAttribute('datetime'));
+      t.textContent = nt.textContent;
+      rawSub = nt.outerHTML;
+      localTimes(sub);
+    }
+    sub.querySelector('.stale')?.remove();
+    if (now.length === then.length && now.every((s, i) => titleOf(s) === titleOf(then[i]))) {
+      then.forEach((fresh, i) => {
+        if (raw[i] === fresh.outerHTML || selecting(now[i])) return;
+        raw[i] = fresh.outerHTML;
+        swap(now[i], fresh);
+      });
+    } else {
+      const grid = document.querySelector('.grid');
+      if (selecting(grid)) return;
+      grid.replaceChildren(...then.map((s) => document.importNode(s, true)));
+      localTimes(grid);
+      raw = then.map((s) => s.outerHTML);
+    }
+  } catch (e) {
+    if (!sub.querySelector('.stale')) {
+      const s = document.createElement('span');
+      s.className = 'stale';
+      s.textContent = ' Could not refresh; showing the last data.';
+      sub.append(s);
+    }
+  } finally {
+    clearTimeout(timer);
+    busy = false;
+  }
+};
+const every = Math.max(5, Number(document.body.dataset.refresh) || 30) * 1000;
+setInterval(update, every);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) update(); });
+"##;
 
 /// A list that scrolls inside its panel once it is long.
 fn scroll(label: &str) -> String {
@@ -329,12 +420,13 @@ pub fn render(v: &View) -> String {
     let _ = write!(
         o,
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-         <meta http-equiv=\"refresh\" content=\"{}\">\
+         <noscript><meta http-equiv=\"refresh\" content=\"{}\"></noscript>\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>usnm OCR, local</title><style>{STYLE}</style></head><body>\
+         <title>usnm OCR, local</title><style>{STYLE}</style></head><body data-refresh=\"{}\">\
          <h1>usnm OCR, local</h1><div class=\"sub\">The scan fetch, the nodes and the hosts on the LAN. \
          Read-only; no page text. Made {}; refreshes every {}s. \
          JSON: <a href=\"/api/view.json\">/api/view.json</a>.</div><div class=\"grid\">",
+        v.refresh_secs,
         v.refresh_secs,
         time(now),
         v.refresh_secs

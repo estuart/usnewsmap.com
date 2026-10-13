@@ -290,6 +290,21 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn the_page_refreshes_in_the_background_without_a_reload() {
+        let dir = std::env::temp_dir().join(format!("usnm-dash-refresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_, body) = call(app(&dir), "198.51.100.50", "GET", "/", "").await;
+        assert!(body.contains("<body data-refresh=\"30\">"));
+        assert!(body.contains("fetch(location.pathname"));
+        assert!(body.contains("setInterval(update, every)"));
+        // Without script the page still reloads itself, and only then.
+        let meta = "<meta http-equiv=\"refresh\" content=\"30\">";
+        assert_eq!(body.matches(meta).count(), 1);
+        assert!(body.contains(&format!("<noscript>{meta}</noscript>")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     async fn call(
         app: Arc<App>,
         from: &str,
