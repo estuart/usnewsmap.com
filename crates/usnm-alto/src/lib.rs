@@ -1,17 +1,37 @@
-//! ALTO from OCR nodes (#296, 13 §13.2): a bounded reader.
+//! ALTO for the OCR nodes (#296, #307; 13 §13.4 and §13.8.2).
 //!
-//! An OCR node is outside Azure and its output is untrusted, so the pickup
-//! (`usnm-ingest ocr-sync`, 12 §12.5 Step 8 check 6) reads each ALTO file
-//! with [`check`] before copying it into the lake: UTF-8, well-formed XML
-//! with no DOCTYPE (so no entity can be declared or expanded) and no
-//! processing instruction but the declaration, one root element, `alto` in
-//! an ALTO v2, v3 or v4 namespace, within depth, element and attribute
-//! limits, with a `Page` that has a positive `WIDTH` and `HEIGHT`. The
-//! reader streams and keeps only the element stack, so memory stays at the
-//! input's size plus the limits whatever the input holds.
-//!
-//! The rest of 13's `usnm-alto` (writing the stored profile, boxes to ALTO,
-//! tile merging, text in reading order) comes with the engine host.
+//! - [`check`]: a bounded reader. An OCR node is outside Azure and its
+//!   output is untrusted, so the pickup (`usnm-ingest ocr-sync`, 12 §12.5
+//!   Step 8 check 6) reads each ALTO file with it before copying it into
+//!   the lake: UTF-8, well-formed XML with no DOCTYPE (so no entity can be
+//!   declared or expanded) and no processing instruction but the
+//!   declaration, one root element, `alto` in an ALTO v2, v3 or v4
+//!   namespace, within depth, element and attribute limits, with a `Page`
+//!   that has a positive `WIDTH` and `HEIGHT`. The reader streams and keeps
+//!   only the element stack.
+//! - [`parse()`]: engine ALTO (any version, `pixel`, `inch1200` or `mm10`)
+//!   into a [`Page`] in pixels.
+//! - [`boxes`]: `boxes.json` (`usnm-boxes/1`), the layout of engines without
+//!   ALTO, read within limits and converted to a [`Page`] with units mapped,
+//!   markup stripped and reading order set.
+//! - [`tiles::merge`]: tiles read separately, as one page.
+//! - [`write()`]: the one stored ALTO profile, ALTO 3.1 in pixels of the
+//!   IIIF full image.
+//! - [`text()`]: the page text in reading order, which the worker
+//!   normalizes and stores, so text and ALTO always hold the same words.
+
+pub mod boxes;
+pub mod markup;
+mod model;
+pub mod order;
+mod parse;
+pub mod tiles;
+mod write;
+
+pub use markup::Markup;
+pub use model::{default_dir, text, Block, BlockKind, Dir, Granularity, Line, Page, Rect, Word};
+pub use parse::{parse, ParseError, ParseOptions};
+pub use write::{write, Description, Software, Step, NAMESPACE, SCHEMA_LOCATION};
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::{Namespace, ResolveResult};

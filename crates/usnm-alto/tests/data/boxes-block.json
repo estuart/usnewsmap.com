@@ -1,0 +1,13 @@
+{
+  "blocks": [
+    {"bbox": [50, 20, 950, 100], "kind": "heading", "lang": "deu", "order": 0, "text": "<h1>Der Deutsche Correspondent</h1>"},
+    {"bbox": [50, 120, 480, 900], "kind": "text", "order": 1, "text": "<p>Die Stadt &amp; das Land.<br>Zweite Zeile mit <b>fett</b>.</p>"},
+    {"bbox": [520, 120, 950, 600], "kind": "illustration", "order": 2, "text": "A picture of a ship"},
+    {"bbox": [520, 620, 950, 900], "kind": "caption", "order": 3, "text": "Das Schiff im Hafen"}
+  ],
+  "frame": {"height": 1000, "width": 1000},
+  "granularity": "block",
+  "reading_order": "engine",
+  "units": "norm1000",
+  "v": 1
+}

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v3# http://www.loc.gov/standards/alto/v3/alto-3-1.xsd">
+  <Description>
+    <MeasurementUnit>pixel</MeasurementUnit>
+    <sourceImageInformation>
+      <fileName>https://tile.loc.gov/image-services/iiif/service:ndnp:x:batch_x:data:0001/full/full/0/default.jpg</fileName>
+      <fileIdentifier fileIdentifierLocation="sha256">0207a56216a746f2d137d019ff44c49c83d4f403efde9b1eddba67ab6ebe326b</fileIdentifier>
+    </sourceImageInformation>
+    <OCRProcessing ID="OCR_0">
+      <ocrProcessingStep>
+        <processingDateTime>2026-10-20T14:04:31Z</processingDateTime>
+        <processingStepSettings>profile=eng
+granularity=word
+dpi=300 (assumed)</processingStepSettings>
+        <processingSoftware>
+          <softwareCreator>tesseract-ocr</softwareCreator>
+          <softwareName>tesseract</softwareName>
+          <softwareVersion>5.5.1</softwareVersion>
+        </processingSoftware>
+      </ocrProcessingStep>
+      <postProcessingStep>
+        <processingStepSettings>text=usnm-alto reading order</processingStepSettings>
+        <processingSoftware>
+          <softwareCreator>usnewsmap.com</softwareCreator>
+          <softwareName>usnm-ocr-worker</softwareName>
+          <softwareVersion>0.1.0</softwareVersion>
+        </processingSoftware>
+      </postProcessingStep>
+    </OCRProcessing>
+  </Description>
+  <Layout>
+    <Page ID="P1" PHYSICAL_IMG_NR="1" WIDTH="2000" HEIGHT="3000">
+      <PrintSpace HPOS="0" VPOS="0" WIDTH="2000" HEIGHT="3000">
+        <TextBlock ID="TB1" HPOS="100" VPOS="60" WIDTH="1800" HEIGHT="240" LANG="deu">
+          <TextLine ID="TL1" HPOS="100" VPOS="60" WIDTH="1800" HEIGHT="240">
+            <String ID="ST1" HPOS="100" VPOS="60" WIDTH="1800" HEIGHT="240" CONTENT="Der"/>
+            <SP/>
+            <String ID="ST2" HPOS="100" VPOS="60" WIDTH="1800" HEIGHT="240" CONTENT="Deutsche"/>
+            <SP/>
+            <String ID="ST3" HPOS="100" VPOS="60" WIDTH="1800" HEIGHT="240" CONTENT="Correspondent"/>
+          </TextLine>
+        </TextBlock>
+        <TextBlock ID="TB2" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" LANG="deu">
+          <TextLine ID="TL2" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340">
+            <String ID="ST4" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" CONTENT="Die"/>
+            <SP/>
+            <String ID="ST5" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" CONTENT="Stadt"/>
+            <SP/>
+            <String ID="ST6" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" CONTENT="&amp;"/>
+            <SP/>
+            <String ID="ST7" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" CONTENT="das"/>
+            <SP/>
+            <String ID="ST8" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" CONTENT="Land."/>
+          </TextLine>
+          <TextLine ID="TL3" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340">
+            <String ID="ST9" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" CONTENT="Zweite"/>
+            <SP/>
+            <String ID="ST10" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" CONTENT="Zeile"/>
+            <SP/>
+            <String ID="ST11" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" CONTENT="mit"/>
+            <SP/>
+            <String ID="ST12" HPOS="100" VPOS="360" WIDTH="860" HEIGHT="2340" CONTENT="fett."/>
+          </TextLine>
+        </TextBlock>
+        <Illustration ID="IL3" HPOS="1040" VPOS="360" WIDTH="860" HEIGHT="1440"/>
+        <TextBlock ID="TB4" HPOS="1040" VPOS="1860" WIDTH="860" HEIGHT="840" LANG="deu">
+          <TextLine ID="TL4" HPOS="1040" VPOS="1860" WIDTH="860" HEIGHT="840">
+            <String ID="ST13" HPOS="1040" VPOS="1860" WIDTH="860" HEIGHT="840" CONTENT="Das"/>
+            <SP/>
+            <String ID="ST14" HPOS="1040" VPOS="1860" WIDTH="860" HEIGHT="840" CONTENT="Schiff"/>
+            <SP/>
+            <String ID="ST15" HPOS="1040" VPOS="1860" WIDTH="860" HEIGHT="840" CONTENT="im"/>
+            <SP/>
+            <String ID="ST16" HPOS="1040" VPOS="1860" WIDTH="860" HEIGHT="840" CONTENT="Hafen"/>
+          </TextLine>
+        </TextBlock>
+      </PrintSpace>
+    </Page>
+  </Layout>
+</alto>

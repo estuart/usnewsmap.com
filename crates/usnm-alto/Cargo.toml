@@ -1,13 +1,15 @@
 [package]
 name = "usnm-alto"
 version = "0.1.0"
-description = "US News Map ALTO: a bounded reader for ALTO v2, v3 and v4 from OCR nodes (#296; 13 §13.2)"
+description = "US News Map ALTO: the bounded reader, the stored ALTO 3.1 writer, boxes.json and reading-order text for OCR nodes (#296, #307; 13 §13.4, §13.8.2)"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [lints]

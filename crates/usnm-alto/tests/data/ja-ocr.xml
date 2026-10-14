@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v3# http://www.loc.gov/standards/alto/v3/alto-3-1.xsd">
+<Description>
+<MeasurementUnit>inch1200</MeasurementUnit>
+<sourceImageInformation><fileName>https://tile.loc.gov/a&amp;b</fileName></sourceImageInformation>
+<OCRProcessing ID="OCR_0"><ocrProcessingStep>
+<processingDateTime>2026-10-05T12:00:00+00:00</processingDateTime>
+<processingStepSettings>dpi:300
+lines:NDLOCR-Lite reading order
+strings:one per line</processingStepSettings>
+<processingSoftware><softwareCreator>National Diet Library</softwareCreator><softwareName>NDLOCR-Lite</softwareName><softwareVersion>ndlocr-lite x</softwareVersion></processingSoftware>
+</ocrProcessingStep></OCRProcessing>
+</Description>
+<Layout>
+<Page ID="P3" PHYSICAL_IMG_NR="3" WIDTH="9600" HEIGHT="16000">
+<PrintSpace HPOS="0" VPOS="0" WIDTH="9600" HEIGHT="16000">
+<TextBlock ID="P3_TB00001" HPOS="8000" VPOS="1200" WIDTH="600" HEIGHT="1600" LANG="jpn">
+<TextLine ID="P3_TL00001" HPOS="8400" VPOS="1200" WIDTH="200" HEIGHT="1600"><String ID="P3_ST00001" HPOS="8400" VPOS="1200" WIDTH="200" HEIGHT="1600" CONTENT='一行目 &amp; "見出"' WC="0.900"/></TextLine>
+<TextLine ID="P3_TL00002" HPOS="8000" VPOS="1200" WIDTH="200" HEIGHT="1600"><String ID="P3_ST00002" HPOS="8000" VPOS="1200" WIDTH="200" HEIGHT="1600" CONTENT="二行目" WC="0.800"/></TextLine>
+</TextBlock>
+<TextBlock ID="P3_TB00002" HPOS="6000" VPOS="1200" WIDTH="200" HEIGHT="1200" LANG="jpn">
+<TextLine ID="P3_TL00003" HPOS="6000" VPOS="1200" WIDTH="200" HEIGHT="1200"><String ID="P3_ST00003" HPOS="6000" VPOS="1200" WIDTH="200" HEIGHT="1200" CONTENT="次の記事" WC="0.700"/></TextLine>
+</TextBlock>
+<TextBlock ID="P3_TB00003" HPOS="400" VPOS="12000" WIDTH="1600" HEIGHT="240" LANG="jpn">
+<TextLine ID="P3_TL00004" HPOS="400" VPOS="12000" WIDTH="1600" HEIGHT="240"><String ID="P3_ST00004" HPOS="400" VPOS="12000" WIDTH="1600" HEIGHT="240" CONTENT="Camp News" WC="1.000"/></TextLine>
+</TextBlock>
+</PrintSpace>
+</Page>
+</Layout>
+</alto>

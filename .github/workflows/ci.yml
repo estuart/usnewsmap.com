@@ -68,6 +68,12 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # The stored ALTO profile (13 §13.8.2): the writer's golden pages
+      # against LoC's ALTO 3.1 schema.
+      - name: Stored ALTO against alto-3-1.xsd
+        run: |
+          command -v xmllint >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q libxml2-utils; }
+          xmllint --noout --schema crates/usnm-alto/xsd/alto-3-1.xsd crates/usnm-alto/tests/golden/*.xml
       # The damage metric and its word lists are behind a feature nothing in
       # the workspace turns on yet (12 §12.5 Step 4).
       - run: cargo clippy -p usnm-core --all-targets --features damage --locked -- -D warnings

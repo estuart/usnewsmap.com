@@ -1,0 +1,35 @@
+{
+  "blocks": [
+    {"bbox": [0.52, 0.2, 0.95, 0.3], "kind": "text", "lines": [
+      {"bbox": [0.52, 0.2, 0.95, 0.24], "words": [
+        {"bbox": [0.75, 0.2, 0.95, 0.24], "conf": 0.88, "text": "rose"},
+        {"bbox": [0.52, 0.2, 0.72, 0.24], "conf": 0.93, "text": "Wheat"}
+      ]},
+      {"bbox": [0.52, 0.25, 0.95, 0.3], "words": [
+        {"bbox": [0.52, 0.25, 0.7, 0.3], "conf": 0.9, "text": "again."}
+      ]}
+    ]},
+    {"bbox": [0.05, 0.2, 0.48, 0.3], "kind": "text", "lines": [
+      {"bbox": [0.05, 0.2, 0.48, 0.24], "hyphen": true, "words": [
+        {"bbox": [0.05, 0.2, 0.2, 0.24], "conf": 0.97, "text": "The"},
+        {"bbox": [0.22, 0.2, 0.48, 0.24], "conf": 0.81, "text": "coun-"}
+      ]},
+      {"bbox": [0.05, 0.25, 0.48, 0.3], "words": [
+        {"bbox": [0.05, 0.25, 0.2, 0.3], "conf": 0.95, "text": "cil"},
+        {"bbox": [0.22, 0.25, 0.4, 0.3], "conf": 0.99, "text": "met."}
+      ]}
+    ]},
+    {"bbox": [0.05, 0.02, 0.95, 0.1], "kind": "heading", "lines": [
+      {"bbox": [0.05, 0.02, 0.95, 0.1], "words": [
+        {"bbox": [0.05, 0.02, 0.45, 0.1], "text": "EVENING"},
+        {"bbox": [0.5, 0.02, 0.95, 0.1], "text": "GAZETTE"}
+      ]}
+    ]},
+    {"bbox": [0.05, 0.12, 0.95, 0.13], "kind": "separator"}
+  ],
+  "frame": {"height": 1, "width": 1},
+  "granularity": "word",
+  "reading_order": "none",
+  "units": "rel",
+  "v": 1
+}
