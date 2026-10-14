@@ -1,0 +1,239 @@
+{
+  "$defs": {
+    "Adapter": {
+      "properties": {
+        "lang": {
+          "description": "`rust` or `python`.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "lang",
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "Cancel": {
+      "description": "How a page that runs past its deadline is stopped (13 §13.6.5).",
+      "oneOf": [
+        {
+          "const": "adapter",
+          "description": "The adapter stops at `deadline_ms`, kills what it started and\nanswers `timeout`.",
+          "type": "string"
+        },
+        {
+          "const": "kill",
+          "description": "The worker kills the instance.",
+          "type": "string"
+        }
+      ]
+    },
+    "Component": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "EngineInfo": {
+      "properties": {
+        "components": {
+          "description": "Libraries such as Leptonica, with their versions.",
+          "items": {
+            "$ref": "#/$defs/Component"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "family": {
+          "description": "`usnm-<family>` is the rows' `ocr_source`.",
+          "type": "string"
+        },
+        "id": {
+          "description": "The engine's id in `engines.toml`.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "family",
+        "id",
+        "version"
+      ],
+      "type": "object"
+    },
+    "Granularity": {
+      "description": "The finest level at which a reading has real geometry (13 §13.4.2).",
+      "enum": [
+        "word",
+        "line",
+        "block",
+        "page"
+      ],
+      "type": "string"
+    },
+    "Layout": {
+      "description": "The engine's layout output.",
+      "oneOf": [
+        {
+          "const": "alto",
+          "description": "ALTO, any version, any `MeasurementUnit`.",
+          "type": "string"
+        },
+        {
+          "const": "boxes",
+          "description": "`boxes.json` (`usnm-boxes/1`).",
+          "type": "string"
+        }
+      ]
+    },
+    "Model": {
+      "properties": {
+        "name": {
+          "description": "The file's path inside the image, e.g. `tessdata/deu.traineddata`.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Hashed from disk when the adapter starts.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "ModelsLoaded": {
+      "oneOf": [
+        {
+          "const": "at_start",
+          "description": "Kept in memory between pages.",
+          "type": "string"
+        },
+        {
+          "const": "per_page",
+          "description": "Loaded for each page (CLI and script engines): the load is part of\nthe page's time.",
+          "type": "string"
+        }
+      ]
+    },
+    "Profile": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "languages": {
+          "description": "ISO 639-3.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "models": {
+          "description": "Names from [`Hello::models`].",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tunable": {
+          "description": "The options a route may set.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "languages",
+        "models",
+        "tunable"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The adapter's first line (13 §13.4.2).",
+  "properties": {
+    "adapter": {
+      "$ref": "#/$defs/Adapter"
+    },
+    "cancel": {
+      "$ref": "#/$defs/Cancel"
+    },
+    "contract": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "deterministic": {
+      "type": "boolean"
+    },
+    "engine": {
+      "$ref": "#/$defs/EngineInfo"
+    },
+    "granularity": {
+      "$ref": "#/$defs/Granularity",
+      "description": "The finest level with real geometry."
+    },
+    "layout": {
+      "$ref": "#/$defs/Layout"
+    },
+    "models": {
+      "description": "Every model file any profile can load.",
+      "items": {
+        "$ref": "#/$defs/Model"
+      },
+      "type": "array"
+    },
+    "models_loaded": {
+      "$ref": "#/$defs/ModelsLoaded"
+    },
+    "profiles": {
+      "items": {
+        "$ref": "#/$defs/Profile"
+      },
+      "type": "array"
+    },
+    "type": {
+      "const": "hello",
+      "type": "string"
+    }
+  },
+  "required": [
+    "adapter",
+    "cancel",
+    "contract",
+    "deterministic",
+    "engine",
+    "granularity",
+    "layout",
+    "models",
+    "models_loaded",
+    "profiles",
+    "type"
+  ],
+  "title": "Hello",
+  "type": "object"
+}

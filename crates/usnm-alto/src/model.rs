@@ -63,7 +63,19 @@ impl Rect {
 }
 
 /// The finest level at which a reading has real geometry (13 §13.4.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Granularity {
     Word,
@@ -85,7 +97,7 @@ impl Granularity {
 
 /// What a block holds (13 §13.4.5). The first four are text and become
 /// TextBlocks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockKind {
     Text,
@@ -106,7 +118,9 @@ impl BlockKind {
 }
 
 /// Reading direction of a block or line (13 §13.4.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum Dir {
     #[default]
     #[serde(rename = "ltr")]

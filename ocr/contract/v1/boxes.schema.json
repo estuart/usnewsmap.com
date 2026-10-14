@@ -1,0 +1,347 @@
+{
+  "$defs": {
+    "BlockKind": {
+      "description": "What a block holds (13 §13.4.5). The first four are text and become\nTextBlocks.",
+      "enum": [
+        "text",
+        "heading",
+        "caption",
+        "table",
+        "illustration",
+        "separator"
+      ],
+      "type": "string"
+    },
+    "BoxBlock": {
+      "properties": {
+        "bbox": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "conf": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "dir": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dir"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "$ref": "#/$defs/BlockKind"
+        },
+        "label": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lang": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lines": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/BoxLine"
+          },
+          "type": "array"
+        },
+        "order": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "polygon": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Points"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "bbox",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "BoxLine": {
+      "properties": {
+        "baseline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Points"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "bbox": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "conf": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "dir": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dir"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "hyphen": {
+          "default": false,
+          "type": "boolean"
+        },
+        "polygon": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Points"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "words": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/BoxWord"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bbox"
+      ],
+      "type": "object"
+    },
+    "BoxWord": {
+      "properties": {
+        "bbox": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "conf": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "polygon": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Points"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "text"
+      ],
+      "type": "object"
+    },
+    "Dir": {
+      "description": "Reading direction of a block or line (13 §13.4.5).",
+      "oneOf": [
+        {
+          "enum": [
+            "ltr",
+            "rtl"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "ttb-rl",
+          "description": "Vertical lines read top to bottom, right to left.",
+          "type": "string"
+        }
+      ]
+    },
+    "Frame": {
+      "description": "The image the coordinates refer to.",
+      "properties": {
+        "height": {
+          "format": "double",
+          "type": "number"
+        },
+        "width": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
+    "Granularity": {
+      "description": "The finest level at which a reading has real geometry (13 §13.4.2).",
+      "enum": [
+        "word",
+        "line",
+        "block",
+        "page"
+      ],
+      "type": "string"
+    },
+    "Points": {
+      "description": "`[x, y]` points of a polygon or baseline, counted as they are read.",
+      "items": {
+        "items": {
+          "format": "double",
+          "type": "number"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": "array"
+      },
+      "type": "array"
+    },
+    "ReadingOrder": {
+      "oneOf": [
+        {
+          "const": "engine",
+          "description": "Array order, or `order` on blocks where given.",
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "description": "Detection or tile order: the reader orders blocks with an XY cut.",
+          "type": "string"
+        }
+      ]
+    },
+    "Units": {
+      "oneOf": [
+        {
+          "const": "px",
+          "description": "Pixels of `frame`.",
+          "type": "string"
+        },
+        {
+          "const": "rel",
+          "description": "0 to 1 of `frame` (docTR).",
+          "type": "string"
+        },
+        {
+          "const": "norm1000",
+          "description": "0 to 1000 of `frame` (Qwen3-VL, LightOnOCR, Chandra, HunyuanOCR).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "blocks": {
+      "items": {
+        "$ref": "#/$defs/BoxBlock"
+      },
+      "type": "array"
+    },
+    "frame": {
+      "$ref": "#/$defs/Frame"
+    },
+    "granularity": {
+      "$ref": "#/$defs/Granularity"
+    },
+    "reading_order": {
+      "$ref": "#/$defs/ReadingOrder"
+    },
+    "units": {
+      "$ref": "#/$defs/Units"
+    },
+    "v": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "v",
+    "units",
+    "frame",
+    "granularity",
+    "reading_order",
+    "blocks"
+  ],
+  "title": "Boxes",
+  "type": "object"
+}

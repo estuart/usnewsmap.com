@@ -1,0 +1,183 @@
+{
+  "$defs": {
+    "Layout": {
+      "description": "The engine's layout output.",
+      "oneOf": [
+        {
+          "const": "alto",
+          "description": "ALTO, any version, any `MeasurementUnit`.",
+          "type": "string"
+        },
+        {
+          "const": "boxes",
+          "description": "`boxes.json` (`usnm-boxes/1`).",
+          "type": "string"
+        }
+      ]
+    },
+    "LayoutFile": {
+      "properties": {
+        "alto_dpi": {
+          "description": "For ALTO the engine converted from pixels at an assumed dpi (NDNP\nOpen OCR at 300).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/Layout"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "path"
+      ],
+      "type": "object"
+    },
+    "Markup": {
+      "enum": [
+        "none",
+        "html",
+        "markdown"
+      ],
+      "type": "string"
+    },
+    "ResultError": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "message": {
+          "description": "At most 2 KiB, never page text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "message"
+      ],
+      "type": "object"
+    },
+    "Status": {
+      "oneOf": [
+        {
+          "enum": [
+            "ok",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "Profile, language or option not in this image.",
+          "type": "string"
+        },
+        {
+          "const": "bad_input",
+          "description": "The engine can't read an image the worker decoded.",
+          "type": "string"
+        },
+        {
+          "const": "timeout",
+          "description": "The adapter stopped at `deadline_ms` (`cancel = adapter`).",
+          "type": "string"
+        }
+      ]
+    },
+    "TextFile": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The adapter's answer to one page (13 §13.4.4).",
+  "properties": {
+    "engine_stats": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "default": {},
+      "description": "Free-form numbers the worker keeps and never interprets.",
+      "type": "object"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResultError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "layout": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LayoutFile"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Present when `status` is `ok`."
+    },
+    "markup": {
+      "$ref": "#/$defs/Markup",
+      "default": "none"
+    },
+    "partial": {
+      "description": "Text read before a deadline; only the survey reads it.",
+      "type": "boolean"
+    },
+    "restart": {
+      "description": "With `failed`: the adapter knows its engine is in a bad state.",
+      "type": "boolean"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/Status"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TextFile"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The engine's own text, which the survey compares. The stored text\nis always derived from the layout."
+    },
+    "type": {
+      "const": "result",
+      "type": "string"
+    },
+    "warnings": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "run_id",
+    "status",
+    "type"
+  ],
+  "title": "PageResult",
+  "type": "object"
+}

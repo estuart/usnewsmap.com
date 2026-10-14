@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "DpiSource": {
+      "oneOf": [
+        {
+          "const": "assumed",
+          "description": "IIIF JPEGs carry no resolution: 300 for a full scan.",
+          "type": "string"
+        },
+        {
+          "const": "loc_alto",
+          "description": "Read from LoC's ALTO.",
+          "type": "string"
+        }
+      ]
+    },
+    "Image": {
+      "description": "The file the adapter reads.",
+      "properties": {
+        "dpi": {
+          "description": "The scan's dpi times the worker's scale.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dpi_source": {
+          "$ref": "#/$defs/DpiSource"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "`/in/<run_id>.jpg`, or `.png` when the worker scaled the scan or\ncut a tile.",
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "dpi",
+        "dpi_source",
+        "height",
+        "path",
+        "sha256",
+        "width"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A page for the adapter (13 §13.4.3). It carries no page id, URL, batch\nor credential.",
+  "properties": {
+    "deadline_ms": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "image": {
+      "$ref": "#/$defs/Image"
+    },
+    "language": {
+      "description": "ISO 639-3.",
+      "type": "string"
+    },
+    "options": {
+      "additionalProperties": true,
+      "description": "The profile's defaults overlaid by the route's options.",
+      "type": "object"
+    },
+    "out": {
+      "description": "`/out/<run_id>/`.",
+      "type": "string"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "script": {
+      "description": "ISO 15924.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "type": {
+      "const": "page",
+      "type": "string"
+    }
+  },
+  "required": [
+    "deadline_ms",
+    "image",
+    "language",
+    "options",
+    "out",
+    "profile",
+    "run_id",
+    "type"
+  ],
+  "title": "PageRequest",
+  "type": "object"
+}

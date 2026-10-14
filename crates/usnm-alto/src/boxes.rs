@@ -14,7 +14,7 @@ use crate::order;
 /// `boxes.json`'s version.
 pub const VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Units {
     /// Pixels of `frame`.
@@ -25,7 +25,7 @@ pub enum Units {
     Norm1000,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ReadingOrder {
     /// Array order, or `order` on blocks where given.
@@ -35,17 +35,18 @@ pub enum ReadingOrder {
 }
 
 /// The image the coordinates refer to.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Frame {
     pub width: f64,
     pub height: f64,
 }
 
 /// `[x, y]` points of a polygon or baseline, counted as they are read.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, schemars::JsonSchema)]
+#[schemars(transparent)]
 pub struct Points(pub Vec<[f64; 2]>);
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Boxes {
     pub v: u32,
     pub units: Units,
@@ -55,7 +56,7 @@ pub struct Boxes {
     pub blocks: Vec<BoxBlock>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "RawBlock")]
 pub struct BoxBlock {
     pub bbox: [f64; 4],
@@ -79,7 +80,7 @@ pub struct BoxBlock {
     pub polygon: Option<Points>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "RawLine")]
 pub struct BoxLine {
     pub bbox: [f64; 4],
@@ -99,7 +100,7 @@ pub struct BoxLine {
     pub baseline: Option<Points>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "RawWord")]
 pub struct BoxWord {
     pub bbox: [f64; 4],
@@ -110,7 +111,7 @@ pub struct BoxWord {
     pub polygon: Option<Points>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct RawBlock {
     bbox: [f64; 4],
     kind: BlockKind,
@@ -132,7 +133,7 @@ struct RawBlock {
     polygon: Option<Points>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct RawLine {
     bbox: [f64; 4],
     #[serde(default)]
@@ -151,7 +152,7 @@ struct RawLine {
     baseline: Option<Points>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct RawWord {
     bbox: [f64; 4],
     #[serde(default)]

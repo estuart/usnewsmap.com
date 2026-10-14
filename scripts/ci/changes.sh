@@ -108,7 +108,7 @@ files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # reconstructed index history), the fixtures the tests read, and the Python
 # metric the damage port is checked against (its tables, its word lists and
 # their sha256).
-rust_files='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/quickwit-fixtures\.sh)'
+rust_files='^(rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/quickwit-fixtures\.sh)'
 rust="^(crates/|Cargo\.(toml|lock)$)|$rust_files"
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer) runs `cargo test -p usnm-search --test quickwit_parity` and
@@ -131,7 +131,7 @@ rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
 fixtures='^fixtures/'
 # The OCR worker's release: the worker and the LAN dashboard, the crates they use, the workspace's
 # build files, its Tesseract image and the release script.
-ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-core|usnm-overlay|usnm-store|usnm-telemetry)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|ocr/engines/tesseract/|scripts/ci/ocr-worker-release\.sh$)'
+ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-alto|usnm-core|usnm-overlay|usnm-store|usnm-telemetry)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|ocr/engines/tesseract/|scripts/ci/ocr-worker-release\.sh$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the
