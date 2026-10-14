@@ -197,6 +197,20 @@ target/debug/usnm-boinc collect --root /srv/usnm/boinc-state \
   --curated-url CURATED_STORE --out-url OCR_OUT_STORE
 ```
 
+On Linux, submission gives only the staged download inputs (`page` and
+`request.json`) mode `0644`, before their atomic rename and before `create_work`.
+These files are meant to be downloaded by volunteers; the separate Apache
+identity must be able to read them. The dispatch journal and original input
+snapshots retain owner-only access. The project administrator must also give
+Apache traversal access to the download fan-out directories; submission does
+not change existing directory ownership or ACLs. Check both file access and
+traversal with the actual web-server identity on the deployed filesystem.
+
+The server bridge wrapper submits directly and preserves the CLI's exit status.
+It does not scan the download or hand-off trees to broaden permissions after
+submission. Operator hand-offs need access to the private journal's owner.
+Deploy the updated bridge image containing both this CLI and wrapper together.
+
 A `published` bridge entry means its native output pair is in `ocr-out`, not that
 it has replaced searchable text. Continue with the existing `ocr-sync` and release.
 

@@ -56,10 +56,34 @@ pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 pub fn atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    atomic_with_permissions(path, bytes, None)
+}
+
+/// Public BOINC inputs must be readable by the web-server identity before
+/// their final names become visible. Journals use the private `atomic` path.
+pub(crate) fn atomic_download(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    let permissions = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(std::fs::Permissions::from_mode(0o644))
+    };
+    #[cfg(not(unix))]
+    let permissions = None;
+    atomic_with_permissions(path, bytes, permissions)
+}
+
+fn atomic_with_permissions(
+    path: &Path,
+    bytes: &[u8],
+    permissions: Option<std::fs::Permissions>,
+) -> anyhow::Result<()> {
     let parent = path.parent().context("no parent directory")?;
     std::fs::create_dir_all(parent)?;
     let mut f = tempfile::NamedTempFile::new_in(parent)?;
     f.write_all(bytes)?;
+    if let Some(permissions) = permissions {
+        f.as_file().set_permissions(permissions)?;
+    }
     f.as_file().sync_all()?;
     f.persist(path).map_err(|e| e.error)?;
     File::open(parent)?.sync_all()?;
