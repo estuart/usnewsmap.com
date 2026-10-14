@@ -60,7 +60,7 @@ param dnsZoneResourceGroup string = ''
 @allowed([0, 1, 2])
 param customDomainStage int = 0
 
-@description('Entra object ids (people or groups) given Key Vault Secrets Officer.')
+@description('Entra object ids (people or groups) given Key Vault Secrets Officer on the vault and Log Analytics Reader on the workspace.')
 param operatorPrincipalIds array
 
 @description('The PUBLIC half of the offline code-signing key (code_sign_public). Empty until it is made offline.')
@@ -115,7 +115,7 @@ module registry 'modules/registry.bicep' = {
 
 module monitor 'modules/monitor.bicep' = {
   name: 'monitor'
-  params: { workspaceName: names.workspace, location: location }
+  params: { workspaceName: names.workspace, location: location, operatorPrincipalIds: operatorPrincipalIds }
 }
 
 module network 'modules/network.bicep' = {

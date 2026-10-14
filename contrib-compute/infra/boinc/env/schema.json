@@ -43,7 +43,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["login", "objectId"],
-      "description": "The Entra user or group that gets Key Vault Secrets Officer and is named as the MySQL Entra administrator in the printed step.",
+      "description": "The Entra user or group that gets Key Vault Secrets Officer, Log Analytics Reader on the stack workspace, and is named as the MySQL Entra administrator in the printed step.",
       "properties": {
         "login": { "type": "string", "minLength": 1 },
         "objectId": {
