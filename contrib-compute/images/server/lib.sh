@@ -58,15 +58,18 @@ render_config() {
   local daemons
   daemons='<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd></daemon>'
-  # The assessment app (#456) validates with usnm-boinc, which only the bridge image carries.
+  # The assessment app (#456) and the gold check (#462) validate with usnm-boinc, which only the bridge image carries.
   # A server run from that image adds its daemons and links the validator scripts into bin/.
   if command -v usnm-boinc >/dev/null 2>&1; then
     daemons="$daemons
         <daemon><cmd>script_validator --app usnm_assess --init_script &quot;usnm_assess_check files&quot; --compare_script &quot;usnm_assess_compare files files2&quot;</cmd></daemon>
-        <daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd></daemon>"
+        <daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd></daemon>
+        <daemon><cmd>script_validator --app usnm_gold --init_script &quot;usnm_gold_check files&quot;</cmd></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd></daemon>"
     if [ -d "$PROJ/bin" ]; then
       ln -sfn "$TEMPLATES/usnm_assess_check" "$PROJ/bin/usnm_assess_check"
       ln -sfn "$TEMPLATES/usnm_assess_compare" "$PROJ/bin/usnm_assess_compare"
+      ln -sfn "$TEMPLATES/usnm_gold_check" "$PROJ/bin/usnm_gold_check"
     fi
   fi
   DB_PASSWD="$(cat "$SECRETS/db-runtime")" python3 - "$TEMPLATES/config.xml.template" "$SECRETS/config.xml" "$daemons" <<'PY'

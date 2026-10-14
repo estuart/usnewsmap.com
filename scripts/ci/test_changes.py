@@ -1,4 +1,4 @@
-"""scripts/ci/changes.sh: the Quickwit job runs only for what its tests build or load.
+"""scripts/ci/changes.sh: the Quickwit, image and web end-to-end jobs run only for what they build or load.
 
 Each test commits a change in a scratch clone of this checkout and runs
 changes.sh on it as a push. The lock-file cases resolve packages with cargo
@@ -40,7 +40,7 @@ class Quickwit(unittest.TestCase):
             "commit", "-q", "--allow-empty", "-m", message)
         return git(self.repo, "rev-parse", "HEAD")
 
-    def quickwit(self) -> bool:
+    def outputs(self) -> dict:
         before = git(self.repo, "rev-parse", "HEAD")
         self.change()
         after = self.commit("change")
@@ -50,7 +50,10 @@ class Quickwit(unittest.TestCase):
                    GITHUB_SHA=after, GITHUB_OUTPUT=str(out))
         subprocess.run(["scripts/ci/changes.sh"], cwd=self.repo, env=env, check=True,
                        capture_output=True, text=True)
-        return re.search(r"^quickwit=(\w+)$", out.read_text(), re.M).group(1) == "true"
+        return {k: v == "true" for k, v in re.findall(r"^(\w+)=(\w+)$", out.read_text(), re.M)}
+
+    def quickwit(self) -> bool:
+        return self.outputs()["quickwit"]
 
     def touch(self, path: str):
         f = self.repo / path
@@ -68,6 +71,24 @@ class Quickwit(unittest.TestCase):
     def test_a_crate_in_the_closure_runs_it(self):
         self.change = lambda: self.touch("crates/usnm-core/src/lib.rs")
         self.assertTrue(self.quickwit())
+
+    def test_a_boinc_only_change_runs_no_image_or_e2e(self):
+        self.change = lambda: self.touch("crates/usnm-boinc/src/lib.rs")
+        o = self.outputs()
+        self.assertFalse(o["image"])
+        self.assertFalse(o["e2e"])
+
+    def test_a_crate_in_the_api_closure_runs_image_and_e2e(self):
+        self.change = lambda: self.touch("crates/usnm-api/src/main.rs")
+        o = self.outputs()
+        self.assertTrue(o["image"])
+        self.assertTrue(o["e2e"])
+
+    def test_an_ingest_only_crate_runs_image_not_e2e(self):
+        self.change = lambda: self.touch("crates/usnm-ingest/src/lib.rs")
+        o = self.outputs()
+        self.assertTrue(o["image"])
+        self.assertFalse(o["e2e"])
 
     def test_a_fixture_runs_it(self):
         self.change = lambda: (self.repo / "fixtures/new.txt").write_text("x\n")

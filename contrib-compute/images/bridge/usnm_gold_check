@@ -1,0 +1,9 @@
+#!/bin/sh
+# script_validator's init script for usnm_gold (#462), called as `usnm_gold_check files`:
+# script_validator passes the result's one file, gold-result.json. Exit 0 when it is valid
+# against the bundle's expectations, which `usnm-boinc gold submit` writes to <project>/gold/.
+# Linked into the project's bin/. UNVERIFIED: that PROJECT_DIR and PROJECT reach the daemons'
+# environment; USNM_GOLD_EXPECTED overrides the directory.
+[ "$#" -eq 1 ] || { echo "usnm_gold_check: expected 1 file, got $#" >&2; exit 2; }
+exec /usr/local/bin/usnm-boinc gold check --file "$1" \
+  --expected-dir "${USNM_GOLD_EXPECTED:-$PROJECT_DIR/$PROJECT/gold}"

@@ -31,6 +31,7 @@ jobs:
       quickwit: ${{ steps.f.outputs.quickwit }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
+      e2e: ${{ steps.f.outputs.e2e }}
       fixtures: ${{ steps.f.outputs.fixtures }}
       ops: ${{ steps.f.outputs.ops }}
       code: ${{ steps.f.outputs.code }}
@@ -589,7 +590,7 @@ jobs:
   web-e2e:
     name: web end-to-end (Playwright + axe)
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -4,6 +4,8 @@ Azure hosting for the stock BOINC server that PR #441 (the BOINC batch OCR pilot
 
 Status: a draft. Nothing here is deployed and no server exists. Checked so far: Bicep compile, shellcheck, XML well-formedness, and (in CI) that the server image builds and has the stock tools. Each document lists what was not tested, marked UNVERIFIED.
 
+Volunteers: start with [docs/boinc-volunteer.md](../docs/boinc-volunteer.md).
+
 ## Contents
 
 - `infra/boinc/`: Bicep for the stock server: a Container App (Apache, PHP and the stock daemons, one replica, no scale to zero), a MySQL flexible server, an Azure Files share, Key Vault, Log Analytics, a static site for the human pages, and a manual-trigger Container Apps Job that runs `usnm-boinc submit`. Lint and compile only.

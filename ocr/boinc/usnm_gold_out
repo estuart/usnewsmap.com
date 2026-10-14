@@ -1,0 +1,6 @@
+<output_template>
+  <file_info><name><OUTFILE_0/></name><generated_locally/><upload_when_present/><max_nbytes>262144</max_nbytes><url><UPLOAD_URL/></url></file_info>
+  <result>
+    <file_ref><file_name><OUTFILE_0/></file_name><open_name>gold-result.json</open_name></file_ref>
+  </result>
+</output_template>

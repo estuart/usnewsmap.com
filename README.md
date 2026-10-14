@@ -61,7 +61,7 @@ cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). To report a vulnerability, follow [SECURITY.md](SECURITY.md) and don't open a public issue.
+See [CONTRIBUTING.md](CONTRIBUTING.md). To contribute compute (OCR of newspaper pages on your Linux machine through BOINC), follow [docs/boinc-volunteer.md](docs/boinc-volunteer.md). To report a vulnerability, follow [SECURITY.md](SECURITY.md) and don't open a public issue.
 
 ## Credits
 

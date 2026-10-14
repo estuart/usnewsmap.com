@@ -10,3 +10,8 @@
      entries only when it is there). -->
 <daemon><cmd>script_validator --app usnm_assess --init_script "usnm_assess_check files" --compare_script "usnm_assess_compare files files2"</cmd></daemon>
 <daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd></daemon>
+<!-- The gold check (#462). One result per unit: script_validator runs `usnm-boinc gold check`
+     on each result against <project>/gold/<manifest sha256>.json, which `gold submit` writes.
+     No compare script: each result measures its own host. -->
+<daemon><cmd>script_validator --app usnm_gold --init_script "usnm_gold_check files"</cmd></daemon>
+<daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd></daemon>

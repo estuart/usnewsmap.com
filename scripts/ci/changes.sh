@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Which parts of CI a change needs, as step outputs rust/web/image/fixtures/
+# Which parts of CI a change needs, as step outputs rust/web/image/e2e/fixtures/
 # ops/code/markdown/ocr_worker/page_language=true|false (ocr_worker: the OCR
 # worker's EL9 build, its Tesseract image and, on main, its release;
 # page_language: the page-language detector's test on text of known
@@ -26,6 +26,11 @@
 # crates usnm-search and usnm-ingest depend on (from cargo metadata), the
 # workspace manifest and lock file only when the packages Cargo resolves for
 # those crates change, and the fixtures, index configs and Quickwit scripts.
+# image and e2e are narrowed the same way: image for the workspace crates
+# usnm-api (Dockerfile) and usnm-ingest (Dockerfile.ingest) build, e2e (the web
+# end-to-end job) for those usnm-api builds, the API that
+# scripts/ci/start-api-fixtures.sh starts. A crate outside a closure (the BOINC
+# or OCR survey crates, say) runs neither.
 # The infra job (code) checks the workbook definitions, so any change to
 # infra/workbooks/ runs it.
 set -euo pipefail
@@ -35,7 +40,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\nocr_gold=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\nocr_gold=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -103,7 +108,8 @@ files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # reconstructed index history), the fixtures the tests read, and the Python
 # metric the damage port is checked against (its tables, its word lists and
 # their sha256).
-rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/quickwit-fixtures\.sh)'
+rust_files='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/quickwit-fixtures\.sh)'
+rust="^(crates/|Cargo\.(toml|lock)$)|$rust_files"
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer) runs `cargo test -p usnm-search --test quickwit_parity` and
 # `cargo test -p usnm-ingest --test pipeline`: the files those tests load
@@ -115,7 +121,9 @@ quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/quickwit-fix
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
-image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
+# Crates count for these two below, by closure.
+e2e="$rust_files|$web"
+image="$rust_files|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
@@ -133,21 +141,24 @@ page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.
 # documentation, above), and the workflow, which matches earlier.
 contrib='^(contrib-compute/|crates/usnm-boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
-# quickwit_crates: the workspace crates usnm-search and usnm-ingest depend on,
-# directly or not (normal, build and dev dependencies: path dependencies in
-# their manifests), from cargo metadata, so a new dependency can't leave the
-# list stale. A change under one of their directories runs the job.
-quickwit_crates() {
-  cargo metadata --format-version 1 --no-deps --offline | jq -r --arg root "$PWD/" '
+# closure_crates ROOT...: the directories of the workspace crates the roots
+# depend on, directly or not (normal, build and dev dependencies: path
+# dependencies in their manifests), from cargo metadata, so a new dependency
+# can't leave the list stale.
+closure_crates() {
+  cargo metadata --format-version 1 --no-deps --offline | jq -r --arg root "$PWD/" --args '
     (.packages | map({key: .name, value: .}) | from_entries) as $p
     | def close: . as $s | ([$s[], ($s[] | $p[.].dependencies[] | select(.path) | .name)] | unique) as $n
         | if $n == $s then $s else $n | close end;
-    ["usnm-search", "usnm-ingest"] | close | .[] | $p[.].manifest_path | ltrimstr($root) | rtrimstr("Cargo.toml")'
+    $ARGS.positional | close | .[] | $p[.].manifest_path | ltrimstr($root) | rtrimstr("Cargo.toml")' "$@"
 }
-# quickwit_tree: every package (with its features) Cargo builds for those two
-# crates' tests, in the checkout at $1, without the workspace crates' local paths (a git source keeps its revision).
-quickwit_tree() {
-  (cd "$1" && cargo tree --locked -p usnm-search -p usnm-ingest -e normal,build,dev --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
+# closure_tree DIR ROOT...: every package (with its features) Cargo builds for
+# the roots' tests, in the checkout at DIR, without the workspace crates' local
+# paths (a git source keeps its revision).
+closure_tree() {
+  local dir=$1 p args=(); shift
+  for p in "$@"; do args+=(-p "$p"); done
+  (cd "$dir" && cargo tree --locked "${args[@]}" -e normal,build,dev --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
 }
 # root_settings: the workspace manifest at revision $1 without its member list
 # and [workspace.dependencies], whose effect on these crates the package tree
@@ -158,31 +169,38 @@ root_settings() {
     /^members = \[/ { skip = 1 } skip { if (/^\]/) skip = 0; next }
     /^\[/ { deps = ($0 == "[workspace.dependencies]") } !deps'
 }
-# The workspace manifest and the lock file: the job runs only when the
-# packages resolved for those crates differ between the base and this
-# revision (a crate added outside them changes neither). Run it if that can't
-# be worked out.
-quickwit_lock_changed() {
+# lock_changed ROOT...: whether the packages resolved for the roots differ
+# between the base and this revision (a crate added outside them changes
+# neither). True if that can't be worked out.
+lock_changed() {
   local base dir before after
   case "$range" in *...*) base=$(git merge-base "${range%%...*}" "${range##*...}") ;; *) base=${range%%..*} ;; esac || return 0
   [ "$(root_settings "$base")" = "$(root_settings HEAD)" ] || return 0
   dir=$(mktemp -d)
   git worktree add -q --detach "$dir" "$base" || { rm -rf "$dir"; return 0; }
-  before=$(quickwit_tree "$dir") || before=
+  before=$(closure_tree "$dir" "$@") || before=
   git worktree remove --force "$dir"
-  after=$(quickwit_tree .) || after=
+  after=$(closure_tree . "$@") || after=
   [ -z "$before" ] || [ -z "$after" ] || [ "$before" != "$after" ]
 }
-if ! matches_built "$quickwit"; then
-  if ! dirs=$(quickwit_crates) || [ -z "$dirs" ]; then
-    echo "cargo metadata failed: running quickwit"; quickwit='.'
+# narrow PART ROOT...: run PART when a crate in the roots' closure changed, or
+# the workspace manifest or lock file changed what Cargo resolves for them.
+# Fails open: when cargo can't say, PART runs.
+narrow() {
+  local part=$1 dirs; shift
+  matches_built "${!part}" && return 0
+  if ! dirs=$(closure_crates "$@") || [ -z "$dirs" ]; then
+    echo "cargo metadata failed: running $part"; printf -v "$part" '.'
   elif matches_built "^($(paste -sd'|' - <<< "$dirs"))"; then
-    quickwit='.'
-  elif matches_built '^Cargo\.(toml|lock)$' && quickwit_lock_changed; then
-    echo "the packages resolved for usnm-search and usnm-ingest changed"; quickwit='.'
+    printf -v "$part" '.'
+  elif matches_built '^Cargo\.(toml|lock)$' && lock_changed "$@"; then
+    echo "the packages resolved for $* changed: running $part"; printf -v "$part" '.'
   fi
-fi
-for part in rust quickwit web image fixtures; do
+}
+narrow quickwit usnm-search usnm-ingest
+narrow image usnm-api usnm-ingest
+narrow e2e usnm-api
+for part in rust quickwit web image e2e fixtures; do
   if matches_built "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 for part in ocr_worker page_language contrib ocr_gold; do

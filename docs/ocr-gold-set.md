@@ -269,7 +269,7 @@ cargo run --release -p usnm-ocr-survey -- bundle-verify --bundle OUT/bundle/usnm
 
 **Version 1** (built 2026-10-13, seed 457, 30 per source): 142 crops, 30 BLN600, 30 Overproof CA (from 18 LoC pages), 24 NewsEye BnF, 18 NewsEye NLF Finnish, 10 NewsEye NLF Swedish and 30 NZZ lines. The tar is 9.6 MB (9.1 MB of shipped crops, a 140 KB manifest, 128 KB of licence files). A client also downloads 19 remotes: the 68 MB BLN600 zip and 18 page images. All 18 LoC page images matched the checksums recorded at conversion when fetched again on the same day.
 
-**Client.** `usnm-boinc gold-stage` (network) and `usnm-boinc gold-run` (offline), in [boinc.md](boinc.md#gold-check). A run with Tesseract 5.5.1 and only `eng` installed scored the 60 English crops (CER 0.0932 on BLN600, 0.0276 on Overproof CA) and reported the other 82 as skipped for lack of a model.
+**Client.** `usnm-boinc gold-stage` (network) and `usnm-boinc gold-run` (offline), in [boinc.md](boinc.md#gold-check). As BOINC work, the app `usnm_gold` (#462): the BOINC client downloads the originals from their publishers as sticky inputs, and the run step stays offline ([boinc.md](boinc.md#as-boinc-work-usnm_gold)). A run with Tesseract 5.5.1 and only `eng` installed scored the 60 English crops (CER 0.0932 on BLN600, 0.0276 on Overproof CA) and reported the other 82 as skipped for lack of a model.
 
 ## Licensing
 
@@ -288,6 +288,5 @@ Checked in public documentation only, nobody contacted.
 
 - A person transcribes the 60 crops and the Japanese crops, or the 60 stay scored as agreement only.
 - Run `public-fetch` and `public-convert` for Reichsanzeiger and Austrian, and check the readers against the real files.
-- BOINC: send the gold check as BOINC work and collect its reports ([Volunteer bundle](#volunteer-bundle); [#462](https://github.com/tgoodyear/usnewsmap.com/issues/462)).
 - Decide whether to commit the images once `cut` has run and the total is known.
 - `usnm-ocr-survey score` takes over the span-finding for whole-page runs and reads this format as `--truth`.

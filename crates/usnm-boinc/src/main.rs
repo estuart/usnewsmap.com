@@ -116,6 +116,9 @@ enum Commands {
     /// The JP2 against IIIF JPEG assessment (#456), app `usnm_assess`.
     #[command(subcommand)]
     Assess(Assess),
+    /// The gold check as BOINC work (#462), app `usnm_gold`.
+    #[command(subcommand)]
+    Gold(Gold),
     /// Inspect the local submission/publication journal; emits no page text.
     Status {
         #[arg(long)]
@@ -197,6 +200,61 @@ enum Assess {
     Collect {
         #[arg(long)]
         root: PathBuf,
+        #[arg(long)]
+        spool: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum Gold {
+    /// Server side, once per bundle: fetch the original files (one request at a time) to learn
+    /// their sizes and md5s and the crops' reference counts; writes prepared.json.
+    Prepare {
+        /// The bundle tar.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// The campaign root.
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long, default_value_t = 5)]
+        gap_secs: u64,
+    },
+    /// Make units with stock create_work, one result each.
+    Submit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        /// How many units the campaign has; units already submitted are skipped.
+        #[arg(long, default_value_t = 20)]
+        units: u32,
+        /// The worker image's full digest (sha256:...).
+        #[arg(long)]
+        engine_image: String,
+        /// The Tesseract image the worker image was built on (its TESSERACT_IMAGE).
+        #[arg(long)]
+        engine_base: String,
+        #[arg(long, default_value = "5.5.0")]
+        engine_version: String,
+        /// Per crop.
+        #[arg(long, default_value_t = 300)]
+        timeout_secs: u32,
+    },
+    /// script_validator's init script: check one result against the bundle's expectations.
+    Check {
+        #[arg(long)]
+        file: PathBuf,
+        /// The project's gold/ directory, which submit writes.
+        #[arg(long)]
+        expected_dir: PathBuf,
+    },
+    /// Write per-host report tables from the canonical results.
+    Collect {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
         #[arg(long)]
         spool: PathBuf,
         #[arg(long)]
@@ -324,6 +382,7 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string(&report.summary)?);
         }
         Commands::Assess(a) => assess(a).await?,
+        Commands::Gold(g) => gold(g).await?,
         Commands::Status { root } => {
             for r in records(&root)? {
                 println!(
@@ -331,6 +390,72 @@ async fn main() -> anyhow::Result<()> {
                     serde_json::json!({"job":r.job.id,"workunit":r.job.workunit(),"page":r.job.message.page,"stage":r.stage,"error":r.error})
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+async fn gold(g: Gold) -> anyhow::Result<()> {
+    use usnm_boinc::gold as x;
+    match g {
+        Gold::Prepare {
+            bundle,
+            root,
+            gap_secs,
+        } => {
+            let p = x::prepare::run(&x::prepare::Options {
+                bundle,
+                root,
+                gap: std::time::Duration::from_secs(gap_secs),
+            })
+            .await?;
+            eprintln!(
+                "bundle v{} manifest {}: {} crops, {} original files",
+                p.bundle_version,
+                p.manifest_sha256,
+                p.crops.len(),
+                p.remotes.len()
+            );
+        }
+        Gold::Submit {
+            root,
+            project,
+            units,
+            engine_image,
+            engine_base,
+            engine_version,
+            timeout_secs,
+        } => {
+            let s = x::submit::run(&x::submit::Options {
+                root,
+                project,
+                units,
+                engine: usnm_boinc::gold::job::Engine {
+                    base: engine_base,
+                    dpi: 300,
+                    image: engine_image,
+                    psm: 3,
+                    timeout_secs,
+                    version: engine_version,
+                },
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Gold::Check { file, expected_dir } => x::validate::check(&file, &expected_dir)?,
+        Gold::Collect {
+            root,
+            project,
+            spool,
+            out,
+        } => {
+            let s = x::collect::run(&x::collect::Options {
+                root,
+                project,
+                spool,
+                out,
+            })?;
+            eprintln!("{s:?}");
         }
     }
     Ok(())

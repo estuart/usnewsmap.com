@@ -6,7 +6,9 @@ The pilot uses stock BOINC, one cached page per task, and the repository's
 Tesseract 5.5.0/model lock and language routing. It publishes native ALTO and
 Parquet to `ocr-out`; `ocr-sync` and the release keep their existing decisions.
 A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison
-(#456); see [boinc-assessment.md](boinc-assessment.md).
+(#456); see [boinc-assessment.md](boinc-assessment.md). A third, `usnm_gold`,
+scores a host's engine on public ground truth ([Gold check](#gold-check)).
+Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
 
 ## Boundaries
 
@@ -381,6 +383,99 @@ over the limit). It
 holds no page text and no transcription. The project ships no BLN600 crop and
 no LoC image: the client gets them from their publishers and cuts them itself.
 
-Not built yet: sending the gold check as BOINC work (an app version or a task
-type, how the bundle and cache reach the container, and where the reports go).
-That is tracked in #462.
+### As BOINC work: `usnm_gold`
+
+The third app, `usnm_gold` (#462), sends the same check to hosts as work. It
+runs in the same worker image; `gold.json` in the slot selects it. The job and
+its checks are `usnm_boinc::gold::job`; the code is `crates/usnm-boinc/src/gold/`.
+
+**Inputs and delivery.** A unit's inputs, in input template order:
+
+| Open name              | From                                                                     | On the host  |
+| ---------------------- | ------------------------------------------------------------------------ | ------------ |
+| `gold.json`            | the project server                                                       | per unit     |
+| `bundle.tar`           | the project server (shareable files only)                                | sticky, kept |
+| `<sha256>.zip`, `.jpg` | the publisher: BLN600's zip from figshare, page images from tile.loc.gov | sticky, kept |
+
+The originals are `create_work --remote_file URL BYTES MD5` inputs: the BOINC
+client downloads each from the publisher's URL and checks its size and md5, so
+the project server never stores or serves them. That keeps BLN600 (CC BY-NC-ND)
+and the LoC images where the licence and #457 put them. The tar and the
+originals are `<sticky/>` and `<no_delete/>`, so each host downloads them once and reuses
+them across its gold units; all are `<copy_file/>`, because the container sees only the
+slot. The open names are the cache names `gold-run` reads, so the slot is the
+cache and the run step needs no network: the container keeps `--network=none`
+from `job.toml`. The worker checks every input's size and sha256 against the
+job, the manifest's digest and version, the Tesseract version and base image,
+and the model bytes of each profile it used, then writes `gold-result.json`.
+
+**Result.** `gold-result.json` is the report above, run on the whole bundle
+(no `--limit`), with a `boinc` block: job id, worker image and base digests,
+and the host id the client wrote into the slot's `init_data.xml` (the client's
+claim, not proof). Counts only; no text. The output template allows 256 KiB.
+
+**Validation.** One result per unit (`min_quorum` 1): each result measures the
+host that ran it, so results from two hosts are not expected to match, and
+there is no compare script. `script_validator` runs `usnm_gold_check`
+(`usnm-boinc gold check`) on each result against
+`<project>/gold/<manifest sha256>.json`, which `gold submit` writes. It
+refuses a result with any field outside the schema, a skip reason other than
+`no-model:<lang>`, `engine-error` or `not-prepared` (the worker turns its
+reasons into these codes), or an engine name other than `usnm-tesseract`, and
+refuses it unless:
+
+- it is the report of the unit it was uploaded for (the job id in it matches the
+  workunit name in the result file's name), a unit this server made, with that unit's bundle version, manifest
+  sha256 and engine (image, base, version, PSM 3, DPI 300), and no `--limit`;
+- every crop of the bundle is scored or skipped exactly once;
+- each scored crop's reference characters and words equal the counts `gold
+prepare` computed from the transcription (a host that read other text fails);
+- edit counts and times are in range, and the summary adds up from the crops.
+
+This does not prove which engine ran. As for the other apps, volunteers are
+trusted friends.
+
+**Where reports go.** `usnm-boinc gold collect` reads the canonical results
+from the `batch_collect_assimilator` spool, checks each again, and writes
+`reports.jsonl` (one row per result) and `crops.jsonl` (one row per scored
+crop), keyed by bundle version, manifest sha256, engine version, image and
+base, workunit and host id, under `<share>/gold/<campaign>/out/`. Nothing new
+in Azure: they live on the existing project share.
+
+**Models.** The worker image's model lock decides which crops a host can score;
+crops in a language with no locked model are listed as skipped.
+
+**Running a campaign.** With the server deployed with `assessment=true` (the
+server runs from the bridge image, which carries the validator), a
+`usnm_gold` app version installed (`scripts/boinc/install.py --app usnm_gold
+...`), signed, and `bin/update_versions` run, and the bundle tar copied to
+`<share>/gold/<campaign>/bundle.tar`:
+
+```sh
+# Once per bundle: fetch the originals, one request at a time, 5 s apart, into
+# <campaign>/cache on the share; write prepared.json (sizes, md5s, reference
+# counts). Stops if any download fails or a checksum differs.
+az containerapp job start ... --env-vars BRIDGE_STEP=gold-prepare GOLD_CAMPAIGN=v1-tess550
+# Make the units (default 20). Re-running skips units already submitted.
+az containerapp job start ... --env-vars BRIDGE_STEP=gold-submit GOLD_CAMPAIGN=v1-tess550 \
+  GOLD_ENGINE_IMAGE=sha256:... GOLD_ENGINE_BASE=<its TESSERACT_IMAGE> GOLD_UNITS=20
+# When results are assimilated:
+az containerapp job start ... --env-vars BRIDGE_STEP=gold-collect GOLD_CAMPAIGN=v1-tess550 \
+  GOLD_SPOOL=/project/usnmocr/results/<batch>
+```
+
+A unit left with a `submitting` marker is handled as for the assessment.
+
+**Not verified** (check in the live acceptance exercise):
+
+- that stock `create_work --remote_file` keeps `<sticky/>` and `<no_delete/>`
+  from the input template, and that the client follows figshare's redirect;
+- that `script_validator` passes the upload under its `<workunit>_<replica>_0`
+  name, which the validator reads the unit from;
+- that the Docker wrapper's slot mount includes `init_data.xml` (the host id is
+  empty otherwise);
+- that `PROJECT_DIR` and `PROJECT` reach `script_validator`'s environment
+  (`USNM_GOLD_EXPECTED` overrides the directory);
+- run time and memory on a real host; `rsc_fpops_est` 5e12 is a guess.
+
+Volunteers' steps are in [boinc-volunteer.md](boinc-volunteer.md).

@@ -919,7 +919,7 @@ pub struct Ready {
 }
 
 /// A crop that could not be prepared, and why.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Skipped {
     pub crop_id: String,
     pub reason: String,
@@ -1108,4 +1108,20 @@ pub fn lock(b: &Built) -> anyhow::Result<Value> {
         "tar_bytes": std::fs::metadata(&b.tar)?.len(),
         "tar_sha256": b.tar_sha256,
     }))
+}
+
+#[cfg(test)]
+mod sha_tests {
+    #[test]
+    fn remote_checksums_must_be_full_lowercase_hex() {
+        assert!(super::is_sha256_hex(&"a".repeat(64)));
+        for s in [
+            "a".repeat(63),
+            "a".repeat(65),
+            "A".repeat(64),
+            "z".repeat(64),
+        ] {
+            assert!(!super::is_sha256_hex(&s), "{s}");
+        }
+    }
 }

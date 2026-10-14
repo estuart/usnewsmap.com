@@ -16,6 +16,7 @@ COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
 # The assessment (#456): script_validator's scripts, and the #435 report's scoring scripts,
 # unchanged, for the assess-collect step.
 COPY contrib-compute/images/bridge/usnm_assess_check contrib-compute/images/bridge/usnm_assess_compare \
+     contrib-compute/images/bridge/usnm_gold_check \
      /usr/local/lib/usnm-boinc/
 COPY docs/reports/2026-10-jp2-vs-jpeg-ocr/score.py docs/reports/2026-10-jp2-vs-jpeg-ocr/aggregate.py \
      /usr/local/lib/usnm-boinc/assess/

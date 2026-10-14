@@ -9,11 +9,18 @@
 //!   runs Tesseract on each, scores CER/WER as gold.py does, and writes a report of counts only.
 //!   The report holds no page text and no transcription.
 use anyhow::{ensure, Context};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use usnm_ocr_survey::{bundle, score};
 use usnm_ocr_worker::engine::{self, Engine, Runner, Tesseract, TesseractOptions};
+
+pub mod collect;
+pub mod job;
+pub mod prepare;
+pub mod submit;
+pub mod validate;
+pub mod work;
 
 /// The report's format version.
 pub const REPORT_VERSION: u32 = 1;
@@ -55,7 +62,7 @@ pub struct RunOptions {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineInfo {
     pub dpi: u32,
     pub name: String,
@@ -63,7 +70,7 @@ pub struct EngineInfo {
     pub version: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CropRun {
     #[serde(flatten)]
     pub result: bundle::CropResult,
@@ -72,8 +79,11 @@ pub struct CropRun {
 }
 
 /// gold-result.json. Counts only: no page text, no transcription.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
+    /// Set when the report came from a BOINC unit; absent from a hand run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boinc: Option<BoincInfo>,
     pub bundle_version: u32,
     pub completed_at: String,
     pub crops: Vec<CropRun>,
@@ -84,6 +94,16 @@ pub struct Report {
     pub report_version: u32,
     pub skipped: Vec<bundle::Skipped>,
     pub summary: Vec<bundle::SourceSummary>,
+}
+
+/// Who ran a BOINC unit, as the slot says. The host id is the client's own claim (from the
+/// slot's `init_data.xml`), not proof of identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoincInfo {
+    pub engine_base: String,
+    pub engine_image: String,
+    pub host_id: Option<u64>,
+    pub job_id: String,
 }
 
 pub async fn run(opts: &RunOptions) -> anyhow::Result<Report> {
@@ -133,6 +153,7 @@ pub async fn run(opts: &RunOptions) -> anyhow::Result<Report> {
     );
     let results: Vec<_> = crops.iter().map(|c| c.result.clone()).collect();
     Ok(Report {
+        boinc: None,
         bundle_version: m.bundle_version,
         completed_at: chrono::Utc::now().to_rfc3339(),
         summary: bundle::summarize(&results),

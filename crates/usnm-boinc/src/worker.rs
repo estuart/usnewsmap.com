@@ -13,6 +13,9 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     if work.join(crate::assess::JOB_FILE).exists() {
         return crate::assess::work::run(&work).await;
     }
+    if work.join(crate::gold::job::JOB_FILE).exists() {
+        return crate::gold::work::run(&work).await;
+    }
     for name in ["result.json", "text.txt", "layout.xml", "fraction_done"] {
         let p = work.join(name);
         if p.exists() {
