@@ -31,6 +31,18 @@
 #                               against the committed lock and writes <campaign>/bundle.tar
 #                               (gold-bundle.sh; the gold bundle job, bridge image only)
 #
+# The remote hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache), through the
+# hand-off container HANDOFF_URL=https://<account>.blob.core.windows.net/boinc-handoff, read
+# and written with this job's identity:
+#   BRIDGE_STEP=submit-remote   JOB_ID; copies the exported job from the container's
+#                               dispatch/jobs/<id>/ into $HANDOFF_DIR (checking the page's
+#                               size and sha256 against the request) and submits it. A job
+#                               already past reserved is left. LoC is never asked.
+#   BRIDGE_STEP=spool-out       JOB_ID HANDOFF_SPOOL=<assimilator results directory under
+#                               $PROJ/results>; writes the job's spool files and the canonical
+#                               result's host id to spool/<id>/, and $SHARE_DIR/gold/trust.json
+#                               (when there) to gold/trust.json
+#
 # Registering the apps after init (docs/boinc.md#register-the-apps):
 #   BRIDGE_STEP=register-apps   copies this image's project.xml into the project and runs
 #                               bin/xadd, which adds the apps and platforms the database lacks
@@ -95,6 +107,35 @@ if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != re
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
+if [ "$step" = submit-remote ] || [ "$step" = spool-out ]; then
+  [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
+    fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+fi
+if [ "$step" = spool-out ]; then
+  # Reads the spool and, for the host id, the database; writes only the hand-off container.
+  spool="${HANDOFF_SPOOL:?set HANDOFF_SPOOL}"
+  case "$spool" in "$PROJ"/results/*) ;; *) fail "HANDOFF_SPOOL must be under $PROJ/results" ;; esac
+  [[ "$spool" != *..* ]] || fail "HANDOFF_SPOOL must not contain .."
+  host_args=()
+  mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
+  mycnf="$SECRETS/mysql-runtime.cnf"
+  trap 'rm -f "$mycnf"' EXIT
+  kv_get mysql-runtime-password "$SECRETS/db-runtime"
+  (umask 077; { echo '[client]'; echo "host=$DB_HOST"; echo "user=$DB_RUNTIME_USER"; echo "password=$(cat "$SECRETS/db-runtime")"; } > "$mycnf")
+  # The canonical result's host (BOINC's result.hostid); JOB_ID is [A-Za-z0-9_-] (above).
+  # UNVERIFIED against a live database.
+  if host=$(mysql --defaults-extra-file="$mycnf" --batch --skip-column-names "$DB_NAME" \
+      -e "SELECT r.hostid FROM workunit w JOIN result r ON r.id = w.canonical_resultid WHERE w.name = 'usnm_$JOB_ID'"); then
+    if [[ "$host" =~ ^[0-9]+$ ]]; then host_args=(--host-id "$host"); else log "no canonical result host for usnm_$JOB_ID yet"; fi
+  else
+    log "could not read the canonical result's host id; the node must find it another way"
+  fi
+  trust_args=()
+  [ -f "$SHARE_DIR/gold/trust.json" ] && trust_args=(--trust "$SHARE_DIR/gold/trust.json")
+  usnm-boinc handoff put-spool --to-url "$HANDOFF_URL" --spool "$spool" --job "$JOB_ID" \
+    ${host_args[@]+"${host_args[@]}"} ${trust_args[@]+"${trust_args[@]}"}
+  exit 0
+fi
 fetch_secrets
 render_config
 umask 0002
@@ -128,6 +169,15 @@ case "$step" in
     cp "$TEMPLATES/project.xml" "$PROJ/project.xml"
     cd "$PROJ"
     exec bin/xadd ;;
+  submit-remote)
+    # The page comes from the hand-off container, which the scan fetcher filled; never from
+    # LoC. Submission then runs as for submit, which checks the page again.
+    state=$(usnm-boinc handoff pull --from-url "$HANDOFF_URL" --root "$HANDOFF_DIR" --job "$JOB_ID")
+    if [ "$state" != reserved ]; then
+      log "job $JOB_ID is already $state on the server; nothing submitted"
+      exit 0
+    fi
+    exec usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ;;
   submit)
     # Submission publishes readable download inputs before create_work. The
     # hand-off journal stays private; no permission repair happens afterwards.
@@ -135,5 +185,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, reconcile, register-apps, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
 esac

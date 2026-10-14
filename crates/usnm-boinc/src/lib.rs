@@ -29,6 +29,7 @@ use usnm_store::ObjectStore;
 
 pub mod assess;
 pub mod gold;
+pub mod handoff;
 pub mod submit;
 pub mod trust;
 pub mod worker;

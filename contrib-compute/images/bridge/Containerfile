@@ -40,4 +40,6 @@ COPY scripts/ocr-survey/gold.py scripts/ocr-survey/locfetch.py scripts/ocr-surve
 COPY ja-ocr/jaocr.py ja-ocr/alto.py /usr/local/lib/usnm-boinc/gold/ja-ocr/
 COPY fixtures/ocr-gold/bundle-v1.lock.json /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json
 COPY contrib-compute/images/bridge/gold-bundle.sh /usr/local/lib/usnm-boinc/gold-bundle.sh
+# The hand-off job (#469): the same image, run in the main environment with this command.
+COPY contrib-compute/images/bridge/handoff-job.sh /usr/local/lib/usnm-boinc/handoff-job.sh
 ENTRYPOINT ["/usr/local/bin/bridge-job"]

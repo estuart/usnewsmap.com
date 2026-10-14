@@ -119,6 +119,8 @@ sequenceDiagram
 
 ### 3.4.2 Ingestion (weekly and on demand)
 
+The OCR pipeline, including the BOINC volunteer branch, is drawn in [pipeline-boinc.svg](../images/pipeline-boinc.svg).
+
 ```mermaid
 sequenceDiagram
   autonumber

@@ -219,7 +219,10 @@ impl Fixture {
         .remove(0)
     }
     fn result(&self, id: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let job = usnm_boinc::load(&self.options.root, id).unwrap().job;
+        self.result_in(&self.options.root, id)
+    }
+    fn result_in(&self, root: &Path, id: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let job = usnm_boinc::load(root, id).unwrap().job;
         let text = b"HELLO WORLD";
         let result = ResultManifest {
             v: 1,
@@ -1199,4 +1202,211 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
         usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
         Stage::Published
     );
+}
+
+/// The #469 route on synthetic data, with a local directory standing in for the hand-off
+/// container: the fetcher's scans and manifest in, export and the dispatch root put, the
+/// bridge's pull and submit, the spool and trust list back, and the trusted collect.
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_handoff_round_trip_through_the_container() {
+    use usnm_boinc::handoff::{self, Pulled, DISPATCH};
+    use usnm_boinc::trust::Trust;
+    let fx = Fixture::new("eng").await;
+    let container = store(fx.tmp.path(), "handoff");
+    // What scripts/ocr-node/push-boinc-scan.sh uploads.
+    let pushed = handoff::put(container.as_ref(), &fx.options.scans, "scans")
+        .await
+        .unwrap();
+    assert_eq!(pushed, 2, "the scan and its sidecar");
+    container
+        .put(
+            "manifests/manifest.parquet",
+            std::fs::read(&fx.options.manifest).unwrap(),
+            "x",
+        )
+        .await
+        .unwrap();
+
+    // The hand-off job: scans and manifest down, export, dispatch root up.
+    let job = fx.tmp.path().join("job");
+    handoff::get(container.as_ref(), "scans", &job.join("scans"))
+        .await
+        .unwrap();
+    handoff::get(container.as_ref(), "manifests", &job.join("manifests"))
+        .await
+        .unwrap();
+    let mut options = fx.options.clone();
+    options.scans = job.join("scans");
+    options.manifest = job.join("manifests/manifest.parquet");
+    options.root = job.join("dispatch");
+    let id = usnm_boinc::export(
+        &options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap()
+    .remove(0);
+    handoff::put(container.as_ref(), &options.root, DISPATCH)
+        .await
+        .unwrap();
+    assert!(container
+        .get(&format!("{DISPATCH}/jobs/{id}/record.json"))
+        .await
+        .unwrap()
+        .is_some());
+    // The journal lock stays behind.
+    assert!(!container
+        .list(DISPATCH)
+        .await
+        .unwrap()
+        .iter()
+        .any(|p| p.ends_with(".lock")));
+
+    // The bridge: pull, then the existing submit against stand-ins for the stock tools.
+    let server = fx.tmp.path().join("server-handoff");
+    assert_eq!(
+        handoff::pull(container.as_ref(), &server, &id)
+            .await
+            .unwrap(),
+        Pulled::Reserved
+    );
+    // The existing submit (tested with the stock tools' stand-ins above) then moves the
+    // server's entry on. Spawning them here would race the other tests' journal locks
+    // through forked descriptors, so the submission is recorded directly.
+    let page = std::fs::read(options.root.join("jobs").join(&id).join("page")).unwrap();
+    assert_eq!(
+        std::fs::read(server.join("jobs").join(&id).join("page")).unwrap(),
+        page
+    );
+    let mut submitted = usnm_boinc::load(&server, &id).unwrap();
+    assert_eq!(submitted.stage, Stage::Reserved);
+    submitted.stage = Stage::Submitted;
+    usnm_boinc::save(&server, &submitted).unwrap();
+    // A repeated run submits nothing; the dispatch root's journal stays reserved.
+    assert_eq!(
+        handoff::pull(container.as_ref(), &server, &id)
+            .await
+            .unwrap(),
+        Pulled::Already(Stage::Submitted)
+    );
+    assert_eq!(
+        usnm_boinc::load(&options.root, &id).unwrap().stage,
+        Stage::Reserved
+    );
+
+    // The bridge after assimilation: spool, host id and trust list up.
+    let record = usnm_boinc::load(&server, &id).unwrap();
+    let files = fx.result_in(&server, &id);
+    let spool = fx.tmp.path().join("server-spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    for (source, logical) in [
+        (&files.0, "result.json"),
+        (&files.1, "text.txt"),
+        (&files.2, "layout.xml"),
+    ] {
+        std::fs::copy(
+            source,
+            spool.join(format!("{}__file_{logical}", record.job.workunit())),
+        )
+        .unwrap();
+    }
+    std::fs::write(spool.join("usnm_unrelated__file_text.txt"), "other job").unwrap();
+    let trust = Trust {
+        hosts: [(record.job.engine.image.clone(), [42].into())].into(),
+        max_cer: 0.1,
+        v: usnm_boinc::trust::TRUST_VERSION,
+    };
+    let trust_path = fx.tmp.path().join("gold/trust.json");
+    usnm_boinc::atomic(&trust_path, &serde_json::to_vec_pretty(&trust).unwrap()).unwrap();
+    assert_eq!(
+        handoff::put_spool(container.as_ref(), &spool, &id, Some(42), Some(&trust_path))
+            .await
+            .unwrap(),
+        3
+    );
+
+    // The hand-off job's collect: dispatch root, spool and trust down, collect, root up.
+    let collect = fx.tmp.path().join("collect");
+    handoff::get(container.as_ref(), DISPATCH, &collect.join("dispatch"))
+        .await
+        .unwrap();
+    let host = handoff::get_spool(container.as_ref(), &id, &collect.join("spool"))
+        .await
+        .unwrap();
+    assert_eq!(host, Some(42));
+    assert!(
+        handoff::get_trust(container.as_ref(), &collect.join("trust.json"))
+            .await
+            .unwrap()
+    );
+    usnm_boinc::trust::collect(
+        &collect.join("dispatch"),
+        &collect.join("spool"),
+        &id,
+        &Trust::load(&collect.join("trust.json")).unwrap(),
+        host,
+        fx.stores.curated.as_ref(),
+        fx.stores.out.as_ref(),
+    )
+    .await
+    .unwrap();
+    handoff::put(container.as_ref(), &collect.join("dispatch"), DISPATCH)
+        .await
+        .unwrap();
+    let back: usnm_boinc::Record = serde_json::from_slice(
+        &container
+            .get(&format!("{DISPATCH}/jobs/{id}/record.json"))
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(back.stage, Stage::Published);
+}
+
+/// The bridge refuses a container copy whose page or record is not the exported job's.
+#[tokio::test]
+async fn pull_refuses_a_changed_page_or_another_jobs_record() {
+    use usnm_boinc::handoff::{self, DISPATCH};
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let container = store(fx.tmp.path(), "handoff");
+    handoff::put(container.as_ref(), &fx.options.root, DISPATCH)
+        .await
+        .unwrap();
+    let server = fx.tmp.path().join("server-handoff");
+    let page = format!("{DISPATCH}/jobs/{id}/page");
+    let mut bytes = container.get(&page).await.unwrap().unwrap();
+    bytes[0] ^= 1;
+    container.put(&page, bytes, "x").await.unwrap();
+    assert!(handoff::pull(container.as_ref(), &server, &id)
+        .await
+        .is_err());
+    assert!(!server.join("jobs").join(&id).exists());
+    // A prepared entry (its reservation may have been refused) is never submitted.
+    let fresh = fx.tmp.path().join("fresh-handoff");
+    let record_path = format!("{DISPATCH}/jobs/{id}/record.json");
+    let original = container.get(&record_path).await.unwrap().unwrap();
+    let mut prepared: usnm_boinc::Record = serde_json::from_slice(&original).unwrap();
+    prepared.stage = Stage::Prepared;
+    let mut good = container.get(&page).await.unwrap().unwrap();
+    good[0] ^= 1;
+    container.put(&page, good, "x").await.unwrap();
+    container
+        .put(&record_path, serde_json::to_vec(&prepared).unwrap(), "x")
+        .await
+        .unwrap();
+    assert!(handoff::pull(container.as_ref(), &fresh, &id)
+        .await
+        .is_err());
+    assert!(!fresh.join("jobs").join(&id).join("record.json").exists());
+    assert!(handoff::pull(container.as_ref(), &server, &"0".repeat(64))
+        .await
+        .is_err());
+    assert!(handoff::get_spool(container.as_ref(), &id, &server)
+        .await
+        .is_err());
 }
