@@ -8,7 +8,7 @@ Status: written, not built or run. The CI job `contrib-compute (server and bridg
 | ------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | server | `images/server/Containerfile`       | Debian 12 slim, pinned by digest. Stock BOINC server built from a pinned commit with no patches. Apache with PHP (mod_php), the scheduler and upload CGIs, all daemons under `supervisord`, one container |
 | bridge | `images/bridge/Containerfile`       | The server image plus the `usnm-boinc` binary from PR #441's crate. Entry point `/usr/local/bin/bridge-job`                                                                                               |
-| worker | `ocr/boinc/Containerfile` (PR #441) | Tesseract and `usnm-boinc work`; volunteers' Docker pulls it. Not built here. Where it is published: the addendum in ADR-0019                                                                             |
+| worker | `ocr/boinc/Containerfile` (PR #441) | Tesseract and `usnm-boinc work`; volunteers' Docker pulls it. Built and pushed by `.github/workflows/boinc-worker.yml` (ADR-0019, addendum)                                                               |
 
 One container holds Apache and the daemons because the feeder and the scheduler share a System V shared-memory segment (design.md, section 2.1).
 

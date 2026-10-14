@@ -1,0 +1,109 @@
+name: boinc-worker
+# The BOINC worker image volunteers pull (ADR-0019, addendum): the Tesseract
+# engine image first, then ocr/boinc/Containerfile on it, with TESSERACT_IMAGE
+# pinned to the engine's image id. A manual run publishes it to
+# ghcr.io/tgoodyear/usnm-boinc-worker and reports its registry digest and its
+# TESSERACT_IMAGE (docs/boinc.md, "Publish the worker image"). A pull request
+# that changes what it is built from builds it without pushing.
+#
+# Publishing is manual on purpose: every pushed image needs its own signed app
+# version and a drained cohort before it is used (docs/boinc.md, "Build the
+# worker image"), so a push to main publishes nothing.
+# The run's name carries the dispatch's correlation id, so the one who started it
+# can find this run (docs/boinc.md, "Publish the worker image").
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-worker ({0})', inputs.correlation) || github.event.pull_request.title }}
+on:
+  workflow_dispatch:
+    inputs:
+      correlation:
+        description: "Identifies this run, for finding it after the dispatch"
+        required: false
+        default: "manual"
+  pull_request:
+    paths:
+      - ".github/workflows/boinc-worker.yml"
+      - ".github/actions/boinc-worker-build/**"
+      - "ocr/engines/tesseract/**"
+      - "ocr/boinc/Containerfile"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".dockerignore"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boinc-worker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/tgoodyear/usnm-boinc-worker
+
+jobs:
+  # Pull requests: build and check only, with a read-only token.
+  check:
+    name: worker image (build)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/boinc-worker-build
+        with:
+          image: ${{ env.IMAGE }}
+          tag: ${{ github.sha }}
+
+  # A manual run on main: the same build, then the push. Only this job can write packages.
+  publish:
+    name: worker image (build, push)
+    # Only main, so what is published went through review and branch protection.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      image: ${{ steps.push.outputs.image }}
+      tesseract_image: ${{ steps.build.outputs.tesseract_image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: build
+        uses: ./.github/actions/boinc-worker-build
+        with:
+          image: ${{ env.IMAGE }}
+          tag: ${{ github.sha }}
+      - name: Push to GHCR
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          SHA: ${{ github.sha }}
+          TESSERACT_IMAGE: ${{ steps.build.outputs.tesseract_image }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          docker push "$IMAGE:$SHA"
+          # The registry's digest for the tag, as volunteers pull it (RepoDigests is empty
+          # with the containerd image store).
+          digest=$(docker buildx imagetools inspect "$IMAGE:$SHA" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no registry digest for $IMAGE:$SHA after the push"; exit 1; }
+          docker logout ghcr.io
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Worker image"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| image | \`$IMAGE@$digest\` |"
+            echo "| digest (GOLD_ENGINE_IMAGE, ASSESS_ENGINE_IMAGE) | \`$digest\` |"
+            echo "| TESSERACT_IMAGE (GOLD_ENGINE_BASE, ASSESS_ENGINE_BASE) | \`$TESSERACT_IMAGE\` |"
+            echo "| commit | \`$SHA\` |"
+            echo
+            echo "A new package is private: make it public once (docs/boinc.md, \"Publish the worker image\")."
+          } >> "$GITHUB_STEP_SUMMARY"

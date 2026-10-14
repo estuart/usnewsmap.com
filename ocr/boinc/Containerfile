@@ -1,13 +1,18 @@
 # Build with the existing Tesseract image's immutable digest. Model bytes
 # and routing are shared with the on-prem worker; no nested container runtime.
+# TESSERACT_IMAGE is the engine's image id (sha256:...), recorded in the image.
+# TESSERACT_FROM is what FROM resolves, by default the same: BuildKit can't
+# resolve a bare local image id, so a Docker build passes the engine's local
+# tag here (.github/workflows/boinc-worker.yml checks it is that image).
 ARG TESSERACT_IMAGE
+ARG TESSERACT_FROM=${TESSERACT_IMAGE}
 FROM rust:1-bookworm AS build
 ARG BUILD_JOBS=2
 WORKDIR /src
 COPY . .
 RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
 
-FROM ${TESSERACT_IMAGE}
+FROM ${TESSERACT_FROM}
 # The assessment (#456) checks each unit against the engine image this one is built on.
 ARG TESSERACT_IMAGE
 ENV USNM_TESSERACT_IMAGE=${TESSERACT_IMAGE}

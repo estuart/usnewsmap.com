@@ -45,7 +45,7 @@ This ADR covers that missing piece, the Azure hosting of a stock server, so the 
 
 ## Addendum (2026-10-13): where the worker image is published
 
-Not implemented. This records the decision so the first deployment does not stall on it; no workflow publishes the image yet.
+Implemented by `.github/workflows/boinc-worker.yml` (docs/boinc.md, "Publish the worker image").
 
 **Problem.** Each volunteer's Docker pulls the worker image: the app version's `Dockerfile` is `FROM <image>` (`scripts/boinc/install.py` in PR #441). Volunteers have no credentials for us. The project's Azure Container Registry has no anonymous pull and no admin user (design.md, 5.2), and that is right for the server images, so it cannot serve volunteers.
 
@@ -53,7 +53,7 @@ Not implemented. This records the decision so the first deployment does not stal
 
 - The image holds Tesseract, its pinned models, and the `usnm-boinc` binary. It holds no credential, no data and no scan, so a public package discloses nothing that the repository does not already publish.
 - A GHCR package is private by default. Its visibility is set once in the package settings by the maintainer; a workflow cannot do it. Before the first task is sent, verify an anonymous pull from a logged-out Docker on a host that is not the maintainer's (#441 asks for the same check from the volunteer runtime).
-- Publishing is a separate, later workflow on pushes of a version tag, using the repository token, with permission to write packages. Rolling the image means a new app version and a drained cohort (#441, "Build the worker image").
+- Publishing is a workflow started by hand (`workflow_dispatch`), using the repository token, with permission to write packages. A pull request that changes the image's inputs builds it without pushing. A push to main publishes nothing: each image needs its own signed app version. Rolling the image means a new app version and a drained cohort (#441, "Build the worker image").
 
 **Alternatives.**
 
