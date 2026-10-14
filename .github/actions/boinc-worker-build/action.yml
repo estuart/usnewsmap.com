@@ -1,67 +1,53 @@
 name: boinc-worker-build
-description: >-
-  Builds the Tesseract engine image and the BOINC worker image on it
-  (.github/workflows/boinc-worker.yml), and checks the worker names and is built
-  on that engine. Pushes nothing.
+description: Build and check one native architecture of the BOINC worker; publish nothing.
 inputs:
   image:
-    description: The worker image's repository
+    description: Worker image repository
     required: true
   tag:
-    description: The local tag to give the worker image
+    description: Local image tag
+    required: true
+  arch:
+    description: Native architecture (amd64 or arm64)
+    required: true
+  base_image:
+    description: Pinned Debian base for this architecture
+    required: true
+  rust_image:
+    description: Pinned Rust build base for this architecture
     required: true
 outputs:
   tesseract_image:
-    description: The engine's image id (sha256:...), the worker's TESSERACT_IMAGE
-    value: ${{ steps.engine.outputs.tesseract_image }}
+    description: Native engine configuration/image ID
+    value: ${{ steps.build.outputs.tesseract_image }}
 runs:
   using: composite
   steps:
-    # Docker's own builder, so the worker build can use the engine from the
-    # daemon's image store by its local tag (TESSERACT_FROM).
-    - name: Build the Tesseract engine image
-      id: engine
+    - id: build
       shell: bash
-      run: |
-        docker build -f ocr/engines/tesseract/Containerfile -t usnm-ocr/tesseract:worker ocr/engines/tesseract
-        id=$(docker image inspect --format '{{.Id}}' usnm-ocr/tesseract:worker)
-        [[ $id =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::unexpected engine image id $id"; exit 1; }
-        echo "tesseract_image=$id" >> "$GITHUB_OUTPUT"
-        echo "engine image $id"
-    - name: Build the worker image on it
       env:
-        TESSERACT_IMAGE: ${{ steps.engine.outputs.tesseract_image }}
-        SHA: ${{ inputs.tag }}
+        ARCH: ${{ inputs.arch }}
+        BASE_IMAGE: ${{ inputs.base_image }}
+        RUST_IMAGE: ${{ inputs.rust_image }}
         WORKER_IMAGE: ${{ inputs.image }}
-      shell: bash
+        TAG: ${{ inputs.tag }}
       run: |
-        docker build -f ocr/boinc/Containerfile --build-arg "TESSERACT_IMAGE=$TESSERACT_IMAGE" \
-          --build-arg TESSERACT_FROM=usnm-ocr/tesseract:worker \
-          --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-          --label "org.opencontainers.image.revision=$SHA" \
-          --label "org.opencontainers.image.description=usnewsmap BOINC OCR worker (Tesseract and usnm-boinc)" \
-          -t "$WORKER_IMAGE:$SHA" .
-    # FROM resolved the engine's tag: its layers must be the engine's, in order.
-    - name: The image is built on the engine image
-      env:
-        TESSERACT_IMAGE: ${{ steps.engine.outputs.tesseract_image }}
-        SHA: ${{ inputs.tag }}
-        WORKER_IMAGE: ${{ inputs.image }}
-      shell: bash
-      run: |
-        engine=$(docker image inspect --format '{{json .RootFS.Layers}}' "$TESSERACT_IMAGE")
-        worker=$(docker image inspect --format '{{json .RootFS.Layers}}' "$WORKER_IMAGE:$SHA")
-        jq -e --argjson e "$engine" '.[0:($e | length)] == $e' <<< "$worker" > /dev/null ||
-          { echo "::error::the worker image is not built on $TESSERACT_IMAGE"; exit 1; }
-    - name: The image names its engine and runs usnm-boinc
-      env:
-        TESSERACT_IMAGE: ${{ steps.engine.outputs.tesseract_image }}
-        SHA: ${{ inputs.tag }}
-        WORKER_IMAGE: ${{ inputs.image }}
-      shell: bash
-      run: |
-        got=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$WORKER_IMAGE:$SHA" |
-          sed -n 's/^USNM_TESSERACT_IMAGE=//p')
-        [ "$got" = "$TESSERACT_IMAGE" ] || { echo "::error::USNM_TESSERACT_IMAGE is '$got', not $TESSERACT_IMAGE"; exit 1; }
-        docker run --rm --network=none "$WORKER_IMAGE:$SHA" /usr/local/bin/usnm-boinc --help > /dev/null
-        docker run --rm --network=none "$WORKER_IMAGE:$SHA" tesseract --version
+        case "$ARCH:$(uname -m)" in amd64:x86_64|arm64:aarch64) ;; *) echo 'native runner architecture mismatch' >&2; exit 1 ;; esac
+        docker build --platform "linux/$ARCH" --build-arg "BASE=$BASE_IMAGE" \
+          -f ocr/engines/tesseract/Containerfile -t usnm-ocr/tesseract:worker ocr/engines/tesseract
+        engine=$(docker image inspect --format '{{.Id}}' usnm-ocr/tesseract:worker)
+        [[ $engine =~ ^sha256:[0-9a-f]{64}$ ]]
+        args=(--platform "linux/$ARCH" --build-arg "TESSERACT_IMAGE=$engine"
+          --build-arg TESSERACT_FROM=usnm-ocr/tesseract:worker --build-arg "RUST_IMAGE=$RUST_IMAGE"
+          -f ocr/boinc/Containerfile)
+        docker build "${args[@]}" --target build -t usnm-boinc-build:worker .
+        docker build "${args[@]}" --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+          --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$WORKER_IMAGE:$TAG" .
+        e=$(docker image inspect --format '{{json .RootFS.Layers}}' "$engine")
+        w=$(docker image inspect --format '{{json .RootFS.Layers}}' "$WORKER_IMAGE:$TAG")
+        jq -e --argjson e "$e" '.[0:($e | length)] == $e' <<< "$w" > /dev/null
+        got=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$WORKER_IMAGE:$TAG" | sed -n 's/^USNM_TESSERACT_IMAGE=//p')
+        [ "$got" = "$engine" ]
+        echo "tesseract_image=$engine" >> "$GITHUB_OUTPUT"
+        python3 scripts/boinc/smoke-worker.py --image "$WORKER_IMAGE:$TAG" --build-image usnm-boinc-build:worker \
+          --arch "$ARCH" --dir "$RUNNER_TEMP/boinc-worker-smoke"

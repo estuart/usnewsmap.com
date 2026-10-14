@@ -61,8 +61,15 @@ class CheckAppver(unittest.TestCase):
         return ca.check(self.dir, self.sigs, self.key, str(self.crypt))
 
     def test_a_signed_version_passes(self):
-        self.assertEqual(self.check(), ["Dockerfile_1", "docker_wrapper_1", "job_1.toml"])
-        self.assertTrue((self.dir / "job_1.toml.sig").is_file())
+        self.assertEqual(
+            self.check(),
+            [
+                "Dockerfile_usnm_gold_1.0_x86_64-pc-linux-gnu_docker",
+                "docker_wrapper_usnm_gold_1.0_x86_64-pc-linux-gnu_docker",
+                "job_usnm_gold_1.0_x86_64-pc-linux-gnu_docker.toml",
+            ],
+        )
+        self.assertTrue((self.dir / "job_usnm_gold_1.0_x86_64-pc-linux-gnu_docker.toml.sig").is_file())
 
     def test_refuses_an_orphan_sig(self):
         (self.sigs / "extra_1.sig").write_text("good x")
@@ -70,8 +77,8 @@ class CheckAppver(unittest.TestCase):
             self.check()
 
     def test_refuses_a_missing_sig(self):
-        (self.sigs / "job_1.toml.sig").unlink()
-        with self.assertRaisesRegex(ca.Refused, "no .sig for job_1.toml"):
+        (self.sigs / "job_usnm_gold_1.0_x86_64-pc-linux-gnu_docker.toml.sig").unlink()
+        with self.assertRaisesRegex(ca.Refused, "no .sig for job_usnm_gold_1.0_x86_64-pc-linux-gnu_docker.toml"):
             self.check()
 
     def test_refuses_a_non_signature(self):
@@ -80,14 +87,14 @@ class CheckAppver(unittest.TestCase):
             self.check()
 
     def test_refuses_a_bad_signature_or_changed_bytes(self):
-        (self.dir / "Dockerfile_1").write_text("FROM other\n")
-        with self.assertRaisesRegex(ca.Refused, "Dockerfile_1.sig does not verify"):
+        (self.dir / "Dockerfile_usnm_gold_1.0_x86_64-pc-linux-gnu_docker").write_text("FROM other\n")
+        with self.assertRaisesRegex(ca.Refused, "Dockerfile_usnm_gold_1.0_x86_64-pc-linux-gnu_docker.sig does not verify"):
             self.check()
 
     def test_refuses_version_xml_naming_a_missing_file(self):
-        (self.dir / "job_1.toml").unlink()
-        (self.sigs / "job_1.toml.sig").unlink()
-        with self.assertRaisesRegex(ca.Refused, "version.xml names files that are not staged: job_1.toml"):
+        (self.dir / "job_usnm_gold_1.0_x86_64-pc-linux-gnu_docker.toml").unlink()
+        (self.sigs / "job_usnm_gold_1.0_x86_64-pc-linux-gnu_docker.toml.sig").unlink()
+        with self.assertRaisesRegex(ca.Refused, "version.xml names files that are not staged: job_usnm_gold_1.0_x86_64-pc-linux-gnu_docker.toml"):
             self.check()
 
     def test_refuses_without_a_public_key(self):

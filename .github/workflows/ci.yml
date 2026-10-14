@@ -122,7 +122,9 @@ jobs:
         run: |
           python3 -m unittest -v scripts/boinc/test_install.py
           python3 -m unittest -v scripts/boinc/test_volunteer.py
+          python3 -m unittest -v scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_worker_platform.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
+          python3 -m unittest -v contrib-compute/images/appver/test_publish_appver.py
       - name: Install Bicep
         working-directory: .
         run: scripts/ci/install-bicep.sh

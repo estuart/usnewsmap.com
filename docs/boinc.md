@@ -78,9 +78,11 @@ locked dependencies; capture the build revision and compiler in your release.
 
 Volunteers pull the worker image from a public GHCR package,
 `ghcr.io/tgoodyear/usnm-boinc-worker` (ADR-0019, addendum). The workflow
-`.github/workflows/boinc-worker.yml` builds it as above and pushes it. It runs
-only when started by hand, and publishes only from `main`; a pull request that changes what the image is built
-from builds it without pushing:
+`.github/workflows/boinc-worker.yml` builds and smoke-tests separate native
+`linux/amd64` and `linux/arm64` images on matching Ubuntu runners. The Debian and
+Rust bases are pinned per architecture in that workflow; no QEMU setup is used.
+Publishing starts by hand from `main` and combines both tested images into one OCI
+index only after both builds pass. Pull requests build and test without pushing:
 
 ```sh
 c="worker-$(date -u +%Y%m%dT%H%M%S)"
@@ -93,14 +95,18 @@ gh run watch "$run" --exit-status
 gh run view "$run" --json url -q .url   # the run's summary holds the digest
 ```
 
-The run's summary, and the job's outputs `digest`, `image` and `tesseract_image`, give:
+The index job's summary and outputs `digest` and `image` give the **index**
+digest to use in `scripts/boinc/install.py --image` and `images.worker` in
+`contrib-compute/infra/boinc/env/<env>.json`. The summary also records each child
+manifest and its `tesseract_image` engine configuration ID; the two engine IDs
+differ even though their Tesseract version and model lock match.
 
-- `image`: `ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest>`, for
-  `scripts/boinc/install.py --image` and `images.worker` in
-  `contrib-compute/infra/boinc/env/<env>.json`;
-- `digest`: `sha256:<digest>`, for `GOLD_ENGINE_IMAGE` and `ASSESS_ENGINE_IMAGE`;
-- `tesseract_image`: the engine's image id (`sha256:...`) the image was built on,
-  its `USNM_TESSERACT_IMAGE`, for `GOLD_ENGINE_BASE` and `ASSESS_ENGINE_BASE`.
+`GOLD_ENGINE_IMAGE` and `ASSESS_ENGINE_IMAGE` use the worker index digest.
+`GOLD_ENGINE_BASE` and `ASSESS_ENGINE_BASE` must match the architecture executing
+the cohort. The current bridge settings hold only one base ID: keep assessment
+and gold campaigns restricted to a matching architecture until per-architecture
+expectations are supported. Start Mac validation with reserved `usnm_ocr` jobs;
+this build support does not establish cross-architecture gold agreement.
 
 The image is tagged with the commit; only the digest is used. A new GHCR package
 is private, and a workflow can't change that. Once, after the first push:
@@ -112,7 +118,8 @@ is private, and a workflow can't change that. Once, after the first push:
 4. From a Docker that is logged out of GHCR, on a host that is not the maintainer's:
    `docker logout ghcr.io; docker pull ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest>`.
 
-Later pushes keep the package public.
+Later pushes keep the package public. Verify an anonymous pull on each native
+architecture before releasing Mac app versions. See the [Mac release procedure](../contrib-compute/docs/app-release.md#mac-app-versions).
 
 Before changing the installed worker image, stop creating new cohorts. Finish
 exporting/submitting already allocated cohorts with their original image, and

@@ -2,7 +2,8 @@
 # (infra/boinc/main.bicep, publishJob; docs/app-release.md). scripts/boinc-app-release.sh builds
 # it in ACR Tasks from a context it assembles:
 #
-#   src/                 scripts/boinc/install.py and ocr/boinc/ at the committed HEAD
+#   src/                 installer, ocr/boinc/ and project.xml at the committed HEAD
+#   wrapper-candidate/   verified Mac wrapper (empty for Linux)
 #   sigs/<file>.sig      the signatures made on the signing host (nothing else comes back)
 #   code_sign_public     the PUBLIC half of the code-signing key (env/<env>.json)
 #   publish-appver.sh    this directory's publish script
@@ -18,21 +19,27 @@ ARG APP
 ARG VERSION
 ARG WORKER_IMAGE
 ARG PLAN_CLASS=docker
+ARG PLATFORM=x86_64-pc-linux-gnu
+ARG WRAPPER_PATH=/usr/local/lib/usnm-boinc/docker_wrapper
 COPY src /tmp/appver-src
 COPY sigs /tmp/sigs
 COPY code_sign_public /tmp/code_sign_public
 COPY publish-appver.sh /usr/local/lib/usnm-boinc/publish-appver.sh
 COPY check_appver.py /tmp/check_appver.py
+# The release script supplies a verified Mac artifact here; Linux uses the server wrapper.
+COPY wrapper-candidate /tmp/wrapper-candidate
 RUN set -eu; \
     p=/usr/local/lib/usnm-boinc/appver; \
     mkdir -p "$p"; touch "$p/config.xml"; \
+    cp /tmp/appver-src/contrib-compute/boinc/project.xml "$p/project.xml"; \
     python3 /tmp/appver-src/scripts/boinc/install.py --project "$p" \
-      --wrapper /usr/local/lib/usnm-boinc/docker_wrapper --image "$WORKER_IMAGE" --version "$VERSION" --app "$APP" --plan-class "$PLAN_CLASS"; \
+      --wrapper "$WRAPPER_PATH" --image "$WORKER_IMAGE" --version "$VERSION" \
+      --app "$APP" --plan-class "$PLAN_CLASS" --platform "$PLATFORM"; \
     rm "$p/config.xml"; \
-    d="$p/apps/$APP/$VERSION/x86_64-pc-linux-gnu__$PLAN_CLASS"; \
+    d="$p/apps/$APP/$VERSION/${PLATFORM}__${PLAN_CLASS}"; \
     python3 /tmp/check_appver.py --version-dir "$d" --sigs /tmp/sigs --public-key /tmp/code_sign_public; \
-    rm -rf /tmp/appver-src /tmp/sigs /tmp/code_sign_public /tmp/check_appver.py; \
+    rm -rf /tmp/appver-src /tmp/sigs /tmp/code_sign_public /tmp/check_appver.py /tmp/wrapper-candidate; \
     chmod 0755 /usr/local/lib/usnm-boinc/publish-appver.sh
-ENV APPVER_APP=${APP} APPVER_VERSION=${VERSION}
+ENV APPVER_APP=${APP} APPVER_VERSION=${VERSION} APPVER_PLATFORM=${PLATFORM} APPVER_PLAN_CLASS=${PLAN_CLASS}
 ENTRYPOINT ["/usr/local/lib/usnm-boinc/publish-appver.sh"]
 CMD []

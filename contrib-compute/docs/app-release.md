@@ -59,7 +59,7 @@ flowchart LR
 2. **Stage.** The server image goes to the signing host with a short-lived ACR pull token
    (deleted after the pull). `scripts/boinc/install.py` and `ocr/boinc/`, from the committed
    HEAD, run in it with `--network=none` and write
-   `apps/<app>/<version>/x86_64-pc-linux-gnu__docker/` (wrapper, `job.toml`, a `Dockerfile`
+   `apps/<app>/<version>/<platform>__docker/` (`x86_64-pc-linux-gnu` by default) (wrapper, `job.toml`, a `Dockerfile`
    pinned to the worker digest, `version.xml`).
 3. **Sign.** BOINC's `sign_executable` runs in the server image with `--network=none` and the
    key directory mounted read-only, and signs every file but `version.xml`. Only the `.sig`
@@ -73,7 +73,8 @@ flowchart LR
    `codeSignPublicKey`. `provision-boinc.sh --publish-image <digest>` deploys the manual job
    `usnm-boinc-publish-caj-<env>` with that image (it has the share, the database and the vault,
    as the init job does), and the script starts it. The job copies the version to the share,
-   installs the app's templates and runs `bin/update_versions --noconfirm`. A version already on
+   installs the app's templates, copies the committed project metadata, runs `bin/xadd`
+   to register platforms, and runs `bin/update_versions --noconfirm`. A platform already on
    the share must be identical, byte for byte (`diff -r`): a rerun with changed bytes is refused,
    because versions are immutable and a change is a new version. The
    script then writes the image's digest to `images.appver` in the settings; commit it. Every
@@ -127,3 +128,64 @@ creates a disposable account when `projectAuthenticator` is empty, and runs
 
 UNVERIFIED against a live deployment: cloud-init package installation, GPU detection by
 `boinc-client`, workunit execution on the VM, and end-to-end result assimilation.
+
+## Mac app versions
+
+Contribute build scripts and public settings through a PR. Runtime changes made
+inside the Container App disappear on rebuild. A contributor can build and test
+native ARM workers and wrappers without server or signing-key access; the
+maintainer publishes and signs from the merged commit.
+
+1. Merge the native build changes, then dispatch `boinc-worker.yml` from `main`.
+   Verify both architecture checks and anonymous pulls, and commit its index
+   digest as `images.worker` through a PR. Follow the cohort drain procedure in
+   [docs/boinc.md](../../docs/boinc.md#publish-the-worker-image).
+2. Dispatch `boinc-mac-wrapper.yml` from the same reviewed commit. Download the
+   `boinc-mac-wrappers` artifact: `docker_wrapper_arm64`, `docker_wrapper_x86_64`,
+   `BOINC_COMMIT`, and `SHA256SUMS`. Alternatively, on a Mac with Xcode:
+
+   ```sh
+   bash scripts/boinc/build-mac-wrapper.sh --out /tmp/mac-wrappers
+   ```
+
+   The script checks out exactly the BOINC commit pinned by the server
+   Containerfile, builds both Mach-O executables and records checksums. The
+   artifact is a BOINC code-signing candidate, not an Apple-notarized installer.
+   A checksum and source-pin file check integrity and consistency; use artifacts
+   from a trusted, reviewed build. Record the workflow run, commit and SDK in the
+   release evidence.
+
+3. On the maintainer's checkout, verify the artifact checksums and use the
+   existing offline-signing release path with the selected platform:
+
+   ```sh
+   (cd /tmp/mac-wrappers && shasum -a 256 -c SHA256SUMS)
+   # Run from the clean repository checkout, using the checked checksum below.
+   scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.1 \
+     --signing-host HOST --platform arm64-apple-darwin \
+     --wrapper /tmp/mac-wrappers/docker_wrapper_arm64 \
+     --wrapper-sha256 CHECKED_SHA256 \
+     --wrapper-source-pin /tmp/mac-wrappers/BOINC_COMMIT --what-if
+   ```
+
+   Remove `--what-if` to stage, sign and publish. For Intel Mac use
+   `x86_64-apple-darwin` and `docker_wrapper_x86_64`. The script requires a worker
+   index containing the corresponding native Linux child, validates wrapper
+   architecture/checksum/source pin, and signs the frozen bytes on the signing
+   host. Mac binaries are never executed on that Linux host. A new platform can
+   share a version number only when its shared templates agree; existing
+   platform files remain immutable. Changed image, wrapper or job configuration
+   requires a new version. Commit the resulting `images.appver` setting.
+
+4. Reserve a synthetic/cached-page `usnm_ocr` job for an ARM Mac client, then
+   verify scheduler selection, signed download, native execution, upload,
+   validation, assimilation and bridge collection. Repeat on an Intel Mac when
+   available. Check pause/resume, client restart and reboot, then run a matched
+   gold campaign before calling Mac support complete.
+
+The standalone Mac spike found an upstream `Run_Podman` command-quoting failure
+when restarting a paused container. Native image execution succeeds; BOINC
+lifecycle behavior still needs a tested fix and full client/server validation.
+See [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476) and the separate
+[BUDA evaluation PR #503](https://github.com/tgoodyear/usnewsmap.com/pull/503).
+These release tools contribute to #476 without closing it or the BUDA spike #481.

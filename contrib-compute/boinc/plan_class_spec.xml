@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <!-- Plan class for the Docker-wrapper app version that scripts/boinc/install.py (PR #441)
-     installs under apps/usnm_ocr/<version>/x86_64-pc-linux-gnu__docker. The class name must be
+     installs under apps/usnm_ocr/<version>/<platform>__docker. The class name must be
      `docker`. The scheduler sends the version only to hosts that report a Docker install
      (src:sched/plan_class_spec.cpp); the server itself never runs Docker.
      Copy this to <project>/plan_class_spec.xml, or merge it into the sample from the BOINC

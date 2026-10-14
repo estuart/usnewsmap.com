@@ -38,10 +38,11 @@
 # key status and podman) and prints the plan.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen> --version <N.M> --signing-host HOST [--plan-class docker|docker_mt|docker_nvidia_cuda] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
+  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen> --version <N.M> --signing-host HOST [--plan-class docker|docker_mt|docker_nvidia_cuda] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM --wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
   exit 2
 }
 ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" PLAN_CLASS=docker WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false
+PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN=""
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
@@ -50,6 +51,10 @@ while [ $# -gt 0 ]; do
     --signing-host) [ $# -ge 2 ] || usage; SIGNING_HOST=$2; shift 2 ;;
     --plan-class) [ $# -ge 2 ] || usage; PLAN_CLASS=$2; shift 2 ;;
     --worker-image) [ $# -ge 2 ] || usage; WORKER_OVERRIDE=$2; shift 2 ;;
+    --platform) [ $# -ge 2 ] || usage; PLATFORM=$2; shift 2 ;;
+    --wrapper) [ $# -ge 2 ] || usage; WRAPPER=$2; shift 2 ;;
+    --wrapper-sha256) [ $# -ge 2 ] || usage; WRAPPER_SHA=$2; shift 2 ;;
+    --wrapper-source-pin) [ $# -ge 2 ] || usage; WRAPPER_PIN=$2; shift 2 ;;
     --signing-key-dir) [ $# -ge 2 ] || usage; KEY_DIR=$2; shift 2 ;;
     --signing-dataset) [ $# -ge 2 ] || usage; KEY_DATASET=$2; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
@@ -72,6 +77,16 @@ esac
 [[ $KEY_DIR =~ ^/[A-Za-z0-9/._-]+$ ]] || die "--signing-key-dir must be an absolute path"
 [[ $KEY_DATASET =~ ^[A-Za-z0-9/._-]+$ ]] || die "--signing-dataset must be a ZFS dataset name"
 cd "$(dirname "$0")/.."
+case "$PLATFORM" in
+  x86_64-pc-linux-gnu) [ -z "$WRAPPER$WRAPPER_SHA$WRAPPER_PIN" ] || die "Linux uses the wrapper built in the pinned server image" ;;
+  arm64-apple-darwin|x86_64-apple-darwin)
+    [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
+    [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
+      die "Mac requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact"
+    python3 scripts/boinc/check-mac-wrapper.py --wrapper "$WRAPPER" --platform "$PLATFORM" \
+      --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Mac wrapper verification failed" ;;
+  *) die "unsupported --platform" ;;
+esac
 # shellcheck source=scripts/lib/boinc.sh disable=SC1091
 . scripts/lib/boinc.sh
 boinc_load_settings
@@ -91,8 +106,9 @@ sha=$(git rev-parse HEAD)
 registry=$(jq -er .registry infra/names/"$ENV_NAME".json) || die "no registry in infra/names/$ENV_NAME.json"
 APPVER_REPO=usnm-boinc-appver
 APPVER_TAG="$APP-$VERSION"
-[ "$PLAN_CLASS" = docker ] || APPVER_TAG="$APP-$VERSION-${PLAN_CLASS//_/-}"
-VERSION_SUBDIR="apps/$APP/$VERSION/x86_64-pc-linux-gnu__$PLAN_CLASS"
+[ "$PLAN_CLASS" = docker ] || APPVER_TAG="$APPVER_TAG-${PLAN_CLASS//_/-}"
+[ "$PLATFORM" = x86_64-pc-linux-gnu ] || APPVER_TAG="$APPVER_TAG-$PLATFORM"
+VERSION_SUBDIR="apps/$APP/$VERSION/${PLATFORM}__${PLAN_CLASS}"
 ssh_host() { ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SIGNING_HOST" "$@"; }
 
 # --- 1. Worker image -------------------------------------------------------------------------
@@ -103,9 +119,10 @@ ghcr_public() {
   local ref=$1 repo digest token
   repo=${ref#ghcr.io/}; repo=${repo%@*}; digest=${ref#*@}
   token=$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | jq -er .token) || return 1
-  curl -fsS -o /dev/null -I -H "Authorization: Bearer $token" \
+  curl -fsS -H "Authorization: Bearer $token" \
     -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json' \
-    "https://ghcr.io/v2/$repo/manifests/$digest"
+    "https://ghcr.io/v2/$repo/manifests/$digest" | \
+    python3 scripts/boinc/check-worker-platform.py --platform "$PLATFORM"
 }
 
 # have REPOSITORY TAG / digest REPOSITORY TAG: as in build-boinc-images.sh.
@@ -156,7 +173,7 @@ elif [ -z "$WORKER_IMAGE" ]; then
   die "no images.worker in $BOINC_SETTINGS. Publish the worker to GHCR (gh workflow run boinc-worker.yml --ref main; docs/boinc.md, \"Publish the worker image\"), make the package public once, put its ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... in images.worker, commit, and run this again"
 else
   ghcr_public "$WORKER_IMAGE" ||
-    die "$WORKER_IMAGE can't be pulled anonymously: make the GHCR package public (package settings) or check the digest"
+    die "$WORKER_IMAGE is not anonymously readable or lacks the required native Linux architecture for $PLATFORM"
   echo "1. worker image $WORKER_IMAGE: anonymous pull works"
 fi
 
@@ -177,7 +194,7 @@ echo "signing host: $KEY_DATASET unlocked, key present, podman available"
 if $WHAT_IF; then
   cat << PLAN
 would, from commit $sha:
-2. stage $APP $VERSION ($PLAN_CLASS) on the signing host: pull $SERVER_IMAGE (short-lived ACR token), run
+2. stage $APP $VERSION ($PLATFORM, $PLAN_CLASS) on the signing host: pull $SERVER_IMAGE (short-lived ACR token), run
    scripts/boinc/install.py in it with --network=none, pinned to $WORKER_IMAGE
 3. sign each file with sign_executable (--network=none, key $KEY_DIR read-only); bring back the .sig files
 4. build $registry.azurecr.io/$APPVER_REPO:$APPVER_TAG in ACR Tasks (every signature verified),
@@ -193,6 +210,11 @@ cleanup() {
   rm -rf "$work"
 }
 trap cleanup EXIT
+if [ "$PLATFORM" != x86_64-pc-linux-gnu ]; then
+  cp "$WRAPPER" "$work/wrapper"
+  python3 scripts/boinc/check-mac-wrapper.py --wrapper "$work/wrapper" --platform "$PLATFORM" \
+    --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Mac wrapper changed since verification"
+fi
 
 # --- 2. Stage --------------------------------------------------------------------------------
 
@@ -204,12 +226,19 @@ baz acr login --name "$registry" --expose-token --query accessToken -o tsv |
   die "can't log the signing host in to $registry"
 ssh_host "podman pull -q --authfile $remote/auth.json $SERVER_IMAGE > /dev/null; rc=\$?; rm -f $remote/auth.json; exit \$rc" ||
   die "the signing host can't pull $SERVER_IMAGE"
-git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc | ssh_host "mkdir $remote/src && tar -x -C $remote/src" ||
+git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc contrib-compute/boinc/project.xml | ssh_host "mkdir $remote/src && tar -x -C $remote/src" ||
   die "can't copy the sources to the signing host"
+wrapper_path=/usr/local/lib/usnm-boinc/docker_wrapper
+wrapper_mount=""
+if [ "$PLATFORM" != x86_64-pc-linux-gnu ]; then
+  ssh_host "cat > $remote/wrapper" < "$work/wrapper" || die "can't copy the verified Mac wrapper"
+  wrapper_path=/wrapper
+  wrapper_mount="-v $remote/wrapper:/wrapper:ro"
+fi
 ssh_host "mkdir -p $remote/proj && touch $remote/proj/config.xml &&
-  podman run --rm --network=none -v $remote/src:/src:ro -v $remote/proj:/proj --entrypoint python3 $SERVER_IMAGE \
-    /src/scripts/boinc/install.py --project /proj --wrapper /usr/local/lib/usnm-boinc/docker_wrapper \
-    --image $WORKER_IMAGE --version $VERSION --app $APP --plan-class $PLAN_CLASS > /dev/null" || die "staging failed on the signing host"
+  podman run --rm --network=none $wrapper_mount -v $remote/src:/src:ro -v $remote/proj:/proj --entrypoint python3 $SERVER_IMAGE \
+    /src/scripts/boinc/install.py --project /proj --wrapper $wrapper_path \
+    --image $WORKER_IMAGE --version $VERSION --app $APP --plan-class $PLAN_CLASS --platform $PLATFORM > /dev/null" || die "staging failed on the signing host"
 
 # --- 3. Sign ---------------------------------------------------------------------------------
 
@@ -232,15 +261,22 @@ echo "   signatures: $(cd "$work/sigs" && echo *)"
 echo "4. building $APPVER_REPO:$APPVER_TAG in $registry"
 ctx="$work/ctx"
 mkdir -p "$ctx/src"
-git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc | tar -x -C "$ctx/src"
+git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc contrib-compute/boinc/project.xml | tar -x -C "$ctx/src"
 git show "HEAD:contrib-compute/images/appver/Containerfile" > "$ctx/Containerfile"
 git show "HEAD:contrib-compute/images/appver/publish-appver.sh" > "$ctx/publish-appver.sh"
 git show "HEAD:contrib-compute/images/appver/check_appver.py" > "$ctx/check_appver.py"
 mv "$work/sigs" "$ctx/sigs"
+mkdir "$ctx/wrapper-candidate"
+appver_wrapper=/usr/local/lib/usnm-boinc/docker_wrapper
+if [ "$PLATFORM" != x86_64-pc-linux-gnu ]; then
+  cp "$work/wrapper" "$ctx/wrapper-candidate/docker_wrapper"
+  appver_wrapper=/tmp/wrapper-candidate/docker_wrapper
+fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
-  --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --file "$ctx/Containerfile" "$ctx" ||
+  --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM" \
+  --build-arg "WRAPPER_PATH=$appver_wrapper" --file "$ctx/Containerfile" "$ctx" ||
   die "the app version image build failed (a signature that doesn't verify fails it)"
 appver_image="$registry.azurecr.io/$APPVER_REPO@$(digest "$APPVER_REPO" "$APPVER_TAG")"
 echo "   $appver_image"

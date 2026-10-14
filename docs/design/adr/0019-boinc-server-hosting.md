@@ -64,3 +64,18 @@ Implemented by `.github/workflows/boinc-worker.yml` (docs/boinc.md, "Publish the
 - _Ship the image from the project server as a file._ BOINC's Docker wrapper does not do that.
 
 **Consequences.** The registry digest exists only after the first push, so `bootstrap.sh --worker-image` cannot be run for real until then. GHCR's terms and retention for public packages are the maintainer's to check (UNVERIFIED).
+
+## Addendum: native worker index and Mac wrapper candidates (#476)
+
+The worker publisher builds and tests amd64 and arm64 on native runners, then
+publishes an OCI index under the commit tag. App versions and cohorts pin the
+index digest. Engine-base configuration IDs remain architecture-specific;
+assessment/gold expectations must match the chosen native engine.
+
+Mac wrappers are built separately on macOS from the same upstream commit as the
+server, checked for the intended Mach-O slice and checksum, then passed to the
+existing offline BOINC signing path. Publishing adds a platform directory without
+changing siblings and registers the reviewed project platform metadata before
+`update_versions`. [Release steps](../../../contrib-compute/docs/app-release.md#mac-app-versions)
+remain maintainer operations. End-to-end Mac execution, lifecycle recovery and
+gold agreement are still unverified; this does not change the BUDA decision.

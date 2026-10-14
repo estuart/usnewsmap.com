@@ -37,3 +37,5 @@ The notes are plain Markdown, rendered by GitHub. The site is served by the API 
 - [Stock BOINC batch pilot](2026-10-13-boinc-pilot.md): cached-page transport, native ingestion, and validation boundaries.
 
 - [Rootless BOINC volunteer readiness on an SELinux host](2026-10-14-boinc-volunteer-preflight.md): slot labels, kernel limits, pause/restart and a startup gate.
+
+- [Native BOINC worker builds and Mac release tooling](2026-10-14-boinc-native-arm-build.md): native Podman round trip and remaining release/client checks.

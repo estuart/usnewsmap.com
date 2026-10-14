@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
-<!-- Input for BOINC's `xadd`: the OCR app, the assessment app (#456), the gold check (#462), the Surya 2 test (#516) and the OCR quality estimate's two apps (#522), one platform to start. See docs/interface.md.
-     Add further <platform> entries (aarch64-unknown-linux-gnu, ...) when those builds exist. -->
+<!-- Input for BOINC's xadd: the science apps and Linux/Mac platforms.
+     A platform registration alone supplies no app version: publish a signed wrapper first. -->
 <boinc>
     <app>
         <name>usnm_ocr</name>
@@ -65,5 +65,13 @@
     <platform>
         <name>x86_64-pc-linux-gnu</name>
         <user_friendly_name>Linux running on an AMD x86_64 or Intel EM64T CPU</user_friendly_name>
+    </platform>
+    <platform>
+        <name>arm64-apple-darwin</name>
+        <user_friendly_name>macOS on Apple Silicon</user_friendly_name>
+    </platform>
+    <platform>
+        <name>x86_64-apple-darwin</name>
+        <user_friendly_name>macOS on Intel</user_friendly_name>
     </platform>
 </boinc>

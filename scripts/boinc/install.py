@@ -38,14 +38,20 @@ JOB_TOML = {
     ("usnm_qwen", "docker_nvidia_cuda"): "ocr/boinc/qwen/job-gpu.toml",
 }
 
+PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin")
+
 
 def install(project: Path, wrapper: Path, image: str, version: str, app: str = "usnm_ocr",
-            plan_class: str = "docker") -> Path:
+            plan_class: str = "docker", platform: str = "x86_64-pc-linux-gnu") -> Path:
     if app not in TEMPLATES:
         raise ValueError("--app must be one of " + ", ".join(sorted(TEMPLATES)))
+    if platform not in PLATFORMS:
+        raise ValueError("unsupported --platform")
     if (app, plan_class) not in JOB_TOML:
         raise ValueError(f"{app} has no version for plan class {plan_class}: one of "
                          + ", ".join(sorted(p for a, p in JOB_TOML if a == app)))
+    if platform != "x86_64-pc-linux-gnu" and plan_class != "docker":
+        raise ValueError(f"{platform} supports only plan class docker")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}", image):
         raise ValueError("--image must be a pullable registry reference pinned by full digest")
     if not re.fullmatch(r"[1-9][0-9]*\.[0-9]+", version):
@@ -53,19 +59,23 @@ def install(project: Path, wrapper: Path, image: str, version: str, app: str = "
     if not (project / "config.xml").is_file():
         raise ValueError("create a stock BOINC project first")
     if not wrapper.is_file():
-        raise ValueError("missing trusted Linux x86-64 docker_wrapper")
+        raise ValueError("missing trusted docker_wrapper for the selected platform")
     root = Path(__file__).resolve().parents[2]
-    target = project / "apps" / app / version / f"x86_64-pc-linux-gnu__{plan_class}"
+    target = project / "apps" / app / version / f"{platform}__{plan_class}"
     target.mkdir(parents=True, exist_ok=False)
-    shutil.copyfile(wrapper, target / "docker_wrapper_1")
-    (target / "docker_wrapper_1").chmod(0o755)
-    (target / "Dockerfile_1").write_text(f"FROM {image}\n")
-    shutil.copyfile(root / JOB_TOML[(app, plan_class)], target / "job_1.toml")
+    suffix = f"{app}_{version}_{platform}_{plan_class}"
+    wrapper_name = f"docker_wrapper_{suffix}"
+    dockerfile_name = f"Dockerfile_{suffix}"
+    job_name = f"job_{suffix}.toml"
+    shutil.copyfile(wrapper, target / wrapper_name)
+    (target / wrapper_name).chmod(0o755)
+    (target / dockerfile_name).write_text(f"FROM {image}\n")
+    shutil.copyfile(root / JOB_TOML[(app, plan_class)], target / job_name)
     spec = ET.Element("version")
     wrapper_file = ET.SubElement(spec, "file")
-    ET.SubElement(wrapper_file, "physical_name").text = "docker_wrapper_1"
+    ET.SubElement(wrapper_file, "physical_name").text = wrapper_name
     ET.SubElement(wrapper_file, "main_program")
-    for physical, logical in [("Dockerfile_1", "Dockerfile"), ("job_1.toml", "job.toml")]:
+    for physical, logical in [(dockerfile_name, "Dockerfile"), (job_name, "job.toml")]:
         item = ET.SubElement(spec, "file")
         ET.SubElement(item, "physical_name").text = physical
         ET.SubElement(item, "logical_name").text = logical
@@ -87,9 +97,10 @@ def main() -> None:
     parser.add_argument("--version", default="1.0")
     parser.add_argument("--app", default="usnm_ocr", choices=sorted(TEMPLATES))
     parser.add_argument("--plan-class", default="docker", choices=sorted({p for _, p in JOB_TOML}))
+    parser.add_argument("--platform", default="x86_64-pc-linux-gnu", choices=PLATFORMS)
     args = parser.parse_args()
     print(install(args.project.resolve(), args.wrapper.resolve(), args.image, args.version, args.app,
-                  args.plan_class))
+                  args.plan_class, args.platform))
     print(f"Register {args.app}, sign/publish the app, and configure stock daemons; see docs/boinc.md.")
 
 

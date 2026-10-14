@@ -6,11 +6,12 @@
 # tag here (.github/workflows/boinc-worker.yml checks it is that image).
 ARG TESSERACT_IMAGE
 ARG TESSERACT_FROM=${TESSERACT_IMAGE}
-FROM rust:1-bookworm AS build
+ARG RUST_IMAGE=rust:1-bookworm
+FROM ${RUST_IMAGE} AS build
 ARG BUILD_JOBS=2
 WORKDIR /src
 COPY . .
-RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
+RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc --bin usnm-boinc --example pilot_fixture
 
 FROM ${TESSERACT_FROM}
 # The assessment (#456) checks each unit against the engine image this one is built on.
