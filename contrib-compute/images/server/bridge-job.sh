@@ -25,6 +25,8 @@
 #   BRIDGE_STEP=gold-submit     GOLD_ENGINE_IMAGE=sha256:... GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
 #                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_UNITS=20]
 #   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>; writes <campaign>/out
+#   BRIDGE_STEP=gold-trust      [GOLD_MAX_CER=0.10]; writes $SHARE_DIR/gold/trust.json from this
+#                               campaign's out/reports.jsonl, for `usnm-boinc collect --trust`
 #   BRIDGE_STEP=gold-bundle     builds the bundle v1 from its publishers onto the share, checks it
 #                               against the committed lock and writes <campaign>/bundle.tar
 #                               (gold-bundle.sh; the gold bundle job, bridge image only)
@@ -84,6 +86,10 @@ case "$step" in
   gold-collect)
     exec usnm-boinc gold collect --root "$GOLD" --project "$PROJ" \
       --spool "${GOLD_SPOOL:?set GOLD_SPOOL}" --out "$GOLD/out" ;;
+  gold-trust)
+    # No database or secrets: reads this campaign's reports and writes the share's trust list.
+    exec usnm-boinc gold trust --reports "$GOLD/out/reports.jsonl" \
+      --max-cer "${GOLD_MAX_CER:-0.10}" --out "$SHARE_DIR/gold/trust.json" ;;
 esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != register-apps ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
@@ -129,5 +135,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, reconcile, register-apps, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit, gold-collect or gold-bundle" ;;
+  *) fail "BRIDGE_STEP must be submit, reconcile, register-apps, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
 esac

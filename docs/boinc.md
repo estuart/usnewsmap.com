@@ -540,7 +540,11 @@ scripts/start-boinc-bridge.sh --env prod --step gold-submit --var GOLD_CAMPAIGN=
 # When results are assimilated:
 scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_SPOOL=/project/usnmocr/results/<batch>
+# Then the trust list for `collect --trust` (see Host trust below), at <share>/gold/trust.json:
+scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 10
 ```
+
+The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
 
 A unit left with a `submitting` marker is handled as for the assessment.
 
