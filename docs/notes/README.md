@@ -12,6 +12,7 @@ They sit between the other two kinds of document:
 
 | Date       | Note                                                                                                           | Topic                | Measured on                                  |
 | ---------- | -------------------------------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------- |
+| 2026-10-14 | [BUDA evaluation: validation, worker identity and Mac support](2026-10-14-buda-evaluation.md)                  | ocr, operations      | Pinned BOINC source; Mac wrapper 22 launch   |
 | 2026-10-05 | [Corpus coverage: what is searchable, what is counted, what is missing](2026-10-05-corpus-coverage.md)         | coverage             | pages-v20260929-4, pages-v20261003-1         |
 | 2026-10-05 | [Japanese pages: OCR of the pages LoC ships without text](2026-10-05-japanese-ocr.md)                          | ocr                  | sample of 23 crops, 1942–45                  |
 | 2026-10-05 | [Phrases with common words, and the index layout around them](2026-10-05-phrases-through-common-word-pairs.md) | indexing             | 90,745 pages (11 batches); pages-v20261003-1 |
