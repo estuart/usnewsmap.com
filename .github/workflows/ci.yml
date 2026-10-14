@@ -570,6 +570,7 @@ jobs:
       - name: The workbook definitions parse and name the workspace placeholder
         run: |
           scripts/ci/check-workbooks.py
+          scripts/ci/check-workbooks.py --module contrib-compute/infra/boinc/modules/workbook.bicep
           python3 -m unittest -v scripts/ci/test_check_workbooks.py
       - run: bicep build infra/main.bicep --stdout > /dev/null
       - run: bicep build infra/guardrails.bicep --stdout > /dev/null

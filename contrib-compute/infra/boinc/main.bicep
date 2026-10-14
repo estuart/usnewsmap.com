@@ -66,6 +66,9 @@ param operatorPrincipalIds array
 @description('The PUBLIC half of the offline code-signing key (code_sign_public). Empty until it is made offline.')
 param codeSignPublicKey string = ''
 
+@description('Create the workbook "usnm BOINC (<env>)" over the workspace (modules/workbook.bicep). On by default in prod.')
+param workbook bool = env == 'prod'
+
 var envName = checkedEnvName(env)
 var sfx = take(uniqueString(subscription().id, envName, 'boinc', location), 6)
 var withApp = !empty(image)
@@ -89,6 +92,7 @@ var names = {
   vaultEndpoint: usnmName('boinc-vault', 'pep', envName)
   vnet: usnmName('boinc', 'vnet', envName)
   workspace: usnmName('boinc', 'log', envName)
+  workbookTitle: 'usnm BOINC (${envName})'
 }
 
 var registryServer = '${registryName}${environment().suffixes.acrLoginServer}'
@@ -116,6 +120,11 @@ module registry 'modules/registry.bicep' = {
 module monitor 'modules/monitor.bicep' = {
   name: 'monitor'
   params: { workspaceName: names.workspace, location: location, operatorPrincipalIds: operatorPrincipalIds }
+}
+
+module workbookModule 'modules/workbook.bicep' = if (workbook) {
+  name: 'workbook'
+  params: { location: location, workspaceId: monitor.outputs.id, title: names.workbookTitle }
 }
 
 module network 'modules/network.bicep' = {

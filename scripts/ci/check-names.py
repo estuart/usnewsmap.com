@@ -70,6 +70,7 @@ FROZEN_SEEDS = {
     "usnm-sset-writer",
     "usnm-swa-deployer",
     "usnm-workbook-api",
+    "usnm-workbook-boinc",
     "usnm-workbook-ocr-nodes",
     "usnm-workbook-pipeline",
 }

@@ -1,0 +1,154 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "## usnm BOINC\nThe BOINC server app and its jobs (bridge, gold bundle, app version publish, init, secrets), from the platform's events in `ContainerAppSystemLogs_CL` and the containers' output in `ContainerAppConsoleLogs_CL` in this workspace. Times are UTC; the workspace keeps 30 days.\n\nThe BOINC daemons (feeder, transitioner, validators, assimilator, file deleter) are started by `bin/start` and write to log files on the project share, not to stdout, so their lines are not here. Work volume (results in progress, users, hosts) is on the project's [server status page](https://boinc.usnewsmap.com/server_status.php)."
+      },
+      "name": "title"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "5b0e2f7c-6a1d-4c39-9d3e-1f2a7c8e4b10",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 604800000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ],
+              "allowCustom": true
+            }
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-caj-\" and isnotempty(Execution)\n| summarize Started = min(TimeGenerated), Warnings = countif(Kind == \"Warning\"), arg_max(TimeGenerated, Reason) by Job = App, Execution\n| project Job, Execution, Started, Last = TimeGenerated, Status = Reason, Warnings\n| order by Started desc",
+        "size": 0,
+        "title": "Job executions",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "executions"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-caj-\" and isnotempty(Execution)\n| summarize arg_max(TimeGenerated, Reason) by App, Execution\n| summarize Executions = count() by bin(TimeGenerated, 1d), Status = Reason",
+        "size": 0,
+        "title": "Job executions per day, by last event",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "executionsbyday"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-ca-\" and isnotempty(Revision)\n| summarize First = min(TimeGenerated), Last = max(TimeGenerated), Replicas = dcount(Replica), Warnings = countif(Kind == \"Warning\") by Revision\n| order by First desc",
+        "size": 0,
+        "title": "Server app revisions",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "revisions"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-ca-\" and Kind == \"Warning\"\n| summarize Events = count() by bin(TimeGenerated, 1h), Reason",
+        "size": 0,
+        "title": "Server app warnings (restarts, probe failures, crashes) per hour",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "restarts"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where Kind == \"Warning\"\n| project TimeGenerated, App, Revision, Execution, Reason, Msg\n| order by TimeGenerated desc\n| take 100",
+        "size": 0,
+        "title": "Latest platform warnings",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "warnings"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n    Msg = column_ifexists(\"Log_s\", \"\")\n| where App startswith \"usnm-boinc\"\n| where Msg has_any (\"error\", \"fail\", \"failed\", \"failure\", \"usnm-boinc:\")\n| where Msg !has \"IDENTITY_HEADER\" and Msg !has \"MSI_SECRET\"\n| project TimeGenerated, App, Msg\n| order by TimeGenerated desc\n| take 200",
+        "size": 0,
+        "title": "Job and app errors in console output",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "console"
+    }
+  ]
+}
