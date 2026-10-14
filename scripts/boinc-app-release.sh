@@ -223,7 +223,7 @@ mv "$work/sigs" "$ctx/sigs"
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
-  --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --file Containerfile "$ctx" ||
+  --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --file "$ctx/Containerfile" "$ctx" ||
   die "the app version image build failed (a signature that doesn't verify fails it)"
 appver_image="$registry.azurecr.io/$APPVER_REPO@$(digest "$APPVER_REPO" "$APPVER_TAG")"
 echo "   $appver_image"
