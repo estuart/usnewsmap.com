@@ -3,7 +3,7 @@
 # <project>_download, as config.xml says.
 ServerName @MASTER_HOST@
 ServerTokens Prod
-Listen 80
+# Port 80 comes from Debian's ports.conf; a second Listen here stops Apache starting.
 DocumentRoot "@PROJ@/html/user"
 Alias /@PROJECT@_download "@PROJ@/download"
 Alias /@PROJECT@_ops "@PROJ@/html/ops"

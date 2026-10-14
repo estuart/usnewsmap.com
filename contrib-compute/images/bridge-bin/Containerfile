@@ -1,0 +1,13 @@
+# The usnm-boinc binary alone (PR #441's crate), compiled in release mode. scripts/build-boinc-images.sh
+# tags it with a hash of the Rust sources (crates/, Cargo.toml, Cargo.lock, rust-toolchain.toml)
+# and this file, and builds it only when that tag is missing; the bridge image copies it out.
+#
+#   docker build -f contrib-compute/images/bridge-bin/Containerfile .   (context: the repository)
+FROM mirror.gcr.io/library/rust:1-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS build
+ARG BUILD_JOBS=2
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
+
+FROM scratch
+COPY --from=build /src/target/release/usnm-boinc /usnm-boinc

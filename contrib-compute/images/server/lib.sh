@@ -34,13 +34,30 @@ kv_get() {
     fail "cannot read Key Vault secret $name"
 }
 
+# kv_get_optional NAME FILE: as kv_get, but a secret that does not exist (404) is skipped with
+# a log line and returns 1; any other failure stops, as kv_get does.
+kv_get_optional() {
+  local name=$1 out=$2 token code
+  token="$(kv_token)" || fail "cannot get a Key Vault token"
+  code="$(umask 077; curl -sS -o "$out.json" -w '%{http_code}' -H "Authorization: Bearer $token" \
+    "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=7.4")" || { rm -f "$out.json"; fail "cannot read Key Vault secret $name"; }
+  case "$code" in
+    200) (umask 077; jq -er .value "$out.json" > "$out") || { rm -f "$out.json"; fail "cannot read Key Vault secret $name"; } ;;
+    404) rm -f "$out.json"; log "no $name in Key Vault yet"; return 1 ;;
+    *) rm -f "$out.json"; fail "cannot read Key Vault secret $name (HTTP $code)" ;;
+  esac
+  rm -f "$out.json"
+}
+
 fetch_secrets() {
   mkdir -p "$SECRETS/keys"
   chmod 700 "$SECRETS" "$SECRETS/keys"
   kv_get mysql-runtime-password "$SECRETS/db-runtime"
   kv_get upload-private-key "$SECRETS/keys/upload_private"
   kv_get upload-public-key "$SECRETS/keys/upload_public"
-  kv_get code-sign-public-key "$SECRETS/keys/code_sign_public"
+  # The public half of the offline code-signing key arrives with the first signed app version
+  # (provision-boinc.sh, step 4); until then the project serves without it.
+  kv_get_optional code-sign-public-key "$SECRETS/keys/code_sign_public" || true
   chmod 640 "$SECRETS"/keys/*
   chown -R root:boincadm "$SECRETS"
   chmod 750 "$SECRETS" "$SECRETS/keys"

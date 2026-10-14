@@ -4,7 +4,7 @@
 // project tree, config.xml and the database, so they cannot run anywhere else. The job
 // holds no ocr-out or curated credential: export and collect stay on the maintainer's side.
 // Nothing starts it on a schedule.
-param name string
+param jobName string
 param location string
 param environmentId string
 param identityId string
@@ -18,11 +18,13 @@ param databaseName string
 param masterHost string
 param projectStorageName string
 param workloadProfileName string
+@description('The container command. The default runs the bridge; the project-init job passes the entrypoint\'s --init-project.')
+param command array = [ '/usr/local/bin/bridge-job' ]
 @description('Seconds before a run is stopped.')
 param timeoutSeconds int = 1800
 
 resource job 'Microsoft.App/jobs@2024-03-01' = {
-  name: 'usnm-${name}-caj'
+  name: jobName
   location: location
   identity: {
     type: 'UserAssigned'
@@ -43,7 +45,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
         {
           name: 'bridge'
           image: image
-          command: [ '/usr/local/bin/bridge-job' ]
+          command: command
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
             { name: 'AZURE_CLIENT_ID', value: identityClientId }
@@ -57,7 +59,9 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
           volumeMounts: [ { volumeName: 'project', mountPath: '/project' } ]
         }
       ]
-      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorageName } ]
+      // SMB has no symlinks or POSIX owners: mfsymlinks stores BOINC's symlinks (bin/stop ->
+      // bin/start), and the share appears owned by boincadm (uid 1000).
+      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorageName, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' } ]
     }
   }
 }

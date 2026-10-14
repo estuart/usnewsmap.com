@@ -119,18 +119,22 @@ jobs:
       # Every base image in these Containerfiles is pinned by digest.
       - name: Base images are pinned by digest
         run: |
-          bad=$(grep -nE '^(FROM|ARG BASE=)' contrib-compute/images/*/Containerfile | grep -vE '@sha256:[0-9a-f]{64}|FROM \$\{' || true)
+          bad=$(grep -nE '^(FROM|ARG BASE=)' contrib-compute/images/*/Containerfile | grep -vE '@sha256:[0-9a-f]{64}|FROM \$\{|FROM scratch$' || true)
           [ -z "$bad" ] || { echo "::error::base image without a digest:"; echo "$bad"; exit 1; }
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # The base (BOINC from source) is the slow layer: cached across runs.
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        id: server
         with:
-          context: contrib-compute
-          file: contrib-compute/images/server/Containerfile
-          tags: usnm-boinc-server:check
+          context: contrib-compute/images/base
+          file: contrib-compute/images/base/Containerfile
+          tags: usnm-boinc-base:check
           load: true
-          cache-from: type=gha,scope=boinc-server
-          cache-to: type=gha,scope=boinc-server,mode=max
+          cache-from: type=gha,scope=boinc-base
+          cache-to: type=gha,scope=boinc-base,mode=max
+      - name: The server image builds on the base
+        run: |
+          docker buildx build --builder default --load -t usnm-boinc-server:check \
+            -f contrib-compute/images/server/Containerfile --build-arg BASE_IMAGE=usnm-boinc-base:check contrib-compute
       - name: The server image has the stock tools and daemons
         run: scripts/ci/check-boinc-server-image.sh --image usnm-boinc-server:check
       - name: Record the image id
@@ -139,8 +143,11 @@ jobs:
       - name: The bridge image builds
         if: hashFiles('crates/usnm-boinc/Cargo.toml') != ''
         run: |
+          docker buildx build --builder default --load -t usnm-boinc-bridge-bin:check \
+            -f contrib-compute/images/bridge-bin/Containerfile .
           docker buildx build --builder default --load -t usnm-boinc-bridge:check \
-            -f contrib-compute/images/bridge/Containerfile --build-arg SERVER_IMAGE=usnm-boinc-server:check .
+            -f contrib-compute/images/bridge/Containerfile --build-arg SERVER_IMAGE=usnm-boinc-server:check \
+            --build-arg BIN_IMAGE=usnm-boinc-bridge-bin:check .
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
 
   # The page-language detector on text of known language (05 §5.5.8): behind

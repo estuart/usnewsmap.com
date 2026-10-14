@@ -1,18 +1,16 @@
 # The bridge job image: the server image (the stock project tools, create_work, config rendering
-# and /usr/local/bin/bridge-job) plus the usnm-boinc binary from PR #441's crate.
-# Build from the repository root, after #441 is merged (crates/usnm-boinc must exist):
+# and /usr/local/bin/bridge-job) plus the usnm-boinc binary from the bridge-bin image. The binary comes
+# in by reference; this build copies it and the assessment scripts.
 #
 #   docker build -f contrib-compute/images/bridge/Containerfile \
-#     --build-arg SERVER_IMAGE=REGISTRY/NAME@sha256:<server image digest> .
+#     --build-arg SERVER_IMAGE=REGISTRY/usnm-boinc-server@sha256:... \
+#     --build-arg BIN_IMAGE=REGISTRY/usnm-boinc-bridge-bin:<tag> .   (context: the repository)
 ARG SERVER_IMAGE
-FROM mirror.gcr.io/library/rust:1-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS build
-ARG BUILD_JOBS=2
-WORKDIR /src
-COPY . .
-RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
+ARG BIN_IMAGE
+FROM ${BIN_IMAGE} AS bin
 
 FROM ${SERVER_IMAGE}
-COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
+COPY --from=bin /usnm-boinc /usr/local/bin/usnm-boinc
 # The assessment (#456): script_validator's scripts, and the #435 report's scoring scripts,
 # unchanged, for the assess-collect step.
 COPY contrib-compute/images/bridge/usnm_assess_check contrib-compute/images/bridge/usnm_assess_compare \

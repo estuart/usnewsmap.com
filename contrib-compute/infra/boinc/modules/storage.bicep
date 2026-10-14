@@ -7,7 +7,7 @@
 // The account holds scans the cache already holds, volunteer results and spool files;
 // no search text, no keys. Scans are no longer copied to a second account: usnm-boinc
 // submit stages each cohort's cached pages into download/ through create_work.
-param name string
+param endpointName string
 param location string
 param peSubnetId string
 param dnsZoneId string
@@ -32,7 +32,7 @@ resource files 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 }
 
 resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: 'usnm-${name}-files-pe'
+  name: endpointName
   location: location
   properties: {
     subnet: { id: peSubnetId }

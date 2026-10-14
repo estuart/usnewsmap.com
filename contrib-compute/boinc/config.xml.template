@@ -1,18 +1,18 @@
 <?xml version="1.0"?>
 <!-- Template for the BOINC project's config.xml. No secrets live here. The container start
-     script renders this into the project tree on tmpfs, replacing each @NAME@ from the
+     script renders this into the project tree on tmpfs, replacing each placeholder (the name between @ signs) from the
      environment, where the values come from Key Vault. Never commit a rendered copy.
 
-     Placeholders:
-       @DB_HOST@        MySQL flexible server host name
-       @DB_NAME@        database name
-       @DB_USER@        run-time database user
-       @DB_PASSWD@      run-time database password (Key Vault secret)
-       @MASTER_URL@     master URL, with trailing slash
-       @PROJECT_HOST@   host name of this server (not an IP address)
-       @PROJECT_DIR@    absolute project directory
-       @PROJECT@        short project name used in URLs (for example usnmocr)
-       @APP_DAEMONS@    the <daemon> entries of ocr/boinc/daemons.xml (PR #441), pasted in by the
+     Placeholders (written here without their @ signs, which the renderer would substitute):
+       DB_HOST        MySQL flexible server host name
+       DB_NAME        database name
+       DB_USER        run-time database user
+       DB_PASSWD      run-time database password (Key Vault secret)
+       MASTER_URL     master URL, with trailing slash
+       PROJECT_HOST   host name of this server (not an IP address)
+       PROJECT_DIR    absolute project directory
+       PROJECT        short project name used in URLs (for example usnmocr)
+       APP_DAEMONS    the <daemon> entries of ocr/boinc/daemons.xml (PR #441), pasted in by the
                         start script: sample_trivial_validator and batch_collect_assimilator
 -->
 <boinc>

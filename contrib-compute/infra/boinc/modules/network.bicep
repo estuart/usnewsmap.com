@@ -2,14 +2,15 @@
 // subnet for the private endpoints of the Files account and the Key Vault (neither is public).
 // MySQL flexible server access mode (private or public) cannot be changed after creation,
 // so the private choice is made here from the start.
-param name string
+param vnetName string
+param mysqlDnsZoneName string
 param location string
 // Second octet of the VNet's 10.x.0.0/22 block. The address is built from it so the repo holds
 // no literal private address.
 param vnetOctet int = 40
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
-  name: 'usnm-${name}-vnet'
+  name: vnetName
   location: location
   properties: {
     addressSpace: { addressPrefixes: [ '10.${vnetOctet}.0.0/22' ] }
@@ -37,7 +38,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
 }
 
 resource dns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: '${name}.private.mysql.database.azure.com'
+  name: mysqlDnsZoneName
   location: 'global'
 }
 
@@ -72,7 +73,7 @@ resource filesDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@202
 }
 
 resource vaultDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink${environment().suffixes.keyvaultDns}'
+  name: 'privatelink.vaultcore.azure.net' // Key Vault's private link zone; keyvaultDns (vault.azure.net) is not it
   location: 'global'
 }
 

@@ -1,21 +1,28 @@
 // Key Vault for the BOINC project secrets, read by the app's managed identity.
-// Secrets are created by the operator bootstrap script, not by this template, so
-// no secret value passes through a deployment parameter or a template output.
 // The vault is not public: public network access is off and it is reached through a private
-// endpoint in the project's VNet. The workload identity reads it from there; the operator
-// needs a network path into the VNet to create the secrets (docs/design.md, section 5.2).
-// Expected secret names: mysql-admin-password, mysql-runtime-password,
-// upload-private-key, upload-public-key, code-sign-public-key. The code-signing private key is NOT here.
-param name string
+// endpoint in the project's VNet (docs/design.md, section 5.2).
+//
+// Who writes what:
+// - this template: mysql-admin-password (a new random value each deployment, from main.bicep)
+//   and code-sign-public-key (the PUBLIC half of the offline key, from the settings, if set).
+//   Both go through Azure Resource Manager, which needs no network path into the VNet.
+// - the secrets job (secrets-job.bicep), inside the VNet with its own identity:
+//   mysql-runtime-password, upload-private-key and upload-public-key, each only if absent.
+// The code-signing private key is NOT here and never reaches Azure.
+param vaultName string
+param endpointName string
 param location string
 param readerPrincipalId string
+@description('The secrets job\'s identity: Key Vault Secrets Officer, to create the secrets that must not rotate.')
+param writerPrincipalId string
 param logAnalyticsWorkspaceId string
 param peSubnetId string
 param dnsZoneId string
-@description('Entra object ids (people or groups) given Key Vault Secrets Officer, so the bootstrap script can create the secrets.')
+@description('Entra object ids (people or groups) given Key Vault Secrets Officer, to inspect or repair secrets by hand.')
 param operatorPrincipalIds array
-
-var vaultName = take('usnm${name}kv${uniqueString(resourceGroup().id, name)}', 24)
+@secure()
+param mysqlAdminPassword string
+param codeSignPublicKey string = ''
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: vaultName
@@ -33,7 +40,7 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
 }
 
 resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: 'usnm-${name}-kv-pe'
+  name: endpointName
   location: location
   properties: {
     subnet: { id: peSubnetId }
@@ -75,6 +82,28 @@ resource officers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
     }
   }
 ]
+
+resource writerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: vault
+  name: guid(vault.id, writerPrincipalId, secretsOfficer)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsOfficer)
+    principalId: writerPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource adminPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: vault
+  name: 'mysql-admin-password'
+  properties: { value: mysqlAdminPassword, contentType: 'text/plain' }
+}
+
+resource codeSignPublic 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(codeSignPublicKey)) {
+  parent: vault
+  name: 'code-sign-public-key'
+  properties: { value: codeSignPublicKey, contentType: 'text/plain' }
+}
 
 resource diag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   scope: vault
