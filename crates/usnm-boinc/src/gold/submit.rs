@@ -172,7 +172,7 @@ async fn hier_path(project: &Path, physical: &str) -> anyhow::Result<PathBuf> {
 
 fn publish(path: &Path, from: &Path) -> anyhow::Result<()> {
     let parent = path.parent().context("no parent")?;
-    std::fs::create_dir_all(parent)?;
+    crate::public_dirs(parent)?;
     let tmp = path.with_extension("part");
     std::fs::copy(from, &tmp)?;
     #[cfg(unix)]

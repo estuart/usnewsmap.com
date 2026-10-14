@@ -62,14 +62,67 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 /// Public BOINC inputs must be readable by the web-server identity before
 /// their final names become visible. Journals use the private `atomic` path.
 pub(crate) fn atomic_download(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path.parent().context("no parent directory")?;
+    public_dirs(parent)?;
     #[cfg(unix)]
     let permissions = {
         use std::os::unix::fs::PermissionsExt;
         Some(std::fs::Permissions::from_mode(0o644))
     };
+    // Other platforms have no mode bits to set; the web server there is not BOINC's Apache.
     #[cfg(not(unix))]
     let permissions = None;
     atomic_with_permissions(path, bytes, permissions)
+}
+
+/// Creates missing directories as 0755 whatever the umask, so the web-server
+/// identity can traverse new download fan-out directories. Every directory that
+/// was missing (made here or by a concurrent caller), the first existing ancestor
+/// when it has the same owner, and the direct parent, which
+/// stock `dir_hier_path` may already have made under the same umask, gains any
+/// missing 0755 bits; other bits (setgid, group write) stay.
+pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let traversable = |d: &Path| -> anyhow::Result<()> {
+            let mode = std::fs::metadata(d)?.permissions().mode() & 0o7777;
+            if mode & 0o755 != 0o755 {
+                std::fs::set_permissions(d, std::fs::Permissions::from_mode(mode | 0o755))?;
+            }
+            Ok(())
+        };
+        let mut missing = Vec::new();
+        let mut cur = Some(dir);
+        while let Some(d) = cur.filter(|d| !d.as_os_str().is_empty() && !d.is_dir()) {
+            missing.push(d);
+            cur = d.parent();
+        }
+        let ancestor = cur.filter(|_| !missing.is_empty());
+        for d in missing.into_iter().rev() {
+            match std::fs::create_dir(d) {
+                Ok(()) => {}
+                // Another submitter made it, perhaps under its own umask.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && d.is_dir() => {}
+                Err(e) => return Err(e).with_context(|| format!("creating {}", d.display())),
+            }
+            traversable(d)?;
+        }
+        // A peer submitter may have just made the first existing ancestor under its
+        // umask. Repair it only if it has our new directory's owner, so a directory
+        // that belongs to someone else (the project root, say) is left alone.
+        if let Some(a) = ancestor {
+            use std::os::unix::fs::MetadataExt;
+            if std::fs::metadata(a)?.uid() == std::fs::metadata(dir)?.uid() {
+                traversable(a)?;
+            }
+        }
+        traversable(dir)?;
+    }
+    // Other platforms have no mode bits; plain creation is all there is to do.
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)?;
+    Ok(())
 }
 
 fn atomic_with_permissions(

@@ -913,11 +913,21 @@ mod download_permissions {
         // A JSON string is also a Python string literal; this is not shell quoting.
         serde_json::to_string(path.to_str().unwrap()).unwrap()
     }
-    fn project(fx: &Fixture, id: &str, fail_staging: bool) -> PathBuf {
+    /// `fanout` maps inputs two not-yet-created levels below `download/`, like a
+    /// new hierarchy bucket, so their creation under the private umask is tested.
+    fn project(fx: &Fixture, id: &str, fail_staging: bool, fanout: bool) -> PathBuf {
         let project = fx.tmp.path().join("BOINC project's files");
-        let download = project.join("download");
         std::fs::create_dir_all(project.join("bin")).unwrap();
-        std::fs::create_dir_all(&download).unwrap();
+        std::fs::create_dir_all(project.join("download")).unwrap();
+        let new_dirs = if fanout {
+            vec![
+                project.join("download/fan"),
+                project.join("download/fan/3a"),
+            ]
+        } else {
+            Vec::new()
+        };
+        let download = new_dirs.last().cloned().unwrap_or(project.join("download"));
         let mapping = if fail_staging {
             let blocker = project.join("not-a-directory");
             std::fs::write(&blocker, b"block parent creation").unwrap();
@@ -950,11 +960,14 @@ for logical, physical in [("page", "{id}_page"), ("request.json", "{id}_request_
     assert mode & (stat.S_IWGRP | stat.S_IWOTH) == 0, "public input is writable by another identity"
     assert public.read_bytes() == (source / logical).read_bytes()
     assert stat.S_IMODE((source / logical).stat().st_mode) & 0o077 == 0
+for d in {new_dirs}:
+    assert stat.S_IMODE(pathlib.Path(d).stat().st_mode) == 0o755, d
 pathlib.Path({marker}).write_text("inputs readable when create_work started")
 "#,
                 source = python_path(&fx.options.root.join("jobs").join(id)),
                 download = python_path(&download),
                 marker = python_path(&project.join("dispatched")),
+                new_dirs = serde_json::to_string(&new_dirs).unwrap(),
             ),
         );
         project
@@ -985,7 +998,7 @@ pathlib.Path({marker}).write_text("inputs readable when create_work started")
         for replace in [false, true] {
             let fx = Fixture::new("eng").await;
             let id = fx.export().await;
-            let project = project(&fx, &id, false);
+            let project = project(&fx, &id, false, false);
             if replace {
                 for suffix in ["page", "request_json"] {
                     let path = project.join("download").join(format!("{id}_{suffix}"));
@@ -1014,10 +1027,30 @@ pathlib.Path({marker}).write_text("inputs readable when create_work started")
     }
 
     #[tokio::test]
+    async fn new_fanout_dirs_are_traversable_with_private_umask() {
+        let fx = Fixture::new("eng").await;
+        let id = fx.export().await;
+        let project = project(&fx, &id, false, true);
+        assert!(!project.join("download/fan").exists());
+        let output = submit_with_private_umask(&fx, &project, &id).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(project.join("dispatched").exists());
+        for name in ["page", "request_json"] {
+            let file = project.join(format!("download/fan/3a/{id}_{name}"));
+            let mode = std::fs::metadata(file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o7777, 0o644);
+        }
+    }
+
+    #[tokio::test]
     async fn staging_failure_never_dispatches_or_exposes_the_journal() {
         let fx = Fixture::new("eng").await;
         let id = fx.export().await;
-        let project = project(&fx, &id, true);
+        let project = project(&fx, &id, true, false);
         let output = submit_with_private_umask(&fx, &project, &id).await;
         assert!(!output.status.success());
         assert!(!project.join("dispatched").exists());
@@ -1079,11 +1112,10 @@ sys.exit({exit_code})
             let include = ". /usr/local/lib/usnm-boinc/lib.sh";
             assert!(script.contains(include));
             let wrapper = tmp.path().join("bridge-job.sh");
-            std::fs::write(
-                &wrapper,
-                script.replace(include, &format!(". {}", shell_path(&library))),
-            )
-            .unwrap();
+            let replacement = format!(". {}", shell_path(&library));
+            let patched = script.replace(include, &replacement);
+            assert!(!patched.contains(include) && patched.contains(&replacement));
+            std::fs::write(&wrapper, patched).unwrap();
             let output = std::process::Command::new("bash")
                 .arg(&wrapper)
                 .env(
