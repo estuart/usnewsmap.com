@@ -32,13 +32,16 @@
 # BOINC group and on the shared registry and DNS zone's group (infra/names/<env>.json rg): the
 # stack writes role assignments in both, and the custom domain's records in the zone.
 set -euo pipefail
-usage() { echo "usage: scripts/provision-boinc.sh --env <prod|dev> [--allow-dirty] [--what-if]" >&2; exit 2; }
-ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false
+usage() { echo "usage: scripts/provision-boinc.sh --env <prod|dev> [--publish-image REF] [--allow-dirty] [--what-if]" >&2; exit 2; }
+ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false PUBLISH_IMAGE=""
+PUBLISH_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --allow-dirty) ALLOW_DIRTY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
+    # Override images.appver (the publish job's image) for this deployment only.
+    --publish-image) [ $# -ge 2 ] || usage; PUBLISH_OVERRIDE=$2; shift 2 ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -51,6 +54,8 @@ cd "$(dirname "$0")/.."
 boinc_clean_check
 boinc_load_settings
 boinc_az_check
+# The publish job (main.bicep) runs the last published app version, images.appver.
+PUBLISH_IMAGE=${PUBLISH_OVERRIDE:-$APPVER_IMAGE}
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -81,12 +86,12 @@ domain_stage() {
 }
 # write_params STAGE: the deployment parameters, with the custom domain stage.
 write_params() {
-jq -n --argjson assess "$ASSESSMENT" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" \
+jq -n --argjson assess "$ASSESSMENT" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
   --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   contentVersion: "1.0.0.0",
   parameters: {
-    env: {value: $env}, assessment: {value: $assess}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b},
+    env: {value: $env}, assessment: {value: $assess}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b}, publishImage: {value: $p},
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
     dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
@@ -98,8 +103,11 @@ write_params "$STAGE"
 # The images must be in the shared registry: the app and the jobs pull with their identities,
 # which this stack gives AcrPull there only.
 registry="$REGISTRY_NAME.azurecr.io"
+[ -z "$PUBLISH_IMAGE" ] || [ -n "$SERVER_IMAGE" ] || die "the publish image needs the app: set the server and bridge images first"
+[ -z "$PUBLISH_IMAGE" ] || [[ $PUBLISH_IMAGE =~ ^[a-z0-9.-]+\.azurecr\.io/usnm-boinc-appver@sha256:[0-9a-f]{64}$ ]] ||
+  die "the publish image must be <registry>.azurecr.io/usnm-boinc-appver@sha256:<64 hex>"
 if [ -n "$SERVER_IMAGE" ]; then
-  for img in "$SERVER_IMAGE" "$BRIDGE_IMAGE"; do
+  for img in "$SERVER_IMAGE" "$BRIDGE_IMAGE" ${PUBLISH_IMAGE:+"$PUBLISH_IMAGE"}; do
     [ "${img%%/*}" = "$registry" ] || die "$img is not in the shared registry $registry"
   done
 fi
@@ -163,7 +171,6 @@ done
 echo "secrets complete ($execution)"
 
 fqdn=$(boinc_output appFqdn)
-vault=$(boinc_output keyVaultName)
 cat << STEPS
 
 == Done by this script: the stack, the secrets. Next, by hand, once each:
@@ -178,18 +185,10 @@ cat << STEPS
    it with a managed certificate (stage $STAGE of 2 above; run it again if short of 2). The master
    URL cannot change after volunteers attach.
 
-3. App version and code signing; the private key stays offline. On a trusted machine, from a
-   checkout of this repository, against a scratch project directory:
-       docker create --name w $SERVER_IMAGE && docker cp w:/usr/local/lib/usnm-boinc/docker_wrapper ./docker_wrapper
-       mkdir -p scratch && touch scratch/config.xml
-       python3 scripts/boinc/install.py --project scratch --wrapper ./docker_wrapper \\
-         --image ${WORKER_IMAGE:-ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest, ADR-0019 addendum>} --version 1.0
-   On the OFFLINE machine, for each file F in the version directory:
-       sign_executable F code_sign_private > F.sig
-   Put the PUBLIC key, code_sign_public, in codeSignPublicKey in $BOINC_SETTINGS (commit,
-   then run this script: the deployment writes it to Key Vault $vault). Copy the version
-   directory and templates, with the .sig files, to the project on the share from inside the
-   VNet (a bridge job run), then run bin/update_versions there.
+3. App version and code signing (the private key stays on the signing host), one command:
+       scripts/boinc-app-release.sh --env $ENV_NAME --app usnm_ocr --version 1.0 --signing-host <host>
+   It needs the worker image in images.worker of $BOINC_SETTINGS and the PUBLIC key in
+   codeSignPublicKey (contrib-compute/docs/app-release.md).
 
 4. Check:
        curl -fsS https://$fqdn/usnmocr/get_project_config.php

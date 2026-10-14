@@ -21,9 +21,10 @@
     "images": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bridge", "server", "worker"],
-      "description": "Images by registry digest, or empty before the first build. server and bridge are in the app's shared registry (infra/names/<env>.json) and come from scripts/build-boinc-images.sh; with server empty, the stack deploys only the base resources. worker is the public GHCR package that volunteers pull (ADR-0019, addendum), from .github/workflows/boinc-worker.yml.",
+      "required": ["appver", "bridge", "server", "worker"],
+      "description": "Images by registry digest, or empty before the first build. server and bridge are in the app's shared registry (infra/names/<env>.json) and come from scripts/build-boinc-images.sh; with server empty, the stack deploys only the base resources. worker is the public GHCR package that volunteers pull (ADR-0019, addendum), from .github/workflows/boinc-worker.yml. appver is the last published app version (images/appver, usnm-boinc-appver), written by scripts/boinc-app-release.sh; when set, the stack keeps the publish job on it.",
       "properties": {
+        "appver": { "type": "string", "pattern": "^$|^[a-z0-9.-]+\\.azurecr\\.io/usnm-boinc-appver@sha256:[0-9a-f]{64}$" },
         "bridge": { "type": "string", "pattern": "^$|^[a-z0-9.-]+\\.azurecr\\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$" },
         "server": { "type": "string", "pattern": "^$|^[a-z0-9.-]+\\.azurecr\\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$" },
         "worker": { "type": "string", "pattern": "^$|^ghcr\\.io/tgoodyear/usnm-boinc-worker@sha256:[0-9a-f]{64}$" }

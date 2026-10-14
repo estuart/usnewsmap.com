@@ -32,6 +32,9 @@ param image string = ''
 @description('Bridge job image (images/bridge), by digest, in the same registry. Required with image: the server image has no usnm-boinc binary.')
 param bridgeImage string = ''
 
+@description('A signed app version baked on the server image (images/appver), by digest, in the same registry. images.appver in env/<env>.json, written by scripts/boinc-app-release.sh; empty: no publish job.')
+param publishImage string = ''
+
 @description('Run the server from the bridge image (the server image plus usnm-boinc), so the usnm_assess validator (#456) can run. Off by default.')
 param assessment bool = false
 
@@ -74,6 +77,7 @@ var names = {
   mysql: usnmGlobalName('boinc', 'mysql', envName, sfx)
   mysqlDnsZone: 'usnm-boinc-${envName}.private.mysql.database.azure.com'
   initJob: usnmName('boinc-init', 'caj', envName)
+  publishJob: usnmName('boinc-publish', 'caj', envName)
   secretsIdentity: usnmName('boinc-secrets', 'id', envName)
   secretsJob: usnmName('boinc-secrets', 'caj', envName)
   site: usnmName('boinc', 'swa', envName)
@@ -253,6 +257,31 @@ module initJob 'modules/bridge-job.bicep' = if (withApp) {
   }
 }
 
+// App version publish (docs/app-release.md): copies the version directory baked into publishImage
+// onto the share and runs bin/update_versions. Its own job, like init, because a per-run image
+// override would drop the share and the settings. Deployed whenever images.appver is set, so it stays
+// across deployments and always holds the last published version.
+module publishJob 'modules/bridge-job.bicep' = if (withApp && !empty(publishImage)) {
+  name: 'publish-job'
+  dependsOn: [ registry ]
+  params: {
+    jobName: names.publishJob
+    location: location
+    environmentId: app!.outputs.environmentId
+    identityId: identity.id
+    identityClientId: identity.properties.clientId
+    image: publishImage
+    registryServer: registryServer
+    keyVaultName: vault.outputs.name
+    mysqlHost: mysql.outputs.host
+    databaseName: mysql.outputs.databaseName
+    masterHost: masterHost
+    projectStorageName: app!.outputs.projectStorageName
+    workloadProfileName: app!.outputs.workloadProfileName
+    command: [ '/usr/local/lib/usnm-boinc/publish-appver.sh' ]
+  }
+}
+
 module secretsJob 'modules/secrets-job.bicep' = if (withApp) {
   name: 'secrets-job'
   dependsOn: [ registry ]
@@ -273,6 +302,7 @@ output appFqdn string = withApp ? app!.outputs.fqdn : ''
 output bridgeJobName string = withApp ? bridgeJob!.outputs.name : ''
 output keyVaultName string = vault.outputs.name
 output mysqlHost string = mysql.outputs.host
+output publishJobName string = withApp && !empty(publishImage) ? publishJob!.outputs.name : ''
 output registryName string = registryName
 output registryServer string = registryServer
 output secretsJobName string = withApp ? secretsJob!.outputs.name : ''

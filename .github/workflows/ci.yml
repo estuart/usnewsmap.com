@@ -101,7 +101,13 @@ jobs:
           for f in boinc/project.xml boinc/plan_class_spec.xml boinc/config.xml.template; do
             python3 -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$f"
           done
-      - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh
+      - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh images/appver/*.sh
+      # The app version's signature checks and the installer (no server needed).
+      - name: The app version checks' tests pass
+        working-directory: .
+        run: |
+          python3 -m unittest -v scripts/boinc/test_install.py
+          python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
       - name: Install Bicep
         working-directory: .
         run: scripts/ci/install-bicep.sh

@@ -31,7 +31,7 @@ boinc_clean_check() {
 
 # Checks the settings against the rules in schema.json, with jq, and reads them into
 # ASSESSMENT, SUBSCRIPTION, LOCATION, PROJECT_URL, MASTER_HOST, OPERATOR_ID, OPERATOR_LOGIN,
-# SERVER_IMAGE, BRIDGE_IMAGE and WORKER_IMAGE.
+# SERVER_IMAGE, BRIDGE_IMAGE, WORKER_IMAGE and APPVER_IMAGE.
 boinc_load_settings() {
   local err
   err=$(jq -r '
@@ -42,8 +42,10 @@ boinc_load_settings() {
       (if keys_unsorted != keys then "keys are not sorted" else empty end),
       (if (.assessment | type) != "boolean" then "assessment must be true or false" else empty end),
       (if (.codeSignPublicKey | type) != "string" then "codeSignPublicKey must be a string" else empty end),
-      (if (.images | type) != "object" or (.images | keys) != ["bridge", "server", "worker"] then "images must have exactly bridge, server and worker" else empty end),
+      (if (.images | type) != "object" or (.images | keys) != ["appver", "bridge", "server", "worker"] then "images must have exactly appver, bridge, server and worker" else empty end),
       (if (.images.server // "" | acr) and (.images.bridge // "" | acr) then empty else "images.server and images.bridge must be empty or <registry>.azurecr.io/<name>@sha256:<64 hex>" end),
+      (if (.images.appver // "") | test("^$|^[a-z0-9.-]+\\.azurecr\\.io/usnm-boinc-appver@sha256:[0-9a-f]{64}$") then empty else "images.appver must be empty or <registry>.azurecr.io/usnm-boinc-appver@sha256:<64 hex>" end),
+      (if (.images.appver // "" | length > 0) and (.images.server // "" | length == 0) then "images.appver needs images.server (the publish job runs in the app environment)" else empty end),
       (if (.images.worker // "") | test("^$|^ghcr\\.io/tgoodyear/usnm-boinc-worker@sha256:[0-9a-f]{64}$") then empty else "images.worker must be empty or ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>" end),
       (if (.images.server // "" | length > 0) != (.images.bridge // "" | length > 0) then "images.server and images.bridge are set together (the bridge image is built on the server image)" else empty end),
       (if (.location // "") | test("^[a-z0-9]+$") then empty else "location must be an Azure region name" end),
@@ -62,6 +64,7 @@ boinc_load_settings() {
   SERVER_IMAGE=$(jq -r .images.server "$BOINC_SETTINGS")
   BRIDGE_IMAGE=$(jq -r .images.bridge "$BOINC_SETTINGS")
   WORKER_IMAGE=$(jq -r .images.worker "$BOINC_SETTINGS")
+  APPVER_IMAGE=$(jq -r .images.appver "$BOINC_SETTINGS")
   MASTER_HOST=${PROJECT_URL#https://}
   MASTER_HOST=${MASTER_HOST%/}
   case "$ENV_NAME:$MASTER_HOST" in

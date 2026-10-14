@@ -1,0 +1,37 @@
+# A signed BOINC app version, baked on the server image for the publish job
+# (infra/boinc/main.bicep, publishJob; docs/app-release.md). scripts/boinc-app-release.sh builds
+# it in ACR Tasks from a context it assembles:
+#
+#   src/                 scripts/boinc/install.py and ocr/boinc/ at the committed HEAD
+#   sigs/<file>.sig      the signatures made on the signing host (nothing else comes back)
+#   code_sign_public     the PUBLIC half of the code-signing key (env/<env>.json)
+#   publish-appver.sh    this directory's publish script
+#   check_appver.py      the signature checks (no orphan or missing .sig, version.xml complete,
+#                        every .sig verified with crypt_prog against the public key)
+#
+# The version directory is staged again here, with the same install.py, wrapper and worker
+# image as on the signing host, so it is byte for byte what was signed. Each file is checked
+# against its signature with the public key (check_appver.py): any refusal fails the build.
+ARG SERVER_IMAGE
+FROM ${SERVER_IMAGE}
+ARG APP
+ARG VERSION
+ARG WORKER_IMAGE
+COPY src /tmp/appver-src
+COPY sigs /tmp/sigs
+COPY code_sign_public /tmp/code_sign_public
+COPY publish-appver.sh /usr/local/lib/usnm-boinc/publish-appver.sh
+COPY check_appver.py /tmp/check_appver.py
+RUN set -eu; \
+    p=/usr/local/lib/usnm-boinc/appver; \
+    mkdir -p "$p"; touch "$p/config.xml"; \
+    python3 /tmp/appver-src/scripts/boinc/install.py --project "$p" \
+      --wrapper /usr/local/lib/usnm-boinc/docker_wrapper --image "$WORKER_IMAGE" --version "$VERSION" --app "$APP"; \
+    rm "$p/config.xml"; \
+    d="$p/apps/$APP/$VERSION/x86_64-pc-linux-gnu__docker"; \
+    python3 /tmp/check_appver.py --version-dir "$d" --sigs /tmp/sigs --public-key /tmp/code_sign_public; \
+    rm -rf /tmp/appver-src /tmp/sigs /tmp/code_sign_public /tmp/check_appver.py; \
+    chmod 0755 /usr/local/lib/usnm-boinc/publish-appver.sh
+ENV APPVER_APP=${APP} APPVER_VERSION=${VERSION}
+ENTRYPOINT ["/usr/local/lib/usnm-boinc/publish-appver.sh"]
+CMD []
