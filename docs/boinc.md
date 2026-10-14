@@ -544,6 +544,34 @@ scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN
 
 A unit left with a `submitting` marker is handled as for the assessment.
 
+### Host trust for `usnm_ocr`
+
+`usnm_ocr` validates with `sample_trivial_validator`, which accepts any
+well-formed result. So `collect` can gate publication on the gold check (#468):
+a result counts only when the host that returned it has a gold report for the
+same engine image (the worker image digest) with overall CER at or below a
+threshold, 0.10 unless `--max-cer` says otherwise.
+
+```sh
+# Build the trust list from one or more campaigns' reports.
+usnm-boinc gold trust --reports <share>/gold/v1-tess550/out/reports.jsonl \
+  [--reports ...] [--max-cer 0.10] --out <share>/gold/trust.json
+# The canonical result's host, from the project database:
+#   select r.hostid from workunit w join result r on r.id = w.canonical_resultid
+#   where w.name = 'usnm_JOB_ID';
+usnm-boinc collect --root ROOT --spool SPOOL --job JOB_ID \
+  --curated-url CURATED_STORE --out-url OCR_OUT_STORE \
+  --trust <share>/gold/trust.json --host-id HOST_ID
+```
+
+With `--trust`, a result from an untrusted host, or with no `--host-id`, is held
+back: `collect` copies its spool files and a `reason.json` to
+`<root>/quarantine/<job>/`, publishes nothing, leaves the job's stage as it was
+and exits non-zero. Once the host passes a gold unit, rebuild `trust.json` and
+run `collect` again. Without `--trust`, `collect` publishes as before; production
+collection should pass it. The host id is the client's own claim, so this is a
+quality signal for trusted volunteers, not an identity check.
+
 ### Build the gold bundle
 
 The bundle tar can be built inside the VNet, so nothing passes through an

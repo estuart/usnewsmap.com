@@ -30,6 +30,7 @@ use usnm_store::ObjectStore;
 pub mod assess;
 pub mod gold;
 pub mod submit;
+pub mod trust;
 pub mod worker;
 
 /// Bounded regular-file reads, also used for untrusted volunteer output.

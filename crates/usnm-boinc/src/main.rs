@@ -79,6 +79,13 @@ enum Commands {
         curated_url: String,
         #[arg(long)]
         out_url: String,
+        /// trust.json from `gold trust`: publish only when --host-id passed the gold check for
+        /// the job's engine image; otherwise hold the result in <root>/quarantine/<job>/.
+        #[arg(long)]
+        trust: Option<PathBuf>,
+        /// The BOINC host id of the canonical result (the result table's hostid).
+        #[arg(long, requires = "trust")]
+        host_id: Option<u64>,
     },
     /// Verify the gold bundle and download the original files it refers to (network; outside the
     /// job container).
@@ -260,6 +267,16 @@ enum Gold {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Build trust.json for `collect --trust` from one or more reports.jsonl files.
+    Trust {
+        #[arg(long, required = true)]
+        reports: Vec<PathBuf>,
+        /// The highest overall CER that passes.
+        #[arg(long, default_value_t = usnm_boinc::trust::DEFAULT_MAX_CER)]
+        max_cer: f64,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 #[derive(Clone, Copy, ValueEnum)]
 enum AssessMode {
@@ -342,10 +359,26 @@ async fn main() -> anyhow::Result<()> {
             job,
             curated_url,
             out_url,
+            trust,
+            host_id,
         } => {
             let curated = usnm_store::open(&curated_url)?;
             let out = usnm_store::open(&out_url)?;
-            usnm_boinc::collect(&root, &spool, &job, curated.as_ref(), out.as_ref()).await?;
+            if let Some(trust) = trust {
+                let t = usnm_boinc::trust::Trust::load(&trust)?;
+                usnm_boinc::trust::collect(
+                    &root,
+                    &spool,
+                    &job,
+                    &t,
+                    host_id,
+                    curated.as_ref(),
+                    out.as_ref(),
+                )
+                .await?;
+            } else {
+                usnm_boinc::collect(&root, &spool, &job, curated.as_ref(), out.as_ref()).await?;
+            }
         }
         Commands::GoldStage {
             bundle,
@@ -456,6 +489,22 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
                 out,
             })?;
             eprintln!("{s:?}");
+        }
+        Gold::Trust {
+            reports,
+            max_cer,
+            out,
+        } => {
+            let t = usnm_boinc::trust::Trust::build(&reports, max_cer)?;
+            let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
+                std::path::Path::new(".").join(out)
+            } else {
+                out
+            };
+            usnm_boinc::atomic(&out, &serde_json::to_vec_pretty(&t)?)?;
+            for (image, hosts) in &t.hosts {
+                eprintln!("{image}: {} trusted hosts", hosts.len());
+            }
         }
     }
     Ok(())

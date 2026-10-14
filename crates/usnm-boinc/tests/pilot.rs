@@ -1140,3 +1140,63 @@ sys.exit({exit_code})
         }
     }
 }
+
+#[tokio::test]
+async fn untrusted_host_is_held_back_until_it_passes_gold() {
+    use usnm_boinc::trust::{quarantine_dir, Trust};
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let files = fx.result(&id);
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    let spool = fx.tmp.path().join("spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    for (source, logical) in [
+        (&files.0, "result.json"),
+        (&files.1, "text.txt"),
+        (&files.2, "layout.xml"),
+    ] {
+        std::fs::copy(
+            source,
+            spool.join(format!("{}__file_{logical}", record.job.workunit())),
+        )
+        .unwrap();
+    }
+    let mut trust = Trust {
+        hosts: Default::default(),
+        max_cer: 0.1,
+        v: usnm_boinc::trust::TRUST_VERSION,
+    };
+    let run = |t: Trust| {
+        let (root, spool, id) = (fx.options.root.clone(), spool.clone(), id.clone());
+        let stores = &fx.stores;
+        async move {
+            usnm_boinc::trust::collect(
+                &root,
+                &spool,
+                &id,
+                &t,
+                Some(42),
+                stores.curated.as_ref(),
+                stores.out.as_ref(),
+            )
+            .await
+        }
+    };
+    assert!(run(trust.clone()).await.is_err());
+    let q = quarantine_dir(&fx.options.root, &id);
+    assert!(q.join("reason.json").exists() && q.join("result.json").exists());
+    assert_ne!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Published
+    );
+    trust
+        .hosts
+        .entry(record.job.engine.image.clone())
+        .or_default()
+        .insert(42);
+    run(trust).await.unwrap();
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Published
+    );
+}
