@@ -4,11 +4,15 @@
   "description": "Public settings that scripts/provision-boinc.sh deploys as the stack usnm-boinc-<env> into usnm-boinc-rg-<env>, and scripts/build-boinc-images.sh updates with the images it builds. Nothing secret belongs here: the secrets are made in Azure (contrib-compute/infra/boinc/modules/keyvault.bicep). Keys sorted. provision-boinc.sh checks the same rules with jq.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["codeSignPublicKey", "images", "location", "operator", "projectUrl", "subscriptionId"],
+  "required": ["assessment", "codeSignPublicKey", "images", "location", "operator", "projectUrl", "subscriptionId"],
   "properties": {
     "$schema": {
       "type": "string",
       "description": "This schema, for editors: ./schema.json."
+    },
+    "assessment": {
+      "type": "boolean",
+      "description": "Run the server from the bridge image (the server image plus usnm-boinc), so the usnm_assess and usnm_gold validators can run: main.bicep's assessment parameter."
     },
     "codeSignPublicKey": {
       "type": "string",

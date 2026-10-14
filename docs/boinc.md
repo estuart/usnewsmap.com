@@ -445,7 +445,8 @@ in Azure: they live on the existing project share.
 **Models.** The worker image's model lock decides which crops a host can score;
 crops in a language with no locked model are listed as skipped.
 
-**Running a campaign.** With the server deployed with `assessment=true` (the
+**Running a campaign.** With the server deployed with `assessment=true` (`"assessment": true` in
+`contrib-compute/infra/boinc/env/<env>.json`, then `scripts/provision-boinc.sh`; the
 server runs from the bridge image, which carries the validator), a
 `usnm_gold` app version installed (`scripts/boinc/install.py --app usnm_gold
 ...`), signed, and `bin/update_versions` run, and the bundle tar copied to
