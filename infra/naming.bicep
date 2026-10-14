@@ -146,7 +146,9 @@ var nameTypes = {
   backfillJob: 'caj'
   backfillReplicaSilentAlert: 'alert'
   backfillStalledAlert: 'alert'
+  boincLedgerRole: 'role'
   boincRg: 'rg'
+  boincWorkspace: 'log'
   budget: 'budget'
   ciIdentity: 'id'
   congressJob: 'caj'
@@ -237,7 +239,9 @@ type Names = {
   backfillJob: string
   backfillReplicaSilentAlert: string
   backfillStalledAlert: string
+  boincLedgerRole: string
   boincRg: string
+  boincWorkspace: string
   budget: string
   ciIdentity: string
   congressJob: string
@@ -323,7 +327,9 @@ func names(env string, sfx string, pinned bool) Names => {
     ? 'alert-usnm-backfill-replica-silent-${env}'
     : usnmName('backfill-replica-silent', 'alert', env)
   backfillStalledAlert: pinned ? 'alert-usnm-backfill-stalled-${env}' : usnmName('backfill-stalled', 'alert', env)
+  boincLedgerRole: usnmName('boinc-ledger', 'role', env)
   boincRg: usnmName('boinc', 'rg', env)
+  boincWorkspace: usnmName('boinc', 'log', env)
   budget: pinned ? 'budget-usnm-${env}' : usnmName('core', 'budget', env)
   ciIdentity: pinned ? 'id-usnm-ci-${env}' : usnmName('ci', 'id', env)
   congressJob: usnmName('cong', 'caj', env)

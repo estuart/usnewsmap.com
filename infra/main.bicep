@@ -93,6 +93,9 @@ param serialSetOnPrem bool = false
 @description('Object id of the on-prem Serial Set runner\'s identity: the OCR node\'s Arc machine identity (with serialSetOnPrem). Settings only, never in the repository.')
 param serialSetRunner string = ''
 
+@description('Object id of the on-prem BOINC hand-off runner\'s identity (#469): the scan-fetch container\'s Arc machine identity, which runs `usnm-boinc export` and `collect`. It gets the ocr-sync lease (Cosmos ops), the native ledger (curated/ocr-local/, no delete), reference read, ocr-out (create, no delete) and the BOINC workspace read (modules/boinc-handoff-runner.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
+param boincHandoffRunner string = ''
+
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
 
@@ -410,6 +413,34 @@ module serialSetRunnerGrant 'modules/serialset-runner.bicep' = if (serialSetOnPr
     storageName: storage.outputs.name
     principalId: trim(serialSetRunner)
     roleLabel: n.serialSetWriterRole
+  }
+}
+
+// The on-prem BOINC hand-off runner's grants (#469). Needs the exchange
+// account (ocrNodes), whose node writer role it reuses on ocr-out.
+module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (ocrNodes && !empty(trim(boincHandoffRunner))) {
+  scope: rg
+  name: 'boinc-handoff-runner'
+  dependsOn: [ocrExchange]
+  params: {
+    storageName: storage.outputs.name
+    exchangeName: exchangeName
+    cosmosName: cosmos.outputs.name
+    principalId: trim(boincHandoffRunner)
+    roleLabel: n.boincLedgerRole
+  }
+}
+
+// The workspace comes from the BOINC stack (scripts/provision-boinc.sh), a
+// later deployment than boincRg: set boincHandoffRunner only once that stack
+// is deployed, or this assignment fails on a missing workspace.
+module boincHandoffLogs 'modules/boinc-handoff-logs.bicep' = if (deployBoincGroup && !empty(trim(boincHandoffRunner))) {
+  scope: resourceGroup(n.boincRg)
+  name: 'boinc-handoff-logs'
+  dependsOn: [boincRg]
+  params: {
+    workspaceName: n.boincWorkspace
+    principalId: trim(boincHandoffRunner)
   }
 }
 

@@ -62,6 +62,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_BOINC_HANDOFF_RUNNER": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The on-prem BOINC hand-off runner's identity's object id (the scan-fetch container's Arc machine identity, #469).",
+      "not": {}
+    },
     "USNM_BROWSE_PAGES": {
       "x-usnm-visibility": "public",
       "type": "boolean"

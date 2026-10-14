@@ -64,6 +64,7 @@ WORD_RE = re.compile(r"^[a-z][a-z0-9]{1,8}$")
 # and recreates (ADR-0017, "Enforcement").
 FROZEN_SEEDS = {
     "usnm-archive-writer",
+    "usnm-boinc-ledger-writer",
     "usnm-ocr-node-writer",
     "usnm-scans-writer",
     "usnm-search-log-writer",

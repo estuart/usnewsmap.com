@@ -325,6 +325,57 @@ journals on persistent local storage at each stage; Azure Files/SMB lock and
 atomic-rename durability have not been verified. Exercise the hand-off on a
 small cohort before using the Azure-hosted submission job from #439.
 
+### The hand-off runner (scan-fetch container)
+
+`export` and `collect` run on the scan-fetch container (CT 211 on pve-big,
+`scripts/ocr-node/scanfetch-ct.sh`), which already holds the prefetch manifest and
+the scans under `/tank/ocr`, so no scan leaves the LAN. It is an unprivileged Debian 12
+LXC; the Azure Connected Machine agent runs in it like on a VM. Its Arc machine,
+`usnm-ocr-node5-arcs-prod` in the environment's group, gives it a system-assigned
+identity. It is not an OCR worker and is not in the nodes' Entra group, so it has
+none of the queue grants.
+
+Its grants (`infra/modules/boinc-handoff-runner.bicep` and `boinc-handoff-logs.bicep`)
+go to the object id in the private setting `USNM_BOINC_HANDOFF_RUNNER`:
+
+| Scope                             | Role                                                           | For                                            |
+| --------------------------------- | -------------------------------------------------------------- | ---------------------------------------------- |
+| Cosmos `usnm/ops`                 | Cosmos DB Built-in Data Contributor                            | the `ocr-sync` lease and the published version |
+| lake `curated`, `ocr-local/` only | `usnm-boinc-ledger-role-<env>` (list, read, create; no delete) | the native ledger                              |
+| lake `reference`                  | Storage Blob Data Reader                                       | `{version}/batches.json`, `titles.json`        |
+| exchange `ocr-out`                | the OCR nodes' writer role (list, read, create; no delete)     | collect's ALTO and Parquet                     |
+| `usnm-boinc-log-<env>` workspace  | Log Analytics Reader                                           | the bridge jobs' logs                          |
+
+Set up once, from the operator's machine and the Proxmox host, after the BOINC stack is
+deployed (the workspace grant needs `usnm-boinc-log-<env>` to exist):
+
+```sh
+# On pve-big: the agent, locked down before it connects (no extensions, no
+# machine configuration, no incoming connections), and az.
+pct exec 211 -- bash -c 'curl -fsSL -o /root/arc.sh https://aka.ms/azcmagent && bash /root/arc.sh'
+pct exec 211 -- azcmagent config set extensions.enabled false
+pct exec 211 -- azcmagent config set guestconfiguration.enabled false
+pct exec 211 -- azcmagent config set incomingconnections.enabled false
+# Connect with a short-lived ARM token in a root-only file (never on a command line),
+# --resource-group <the environment's group> --resource-name usnm-ocr-node5-arcs-prod
+# --tags environment=prod,project=usnewsmap,role=boinc-handoff --config <file>.
+
+# On the operator's machine: the grant.
+az resource show -g "$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)" \
+  -n usnm-ocr-node5-arcs-prod --resource-type Microsoft.HybridCompute/machines \
+  --query identity.principalId -o tsv
+scripts/settings.sh --env prod --key USNM_BOINC_HANDOFF_RUNNER --value <object id>
+scripts/provision.sh --env prod --what-if
+scripts/provision.sh --env prod
+```
+
+In the container, `az login --identity --allow-no-subscriptions` signs in (the
+identity has data-plane roles only, no subscription role).
+
+The grants don't open any network path. The lake and ocr-out take the home IP through
+`USNM_OCR_NODE_IPS`, but the lake only while `USNM_SERIALSET_ONPREM` is on, and Cosmos
+allows no public access at all, so the `--cosmos` lease can't be reached from the LAN yet.
+
 ## Allocation and recovery
 
 Export filters the manifest while decoding, retaining only selected batch/page
