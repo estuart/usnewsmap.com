@@ -77,14 +77,14 @@ usnm-boinc assess sample --manifest manifest.parquet --seed 456 \
   --out-ocr sample-ocr.jsonl --out-crash sample-crash.jsonl
 # Copy both to <share>/assess/<campaign>/ on the project share.
 
-# Bridge job runs, repeated until stage reports nothing left (each run is bounded).
-az containerapp job start ... --env-vars BRIDGE_STEP=assess-stage ASSESS_MODE=crash ASSESS_CAMPAIGN=tess550 \
-  ASSESS_ENGINE_IMAGE=sha256:... ASSESS_ENGINE_BASE=sha256:...
-az containerapp job start ... --env-vars BRIDGE_STEP=assess-submit ASSESS_MODE=crash ASSESS_CAMPAIGN=tess550
+# Bridge job runs (docs/boinc.md#start-a-bridge-step), repeated until stage reports nothing left (each run is bounded).
+scripts/start-boinc-bridge.sh --env prod --step assess-stage --var ASSESS_MODE=crash --var ASSESS_CAMPAIGN=tess550 \
+  --var ASSESS_ENGINE_IMAGE=sha256:... --var ASSESS_ENGINE_BASE=sha256:...
+scripts/start-boinc-bridge.sh --env prod --step assess-submit --var ASSESS_MODE=crash --var ASSESS_CAMPAIGN=tess550
 # The same for ASSESS_MODE=ocr.
 
 # When the units have been assimilated:
-az containerapp job start ... --env-vars BRIDGE_STEP=assess-collect ASSESS_CAMPAIGN=tess550 ASSESS_SPOOL=/project/usnmocr/results/<batch>
+scripts/start-boinc-bridge.sh --env prod --step assess-collect --var ASSESS_CAMPAIGN=tess550 --var ASSESS_SPOOL=/project/usnmocr/results/<batch>
 # Tables: <share>/assess/tess550/out/tables.md
 ```
 

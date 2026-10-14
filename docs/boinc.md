@@ -256,6 +256,43 @@ Deploy the updated bridge image containing both this CLI and wrapper together.
 A `published` bridge entry means its native output pair is in `ocr-out`, not that
 it has replaced searchable text. Continue with the existing `ocr-sync` and release.
 
+## Start a bridge step
+
+The deployed server's bridge job (`contrib-compute/infra/boinc/modules/bridge-job.bicep`)
+runs one step of `contrib-compute/images/server/bridge-job.sh` per execution, chosen by
+`BRIDGE_STEP` and that step's settings. Start it with:
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --step <step> [--var NAME=VALUE ...] [--wait-mins N] [--what-if]
+```
+
+Don't use `az containerapp job start --env-vars` for this. With any container flag, the
+CLI sends an execution template holding one container named after the job, with no image
+and only the variables given, so the job's own settings (`KEY_VAULT_NAME`, `DB_HOST`,
+`PROJECT_DIR`, ...) are lost. The API's execution template has no volumes or mounts
+either, and every step needs the project share at `/project`. The script writes the run's
+settings into the job instead (`az containerapp job update --replace-env-vars`: the
+template's own settings, `BRIDGE_STEP` and each `--var`; whatever a previous run set is
+dropped), then starts it with no override. The next `scripts/provision-boinc.sh` restores
+the template's settings. Run one step at a time.
+
+### Register the apps
+
+`make_project` and `bin/xadd` run once, at `--init-project`. An app added to
+`contrib-compute/boinc/project.xml` later (`usnm_assess`, `usnm_gold`) is not in the
+database until `xadd` runs again. The `register-apps` step copies the deployed image's
+`project.xml` into the project and runs `bin/xadd`:
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15
+```
+
+It is safe to repeat. At the pinned BOINC commit (22bbebe), `tools/xadd` looks up each
+`<platform>` and `<app>` by name. It inserts the ones that are missing, updates a changed
+`user_friendly_name` or `min_version`, prints "already in DB" for the rest, and never
+deletes or deprecates anything. The step needs a bridge image with this step in it
+(`scripts/build-boinc-images.sh`, then `scripts/provision-boinc.sh`).
+
 ## Server and maintainer on different hosts
 
 The bridge has no remote-submit API. `submit`/`reconcile` must run on the BOINC
@@ -496,13 +533,13 @@ server runs from the bridge image, which carries the validator), a
 # Once per bundle: fetch the originals, one request at a time, 5 s apart, into
 # <campaign>/cache on the share; write prepared.json (sizes, md5s, reference
 # counts). Stops if any download fails or a checksum differs.
-az containerapp job start ... --env-vars BRIDGE_STEP=gold-prepare GOLD_CAMPAIGN=v1-tess550
+scripts/start-boinc-bridge.sh --env prod --step gold-prepare --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 60
 # Make the units (default 20). Re-running skips units already submitted.
-az containerapp job start ... --env-vars BRIDGE_STEP=gold-submit GOLD_CAMPAIGN=v1-tess550 \
-  GOLD_ENGINE_IMAGE=sha256:... GOLD_ENGINE_BASE=<its TESSERACT_IMAGE> GOLD_UNITS=20
+scripts/start-boinc-bridge.sh --env prod --step gold-submit --var GOLD_CAMPAIGN=v1-tess550 \
+  --var GOLD_ENGINE_IMAGE=sha256:... --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE> --var GOLD_UNITS=20
 # When results are assimilated:
-az containerapp job start ... --env-vars BRIDGE_STEP=gold-collect GOLD_CAMPAIGN=v1-tess550 \
-  GOLD_SPOOL=/project/usnmocr/results/<batch>
+scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
+  --var GOLD_SPOOL=/project/usnmocr/results/<batch>
 ```
 
 A unit left with a `submitting` marker is handled as for the assessment.

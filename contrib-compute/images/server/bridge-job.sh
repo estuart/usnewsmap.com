@@ -26,8 +26,17 @@
 #                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_UNITS=20]
 #   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>; writes <campaign>/out
 #
-# Settled by this script, open in design.md section 9 (question 4): the job id is read from
-# the environment, so each run needs a start with an environment override. UNVERIFIED.
+# Registering the apps after init (docs/boinc.md#register-the-apps):
+#   BRIDGE_STEP=register-apps   copies this image's project.xml into the project and runs
+#                               bin/xadd, which adds the apps and platforms the database lacks
+#                               and leaves the others (safe to repeat)
+#
+# Start a step with scripts/start-boinc-bridge.sh, which sets these on the job: an
+# `az containerapp job start --env-vars` override drops the job's own settings and the share.
+#
+# The step and its settings (JOB_ID included) are read from the environment. Each run's are
+# written into the job's own template by scripts/start-boinc-bridge.sh, which then starts it
+# with no execution override (design.md section 9, question 4). UNVERIFIED against a live job.
 set -euo pipefail
 # shellcheck source=lib.sh
 . /usr/local/lib/usnm-boinc/lib.sh
@@ -69,7 +78,7 @@ case "$step" in
     exec usnm-boinc gold collect --root "$GOLD" --project "$PROJ" \
       --spool "${GOLD_SPOOL:?set GOLD_SPOOL}" --out "$GOLD/out" ;;
 esac
-if [ "$step" != assess-submit ] && [ "$step" != gold-submit ]; then
+if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != register-apps ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -99,6 +108,13 @@ case "$step" in
     done
     rm -f "$stamp"
     exit "$rc" ;;
+  register-apps)
+    # BOINC's tools/xadd looks up each <platform> and <app> of project.xml by name: it inserts
+    # the ones the database lacks, updates a changed user_friendly_name or min_version, and
+    # leaves the rest; it never deletes. So a rerun changes nothing (BOINC 22bbebe, tools/xadd).
+    cp "$TEMPLATES/project.xml" "$PROJ/project.xml"
+    cd "$PROJ"
+    exec bin/xadd ;;
   submit)
     # Submission publishes readable download inputs before create_work. The
     # hand-off journal stays private; no permission repair happens afterwards.
@@ -106,5 +122,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, reconcile, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit or gold-collect" ;;
+  *) fail "BRIDGE_STEP must be submit, reconcile, register-apps, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit or gold-collect" ;;
 esac

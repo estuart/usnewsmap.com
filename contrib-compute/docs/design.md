@@ -398,8 +398,11 @@ the images would be preferred if one exists. It is not planned until the maintai
    accept the MyISAM tables (forums off)? Does BOINC's code work against MySQL 8.4?
 3. Does Entra authorisation work for pulling and pushing Azure Files data from the
    maintainer's side, or does the hand-off use the account key?
-4. Does a Container Apps Job accept per-run argument overrides at start (the job id to
-   submit), or does each run need a new execution template?
+4. ~~Does a Container Apps Job accept per-run argument overrides at start (the job id to
+   submit), or does each run need a new execution template?~~ Settled in code: an execution
+   template drops the job's settings and has no mounts, so `scripts/start-boinc-bridge.sh`
+   writes the run's settings into the job and starts it without an override (docs/boinc.md,
+   "Start a bridge step"). UNVERIFIED against a live job.
 5. Does the BOINC client follow a redirect for `get_project_config.php`?
 6. ~~Which registry holds the worker image?~~ Proposed: public GHCR package (ADR-0019, addendum); the maintainer sets its visibility.
 7. Code-signing key custody: which offline machine, and who holds the backup?
