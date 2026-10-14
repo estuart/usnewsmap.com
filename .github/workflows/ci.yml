@@ -477,6 +477,8 @@ jobs:
         run: |
           scripts/ci/no-positional-args.py
           python3 -m unittest -v scripts/ci/test_no_positional_args.py
+      - name: changes.sh runs the Quickwit job only for what its tests build
+        run: python3 -m unittest -v scripts/ci/test_changes.py
       - name: The OCR gold set's tests pass (#296)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: |
