@@ -43,6 +43,9 @@
         <daily_result_quota>200</daily_result_quota>
         <max_wus_to_send>8</max_wus_to_send>
         <delete_delay_hours>168</delete_delay_hours>
+        <!-- Upload certificates on: the transitioner signs each output file_info (name and
+             max_nbytes) and the upload handler enforces both. add_signatures() only finds a
+             file_info followed by a newline, so the output templates keep that layout. -->
         <dont_generate_upload_certificates>0</dont_generate_upload_certificates>
     </config>
     <tasks>

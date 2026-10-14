@@ -2,16 +2,16 @@
      Retain feeder, transitioner, file_deleter, db_purge and other stock daemons. -->
 <!-- Insert inside the project's existing daemons section. Native validation
      occurs centrally before publication; this pilot assumes trusted friends. -->
-<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd></daemon>
-<daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd></daemon>
+<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd><output>sample_trivial_validator_usnm_ocr.log</output><pid_file>sample_trivial_validator_usnm_ocr.pid</pid_file></daemon>
+<daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd><output>batch_collect_assimilator_usnm_ocr.log</output><pid_file>batch_collect_assimilator_usnm_ocr.pid</pid_file></daemon>
 <!-- The JP2 against IIIF JPEG assessment (#456). Redundancy 2: script_validator runs
      `usnm-boinc assess check` on each result and `assess compare` on pairs (exit 0 = valid /
      equivalent). Needs usnm-boinc in the server container (images/server/lib.sh adds these
      entries only when it is there). -->
-<daemon><cmd>script_validator --app usnm_assess --init_script "usnm_assess_check files" --compare_script "usnm_assess_compare files files2"</cmd></daemon>
-<daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd></daemon>
+<daemon><cmd>script_validator --app usnm_assess --init_script usnm_assess_check --compare_script usnm_assess_compare</cmd><output>script_validator_usnm_assess.log</output><pid_file>script_validator_usnm_assess.pid</pid_file></daemon>
+<daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd><output>batch_collect_assimilator_usnm_assess.log</output><pid_file>batch_collect_assimilator_usnm_assess.pid</pid_file></daemon>
 <!-- The gold check (#462). One result per unit: script_validator runs `usnm-boinc gold check`
      on each result against <project>/gold/<manifest sha256>.json, which `gold submit` writes.
      No compare script: each result measures its own host. -->
-<daemon><cmd>script_validator --app usnm_gold --init_script "usnm_gold_check files"</cmd></daemon>
-<daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd></daemon>
+<daemon><cmd>script_validator --app usnm_gold --init_script usnm_gold_check</cmd><output>script_validator_usnm_gold.log</output><pid_file>script_validator_usnm_gold.pid</pid_file></daemon>
+<daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd><output>batch_collect_assimilator_usnm_gold.log</output><pid_file>batch_collect_assimilator_usnm_gold.pid</pid_file></daemon>
