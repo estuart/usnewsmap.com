@@ -107,8 +107,8 @@ Tesseract runs with `--psm 3 --dpi 300` and the `txt` and `alto` configs, so one
 
 Each page writes two objects to `--out-url`:
 
-1. `alto/<doc_id>.<node>.<UTC stamp>.xml`: Tesseract's ALTO, with `fileName` set to the scan's URL. It is written first.
-2. `pages/<lccn>_<date>_ed-<n>.<node>.<UTC stamp>.parquet`: an overlay part with one row, with the same stamp as its ALTO. Its columns and types are the ones `ja-ocr/jaocr.py write_part` writes (`usnm_overlay::schema`), zstd-compressed, and the release's overlay reader (`usnm_ingest::ocr_ja::read_part`) reads it.
+1. `alto/<doc_id>.<node>.<UTC stamp>.xml`: the stored ALTO (13 §13.8.2), written first. The worker parses Tesseract's ALTO and writes ALTO 3.1 in pixels of the scan from the parsed values (`usnm-alto`), with `fileName` set to the scan's URL, the scan's sha256 (and a JP2's bag md5) in `fileIdentifier`, and the `ocr_engine` tag, granularity and dpi in `processingStepSettings`. Nothing of Tesseract's XML is copied but the words. A Tesseract ALTO that doesn't parse fails the page as transient `convert`.
+2. `pages/<lccn>_<date>_ed-<n>.<node>.<UTC stamp>.parquet`: an overlay part with one row, with the same stamp as its ALTO. Its text is derived from the stored ALTO in reading order and normalized (`normalize_ocr`), so the text and the ALTO hold the same words. Its columns and types are the ones `ja-ocr/jaocr.py write_part` writes (`usnm_overlay::schema`), zstd-compressed, and the release's overlay reader (`usnm_ingest::ocr_ja::read_part`) reads it.
 
 Values specific to this worker:
 

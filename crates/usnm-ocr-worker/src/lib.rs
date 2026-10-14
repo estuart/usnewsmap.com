@@ -25,6 +25,8 @@ pub mod queue;
 pub mod serve;
 /// The worker's status for the LAN dashboard (12 §12.2.5).
 pub mod status;
+/// The stored ALTO and text from an engine's reading (13 §13.4.7).
+pub mod stored;
 pub mod telemetry;
 pub mod worker;
 

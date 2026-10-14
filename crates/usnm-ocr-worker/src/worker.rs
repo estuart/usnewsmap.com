@@ -17,7 +17,7 @@ use usnm_core::ids::PageKey;
 use usnm_overlay::OverlayRow;
 use usnm_store::{ObjectStore, StoreError};
 
-use crate::engine::{exited_136, set_alto_source, Engine, EngineError, EngineOutput};
+use crate::engine::{exited_136, Engine, EngineError, EngineOutput};
 use crate::loc::{FetchError, LocClient, Scan, ScanFormat};
 use crate::message::{self, Cause, DeadLetter, OcrMessage};
 use crate::queue::{random_token, LeaseLost, Queue, Received, BULK, DEADLETTER, PRIORITY};
@@ -122,7 +122,7 @@ enum Failure {
     Permanent(String),
     /// Leave the message; it reappears when its visibility runs out. The
     /// first field is the kind, for metrics: fetch, engine, no_model,
-    /// output or scratch.
+    /// convert, output or scratch.
     Transient(&'static str, String),
     /// Out of time: no output written; the message reappears.
     Abandoned,
@@ -698,16 +698,27 @@ impl Worker {
             tokio::time::timeout_at(deadline.into(), read)
                 .await
                 .map_err(|_| Failure::Abandoned)??;
-        let text = usnm_core::text::normalize_ocr(&out.text);
-        // The ALTO names the file read (the IIIF JPEG or the batch's JP2)
-        // and its sha256, and a JP2's bag md5; the overlay row names the
-        // page by its IIIF base either way.
-        let alto = set_alto_source(
-            &String::from_utf8_lossy(&out.alto),
-            &scan_url,
-            &scan_sha256,
-            scan_md5.as_deref(),
-        );
+        // The stored ALTO is written from the engine's parsed ALTO, and the
+        // text is derived from it in reading order (13 §13.4.7), so the two
+        // hold the same words. The ALTO names the file read (the IIIF JPEG
+        // or the batch's JP2) and its sha256, and a JP2's bag md5; the
+        // overlay row names the page by its IIIF base either way.
+        let source = crate::stored::Source {
+            url: &scan_url,
+            sha256: &scan_sha256,
+            md5: scan_md5.as_deref(),
+        };
+        let stored = crate::stored::from_engine_alto(
+            &out.alto,
+            &out.engine,
+            &m.language,
+            self.engine.dpi(),
+            &source,
+            &crate::stored::worker_version(),
+            Utc::now(),
+        )
+        .map_err(|e| Failure::Transient("convert", e.to_string()))?;
+        let (text, alto) = (stored.text, stored.alto);
         let row = OverlayRow {
             key: key.clone(),
             batch: m.batch.clone(),
@@ -932,11 +943,26 @@ mod tests {
             Ok(EngineOutput {
                 text: "Die  Nebraska Staats-Zeitung\nerscheint  jeden\u{0007} Sonn-\nabend.\n"
                     .into(),
-                alto: b"<alto><fileName>/tmp/page.jpg</fileName></alto>".to_vec(),
+                alto: FAKE_ALTO.as_bytes().to_vec(),
                 engine: "tesseract-5.5.1/deu_latf+deu".into(),
             })
         }
     }
+
+    /// ALTO as Tesseract 5 writes it, with the fake engine's text.
+    const FAKE_ALTO: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v3# http://www.loc.gov/alto/v3/alto-3-0.xsd">
+ <Description><MeasurementUnit>pixel</MeasurementUnit><sourceImageInformation><fileName>/tmp/page.jpg</fileName></sourceImageInformation>
+  <OCRProcessing ID="OCR_0"><ocrProcessingStep><processingSoftware><softwareName>tesseract 5.5.1</softwareName></processingSoftware></ocrProcessingStep></OCRProcessing></Description>
+ <Layout><Page WIDTH="1000" HEIGHT="800" PHYSICAL_IMG_NR="0" ID="page_0"><PrintSpace HPOS="0" VPOS="0" WIDTH="1000" HEIGHT="800">
+  <ComposedBlock ID="cblock_0" HPOS="10" VPOS="10" WIDTH="500" HEIGHT="100"><TextBlock ID="block_0" HPOS="10" VPOS="10" WIDTH="500" HEIGHT="100">
+   <TextLine ID="line_0" HPOS="10" VPOS="10" WIDTH="500" HEIGHT="30"><String ID="string_0" HPOS="10" VPOS="10" WIDTH="40" HEIGHT="30" WC="0.96" CONTENT="Die"/><SP WIDTH="10" VPOS="10" HPOS="50"/><String ID="string_1" HPOS="60" VPOS="10" WIDTH="150" HEIGHT="30" WC="0.95" CONTENT="Nebraska"/><SP WIDTH="10" VPOS="10" HPOS="210"/><String ID="string_2" HPOS="220" VPOS="10" WIDTH="290" HEIGHT="30" WC="0.9" CONTENT="Staats-Zeitung"/></TextLine>
+   <TextLine ID="line_1" HPOS="10" VPOS="45" WIDTH="400" HEIGHT="30"><String ID="string_3" HPOS="10" VPOS="45" WIDTH="150" HEIGHT="30" WC="0.93" CONTENT="erscheint"/><SP WIDTH="10" VPOS="45" HPOS="160"/><String ID="string_4" HPOS="170" VPOS="45" WIDTH="100" HEIGHT="30" WC="0.91" CONTENT="jeden"/><SP WIDTH="10" VPOS="45" HPOS="270"/><String ID="string_5" HPOS="280" VPOS="45" WIDTH="100" HEIGHT="30" WC="0.88" CONTENT="Sonn-"/></TextLine>
+   <TextLine ID="line_2" HPOS="10" VPOS="80" WIDTH="100" HEIGHT="30"><String ID="string_6" HPOS="10" VPOS="80" WIDTH="100" HEIGHT="30" WC="0.97" CONTENT="abend."/></TextLine>
+  </TextBlock></ComposedBlock>
+ </PrintSpace></Page></Layout>
+</alto>
+"#;
 
     fn msg(page: &str, language: &str) -> String {
         OcrMessage {
@@ -1029,14 +1055,18 @@ mod tests {
             .strip_suffix(".xml")
             .unwrap();
         let alto = out.get(&altos[0]).await.unwrap().unwrap();
-        // The scan's URL, and the sha256 of the bytes read (ADR-0015 decision 9).
-        assert_eq!(
-            String::from_utf8(alto).unwrap(),
-            format!(
-                "<alto><fileName>https://tile.loc.gov/image-services/iiif/service:ndnp:x:7/full/full/0/default.jpg</fileName><fileIdentifier fileIdentifierLocation=\"sha256\">{}</fileIdentifier></alto>",
-                crate::prefetch::sha256(b"jpeg")
-            )
+        // The stored ALTO 3.1, written from the engine's: the scan's URL,
+        // and the sha256 of the bytes read (ADR-0015 decision 9).
+        let alto = String::from_utf8(alto).unwrap();
+        assert!(alto.contains(&format!(
+            "<fileName>https://tile.loc.gov/image-services/iiif/service:ndnp:x:7/full/full/0/default.jpg</fileName>\n      <fileIdentifier fileIdentifierLocation=\"sha256\">{}</fileIdentifier>",
+            crate::prefetch::sha256(b"jpeg")
+        )), "{alto}");
+        assert!(
+            alto.contains("alto-3-1.xsd")
+                && alto.contains("<MeasurementUnit>pixel</MeasurementUnit>")
         );
+        assert!(alto.contains("CONTENT=\"Staats-Zeitung\"") && !alto.contains("/tmp/page.jpg"));
         let parts = out.list("pages").await.unwrap();
         assert_eq!(parts.len(), 1, "{parts:?}");
         assert_eq!(

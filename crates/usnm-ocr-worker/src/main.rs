@@ -868,9 +868,25 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             let t0 = Instant::now();
             let result = engine.ocr(&image, &language, work.path()).await?;
             let secs = t0.elapsed().as_secs_f64();
-            let text = usnm_core::text::normalize_ocr(&result.text);
+            // The same stored ALTO and text the worker uploads.
+            let sha = usnm_ocr_worker::prefetch::sha256(&std::fs::read(&image)?);
+            let url = image.display().to_string();
+            let stored = usnm_ocr_worker::stored::from_engine_alto(
+                &result.alto,
+                &result.engine,
+                &language,
+                engine.dpi(),
+                &usnm_ocr_worker::stored::Source {
+                    url: &url,
+                    sha256: &sha,
+                    md5: None,
+                },
+                &usnm_ocr_worker::stored::worker_version(),
+                chrono::Utc::now(),
+            )?;
+            let text = stored.text;
             std::fs::write(out.join(format!("{stem}.txt")), &text)?;
-            std::fs::write(out.join(format!("{stem}.xml")), &result.alto)?;
+            std::fs::write(out.join(format!("{stem}.xml")), &stored.alto)?;
             let status = usnm_core::text::text_status(&text);
             println!(
                 "{}",
@@ -892,14 +908,25 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             std::fs::write(&image, usnm_ocr_worker::testimg::text_image(CHECK_TEXT))?;
             let t0 = Instant::now();
             let result = engine.ocr(&image, "eng", work.path()).await?;
-            let text = usnm_core::text::normalize_ocr(&result.text);
+            // Through the stored ALTO, as the worker stores a page.
+            let stored = usnm_ocr_worker::stored::from_engine_alto(
+                &result.alto,
+                &result.engine,
+                "eng",
+                engine.dpi(),
+                &usnm_ocr_worker::stored::Source {
+                    url: "check.pgm",
+                    sha256: "",
+                    md5: None,
+                },
+                &usnm_ocr_worker::stored::worker_version(),
+                chrono::Utc::now(),
+            )
+            .context("the engine's ALTO doesn't convert to the stored ALTO")?;
+            let text = stored.text;
             anyhow::ensure!(
                 text.contains(CHECK_TEXT),
                 "the engine read {text:?}, not {CHECK_TEXT:?}"
-            );
-            anyhow::ensure!(
-                String::from_utf8_lossy(&result.alto).contains("<alto"),
-                "the engine wrote no ALTO"
             );
             println!(
                 "{}",

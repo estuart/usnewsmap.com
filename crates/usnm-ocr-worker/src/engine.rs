@@ -75,6 +75,11 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     /// costs no image request (12 Step 7). The engine contract (ADR-0016,
     /// #307) answers it from routing.
     fn can_read(&self, language: &str) -> bool;
+    /// The resolution the engine reads scans at: IIIF JPEGs carry none,
+    /// so it is assumed (13 §13.4.3), and the stored ALTO records it.
+    fn dpi(&self) -> u32 {
+        300
+    }
     /// Read `image` (a file) for a page in `language` (ISO 639-3), using
     /// `work` for scratch files.
     async fn ocr(
@@ -1037,6 +1042,10 @@ impl Engine for Tesseract {
 
     fn can_read(&self, language: &str) -> bool {
         route(language, &self.installed).is_some()
+    }
+
+    fn dpi(&self) -> u32 {
+        self.dpi
     }
 
     async fn ocr(

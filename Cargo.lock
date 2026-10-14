@@ -3087,6 +3087,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "usnm-alto",
  "usnm-core",
  "usnm-ingest",
  "usnm-ocr-contract",
