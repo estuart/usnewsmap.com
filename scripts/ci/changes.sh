@@ -15,6 +15,8 @@
 # Rust scorer's golden files that gold.py writes), whose unit tests and golden
 # check run in the infra job. fixtures/ocr-gold/ is read by no build, test
 # or generator, so it counts for none of rust/quickwit/web/image/fixtures.
+# boinc_pages: the BOINC project's own web pages (contrib-compute/boinc/html/), which
+# only need a PHP syntax check; a change to them alone runs nothing else.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
 # XML and Bicep; ADR-0019), which no other job builds.
 # Everything runs for a workflow_dispatch (scripts/bootstrap.sh dispatches ci
@@ -41,7 +43,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\nocr_gold=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -65,6 +67,8 @@ if grep -Eq '\.md$' <<< "$files"; then markdown=true; else markdown=false; fi
 # Documentation is only read: nothing below counts it. No README is compiled
 # into a binary or an image.
 files=$(grep -Ev '\.md$|^docs/' <<< "$files" || true)
+if grep -Eq '^contrib-compute/boinc/html/' <<< "$files"; then boinc_pages=true; else boinc_pages=false; fi
+files=$(grep -Ev '^contrib-compute/boinc/html/' <<< "$files" || true)
 matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
 # The gold set's crops and selection: nothing builds, tests or generates them.
 built=$(grep -Ev '^fixtures/ocr-gold/' <<< "$files" || true)
@@ -209,5 +213,6 @@ for part in ocr_worker page_language contrib ocr_gold; do
 done
 echo "ops=$ops" >> "$out"
 echo "markdown=$markdown" >> "$out"
+echo "boinc_pages=$boinc_pages" >> "$out"
 if [ -n "$files" ] || [[ " $forced " == *" code "* ]]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
 echo "provision=$provision" >> "$out"

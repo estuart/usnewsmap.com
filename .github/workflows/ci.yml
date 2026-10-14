@@ -41,6 +41,7 @@ jobs:
       page_language: ${{ steps.f.outputs.page_language }}
       contrib: ${{ steps.f.outputs.contrib }}
       ocr_gold: ${{ steps.f.outputs.ocr_gold }}
+      boinc_pages: ${{ steps.f.outputs.boinc_pages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,6 +130,18 @@ jobs:
           for f in $(git ls-files 'infra/*.bicep'); do
             bicep build "$f" --stdout > /dev/null
           done
+
+  # The BOINC project's web pages: a PHP syntax check, no image build.
+  boinc-pages:
+    name: boinc pages (php lint)
+    needs: changes
+    if: needs.changes.outputs.boinc_pages == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: find contrib-compute/boinc/html -name '*.php' -print0 | xargs -0 -n1 php -l
 
   # The BOINC server image and the bridge job image (contrib-compute/images). Built, smoke-tested
   # and not pushed: where they are published is the maintainer's step (docs/images.md).

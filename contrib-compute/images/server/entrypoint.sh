@@ -98,6 +98,9 @@ project_tree() {
   for i in $(seq 0 255); do mkdir -p "$PROJ/html/cache/$(printf %02x "$i")"; done
   sed -i -e 's|"REPLACE WITH PROJECT NAME"|"usnewsmap OCR"|' \
     -e 's|"REPLACE WITH COPYRIGHT HOLDER"|"Trevor Goodyear"|' "$inc"
+  # The project's own web pages ship in the image, so a rollout updates them; overwrites the
+  # copies on the share, never deletes stock files.
+  cp -R "$TEMPLATES/html/." "$PROJ/html/"
 }
 
 serve() {

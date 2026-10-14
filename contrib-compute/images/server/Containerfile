@@ -11,6 +11,8 @@ COPY images/server/lib.sh images/server/secrets.sh images/server/entrypoint.sh i
      images/server/supervisord.conf images/server/boinc-daemons.sh /usr/local/lib/usnm-boinc/
 COPY images/server/bridge-job.sh /usr/local/bin/bridge-job
 COPY boinc/config.xml.template boinc/project.xml boinc/plan_class_spec.xml /usr/local/lib/usnm-boinc/
+# Project web pages (about.php, the front-page description), installed by entrypoint.sh --serve
+COPY boinc/html /usr/local/lib/usnm-boinc/html
 # Debian's default site sets its own DocumentRoot, which would serve its page at /.
 RUN a2dissite -q 000-default \
  && chmod 0755 /usr/local/lib/usnm-boinc/entrypoint.sh /usr/local/lib/usnm-boinc/boinc-daemons.sh /usr/local/bin/bridge-job

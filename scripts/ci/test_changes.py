@@ -132,3 +132,34 @@ class Quickwit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BoincPages(unittest.TestCase):
+    """A change to the BOINC project's web pages alone runs only their PHP check."""
+
+    setUp, tearDown, commit, touch = Quickwit.setUp, Quickwit.tearDown, Quickwit.commit, Quickwit.touch
+
+    def outputs(self) -> dict:
+        before = git(self.repo, "rev-parse", "HEAD")
+        self.change()
+        after = self.commit("change")
+        out = self.tmp / "out"
+        out.write_text("")
+        env = dict(os.environ, GITHUB_EVENT_NAME="push", BEFORE_SHA=before,
+                   GITHUB_SHA=after, GITHUB_OUTPUT=str(out))
+        subprocess.run(["scripts/ci/changes.sh"], cwd=self.repo, env=env, check=True,
+                       capture_output=True, text=True)
+        return dict(re.findall(r"^(\w+)=(\w+)$", out.read_text(), re.M))
+
+    def test_a_page_alone_runs_only_the_page_check(self):
+        self.change = lambda: self.touch("contrib-compute/boinc/html/user/about.php")
+        on = {k for k, v in self.outputs().items() if v == "true"}
+        self.assertEqual(on, {"boinc_pages"})
+
+    def test_a_page_with_the_entrypoint_runs_the_contrib_jobs(self):
+        def change():
+            self.touch("contrib-compute/boinc/html/user/about.php")
+            self.touch("contrib-compute/images/server/entrypoint.sh")
+        self.change = change
+        o = self.outputs()
+        self.assertEqual((o["boinc_pages"], o["contrib"], o["code"]), ("true", "true", "true"))
