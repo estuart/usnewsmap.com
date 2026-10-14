@@ -15,8 +15,14 @@ use usnm_core::ocr_engine::{Digest, Fields, OcrEngineTag, TagError};
 pub struct EngineOutput {
     /// Plain text, as the engine wrote it (not normalized).
     pub text: String,
-    /// ALTO XML.
+    /// ALTO XML, when the engine wrote ALTO.
     pub alto: Vec<u8>,
+    /// The page, when the engine wrote boxes (`boxes.json`) rather than
+    /// ALTO: already in pixels of the image read, in reading order.
+    pub page: Option<usnm_alto::Page>,
+    /// What the engine wrote, for the stored ALTO's settings: `ALTO` or
+    /// `boxes.json`.
+    pub layout_from: &'static str,
     /// The `ocr_engine` tag (13 §13.8.1): engine, version, models, image
     /// and route, e.g. `tesseract/5.5.0 profile=frak2021 image=sha256:…
     /// models=sha256:… route=minimal@r1 contract=0`.
@@ -80,6 +86,10 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     fn dpi(&self) -> u32 {
         300
     }
+    /// Stops what the engine keeps running between pages, after the last
+    /// page (long-lived instances); nothing for an engine that starts
+    /// one process per page.
+    async fn shutdown(&self) {}
     /// Read `image` (a file) for a page in `language` (ISO 639-3), using
     /// `work` for scratch files.
     async fn ocr(
@@ -198,24 +208,24 @@ const CONTAINER_LABEL: &str = "usnm.engine=tesseract";
 
 /// What the worker learns from the engine runtime at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Sandbox {
-    podman: PathBuf,
-    url: String,
+pub(crate) struct Sandbox {
+    pub(crate) podman: PathBuf,
+    pub(crate) url: String,
     image: String,
     scratch: PathBuf,
-    info: RuntimeInfo,
+    pub(crate) info: RuntimeInfo,
 }
 
 /// What `podman info` says about the engine runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RuntimeInfo {
+pub(crate) struct RuntimeInfo {
     /// The host uid that [`ENGINE_USER`] maps to.
-    engine_uid: u32,
+    pub(crate) engine_uid: u32,
     /// The host uid the runtime itself runs as (container uid 0: the
     /// engine account), which needs to reach a page's directory to mount
     /// it; none for rootful podman.
     runtime_uid: Option<u32>,
-    selinux: bool,
+    pub(crate) selinux: bool,
 }
 
 /// From `podman info --format json`: the host uids [`ENGINE_USER`] and
@@ -279,8 +289,8 @@ const SLOTS: u32 = 512;
 
 /// A page's slot directory, removed with everything in it when dropped.
 #[derive(Debug)]
-struct PageDir {
-    path: PathBuf,
+pub(crate) struct PageDir {
+    pub(crate) path: PathBuf,
     slot: u32,
 }
 
@@ -302,7 +312,7 @@ fn slot_level(slot: u32) -> String {
 }
 
 impl PageDir {
-    fn level(&self) -> String {
+    pub(crate) fn level(&self) -> String {
         slot_level(self.slot)
     }
 }
@@ -388,7 +398,7 @@ fn owner(path: &Path) -> anyhow::Result<(u32, u32)> {
 }
 
 /// Runs a short helper (`setfacl`, `chcon`) and fails with its stderr.
-async fn checked(cmd: &mut tokio::process::Command) -> anyhow::Result<()> {
+pub(crate) async fn checked(cmd: &mut tokio::process::Command) -> anyhow::Result<()> {
     let out = cmd
         .kill_on_drop(true)
         .output()
@@ -406,7 +416,11 @@ async fn checked(cmd: &mut tokio::process::Command) -> anyhow::Result<()> {
 }
 
 impl Sandbox {
-    async fn detect(podman: &Path, remote: &Remote, image: &str) -> anyhow::Result<Self> {
+    pub(crate) async fn detect(
+        podman: &Path,
+        remote: &Remote,
+        image: &str,
+    ) -> anyhow::Result<Self> {
         let meta = std::fs::metadata(&remote.scratch)
             .with_context(|| format!("scratch directory {}", remote.scratch.display()))?;
         if !meta.is_dir() {
@@ -465,7 +479,7 @@ impl Sandbox {
     /// and can make it unreadable to the worker (a directory with mode
     /// 000), so when the worker can't remove it, a container as that user
     /// at the slot's level empties it first.
-    async fn release(&self, dir: PageDir) {
+    pub(crate) async fn release(&self, dir: PageDir) {
         if std::fs::remove_dir_all(&dir.path).is_ok() {
             return;
         }
@@ -510,7 +524,7 @@ impl Sandbox {
         }
     }
 
-    async fn page_dir(&self) -> anyhow::Result<(PageDir, Option<String>)> {
+    pub(crate) async fn page_dir(&self) -> anyhow::Result<(PageDir, Option<String>)> {
         let dir = claim_slot(&self.scratch)?;
         let (me, _) = owner(&dir.path)?;
         let e = self.info.engine_uid;
@@ -543,7 +557,7 @@ impl Sandbox {
 /// A podman command, through the Podman API socket at `url` when given.
 /// For the socket, the client gets a cleared environment with only what it
 /// needs, so the worker's settings never reach it (13 §13.6.1).
-fn podman_command(podman: &Path, url: Option<&str>) -> tokio::process::Command {
+pub(crate) fn podman_command(podman: &Path, url: Option<&str>) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(podman);
     if let Some(url) = url {
         cmd.env_clear();
@@ -592,11 +606,11 @@ pub fn check_image_ref(image: &str) -> anyhow::Result<()> {
 /// can read `OOMKilled` after one exits ([`ContainerGuard::finish`]); if the
 /// page is cancelled or times out first, dropping the guard removes the
 /// container: killing the podman client leaves it running.
-struct ContainerGuard {
-    podman: PathBuf,
-    url: Option<String>,
-    name: String,
-    armed: bool,
+pub(crate) struct ContainerGuard {
+    pub(crate) podman: PathBuf,
+    pub(crate) url: Option<String>,
+    pub(crate) name: String,
+    pub(crate) armed: bool,
 }
 
 impl ContainerGuard {
@@ -610,7 +624,7 @@ impl ContainerGuard {
 
     /// After the container exits: whether the kernel killed it for memory,
     /// then remove it. A failed removal is left to the drop.
-    async fn finish(&mut self) -> bool {
+    pub(crate) async fn finish(&mut self) -> bool {
         let oom = podman_command(&self.podman, self.url.as_deref())
             .args([
                 "container",
@@ -850,7 +864,7 @@ async fn run(runner: &Runner, args: &[&str]) -> anyhow::Result<String> {
 }
 
 /// The last `n` characters of `s`.
-fn tail(s: &str, n: usize) -> String {
+pub(crate) fn tail(s: &str, n: usize) -> String {
     let skip = s.chars().count().saturating_sub(n);
     s.chars().skip(skip).collect()
 }
@@ -963,7 +977,7 @@ const MAX_ALTO: u64 = 64 << 20;
 /// (checked before opening, and refused by `O_NOFOLLOW` when opening), and
 /// at most `max` bytes. The container has exited by then, so nothing
 /// changes the file meanwhile.
-fn read_output(path: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn read_output(path: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
     use std::io::Read;
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() {
@@ -1162,6 +1176,8 @@ impl Tesseract {
         Ok(EngineOutput {
             text,
             alto,
+            page: None,
+            layout_from: "ALTO",
             engine: self
                 .tag(models)
                 .with_context(|| {

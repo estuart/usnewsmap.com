@@ -2998,6 +2998,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "usnm-ocr-adapter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "rustix",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "usnm-alto",
+ "usnm-ocr-contract",
+ "usnm-ocr-worker",
+]
+
+[[package]]
 name = "usnm-ocr-contract"
 version = "0.1.0"
 dependencies = [

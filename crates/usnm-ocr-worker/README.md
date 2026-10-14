@@ -103,6 +103,18 @@ Tesseract runs with `--psm 3 --dpi 300` and the `txt` and `alto` configs, so one
 
 `ocr_engine` is the tag of 13 §13.8.1 (`usnm_core::ocr_engine`): engine and version, the models read (`profile`), the first 12 hex digits of the image's id and of the models' sha256 (from `ocr/engines/tesseract/models.lock`, built into the worker), the route and the contract, for example `tesseract/5.5.0 profile=frak2021 image=sha256:3f9a0c1d2e4b models=sha256:8c2d71aa09fe route=minimal@r1 contract=0`. A host binary writes `image=local models=local`, which `ocr-sync` refuses. The route is hard-coded (`engine::candidates`): German to `frak2021`, else `deu_latf+deu`; other languages to their tessdata_best model; a language with no model isn't read. `engines.toml` and its gate (#371) replace it. Other engines can be added behind the `Engine` trait if the engine survey (#296) picks them.
 
+## Engines behind the contract (off by default)
+
+`--engine contract` runs an engine adapter that speaks the engine contract (ADR-0016, [13 §13.4](../../docs/design/13-ocr-engines.md#134-the-contract-usnm-ocr-engine1)) in long-lived instances, instead of one Tesseract container per page. It is off unless chosen; `--engine tesseract` stays the default. This is the first part of 13 §13.11 step 6: one engine, a fixed number of instances, and no routing, lock, memory budget, breaker or cgroup metering yet.
+
+- `--engine-image <name>@sha256:<digest>` runs the adapter's image through the engine account's Podman API socket (`--podman-url`, `--scratch-dir`), with the container settings of 13 §13.6.1 and the `--engine-memory-mib`, `--engine-cpus` and `--engine-pids` limits. Each instance gets a scratch slot with `in/` (read-only) and `out/`, and each page an `out/<run_id>/` directory.
+- `--engine-command <program>` runs the adapter as a process on this host, for development and tests only, with `--engine-command-flag=--name=value` for its flags.
+- `--engine-instances` (default 1) instances read pages at once. `--engine-start-timeout-secs` bounds the start to `hello`, `--page-timeout-secs` is each page's `deadline_ms`, and an instance with no result 15 s after it is killed. `--engine-max-jobs` replaces an instance after that many pages.
+- The first instance's `hello` is checked (contract version, engine, unique profiles) and every later instance must match it. A page's language goes to the first profile that lists it; a language no profile lists is left for another node, as `no_model`.
+- An adapter's `ok` result with `layout: alto` is stored like Tesseract's ALTO. With `layout: boxes`, the worker reads `boxes.json` within its limits and converts it to the stored ALTO itself, so an engine that returns text only (granularity `page`) stores one page-sized block. `failed`, `bad_input` and `timeout` fail the page as transient `engine` and keep the instance; only `failed` may ask for a restart (`restart: true`), which replaces it. A crash, a broken line or no answer kills the instance, and the next page starts a new one.
+
+`crates/usnm-ocr-adapter` has the adapter side for Rust adapters and one adapter, `usnm-ocr-adapter-tesseract-text`, which runs the Tesseract CLI for plain text and answers with a page-sized block. It exercises the path a text-only engine takes with an engine every node has; the production Tesseract adapter (13 §13.11 step 5) returns ALTO.
+
 ## Output
 
 Each page writes two objects to `--out-url`:

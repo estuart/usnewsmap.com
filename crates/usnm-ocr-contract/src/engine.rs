@@ -413,8 +413,9 @@ pub fn decode_request(line: &[u8]) -> Result<ToAdapter, ProtocolError> {
 
 impl PageRequest {
     /// Checks a request before it is sent: a deadline, an image with a
-    /// size and dpi, and `out` the directory `/out/<run_id>/`.
-    pub fn check(&self) -> Result<(), ProtocolError> {
+    /// size and dpi, and `out` the directory `<out_root>/<run_id>/`
+    /// (`/out` in a container).
+    pub fn check(&self, out_root: &str) -> Result<(), ProtocolError> {
         if self.deadline_ms == 0 {
             return Err(ProtocolError::Page("no time left before the deadline"));
         }
@@ -423,9 +424,11 @@ impl PageRequest {
             return Err(ProtocolError::Page("an image with no size or dpi"));
         }
         if self.run_id.is_empty()
-            || self.out.trim_end_matches('/') != format!("/out/{}", self.run_id)
+            || self.run_id.contains('/')
+            || self.out.trim_end_matches('/')
+                != format!("{}/{}", out_root.trim_end_matches('/'), self.run_id)
         {
-            return Err(ProtocolError::Page("out isn't /out/<run_id>/"));
+            return Err(ProtocolError::Page("out isn't <out root>/<run_id>/"));
         }
         Ok(())
     }
@@ -641,16 +644,16 @@ mod tests {
         let mut v = h.clone();
         v.profiles.push(v.profiles[0].clone());
         assert!(matches!(v.check(), Err(ProtocolError::Hello(_))));
-        page().check().unwrap();
+        page().check("/out").unwrap();
         let mut p = page();
         p.deadline_ms = 0;
-        assert!(matches!(p.check(), Err(ProtocolError::Page(_))));
+        assert!(matches!(p.check("/out"), Err(ProtocolError::Page(_))));
         let mut p = page();
         p.out = "/out/other/".into();
-        assert!(matches!(p.check(), Err(ProtocolError::Page(_))));
+        assert!(matches!(p.check("/out"), Err(ProtocolError::Page(_))));
         let mut p = page();
         p.image.dpi = 0;
-        assert!(matches!(p.check(), Err(ProtocolError::Page(_))));
+        assert!(matches!(p.check("/out"), Err(ProtocolError::Page(_))));
     }
 
     #[test]

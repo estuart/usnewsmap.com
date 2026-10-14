@@ -169,8 +169,13 @@ pub struct BoxLimits {
     pub max_blocks: usize,
     pub max_lines: usize,
     pub max_words: usize,
-    /// Bytes of text in one word, line or block.
+    /// Bytes of text in one word or line, and in a block's `lang` or
+    /// `label`.
     pub max_text: usize,
+    /// Bytes of text in one block. A block- or page-level engine puts a
+    /// whole block's or page's text there (13 §13.4.4), so this is the
+    /// stored page text's limit (512 KiB, 13 §13.4.7 step 7), not 1 KiB.
+    pub max_block_text: usize,
     pub max_points_per_shape: usize,
     pub max_points: usize,
 }
@@ -183,6 +188,7 @@ impl Default for BoxLimits {
             max_lines: 200_000,
             max_words: 500_000,
             max_text: 1024,
+            max_block_text: 512 << 10,
             max_points_per_shape: 1000,
             max_points: 2_000_000,
         }
@@ -226,7 +232,11 @@ fn bump(what: &str, n: usize) -> Result<(), String> {
 }
 
 fn check_text(t: Option<&str>) -> Result<(), String> {
-    let max = COUNTS.with(|c| c.borrow().limits.map(|l| l.max_text));
+    check_text_within(t, |l| l.max_text)
+}
+
+fn check_text_within(t: Option<&str>, which: fn(&BoxLimits) -> usize) -> Result<(), String> {
+    let max = COUNTS.with(|c| c.borrow().limits.as_ref().map(which));
     match (t, max) {
         (Some(t), Some(max)) if t.len() > max => Err(format!("limit: a text over {max} bytes")),
         _ => Ok(()),
@@ -269,7 +279,7 @@ impl TryFrom<RawBlock> for BoxBlock {
     type Error = String;
     fn try_from(r: RawBlock) -> Result<Self, String> {
         bump("block", 1)?;
-        check_text(r.text.as_deref())?;
+        check_text_within(r.text.as_deref(), |l| l.max_block_text)?;
         check_text(r.lang.as_deref())?;
         check_text(r.label.as_deref())?;
         Ok(BoxBlock {
@@ -776,6 +786,20 @@ mod tests {
                     ..BoxLimits::default()
                 }
             ),
+            Err(BoxesError::Limit(_))
+        ));
+        // A page-level block holds the page's text, over 1 KiB.
+        let page = format!(
+            r#"{{"v":1,"units":"px","frame":{{"width":10,"height":10}},"granularity":"page","reading_order":"engine","blocks":[{{"bbox":[0,0,10,10],"kind":"text","text":"{}"}}]}}"#,
+            "word ".repeat(2000)
+        );
+        assert!(parse(page.as_bytes(), &BoxLimits::default()).is_ok());
+        let small = BoxLimits {
+            max_block_text: 100,
+            ..BoxLimits::default()
+        };
+        assert!(matches!(
+            parse(page.as_bytes(), &small),
             Err(BoxesError::Limit(_))
         ));
         let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));

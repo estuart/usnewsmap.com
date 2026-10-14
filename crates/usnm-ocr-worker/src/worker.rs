@@ -161,7 +161,7 @@ pub struct Done {
 /// the engine's own.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-struct ScratchError(String);
+pub(crate) struct ScratchError(pub(crate) String);
 
 /// The page's failure for an engine error.
 fn engine_failure(e: EngineError, node: &str) -> Failure {
@@ -708,9 +708,9 @@ impl Worker {
             sha256: &scan_sha256,
             md5: scan_md5.as_deref(),
         };
-        let stored = crate::stored::from_engine_alto(
-            &out.alto,
-            &out.engine,
+        let mut out = out;
+        let stored = crate::stored::from_output(
+            &mut out,
             &m.language,
             self.engine.dpi(),
             &source,
@@ -944,6 +944,8 @@ mod tests {
                 text: "Die  Nebraska Staats-Zeitung\nerscheint  jeden\u{0007} Sonn-\nabend.\n"
                     .into(),
                 alto: FAKE_ALTO.as_bytes().to_vec(),
+                page: None,
+                layout_from: "ALTO",
                 engine: "tesseract-5.5.1/deu_latf+deu".into(),
             })
         }

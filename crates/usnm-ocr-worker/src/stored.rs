@@ -73,9 +73,68 @@ pub fn from_engine_alto(
     ))
 }
 
-/// The stored outputs for a parsed page.
+/// The stored outputs for an engine's reading: its page when it wrote
+/// boxes, else its ALTO parsed.
+/// The page is taken from `out`, so a large reading isn't held twice.
+pub fn from_output(
+    out: &mut crate::engine::EngineOutput,
+    language: &str,
+    dpi: u32,
+    source: &Source<'_>,
+    worker_version: &str,
+    now: DateTime<Utc>,
+) -> Result<Stored, ConvertError> {
+    match out.page.take() {
+        Some(page) => Ok(store_from(
+            page,
+            out.layout_from,
+            &out.engine,
+            language,
+            dpi,
+            source,
+            worker_version,
+            now,
+        )),
+        None => from_engine_alto(
+            &out.alto,
+            &out.engine,
+            language,
+            dpi,
+            source,
+            worker_version,
+            now,
+        ),
+    }
+}
+
+/// The stored outputs for a page parsed from engine ALTO.
 pub fn store(
     page: Page,
+    ocr_engine: &str,
+    language: &str,
+    dpi: u32,
+    source: &Source<'_>,
+    worker_version: &str,
+    now: DateTime<Utc>,
+) -> Stored {
+    store_from(
+        page,
+        "ALTO",
+        ocr_engine,
+        language,
+        dpi,
+        source,
+        worker_version,
+        now,
+    )
+}
+
+/// The stored outputs for a page parsed from what the engine wrote
+/// (`from`: `ALTO` or `boxes.json`).
+#[allow(clippy::too_many_arguments)]
+pub fn store_from(
+    page: Page,
+    from: &str,
     ocr_engine: &str,
     language: &str,
     dpi: u32,
@@ -122,7 +181,7 @@ pub fn store(
         post: Some(Step {
             date_time: None,
             settings: vec![
-                ("source".into(), "engine ALTO, parsed".into()),
+                ("source".into(), format!("engine {from}, parsed")),
                 (
                     "text".into(),
                     "usnm-alto reading order, normalize_ocr".into(),

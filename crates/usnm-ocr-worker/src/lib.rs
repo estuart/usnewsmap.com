@@ -11,6 +11,8 @@ pub mod archive;
 pub mod batch;
 /// Scans read from the prefetch cache over HTTP before LoC (#368).
 pub mod cache;
+/// Engines behind the engine contract: long-lived instances (#307).
+pub mod contract;
 pub mod engine;
 pub mod loc;
 /// Fetching scans ahead of the workers (#368).
