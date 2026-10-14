@@ -29,7 +29,8 @@ resource server 'Microsoft.DBforMySQL/flexibleServers@2024-12-30' = {
     version: '8.4'
     administratorLogin: adminLogin
     administratorLoginPassword: adminPassword
-    storage: { storageSizeGB: storageGb, autoGrow: 'Enabled', iops: 360 }
+    // autoIoScaling pinned: the API defaults it to Enabled (billed per IO) when storage is sent.
+    storage: { storageSizeGB: storageGb, autoGrow: 'Enabled', autoIoScaling: 'Disabled', iops: 360 }
     backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
     highAvailability: { mode: 'Disabled' }
     network: { delegatedSubnetResourceId: subnetId, privateDnsZoneResourceId: privateDnsZoneId }
