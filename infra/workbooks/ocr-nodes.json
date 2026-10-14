@@ -362,6 +362,27 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
+        "query": "// The nightly worker update (usnm-ocr-update, #471) and the weekly reboot\n// window (usnm-ocr-reboot): their Warning lines, which are what reach the\n// workspace (an update applied, a rollback, a reboot, any problem).\nlet machines = \"/providers/microsoft.hybridcompute/machines/\";\nlet node_of = (id: string) { tolower(extract(@\"(?i)/machines/([^/]+)$\", 1, id)) };\nunion isfuzzy=true\n    (Syslog\n    | where _ResourceId has machines\n    | where ProcessName in (\"usnm-ocr-update\", \"usnm-ocr-reboot\")\n    | project TimeGenerated, Node = node_of(_ResourceId), Process = ProcessName, Level = SeverityLevel, SyslogMessage),\n    (datatable(TimeGenerated: datetime, Node: string, Process: string, Level: string, SyslogMessage: string)[])\n| where Node in ({Nodes})\n| extend Event = case(SyslogMessage has \"update applied\", \"update applied\",\n    SyslogMessage has \"rolled back\", \"rolled back\",\n    SyslogMessage has \"refused\", \"update refused\",\n    SyslogMessage startswith \"rebooting\", \"reboot\",\n    Level)\n| project TimeGenerated, Node, Process, Event, Message = substring(SyslogMessage, 0, 300)\n| order by TimeGenerated desc",
+        "size": 0,
+        "title": "Worker updates, rollbacks and reboots",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No worker update, rollback or reboot in the time range.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "updates"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
         "query": "// Billed MB a day the nodes' workspace took in (Usage), against its daily\n// cap. Everything in the workspace counts: the agent's Syslog and Perf, the\n// worker's Application Insights telemetry and the exchange account's queue\n// logs. Days are UTC; the cap resets at a time of day of its own, so a day\n// here can straddle two cap periods. Usage lags ingestion by up to a few\n// hours.\n// The cap is ocrNodeDailyCapGb in infra/main.bicep, which\n// provisioning fills in here (cap_gb in ops/queries/ocr-node-health.kql\n// has the same figure).\nlet cap_mb = todouble(\"__CAP_GB__\") * 1000;\nunion isfuzzy=true\n    (Usage | where IsBillable | project TimeGenerated, Quantity),\n    (datatable(TimeGenerated: datetime, Quantity: real)[])\n| summarize MB = round(sum(Quantity), 2) by Day = startofday(TimeGenerated)\n| extend CapMB = cap_mb\n| order by Day asc",
         "size": 0,
         "title": "Billed MB a day against the daily cap",

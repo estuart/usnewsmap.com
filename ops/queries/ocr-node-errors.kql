@@ -3,7 +3,8 @@
 // there). Worker: its WARN and ERROR lines by message and kind, and any
 // line that isn't JSON (a panic, a bad flag), from Syslog local0. System:
 // everything at err and above, systemd's lines about
-// usnm-ocr-worker.service and the kernel's OOM kills, by process and
+// usnm-ocr-worker.service, the nightly update's and the reboot window's
+// Warning lines (#471) and the kernel's OOM kills, by process and
 // message with digits masked. Each group shows its count, first and last
 // time and one example, cut to 300 characters. No Syslog table yet (a new
 // workspace) gives no rows, not an error.
@@ -30,6 +31,7 @@ let system = syslog
     | where Facility != "local0"
     | where SeverityLevel in ("err", "crit", "alert", "emerg")
         or SyslogMessage has "usnm-ocr-worker"
+        or ProcessName in ("usnm-ocr-update", "usnm-ocr-reboot")
         or SyslogMessage has_any ("Out of memory", "oom-kill", "oom_reaper")
     | extend Message = strcat(ProcessName, ": ", replace_regex(substring(SyslogMessage, 0, 120), @"\d+", "N"))
     | summarize Count = count(), First = min(TimeGenerated), Last = max(TimeGenerated),

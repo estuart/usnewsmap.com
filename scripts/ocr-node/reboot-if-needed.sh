@@ -10,7 +10,9 @@
 # (node-setup.sh sets reboot = never). This reboots only when
 # `dnf needs-restarting -r` says an update needs it (the kernel, glibc,
 # systemd and the like). It waits for a dnf-automatic run still going (up
-# to --dnf-wait, default 1800 s; after that it skips this week), then stops
+# to --dnf-wait, default 1800 s; after that it skips this week) and for a
+# worker install or nightly update holding
+# /run/lock/usnm-ocr-maintenance.lock (as long again), then stops
 # usnm-ocr-worker.service, and usnm-sset.service (the on-prem Serial Set
 # fetch, #229) if it's running, and waits for them to exit, up to
 # --drain-timeout (default 1260 s: the 1200 s page timeout and a minute),
@@ -106,6 +108,18 @@ while systemctl is-active --quiet dnf-automatic.service; do
   sleep "$step"
   waited=$((waited + step))
 done
+
+# Never reboot in the middle of a worker install or the nightly update
+# (#471): they hold this lock. Held from here to the reboot, so neither
+# starts meanwhile.
+if [ "$DRY_RUN" = false ]; then
+  mkdir -p /run/lock
+  exec 9> /run/lock/usnm-ocr-maintenance.lock
+  if ! flock -n 9; then
+    log "waiting for a worker install or update to finish"
+    flock -w "$DNF_WAIT" 9 || { warn "warning: a worker install or update still holds the lock after $DNF_WAIT s; no reboot this week"; exit 1; }
+  fi
+fi
 
 # Running, or waiting to restart (activating), so a unit between tries
 # comes back too.

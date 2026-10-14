@@ -1,0 +1,20 @@
+// The OCR nodes' nightly worker updates and weekly reboots, newest first
+// (#471), from the nodes' workspace usnm-ocr-log-<env> (scripts/logs.sh
+// runs ocr-node-* queries there). Only their Warning lines reach the
+// workspace: an update applied, a rollback, a refused release, a reboot
+// and any problem. No Syslog table yet gives no rows, not an error.
+let machines = "/providers/microsoft.hybridcompute/machines/";
+let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) };
+union isfuzzy=true
+    (Syslog
+    | where _ResourceId has machines
+    | where ProcessName in ("usnm-ocr-update", "usnm-ocr-reboot")
+    | project TimeGenerated, Node = node_of(_ResourceId), Process = ProcessName, Level = SeverityLevel, SyslogMessage),
+    (datatable(TimeGenerated: datetime, Node: string, Process: string, Level: string, SyslogMessage: string)[])
+| extend Event = case(SyslogMessage has "update applied", "update applied",
+    SyslogMessage has "rolled back", "rolled back",
+    SyslogMessage has "refused", "update refused",
+    SyslogMessage startswith "rebooting", "reboot",
+    Level)
+| project TimeGenerated, Node, Process, Event, Message = substring(SyslogMessage, 0, 300)
+| order by TimeGenerated desc

@@ -487,6 +487,11 @@ jobs:
       - name: The Rust scorer's golden files match gold.py (#457)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
+      - name: The OCR nodes' nightly update picks the right release (#471)
+        run: |
+          python3 -m unittest -v scripts/ocr-node/test_update_worker.py
+          shellcheck -x -S warning scripts/ocr-node/update-worker.sh scripts/ocr-node/install-worker-node.sh \
+            scripts/ocr-node/install-worker.sh scripts/ocr-node/reboot-if-needed.sh
       - name: The search cluster report's tests pass
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # Against a stub az: the dev experiment marker, the guard-rail budget's

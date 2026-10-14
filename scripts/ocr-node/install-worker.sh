@@ -7,7 +7,8 @@
 #     [--release ocr-worker-YYYYMMDD-SHA7] [--nodes N] [--concurrency N] \
 #     [--scan-cache-url http://HOST:8380] [--pacing-multiplier M] \
 #     [--page-timeout-secs N] [--publish-fetched VERSION] \
-#     [--status-allow DASHBOARD] [--enable] [--rollback] [--dry-run]
+#     [--status-allow DASHBOARD[,HOST...]] [--enable] [--rollback] [--dry-run] \
+#     [--auto-update-delay HOURS [--auto-update-leader URL] | --auto-update-off]
 #
 # Steps:
 #   1. picks the release (--release, or the newest ocr-worker-* release) and
@@ -47,9 +48,19 @@
 #      disabled again if it doesn't stay up. Don't enable it on real queues
 #      before ocr-sync (12 Step 8) is deployed: ocr-out deletes blobs after
 #      30 days.
+#   5. --auto-update-delay HOURS turns on the node's nightly update (#471,
+#      scripts/ocr-node/update-worker.sh): every night at 03:15 US Eastern
+#      the node installs the newest release published at least HOURS ago,
+#      verifying it itself, keeping these settings, and rolls back if the
+#      worker doesn't stay up. Give one node 0 and the others a delay and
+#      --auto-update-leader http://<first node>:8381/status, so they wait
+#      until the first node has run the release (the first node's
+#      --status-allow must then name them too). --auto-update-off turns it
+#      off; without either, the node keeps what it has.
 # --rollback points the node back at the release installed before the
 # current one (or at --release, if installed), with its Tesseract image;
-# it downloads nothing.
+# it downloads nothing. The nightly update won't install the release it
+# leaves again.
 #
 # --dry-run downloads and verifies the release, reads the node's state
 # over ssh and prints the settings file and the commands; it changes
@@ -60,7 +71,7 @@
 # members), and ssh with passwordless sudo for --host. Works with macOS's
 # bash 3.2.
 set -euo pipefail
-usage() { sed -n '5,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '5,11s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
@@ -68,7 +79,7 @@ REPO=tgoodyear/usnewsmap.com
 WORKFLOW="$REPO/.github/workflows/ci.yml"
 ENV_NAME="" HOST="" NAME="" SSH_KEY="" RELEASE="" NODES="" CONCURRENCY="" SCAN_CACHE_URL=""
 PACING="" PAGE_TIMEOUT="" PUBLISH_FETCHED="" STATUS_ALLOW=""
-ENABLE=false ROLLBACK=false DRY_RUN=false
+ENABLE=false ROLLBACK=false DRY_RUN=false AUTO_DELAY="" AUTO_LEADER="" AUTO_OFF=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --env) ENV_NAME=${2:-}; shift 2 ;;
@@ -84,6 +95,9 @@ while [ $# -gt 0 ]; do
     --publish-fetched) PUBLISH_FETCHED=${2:-}; shift 2 ;;
     --status-allow) STATUS_ALLOW=${2:-}; shift 2 ;;
     --enable) ENABLE=true; shift ;;
+    --auto-update-delay) AUTO_DELAY=${2:-}; shift 2 ;;
+    --auto-update-leader) AUTO_LEADER=${2:-}; shift 2 ;;
+    --auto-update-off) AUTO_OFF=true; shift ;;
     --rollback) ROLLBACK=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
@@ -103,8 +117,21 @@ done
 [ -z "$PAGE_TIMEOUT" ] || [[ $PAGE_TIMEOUT =~ ^[1-9][0-9]{1,4}$ ]] || die "--page-timeout-secs: 10 to 99999"
 [ -z "$PUBLISH_FETCHED" ] || [[ $PUBLISH_FETCHED =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "--publish-fetched: a manifest version (pages-vYYYYMMDD-N)"
 [ -z "$PUBLISH_FETCHED" ] || [ -n "$SCAN_CACHE_URL" ] || die "--publish-fetched needs --scan-cache-url"
-[ -z "$STATUS_ALLOW" ] || [[ $STATUS_ALLOW =~ ^[A-Za-z0-9.-]+$ ]] || die "--status-allow: the dashboard's host name or IPv4 address"
+[ -z "$STATUS_ALLOW" ] || [[ $STATUS_ALLOW =~ ^[A-Za-z0-9.-]+(,[A-Za-z0-9.-]+)*$ ]] ||
+  die "--status-allow: the dashboard's host name or IPv4 address (and other nodes', comma-separated)"
+[ -z "$AUTO_DELAY" ] || [[ $AUTO_DELAY =~ ^[0-9]{1,3}$ ]] || die "--auto-update-delay: hours, 0 to 999"
+[ -z "$AUTO_LEADER" ] || [ -n "$AUTO_DELAY" ] || die "--auto-update-leader needs --auto-update-delay"
+[ -z "$AUTO_LEADER" ] || [[ $AUTO_LEADER =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9/_-]*$ ]] ||
+  die "--auto-update-leader: http://HOST:PORT/status"
+[ "$AUTO_OFF" = false ] || [ -z "$AUTO_DELAY" ] || die "--auto-update-delay and --auto-update-off don't go together"
+[ "$ROLLBACK" = false ] || { [ -z "$AUTO_DELAY" ] && [ "$AUTO_OFF" = false ]; } ||
+  die "--rollback leaves the nightly update as it is"
 [ "$ROLLBACK" = false ] || [ "$ENABLE" = false ] || die "--rollback and --enable don't go together"
+
+AUTO_ARGS=()
+[ -z "$AUTO_DELAY" ] || AUTO_ARGS+=(--auto-update-delay "$AUTO_DELAY")
+[ -z "$AUTO_LEADER" ] || AUTO_ARGS+=(--auto-update-leader "$AUTO_LEADER")
+[ "$AUTO_OFF" = false ] || AUTO_ARGS+=(--auto-update-off)
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
@@ -251,7 +278,7 @@ if [ "$DRY_RUN" = true ]; then
   step "Dry run"
   echo "would copy the binary, the env file and scripts/ocr-node/usnm-ocr-worker.service to $HOST, then run as root:"
   echo "  install-worker-node.sh --release $RELEASE --dir <tmp> --binary-sha256 $BIN_SUM \\"
-  echo "    --image-id $IMAGE_ID --image-url $IMAGE_URL --image-sha256 $IMAGE_SUM$([ "$ENABLE" = false ] || echo ' --enable')"
+  echo "    --image-id $IMAGE_ID --image-url $IMAGE_URL --image-sha256 $IMAGE_SUM$([ "$ENABLE" = false ] || echo ' --enable')${AUTO_ARGS[*]+ ${AUTO_ARGS[*]}}"
   if [ "$ENABLE" = true ]; then
     echo "then check the engine as usnm and enable usnm-ocr-worker.service"
   else
@@ -266,16 +293,15 @@ remote=$(ssh "${SSH_OPTS[@]}" "$HOST" 'mktemp -d /tmp/usnm-install.XXXXXX') || d
 {
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/usnm-ocr-worker" < "$TMP/usnm-ocr-worker" &&
     ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/ocr-worker.env" < "$TMP/ocr-worker.env" &&
-    ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/usnm-ocr-worker.service" < scripts/ocr-node/usnm-ocr-worker.service
+    ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/usnm-ocr-worker.service" < scripts/ocr-node/usnm-ocr-worker.service &&
+    ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/update-worker.sh" < scripts/ocr-node/update-worker.sh &&
+    ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/install-worker-node.sh" < scripts/ocr-node/install-worker-node.sh
 } || die "copying to $HOST failed"
 status=0
-if [ "$ENABLE" = true ]; then
-  node --release "$RELEASE" --dir "$remote" --binary-sha256 "$BIN_SUM" --image-id "$IMAGE_ID" \
-    --image-url "$IMAGE_URL" --image-sha256 "$IMAGE_SUM" --enable || status=$?
-else
-  node --release "$RELEASE" --dir "$remote" --binary-sha256 "$BIN_SUM" --image-id "$IMAGE_ID" \
-    --image-url "$IMAGE_URL" --image-sha256 "$IMAGE_SUM" || status=$?
-fi
+args=(--release "$RELEASE" --dir "$remote" --binary-sha256 "$BIN_SUM" --image-id "$IMAGE_ID"
+  --image-url "$IMAGE_URL" --image-sha256 "$IMAGE_SUM")
+[ "$ENABLE" = false ] || args+=(--enable)
+node "${args[@]}" ${AUTO_ARGS[@]+"${AUTO_ARGS[@]}"} || status=$?
 # shellcheck disable=SC2029
 ssh "${SSH_OPTS[@]}" "$HOST" "rm -rf $remote" || true
 [ "$status" -eq 0 ] || die "installing on $HOST failed ($status)"
