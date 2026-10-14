@@ -32,3 +32,5 @@ Copy [`template.md`](template.md) to `YYYY-MM-DD-slug.md`, fill it in, and add a
 The notes are plain Markdown, rendered by GitHub. The site is served by the API from its own image ([ADR-0010](../design/adr/0010-site-served-by-the-api.md)), so publishing them on usnewsmap.com would mean building them into the web app; nothing here assumes that.
 
 - [Stock BOINC batch pilot](2026-10-13-boinc-pilot.md): cached-page transport, native ingestion, and validation boundaries.
+
+- [Rootless BOINC volunteer readiness on an SELinux host](2026-10-14-boinc-volunteer-preflight.md): slot labels, kernel limits, pause/restart and a startup gate.
