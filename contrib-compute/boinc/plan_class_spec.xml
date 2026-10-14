@@ -9,6 +9,6 @@
     <plan_class>
         <name>docker</name>
         <docker/>
-        <min_core_client_version>90000</min_core_client_version>
+        <min_core_client_version>80213</min_core_client_version>
     </plan_class>
 </plan_classes>

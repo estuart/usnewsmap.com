@@ -89,9 +89,12 @@ SQL
 
 # project_tree: fixes to the project tree on the share, safe to repeat at every start.
 # - make_project made only cache/00..80 of the 256 the pages hash into (seen 2026-10-13);
-# - the stock project.inc names the project "REPLACE WITH PROJECT NAME".
+# - the stock project.inc names the project "REPLACE WITH PROJECT NAME";
+# - plan_class_spec.xml was copied once by init, so a changed template (the 9.0 client
+#   minimum, 2026-10-14) never reached the share.
 project_tree() {
   local i inc="$PROJ/html/project/project.inc"
+  cp "$TEMPLATES/plan_class_spec.xml" "$PROJ/plan_class_spec.xml"
   for i in $(seq 0 255); do mkdir -p "$PROJ/html/cache/$(printf %02x "$i")"; done
   sed -i -e 's|"REPLACE WITH PROJECT NAME"|"usnewsmap OCR"|' \
     -e 's|"REPLACE WITH COPYRIGHT HOLDER"|"Trevor Goodyear"|' "$inc"

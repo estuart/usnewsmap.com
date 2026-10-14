@@ -169,7 +169,7 @@ Stock means unmodified upstream BOINC software: BOINC Central hosting or public
 project registration is not required. Friends attach manually to your server's
 project URL. Registering `usnm_ocr` below means registering it on your own server.
 This repository does not provision its web server/database or ship BOINC binaries.
-Use BOINC 9.0+ clients and a recent Linux x86-64 `docker_wrapper` supporting
+Use BOINC 8.2.13+ clients and a recent Linux x86-64 `docker_wrapper` supporting
 `workdir` and `create_args`. Install/merge upstream's Docker plan class and test
 that the requested runtime limits, pause/resume, and output permissions work.
 The minimal CPU `docker` class from the upstream sample is supplied in

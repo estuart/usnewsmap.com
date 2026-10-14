@@ -2,31 +2,41 @@
 
 Volunteers run OCR on historical newspaper pages from Chronicling America (Library of Congress) on their own Linux machines, through a stock BOINC client. Each task reads one page image and returns its text. That text goes into the site's search index after the project's own checks. Two smaller apps measure the OCR engine itself.
 
-Status: a pilot for trusted friends. The project server is designed but not deployed, and no app version is published yet, so the attach step fails until it opens. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc.md](boinc.md).
+Status: a pilot for trusted friends. The project server is up and `usnm_ocr` and `usnm_gold` are published; work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc.md](boinc.md).
 
 ## 1. Check the prerequisites
 
 You need all of these ([boinc.md](boinc.md#boundaries)):
 
 - Linux on x86-64. No other platform has an app version.
-- A BOINC client, version 9.0 or later.
-- Docker, which the BOINC client's user is allowed to run. Every task runs in a Docker container started by the stock BOINC Docker wrapper. Hosts that can't run Docker (including restricted or unprivileged containers) can't take part.
+- A BOINC client, version 8.2.13 or later. Distribution packages are too old (Debian 13 ships 8.0.4, Ubuntu 24.04 ships 7.24.1): use the BOINC project's own package repository (below).
+- Docker, which the BOINC client's user is allowed to run. Every task runs in a Docker container started by the stock BOINC Docker wrapper. Hosts that can't run Docker can't take part. An unprivileged Proxmox LXC container with `nesting=1,keyctl=1` runs Docker (Debian's `docker.io`) well enough to pass the checks below.
 
 Check them:
 
 ```sh
 uname -m                 # expect: x86_64
-boinc --version          # expect: 9.0 or later
+boinc --version          # expect: 8.2.13 or later
 docker version           # expect: a Client and a Server section, no permission error
 ```
 
-Install the client from your distribution or from https://boinc.berkeley.edu/download_all.php if `boinc --version` is missing or older than 9.0. Then check that the BOINC service user can run a container. The user is `boinc` on Debian and Ubuntu packages; other distributions may differ (UNVERIFIED):
+If `boinc --version` is missing or older than 8.2.13, install the client from the BOINC project's repository (https://boinc.berkeley.edu/linux_install.php). On Debian 13 (trixie), as root:
 
 ```sh
-sudo -u boinc docker run --rm hello-world   # expect: "Hello from Docker!"
+curl -fsSL https://boinc.berkeley.edu/dl/linux/stable/trixie/boinc.gpg -o /usr/share/keyrings/boinc.asc
+echo "deb [signed-by=/usr/share/keyrings/boinc.asc] https://boinc.berkeley.edu/dl/linux/stable/trixie trixie main" > /etc/apt/sources.list.d/boinc.list
+apt-get update && apt-get install boinc-client docker.io
 ```
 
-If that fails with a permission error, add the user to the `docker` group and restart the client (UNVERIFIED on distributions other than Debian and Ubuntu): `sudo usermod --append --groups docker boinc && sudo systemctl restart boinc-client`.
+For Ubuntu 24.04 use `noble` in place of `trixie`. This package installs `boinc` and `boinccmd` in `/usr/local/bin`, which is not on root's `PATH` in some shells (a bare `pct exec`, for example); use the full path if `boinccmd` is not found. Its data directory is `/var/lib/boinc` (Debian's own package used `/var/lib/boinc-client`).
+
+Then check that the BOINC service user can run a container. The user is `boinc` on Debian and Ubuntu packages; other distributions may differ (UNVERIFIED):
+
+```sh
+sudo -u boinc docker run --rm hello-world   # expect: "Hello from Docker!" (minimal images lack sudo: apt-get install sudo)
+```
+
+If that fails with a permission error, add the user to the `docker` group and restart the client (verified on Debian 13; UNVERIFIED on other distributions): `sudo usermod --append --groups docker boinc && sudo systemctl restart boinc-client`.
 
 ## 2. Attach to the project
 
@@ -39,21 +49,23 @@ curl --silent --show-error --fail --output /dev/null --write-out '%{http_code}\n
 # expect: 200. Anything else: the project isn't open yet; stop here.
 ```
 
-Create an account (the client prints the account key), or get the key of an existing account:
+Create an account (the client prints the account key), or get the key of an existing account. Account creation is open; the server asks for no invitation code (checked 2026-10-14):
 
 ```sh
 boinccmd --create_account https://boinc.usnewsmap.com/ YOUR_EMAIL YOUR_PASSWORD YOUR_NAME
 boinccmd --lookup_account https://boinc.usnewsmap.com/ YOUR_EMAIL YOUR_PASSWORD
 ```
 
-The server may ask for an invitation code at sign-up ([design](../contrib-compute/docs/design.md)); UNVERIFIED whether it does. Then attach with the key:
+Then attach with the key:
 
 ```sh
 boinccmd --project_attach https://boinc.usnewsmap.com/ ACCOUNT_KEY
 boinccmd --get_project_status   # expect: an entry whose master URL is https://boinc.usnewsmap.com/
 ```
 
-Set idle-only processing and conservative limits in your BOINC preferences, as the pilot asks.
+`boinccmd --get_messages 0` then shows `Master file download succeeded` and `Scheduler request completed`. The client also logs `Docker: version ...` at start-up; if that line is missing, the scheduler sends this host no work.
+
+Set idle-only processing and conservative limits in your BOINC preferences, as the pilot asks. On a headless host or a container, the client may log `Suspending computation - CPU is busy` because it sees the whole machine's load; set `<suspend_cpu_usage>0</suspend_cpu_usage>` in `/var/lib/boinc/global_prefs_override.xml` and run `boinccmd --read_global_prefs_override`.
 
 ## 3. What you will run
 

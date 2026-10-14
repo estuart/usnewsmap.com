@@ -141,7 +141,7 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
 - `docker_wrapper` runs a container described by `job.toml` and built from a `Dockerfile`
   (or pulled from an image), in an app version directory. Source: `wiki:Docker-apps`,
   `wiki:Docker-app-cookbook`, `wiki:Docker-app-implementation`.
-- The client must be BOINC 9.0 or later and the host needs Docker (Windows needs WSL). The
+- The wiki says the client must be BOINC 9.0 or later (see below: 8.2.13 is what exists) and the host needs Docker (Windows needs WSL). The
   image must contain `ps`. The cookbook asks for a server of November 2024 or later and tells
   you to copy `plan_class_spec.xml.sample` into the project directory. Source:
   `wiki:Docker-app-cookbook`.
@@ -159,10 +159,11 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
   `<plan_class><name>docker</name><docker/></plan_class>`) and in the parser
   (`src:sched/plan_class_spec.cpp`, lines 1258 to 1266: `min_core_client_version`,
   `docker`). `boinc/plan_class_spec.xml` here is that class plus
-  `<min_core_client_version>90000</min_core_client_version>`, so older clients are not sent
+  `<min_core_client_version>80213</min_core_client_version>`, so older clients are not sent
   the app. The server's own Docker check applies the 8.2.6 minimum to macOS clients only
-  (line 625); the 9.0 minimum for Linux comes from the wiki, so the line above is our
-  addition.
+  (line 625). The wiki asks for 9.0, but no 9.x client had been released as of 2026-10-14
+  (newest Linux packages: 8.2.13 stable, 8.2.15 alpha), so a 9.0 minimum blocked every host.
+  8.2.13 on Debian 13 detects Docker (`Docker: version ...` in its event log).
 - `scripts/boinc/install.py` (#441) installs the version under
   `apps/usnm_ocr/<version>/x86_64-pc-linux-gnu__docker`. The `__docker` suffix is the plan
   class name, so the plan class must be called `docker`.
