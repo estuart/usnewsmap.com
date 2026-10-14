@@ -20,6 +20,11 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         properties: {
           addressPrefix: '10.${vnetOctet}.0.0/27'
           delegations: [ { name: 'aca', properties: { serviceName: 'Microsoft.App/environments' } } ]
+          // The bridge's hand-off steps reach the exchange account's boinc-handoff container
+          // (#469), which allows this subnet on its firewall (infra/modules/ocr-exchange.bicep).
+          // Global, not Microsoft.Storage: that account is in another region, outside this
+          // one's pair.
+          serviceEndpoints: [ { service: 'Microsoft.Storage.Global' } ]
         }
       }
       {

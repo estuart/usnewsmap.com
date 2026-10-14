@@ -93,8 +93,10 @@ param serialSetOnPrem bool = false
 @description('Object id of the on-prem Serial Set runner\'s identity: the OCR node\'s Arc machine identity (with serialSetOnPrem). Settings only, never in the repository.')
 param serialSetRunner string = ''
 
-@description('Object id of the on-prem BOINC hand-off runner\'s identity (#469): the scan-fetch container\'s Arc machine identity, which runs `usnm-boinc export` and `collect`. It gets the ocr-sync lease (Cosmos ops), the native ledger (curated/ocr-local/, no delete), reference read, ocr-out (create, no delete) and the BOINC workspace read (modules/boinc-handoff-runner.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
+@description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
+@description('The BOINC hand-off job\'s image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json, <registry>.azurecr.io/usnm-boinc-bridge@sha256:<digest>. Empty: no hand-off job. Needs the exchange account (ocrNodes), the registry (useAcr) and the BOINC group (deployBoincGroup).')
+param boincHandoffImage string = ''
 
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
@@ -416,9 +418,42 @@ module serialSetRunnerGrant 'modules/serialset-runner.bicep' = if (serialSetOnPr
   }
 }
 
-// The on-prem BOINC hand-off runner's grants (#469). Needs the exchange
-// account (ocrNodes), whose node writer role it reuses on ocr-out.
-module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (ocrNodes && !empty(trim(boincHandoffRunner))) {
+// The BOINC hand-off job (#469): export and collect in this environment, as its own
+// identity. Its grants: Cosmos ops, the ledger, reference and ocr-out
+// (boinc-handoff-runner.bicep, which reuses the exchange account's node writer role on
+// ocr-out) and boinc-handoff (ocr-exchange.bicep).
+var boincHandoff = ocrNodes && useAcr && deployBoincGroup && !empty(trim(boincHandoffImage))
+
+module boincHandoffJob 'modules/boinc-handoff-job.bicep' = if (boincHandoff) {
+  scope: rg
+  name: 'boinc-handoff-job'
+  dependsOn: [registry]
+  params: {
+    location: location
+    tags: tags
+    environmentId: containerEnv.outputs.id
+    image: trim(boincHandoffImage)
+    registryName: n.registry
+    jobName: n.boincHandoffJob
+    identityName: n.boincHandoffIdentity
+    handoffUrl: 'https://${exchangeName}.blob.${environment().suffixes.storage}/boinc-handoff'
+    cosmosEndpoint: cosmos.outputs.endpoint
+    curatedUrl: '${storage.outputs.blobEndpoint}curated'
+    referenceUrl: '${storage.outputs.blobEndpoint}reference'
+    outUrl: 'https://${exchangeName}.blob.${environment().suffixes.storage}/ocr-out'
+  }
+}
+
+// The BOINC bridge's identity (contrib-compute/infra/boinc, usnm-boinc-id-<env>): its
+// hand-off steps (submit-remote, spool-out) get the node writer role on boinc-handoff. Granted
+// here, not in the BOINC stack, so that stack (the subnet's service endpoint, which the
+// exchange account's firewall rule needs) can deploy first.
+resource boincBridgeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = if (boincHandoff) {
+  scope: resourceGroup(n.boincRg)
+  name: n.boincBridgeIdentity
+}
+
+module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincHandoff) {
   scope: rg
   name: 'boinc-handoff-runner'
   dependsOn: [ocrExchange]
@@ -426,7 +461,7 @@ module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (ocrNod
     storageName: storage.outputs.name
     exchangeName: exchangeName
     cosmosName: cosmos.outputs.name
-    principalId: trim(boincHandoffRunner)
+    principalIds: [boincHandoffJob!.outputs.principalId]
     roleLabel: n.boincLedgerRole
   }
 }
@@ -459,6 +494,15 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
     name: exchangeName
     nodeIps: nodeIpList(ocrNodeIps)
     subnetId: network.outputs.caeSubnetId
+    // Only with the hand-off job, which needs the BOINC stack (its bridge image) and so its
+    // subnet and service endpoint; never on the first provision that creates the BOINC group.
+    boincSubnetId: boincHandoff
+      ? resourceId(subscription().subscriptionId, n.boincRg, 'Microsoft.Network/virtualNetworks/subnets', n.boincVnet, 'aca')
+      : ''
+    handoffWriterIds: concat(
+      boincHandoff ? [boincHandoffJob!.outputs.principalId, boincBridgeIdentity!.properties.principalId] : [],
+      empty(trim(boincHandoffRunner)) ? [] : [trim(boincHandoffRunner)]
+    )
     nodeGroupId: trim(ocrNodeGroupId)
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     nodeWriterRoleLabel: n.ocrNodeWriterRole

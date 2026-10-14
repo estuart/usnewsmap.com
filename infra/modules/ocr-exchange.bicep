@@ -17,6 +17,10 @@ param name string
 param nodeIps array = []
 @description('The Container Apps subnet, allowed through its service endpoint.')
 param subnetId string
+@description('The BOINC environment\'s `aca` subnet (contrib-compute/infra/boinc), allowed through its Microsoft.Storage.Global service endpoint, for the bridge\'s hand-off steps (#469). Empty: not allowed.')
+param boincSubnetId string = ''
+@description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity, the BOINC bridge\'s (usnm-boinc-id-<env>) and the scan fetcher\'s Arc machine identity.')
+param handoffWriterIds array = []
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
 param nodeGroupId string = ''
 @description('The ingest identity: the cloud jobs that fill the queues and copy the output into curated.')
@@ -49,6 +53,9 @@ var outputContainer = 'ocr-out'
 // 8), with a reason record each. No node role; ocr-sync replays them after
 // a fix (--from-quarantine).
 var quarantineContainer = 'ocr-quarantine'
+// The BOINC hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache): the scan fetcher's
+// scans and manifests, the hand-off job's dispatch root, the bridge's spool and trust list.
+var handoffContainer = 'boinc-handoff'
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: name
@@ -75,7 +82,13 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
           action: 'Allow'
         }
       ]
-      virtualNetworkRules: [{ id: subnetId, action: 'Allow' }]
+      // The BOINC subnet is in another region and group, through its Global endpoint (the
+      // BOINC stack's network.bicep). Storage refuses the rule until that endpoint exists, so
+      // scripts/provision-boinc.sh goes first.
+      virtualNetworkRules: concat(
+        [{ id: subnetId, action: 'Allow' }],
+        empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow' }]
+      )
     }
   }
 }
@@ -120,6 +133,12 @@ resource quarantine 'Microsoft.Storage/storageAccounts/blobServices/containers@2
   properties: { publicAccess: 'None' }
 }
 
+resource handoff 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
+  name: handoffContainer
+  properties: { publicAccess: 'None' }
+}
+
 // ocr-out is staging: ocr-sync (ingest identity) checks each part and
 // copies it into curated/ocr-local/ in the data lake, which keeps it with
 // versions, or moves it to ocr-quarantine. It deletes what it has taken;
@@ -138,6 +157,19 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           type: 'Lifecycle'
           definition: {
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['${outputContainer}/'] }
+            actions: {
+              baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
+            }
+          }
+        }
+        // The scans pushed for BOINC are copies of the fetcher's cache; the dispatch root,
+        // spool and trust list stay (the journal must outlive its jobs).
+        {
+          name: 'expire-boinc-handoff-scans'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['${handoffContainer}/scans/'] }
             actions: {
               baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
             }
@@ -253,6 +285,20 @@ resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (n
   }
 }
 
+// The hand-off writers: list, read and create in boinc-handoff, no delete (the node writer
+// role, as on ocr-out). Each assignment's name comes from the scope, the principal and the role.
+resource handoffWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for p in handoffWriterIds: {
+    scope: handoff
+    name: guid(handoff.id, p, 'usnm-ocr-node-writer')
+    properties: {
+      principalId: p
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
+    }
+  }
+]
+
 // The ingest identity: ocr-enqueue and the seeder add pages to the queues,
 // and ocr-sync drains the dead letters (reads and deletes them), so Queue
 // Data Contributor on the account. The seeder and the status file read each
@@ -297,3 +343,4 @@ output queueEndpoint string = account.properties.primaryEndpoints.queue
 output blobEndpoint string = account.properties.primaryEndpoints.blob
 output outputContainer string = output.name
 output quarantineContainer string = quarantine.name
+output handoffContainer string = handoff.name

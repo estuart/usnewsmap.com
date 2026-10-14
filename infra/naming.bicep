@@ -146,8 +146,12 @@ var nameTypes = {
   backfillJob: 'caj'
   backfillReplicaSilentAlert: 'alert'
   backfillStalledAlert: 'alert'
+  boincBridgeIdentity: 'id'
+  boincHandoffIdentity: 'id'
+  boincHandoffJob: 'caj'
   boincLedgerRole: 'role'
   boincRg: 'rg'
+  boincVnet: 'vnet'
   boincWorkspace: 'log'
   budget: 'budget'
   ciIdentity: 'id'
@@ -239,8 +243,15 @@ type Names = {
   backfillJob: string
   backfillReplicaSilentAlert: string
   backfillStalledAlert: string
+  @description('The BOINC stack\'s app and bridge identity (contrib-compute/infra/boinc/main.bicep names it the same way).')
+  boincBridgeIdentity: string
+  boincHandoffIdentity: string
+  @description('A Container Apps job name is under 32 characters.')
+  boincHandoffJob: string
   boincLedgerRole: string
   boincRg: string
+  @description('The BOINC stack\'s VNet (contrib-compute/infra/boinc/main.bicep names it the same way).')
+  boincVnet: string
   boincWorkspace: string
   budget: string
   ciIdentity: string
@@ -327,8 +338,12 @@ func names(env string, sfx string, pinned bool) Names => {
     ? 'alert-usnm-backfill-replica-silent-${env}'
     : usnmName('backfill-replica-silent', 'alert', env)
   backfillStalledAlert: pinned ? 'alert-usnm-backfill-stalled-${env}' : usnmName('backfill-stalled', 'alert', env)
+  boincBridgeIdentity: usnmName('boinc', 'id', env)
+  boincHandoffIdentity: usnmName('boinc-handoff', 'id', env)
+  boincHandoffJob: usnmName('boinc-handoff', 'caj', env)
   boincLedgerRole: usnmName('boinc-ledger', 'role', env)
   boincRg: usnmName('boinc', 'rg', env)
+  boincVnet: usnmName('boinc', 'vnet', env)
   boincWorkspace: usnmName('boinc', 'log', env)
   budget: pinned ? 'budget-usnm-${env}' : usnmName('core', 'budget', env)
   ciIdentity: pinned ? 'id-usnm-ci-${env}' : usnmName('ci', 'id', env)

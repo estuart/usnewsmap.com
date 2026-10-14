@@ -3,6 +3,7 @@
   "USNM_AMERICAN_STORIES": true,
   "USNM_AMERICAN_STORIES_SEARCH": true,
   "USNM_BOINC_GROUP": true,
+  "USNM_BOINC_HANDOFF_IMAGE": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:fb1d3b6ada4e69388547d67f493b84f7ff4298fcf0bcffd55cccd60d167bf058",
   "USNM_BUDGET_START": "2026-10-01",
   "USNM_COSMOS_FREE_TIER": true,
   "USNM_DNS_ZONE": "usnewsmap.com",

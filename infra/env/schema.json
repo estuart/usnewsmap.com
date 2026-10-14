@@ -62,9 +62,15 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_BOINC_HANDOFF_IMAGE": {
+      "x-usnm-visibility": "public",
+      "description": "The BOINC hand-off job's image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json. Empty or unset: no hand-off job.",
+      "type": "string",
+      "pattern": "^$|^[a-z0-9]+\\.azurecr\\.io/usnm-boinc-bridge@sha256:[0-9a-f]{64}$"
+    },
     "USNM_BOINC_HANDOFF_RUNNER": {
       "x-usnm-visibility": "private",
-      "description": "Private: in the settings store, under the environment's label. The on-prem BOINC hand-off runner's identity's object id (the scan-fetch container's Arc machine identity, #469).",
+      "description": "Private: in the settings store, under the environment's label. The scan fetcher's identity's object id (the scan-fetch container's Arc machine identity, #469), which pushes scans to boinc-handoff.",
       "not": {}
     },
     "USNM_BROWSE_PAGES": {

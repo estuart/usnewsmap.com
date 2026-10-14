@@ -161,6 +161,22 @@ class StartBridge(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "usnm-boinc-bridge-caj-prod-abc12\n")
 
+    def test_handoff_target_sets_handoff_step_in_the_main_group(self):
+        base = {"AZURE_CLIENT_ID": "client-2", "HANDOFF_URL": "https://x.blob.core.windows.net/boinc-handoff",
+                "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/", "CURATED_URL": "https://d/curated",
+                "REFERENCE_URL": "https://d/reference", "OUT_URL": "https://x/ocr-out"}
+        tmpl = json.dumps({"containers": [{"name": "handoff", "env": [{"name": k, "value": v} for k, v in base.items()]}]})
+        r = self.run_script("--target", "handoff", "--step", "collect", "--var", "JOB_ID=" + "a" * 64,
+                            STUB_TEMPLATE=tmpl)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        update = [c for c in self.calls() if c.startswith("containerapp job update")][0]
+        self.assertIn("--name usnm-boinc-handoff-caj-prod --resource-group rg-usnm-prod", update)
+        self.assertIn("HANDOFF_STEP=collect", update)
+        self.assertNotIn("BRIDGE_STEP", update)
+        r = self.run_script("--target", "handoff", "--step", "collect", "--var", "HANDOFF_STEP=x",
+                            STUB_TEMPLATE=tmpl)
+        self.assertEqual(r.returncode, 1)
+
 
 class BaseVarsMatchBicep(unittest.TestCase):
     def test_lists_agree(self):
@@ -168,6 +184,14 @@ class BaseVarsMatchBicep(unittest.TestCase):
             m = re.search(r"^BASE_VARS=\(([^)]*)\)", f.read(), re.M)
         script = m.group(1).split()
         with open(os.path.join(ROOT, "contrib-compute/infra/boinc/modules/bridge-job.bicep")) as f:
+            bicep = re.findall(r"\{ name: '([A-Z_]+)', value:", f.read())
+        self.assertEqual(sorted(script), sorted(bicep))
+
+    def test_handoff_lists_agree(self):
+        with open(SCRIPT) as f:
+            m = re.search(r"^HANDOFF_BASE_VARS=\(([^)]*)\)", f.read(), re.M)
+        script = m.group(1).split()
+        with open(os.path.join(ROOT, "infra/modules/boinc-handoff-job.bicep")) as f:
             bicep = re.findall(r"\{ name: '([A-Z_]+)', value:", f.read())
         self.assertEqual(sorted(script), sorted(bicep))
 

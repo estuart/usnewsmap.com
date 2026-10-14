@@ -14,7 +14,7 @@ Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/pipeline-boinc-dark.svg">
-  <img alt="OCR and search pipeline with BOINC: LoC scans go through the on-prem scan fetcher and OCR nodes to ocr-out, ocr-sync, the curated lake, release, index and API. The scan fetcher pushes cached scans to a hand-off container; a hand-off job in the main environment reserves pages and later collects results; the BOINC bridge pulls each job from the container, volunteers run the pinned worker, and the result spool and gold trust list go back through the container, so collect publishes to the same ocr-out only for trusted hosts. Dashed parts are planned." src="images/pipeline-boinc.svg" width="960">
+  <img alt="OCR and search pipeline with BOINC: LoC scans go through the on-prem scan fetcher and OCR nodes to ocr-out, ocr-sync, the curated lake, release, index and API. The scan fetcher pushes cached scans to a hand-off container; a hand-off job in the main environment reserves pages and later collects results; the BOINC bridge pulls each job from the container, volunteers run the pinned worker, and the result spool and gold trust list go back through the container, so collect publishes to the same ocr-out as the OCR nodes for trusted hosts and holds an untrusted host's result in quarantine." src="images/pipeline-boinc.svg" width="960">
 </picture>
 
 ## Boundaries
@@ -366,24 +366,31 @@ database; UNVERIFIED against a live database) and `/project/gold/trust.json` to 
 container. The hand-off job's `collect` step reads them back and publishes to `ocr-out`
 only for a host that passed the gold check.
 
-### Infrastructure this needs (not in this change)
+### Infrastructure
 
-The code above is merged; the infrastructure is not. It needs a reviewed Bicep change:
-
-- the container `boinc-handoff` on the exchange account (`stusnmo<suffix>`), with the
-  `boinc-handoff/scans/` prefix expiring after 30 days, like `ocr-out`;
+- the container `boinc-handoff` on the exchange account (`stusnmo<suffix>`,
+  `infra/modules/ocr-exchange.bicep`), with the `boinc-handoff/scans/` prefix expiring after
+  30 days, like `ocr-out`;
 - the BOINC environment's `aca` subnet allowed on the exchange account's firewall, through a
-  `Microsoft.Storage.Global` service endpoint on that subnet (the BOINC VNet is in westus2,
-  the exchange account in eastus2, and a plain `Microsoft.Storage` endpoint covers only its
-  own region and its pair). A private endpoint is not an option: the main VNet's
-  `privatelink.blob` zone would then fail to resolve the exchange account for `ocr-sync`;
-- the hand-off job (`usnm-boinc-handoff-caj-<env>`) and its user-assigned identity
-  (`usnm-boinc-handoff-id-<env>`) in the main environment, with the job's own settings
-  `AZURE_CLIENT_ID`, `HANDOFF_URL`, `COSMOS_ENDPOINT`, `CURATED_URL`, `REFERENCE_URL` and
-  `OUT_URL`, and a way to start it with per-run settings (as `scripts/start-boinc-bridge.sh`
-  does for the bridge).
+  `Microsoft.Storage.Global` service endpoint on that subnet
+  (`contrib-compute/infra/boinc/modules/network.bicep`). The BOINC VNet is in westus2 and the
+  exchange account in eastus2, and a plain `Microsoft.Storage` endpoint covers only its own
+  region and its pair. A private endpoint is not an option: the main VNet's `privatelink.blob`
+  zone would then fail to resolve the exchange account for `ocr-sync`. Storage refuses the
+  firewall rule until the endpoint exists, so the rule comes with the hand-off job (below). On
+  a new environment: `scripts/provision.sh` with `USNM_BOINC_GROUP` (the group), then
+  `scripts/provision-boinc.sh` (the network, the identity and the images), then
+  `USNM_BOINC_HANDOFF_IMAGE` and `scripts/provision.sh` again (the job, the rule and the
+  grants);
+- the hand-off job `usnm-boinc-handoff-caj-<env>` and its identity
+  `usnm-boinc-handoff-id-<env>` in the main environment (`infra/modules/boinc-handoff-job.bicep`),
+  with its own settings `AZURE_CLIENT_ID`, `HANDOFF_URL`, `COSMOS_ENDPOINT`, `CURATED_URL`,
+  `REFERENCE_URL` and `OUT_URL`. Its image is the setting `USNM_BOINC_HANDOFF_IMAGE`
+  (`infra/env/<env>.json`): `images.bridge` from `contrib-compute/infra/boinc/env/<env>.json`,
+  so a new bridge image means updating both. `scripts/start-boinc-bridge.sh --target handoff`
+  starts it with a run's settings.
 
-The role assignments it would make:
+The role assignments:
 
 | Identity                                     | Scope                             | Role                                                       |
 | -------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
@@ -396,10 +403,10 @@ The role assignments it would make:
 | BOINC bridge (`usnm-boinc-id-<env>`)         | container `boinc-handoff`         | OCR node writer                                            |
 | Scan fetcher (`usnm-ocr-node5-arcs-<env>`)   | container `boinc-handoff`         | OCR node writer                                            |
 
-The hand-off job's grants are the ones `infra/modules/boinc-handoff-runner.bicep` gives the
-scan fetcher today (#514). Once the job exists, the scan fetcher needs only the container
-write above. Its Cosmos, ledger, reference, `ocr-out` and BOINC workspace grants can then
-be removed.
+The main stack makes all of them, the bridge's included (it reads the BOINC identity as an
+existing resource), so the BOINC stack only adds the service endpoint. The Cosmos, ledger,
+reference and `ocr-out` grants are `infra/modules/boinc-handoff-runner.bicep`'s; the
+container grants are `ocr-exchange.bicep`'s.
 
 ### Runbook
 
@@ -411,9 +418,17 @@ scripts/ocr-node/push-boinc-scan.sh --account stusnmoffapzy \
   --manifest /tank/ocr/manifests/<version>/manifest.parquet
 ```
 
-Then, from the operator's machine, the hand-off job's export (with `HANDOFF_STEP=export`,
-`HANDOFF_PAGES=<page key>`, `HANDOFF_BATCH`, `HANDOFF_PLAN`, `HANDOFF_MANIFEST=<version>/manifest.parquet` and
-`ENGINE_IMAGE=sha256:<images.worker's digest>`). It prints the job id. Then the bridge:
+Then, from the operator's machine, the hand-off job's export. It prints the job id in its
+log, and `dispatch/jobs/<id>/` appears in the container:
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --target handoff --step export \
+  --var HANDOFF_PAGES=<page key> --var HANDOFF_BATCH=<batch> --var HANDOFF_PLAN=<plan id> \
+  --var HANDOFF_MANIFEST=<version>/manifest.parquet \
+  --var ENGINE_IMAGE=sha256:<images.worker's digest> --wait-mins 30
+```
+
+Then the bridge:
 
 ```sh
 scripts/start-boinc-bridge.sh --env prod --step submit-remote --var JOB_ID=JOB_ID \
@@ -428,8 +443,13 @@ scripts/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
   --var HANDOFF_SPOOL=/project/usnmocr/results/0 --wait-mins 15
 ```
 
-Then the hand-off job's collect (`HANDOFF_STEP=collect`, `JOB_ID`, and `HOST_ID` only when
-the server recorded none). It publishes to `ocr-out` for a trusted host and writes the
+Then the hand-off job's collect (`HOST_ID` only when the server recorded none):
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --target handoff --step collect --var JOB_ID=JOB_ID --wait-mins 30
+```
+
+It publishes to `ocr-out` for a trusted host and writes the
 dispatch root back with the job `published`. An untrusted host's result is held in the
 dispatch root's `quarantine/<job>/`. Stop there: `ocr-sync` is the next step, as usual. A terminal BOINC failure
 (an `_error` or `_no_output_files` spool) needs neither a host nor the trust list: collect
@@ -437,28 +457,24 @@ marks the job failed. Each run writes back only the journal entries it touched; 
 execution at a time all the same. If a write-back keeps failing, the job's log carries the
 record (`USNM-HANDOFF-RECORD` lines), since a lost reservation's record can't be made again.
 
-### The hand-off runner (scan-fetch container)
+### The scan fetcher's identity (scan-fetch container)
 
-Until the hand-off job above exists, these grants (#514) let `export` and `collect` run on
-the scan-fetch container. With the job, the scan fetcher only pushes scans, and all but a
-container write can go. `export` and `collect` run on the scan-fetch container (CT 211 on pve-big,
-`scripts/ocr-node/scanfetch-ct.sh`), which already holds the prefetch manifest and
-the scans under `/tank/ocr`, so no scan leaves the LAN. It is an unprivileged Debian 12
-LXC; the Azure Connected Machine agent runs in it like on a VM. Its Arc machine,
-`usnm-ocr-node5-arcs-prod` in the environment's group, gives it a system-assigned
-identity. It is not an OCR worker and is not in the nodes' Entra group, so it has
-none of the queue grants.
+The scan fetcher (CT 211 on pve-big, `scripts/ocr-node/scanfetch-ct.sh`) holds the prefetch
+manifest and the scans under `/tank/ocr` and pushes them with `push-boinc-scan.sh`. It is an
+unprivileged Debian 12 LXC; the Azure Connected Machine agent runs in it like on a VM. Its
+Arc machine, `usnm-ocr-node5-arcs-prod` in the environment's group, gives it a
+system-assigned identity. It is not an OCR worker and is not in the nodes' Entra group, so
+it has none of the queue grants.
 
-Its grants (`infra/modules/boinc-handoff-runner.bicep` and `boinc-handoff-logs.bicep`)
-go to the object id in the private setting `USNM_BOINC_HANDOFF_RUNNER`:
+Its grants go to the object id in the private setting `USNM_BOINC_HANDOFF_RUNNER`:
 
-| Scope                             | Role                                                           | For                                            |
-| --------------------------------- | -------------------------------------------------------------- | ---------------------------------------------- |
-| Cosmos `usnm/ops`                 | Cosmos DB Built-in Data Contributor                            | the `ocr-sync` lease and the published version |
-| lake `curated`, `ocr-local/` only | `usnm-boinc-ledger-role-<env>` (list, read, create; no delete) | the native ledger                              |
-| lake `reference`                  | Storage Blob Data Reader                                       | `{version}/batches.json`, `titles.json`        |
-| exchange `ocr-out`                | the OCR nodes' writer role (list, read, create; no delete)     | collect's ALTO and Parquet                     |
-| `usnm-boinc-log-<env>` workspace  | Log Analytics Reader                                           | the bridge jobs' logs                          |
+| Scope                            | Role                                                       | For                        |
+| -------------------------------- | ---------------------------------------------------------- | -------------------------- |
+| exchange `boinc-handoff`         | the OCR nodes' writer role (list, read, create; no delete) | the scans and the manifest |
+| `usnm-boinc-log-<env>` workspace | Log Analytics Reader (`boinc-handoff-logs.bicep`)          | the bridge jobs' logs      |
+
+Until the hand-off job existed, `export` and `collect` ran here too, with Cosmos, ledger,
+reference and `ocr-out` grants (#514); the job took those over and they are gone.
 
 Set up once, from the operator's machine and the Proxmox host, after the BOINC stack is
 deployed (the workspace grant needs `usnm-boinc-log-<env>` to exist):
@@ -486,9 +502,8 @@ scripts/provision.sh --env prod
 In the container, `az login --identity --allow-no-subscriptions` signs in (the
 identity has data-plane roles only, no subscription role).
 
-The grants don't open any network path. The lake and ocr-out take the home IP through
-`USNM_OCR_NODE_IPS`, but the lake only while `USNM_SERIALSET_ONPREM` is on, and Cosmos
-allows no public access at all, so the `--cosmos` lease can't be reached from the LAN yet.
+The grant opens no network path: the exchange account takes the home IP through
+`USNM_OCR_NODE_IPS`.
 
 ## Allocation and recovery
 

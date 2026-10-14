@@ -1,7 +1,6 @@
-// The on-prem BOINC hand-off runner's access (#469): `usnm-boinc export` and
-// `usnm-boinc collect` (docs/boinc.md, "Server and maintainer on different
-// hosts") run on the scan-fetch container, which holds the prefetch manifest
-// and the scans, as its Arc machine identity. Only what those two commands
+// The BOINC hand-off's access (#469): `usnm-boinc export` and `usnm-boinc
+// collect` run as the hand-off job's identity (boinc-handoff-job.bicep,
+// docs/boinc.md#one-page-from-the-scan-cache). Only what those two commands
 // touch:
 // - Cosmos: Built-in Data Contributor on the `ops` container alone, for the
 //   `ocr-sync` lease export takes and the published version it reads
@@ -21,8 +20,8 @@
 param storageName string
 param exchangeName string
 param cosmosName string
-@description('Object id of the runner\'s identity (the container\'s Arc machine identity).')
-param principalId string
+@description('Object ids given these grants: the hand-off job\'s identity.')
+param principalIds array
 @description('The ledger writer role\'s name, before its scope (infra/naming.bicep).')
 param roleLabel string
 
@@ -36,7 +35,7 @@ resource ledgerWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   properties: {
     // Role names are unique per tenant: include the subscription and group.
     roleName: '${roleLabel} (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
-    description: 'The on-prem BOINC hand-off runner: list, read and create blobs. No delete, no container actions.'
+    description: 'The BOINC hand-off: list, read and create blobs. No delete, no container actions.'
     type: 'CustomRole'
     permissions: [
       {
@@ -106,50 +105,58 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
   name: cosmosName
 }
 
-resource ledger 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: account::blobService::curated
-  name: guid(account::blobService::curated.id, principalId, 'usnm-boinc-ledger-writer')
-  properties: {
-    principalId: principalId
-    principalType: 'ServicePrincipal'
-    // Custom roles are addressed at subscription level wherever they're defined.
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', ledgerWriter.name)
-    description: 'The on-prem BOINC hand-off runner (#469): list, read and create blobs under ocr-local/ only; no delete.'
-    conditionVersion: '2.0'
-    condition: condition
+resource ledger 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for principalId in principalIds: {
+    scope: account::blobService::curated
+    name: guid(account::blobService::curated.id, principalId, 'usnm-boinc-ledger-writer')
+    properties: {
+      principalId: principalId
+      principalType: 'ServicePrincipal'
+      // Custom roles are addressed at subscription level wherever they're defined.
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', ledgerWriter.name)
+      description: 'The BOINC hand-off (#469): list, read and create blobs under ocr-local/ only; no delete.'
+      conditionVersion: '2.0'
+      condition: condition
+    }
   }
-}
+]
 
-resource reference 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: account::blobService::reference
-  name: guid(account::blobService::reference.id, principalId, blobReader)
-  properties: {
-    principalId: principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
+resource reference 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for principalId in principalIds: {
+    scope: account::blobService::reference
+    name: guid(account::blobService::reference.id, principalId, blobReader)
+    properties: {
+      principalId: principalId
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
+    }
   }
-}
+]
 
-resource output 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: exchange::blobService::output
-  name: guid(exchange::blobService::output.id, principalId, 'usnm-ocr-node-writer')
-  properties: {
-    principalId: principalId
-    principalType: 'ServicePrincipal'
-    // ocr-exchange.bicep's nodeWriter, in this group.
-    roleDefinitionId: subscriptionResourceId(
-      'Microsoft.Authorization/roleDefinitions',
-      guid(resourceGroup().id, 'usnm-ocr-node-writer')
-    )
+resource output 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for principalId in principalIds: {
+    scope: exchange::blobService::output
+    name: guid(exchange::blobService::output.id, principalId, 'usnm-ocr-node-writer')
+    properties: {
+      principalId: principalId
+      principalType: 'ServicePrincipal'
+      // ocr-exchange.bicep's nodeWriter, in this group.
+      roleDefinitionId: subscriptionResourceId(
+        'Microsoft.Authorization/roleDefinitions',
+        guid(resourceGroup().id, 'usnm-ocr-node-writer')
+      )
+    }
   }
-}
+]
 
-resource lease 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
-  parent: cosmos
-  name: guid(cosmos.id, principalId, cosmosDataContributor, 'ops')
-  properties: {
-    principalId: principalId
-    roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataContributor}'
-    scope: '${cosmos.id}/dbs/usnm/colls/ops'
+resource lease 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = [
+  for principalId in principalIds: {
+    parent: cosmos
+    name: guid(cosmos.id, principalId, cosmosDataContributor, 'ops')
+    properties: {
+      principalId: principalId
+      roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataContributor}'
+      scope: '${cosmos.id}/dbs/usnm/colls/ops'
+    }
   }
-}
+]
