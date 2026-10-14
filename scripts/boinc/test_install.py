@@ -52,6 +52,21 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(target.parts[-3], "usnm_gold")
         self.assertTrue((self.project / "templates" / "usnm_gold_out").is_file())
 
+    def test_surya_versions_per_plan_class(self):
+        cpu = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_surya", "docker_mt")
+        gpu = module.install(self.project, self.wrapper, IMAGE, "1.1", "usnm_surya", "docker_nvidia_cuda")
+        self.assertEqual(cpu.name, "x86_64-pc-linux-gnu__docker_mt")
+        self.assertEqual(gpu.name, "x86_64-pc-linux-gnu__docker_nvidia_cuda")
+        self.assertIn("use_gpu = true", (gpu / "job_1.toml").read_text())
+        self.assertNotIn("use_gpu", (cpu / "job_1.toml").read_text())
+        for name in ["usnm_surya_in", "usnm_surya_out"]:
+            self.assertTrue((self.project / "templates" / name).is_file())
+        # Each app only has the plan classes it was made for.
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_surya", "docker")
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_ocr", "docker_nvidia_cuda")
+
 
 if __name__ == "__main__":
     unittest.main()

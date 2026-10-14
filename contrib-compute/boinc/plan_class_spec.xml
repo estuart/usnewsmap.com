@@ -11,4 +11,33 @@
         <docker/>
         <min_core_client_version>80213</min_core_client_version>
     </plan_class>
+    <!-- usnm_surya (#516, docs/boinc-surya.md). CPU: 4 to 8 threads; the scheduler reserves them
+         and the stock docker_wrapper passes them to the container as cpus. Hosts with fewer than
+         4 usable CPUs get no CPU version. -->
+    <plan_class>
+        <name>docker_mt</name>
+        <docker/>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_ncpus>4</min_ncpus>
+        <max_threads>8</max_threads>
+    </plan_class>
+    <!-- usnm_surya on an NVIDIA GPU. The scheduler checks the GPU the client detected (CUDA,
+         driver, memory); it can't check that Docker or Podman can pass it into a container, which
+         is what the probe finds out. The version's job.toml sets use_gpu, so docker_wrapper runs
+         the container with gpus all, and passes avg_ncpus as cpus. 2.5 GB of GPU memory: the
+         model and projector are 1.5 GB, plus a 16k-token context. Two CPUs for Python and
+         llama-server's host threads; BOINC's default GPU estimate otherwise, to tune from the
+         probe. -->
+    <plan_class>
+        <name>docker_nvidia_cuda</name>
+        <docker/>
+        <gpu_type>nvidia</gpu_type>
+        <cuda/>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_cuda_version>12000</min_cuda_version>
+        <min_nvidia_compcap>500</min_nvidia_compcap>
+        <min_gpu_ram_mb>3000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>2500</gpu_ram_used_mb>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
 </plan_classes>

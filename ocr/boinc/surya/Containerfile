@@ -1,0 +1,62 @@
+# The usnm_surya worker image (#516): Surya 2 (surya-ocr 0.22.1) on llama.cpp's server, and
+# usnm-boinc, which runs one BOINC unit (docs/boinc-surya.md). One image serves both app versions:
+# llama.cpp's CUDA server image loads its CUDA backend when the container sees an NVIDIA GPU and
+# falls back to its CPU backends otherwise (GGML_BACKEND_DL, GGML_CPU_ALL_VARIANTS).
+#
+# Weights come from Hugging Face at pinned revisions and are checked against weights.lock; the
+# image carries Datalab's licence beside them, and NOTICE. torch is the CPU build: it only runs
+# Surya's layout fallback, while the OCR model runs in llama-server.
+#
+# Build from the repository root:
+#   docker build -f ocr/boinc/surya/Containerfile -t usnm-boinc-surya .
+ARG LLAMA_DIGEST=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea
+
+FROM rust:1-bookworm AS build
+ARG BUILD_JOBS=2
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
+
+FROM rust:1-bookworm AS weights
+COPY ocr/boinc/surya/weights.lock /weights.lock
+RUN set -eu; mkdir -p /models; cd /models; \
+    grep -v '^#' /weights.lock | while read -r path url sum; do \
+      mkdir -p "$(dirname "$path")"; \
+      curl -fsSL --retry 3 -o "$path" "$url"; \
+      echo "$sum  $path" | sha256sum -c --quiet -; \
+    done; \
+    echo "sha256:$(grep -v '^#' /weights.lock | sha256sum | cut -d' ' -f1)" > /weights.digest
+
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda@${LLAMA_DIGEST}
+ARG LLAMA_DIGEST
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-venv \
+      libgl1 libglib2.0-0 procps \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv \
+ && /opt/venv/bin/pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+      torch==2.12.1+cpu torchvision==0.27.1+cpu \
+ && /opt/venv/bin/pip install --no-cache-dir surya-ocr==0.22.1 \
+ && mkdir -p /opt/surya && /opt/venv/bin/pip freeze > /opt/surya/pip-freeze.txt
+COPY --from=weights /models/ /opt/surya/models/
+COPY --from=weights /weights.digest /opt/surya/weights.digest
+COPY ocr/boinc/surya/weights.lock ocr/boinc/surya/NOTICE ocr/boinc/surya/run.py /opt/surya/
+COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
+# USNM_SURYA_WEIGHTS must equal /opt/surya/weights.digest; the build fails otherwise.
+ARG SURYA_WEIGHTS=sha256:557aca6f56e5844007dbb04fe69a638f40e8d55823e89de07a1d4906c291b701
+RUN test "$(cat /opt/surya/weights.digest)" = "$SURYA_WEIGHTS"
+ENV PATH=/opt/venv/bin:/app:$PATH LLAMA_CPP_BINARY=/app/llama-server \
+    SURYA_GGUF_LOCAL_MODEL_PATH=/opt/surya/models/surya-2.gguf \
+    SURYA_GGUF_LOCAL_MMPROJ_PATH=/opt/surya/models/surya-2-mmproj.gguf \
+    SURYA_INFERENCE_BACKEND=llamacpp SURYA_INFERENCE_PARALLEL=1 SURYA_INFERENCE_TIMEOUT_SECONDS=3600 \
+    FAST_LAYOUT_MODEL_CHECKPOINT=/opt/surya/models/layout2 \
+    FAST_ORDER_MODEL_CHECKPOINT=/opt/surya/models/layout2/order \
+    HF_HUB_OFFLINE=1 DISABLE_TQDM=true PYTHONDONTWRITEBYTECODE=1 HOME=/tmp \
+    USNM_SURYA_LLAMA_IMAGE=${LLAMA_DIGEST} USNM_SURYA_VERSION=0.22.1 USNM_SURYA_WEIGHTS=${SURYA_WEIGHTS}
+# The CUDA base asks the NVIDIA Container Toolkit's legacy hook (Docker) to refuse drivers older
+# than CUDA 12.8. CUDA 12's minor version compatibility runs this build on any CUDA 12 driver, so
+# the check is off; the plan class asks for CUDA 12.0 and the diagnostics record the driver.
+ENV NVIDIA_DISABLE_REQUIRE=1
+# Stock docker_wrapper mounts the BOINC slot at /work (job-cpu.toml, job-gpu.toml).
+ENTRYPOINT []
+CMD ["/usr/local/bin/usnm-boinc", "work", "--dir", "/work"]

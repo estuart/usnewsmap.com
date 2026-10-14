@@ -17,12 +17,28 @@ TEMPLATES = {
     # The gold check (#462): same worker image. `usnm-boinc gold submit` writes the input
     # template, which depends on the bundle.
     "usnm_gold": ["usnm_gold_out"],
+    # The Surya 2 test (#516): its own worker image, a CPU and a GPU version.
+    "usnm_surya": ["usnm_surya_in", "usnm_surya_out"],
+}
+
+# The plan classes an app version can be installed for (contrib-compute/boinc/plan_class_spec.xml),
+# and the job.toml each app uses under each.
+JOB_TOML = {
+    ("usnm_ocr", "docker"): "ocr/boinc/job.toml",
+    ("usnm_assess", "docker"): "ocr/boinc/job.toml",
+    ("usnm_gold", "docker"): "ocr/boinc/job.toml",
+    ("usnm_surya", "docker_mt"): "ocr/boinc/surya/job-cpu.toml",
+    ("usnm_surya", "docker_nvidia_cuda"): "ocr/boinc/surya/job-gpu.toml",
 }
 
 
-def install(project: Path, wrapper: Path, image: str, version: str, app: str = "usnm_ocr") -> Path:
+def install(project: Path, wrapper: Path, image: str, version: str, app: str = "usnm_ocr",
+            plan_class: str = "docker") -> Path:
     if app not in TEMPLATES:
         raise ValueError("--app must be one of " + ", ".join(sorted(TEMPLATES)))
+    if (app, plan_class) not in JOB_TOML:
+        raise ValueError(f"{app} has no version for plan class {plan_class}: one of "
+                         + ", ".join(sorted(p for a, p in JOB_TOML if a == app)))
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}", image):
         raise ValueError("--image must be a pullable registry reference pinned by full digest")
     if not re.fullmatch(r"[1-9][0-9]*\.[0-9]+", version):
@@ -32,12 +48,12 @@ def install(project: Path, wrapper: Path, image: str, version: str, app: str = "
     if not wrapper.is_file():
         raise ValueError("missing trusted Linux x86-64 docker_wrapper")
     root = Path(__file__).resolve().parents[2]
-    target = project / "apps" / app / version / "x86_64-pc-linux-gnu__docker"
+    target = project / "apps" / app / version / f"x86_64-pc-linux-gnu__{plan_class}"
     target.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(wrapper, target / "docker_wrapper_1")
     (target / "docker_wrapper_1").chmod(0o755)
     (target / "Dockerfile_1").write_text(f"FROM {image}\n")
-    shutil.copyfile(root / "ocr/boinc/job.toml", target / "job_1.toml")
+    shutil.copyfile(root / JOB_TOML[(app, plan_class)], target / "job_1.toml")
     spec = ET.Element("version")
     wrapper_file = ET.SubElement(spec, "file")
     ET.SubElement(wrapper_file, "physical_name").text = "docker_wrapper_1"
@@ -63,8 +79,10 @@ def main() -> None:
     parser.add_argument("--image", required=True)
     parser.add_argument("--version", default="1.0")
     parser.add_argument("--app", default="usnm_ocr", choices=sorted(TEMPLATES))
+    parser.add_argument("--plan-class", default="docker", choices=sorted({p for _, p in JOB_TOML}))
     args = parser.parse_args()
-    print(install(args.project.resolve(), args.wrapper.resolve(), args.image, args.version, args.app))
+    print(install(args.project.resolve(), args.wrapper.resolve(), args.image, args.version, args.app,
+                  args.plan_class))
     print(f"Register {args.app}, sign/publish the app, and configure stock daemons; see docs/boinc.md.")
 
 

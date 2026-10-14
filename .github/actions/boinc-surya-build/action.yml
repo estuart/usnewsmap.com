@@ -1,0 +1,79 @@
+name: boinc-surya-build
+description: >-
+  Builds the usnm_surya worker image (ocr/boinc/surya/Containerfile) and checks that, without a
+  GPU, it runs a unit and returns all five outputs (.github/workflows/boinc-surya.yml). Pushes
+  nothing.
+inputs:
+  image:
+    description: The image's repository
+    required: true
+  tag:
+    description: The local tag to give the image
+    required: true
+runs:
+  using: composite
+  steps:
+    # The CUDA base, torch and the weights need about 15 GB; the runner's preinstalled
+    # toolchains are removed to make room.
+    - name: Free disk space
+      shell: bash
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        docker system prune -af > /dev/null
+        df -h /
+    - name: Build
+      env:
+        IMAGE: ${{ inputs.image }}
+        SHA: ${{ inputs.tag }}
+      shell: bash
+      run: |
+        docker build -f ocr/boinc/surya/Containerfile \
+          --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+          --label "org.opencontainers.image.revision=$SHA" \
+          --label "org.opencontainers.image.description=usnewsmap BOINC Surya 2 worker (surya-ocr, llama.cpp, usnm-boinc)" \
+          -t "$IMAGE:$SHA" .
+        docker image ls "$IMAGE"
+    # Without a GPU: the diagnostics, the Python probe and a unit that is refused (no job)
+    # must still write all five outputs.
+    - name: The image runs a unit and always returns its outputs
+      env:
+        IMAGE: ${{ inputs.image }}
+        SHA: ${{ inputs.tag }}
+      shell: bash
+      run: |
+        work=$(mktemp -d)
+        chmod 777 "$work"
+        echo '{}' > "$work/surya.json"
+        echo x > "$work/page.jpg"
+        docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=1g -v "$work:/work" "$IMAGE:$SHA"
+        for f in text-tiled.txt text-whole.txt text-capped.txt result.json diag.txt; do
+          test -f "$work/$f" || { echo "::error::no $f"; exit 1; }
+        done
+        jq -e '.unit_error != null' "$work/result.json" > /dev/null
+        grep -q '== python probe' "$work/diag.txt"
+        cat "$work/diag.txt"
+    # Surya reads a rendered line on the runner's CPU, through llama.cpp's CPU fallback in the
+    # CUDA image: the CPU version's whole path, in about a minute.
+    - name: The image reads a page on CPU
+      env:
+        IMAGE: ${{ inputs.image }}
+        SHA: ${{ inputs.tag }}
+      shell: bash
+      run: |
+        work=$(mktemp -d)
+        chmod 777 "$work"
+        docker run --rm -v "$work:/work" "$IMAGE:$SHA" python3 -c "
+        from PIL import Image, ImageDraw, ImageFont
+        im = Image.new('RGB', (1000, 240), 'white')
+        ImageDraw.Draw(im).text((40, 80), 'HELLO NEWSPAPER WORLD', fill='black', font=ImageFont.load_default(size=56))
+        im.save('/work/in.jpg')"
+        docker run --rm -v "$work:/work" "$IMAGE:$SHA" usnm-boinc surya local-unit --image /work/in.jpg \
+          --dir /work --modes whole,capped --timeout-secs 900
+        docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=1g --memory=12g -v "$work:/work" "$IMAGE:$SHA"
+        cat "$work/diag.txt"
+        jq . "$work/result.json"
+        jq -e '[.runs[] | select(.outcome == "ok" and .device == "cpu")] | length == 2' "$work/result.json" > /dev/null
+        # llama-server runs in a session of its own; its memory must be counted.
+        jq -e '[.runs[] | select(.peak_rss_kib > 1000000)] | length == 2' "$work/result.json" > /dev/null ||
+          { echo "::error::peak memory leaves out llama-server"; exit 1; }
+        grep -qi 'newspaper' "$work/text-whole.txt" || { echo "::error::Surya did not read the line"; exit 1; }

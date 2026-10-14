@@ -4,6 +4,10 @@
 #   scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST --what-if
 #   scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST
 #
+# usnm_surya (#516) has its own worker image and two plan classes, one per version:
+#   scripts/boinc-app-release.sh --env prod --app usnm_surya --version 1.0 --plan-class docker_mt \
+#     --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
+#
 # Steps (contrib-compute/docs/app-release.md):
 # 1. Worker image. Volunteers pull it from the public GHCR package named, by digest, in
 #    images.worker of contrib-compute/infra/boinc/env/<env>.json; .github/workflows/boinc-worker.yml
@@ -32,16 +36,18 @@
 # key status and podman) and prints the plan.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold> --version <N.M> --signing-host HOST [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
+  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold|usnm_surya> --version <N.M> --signing-host HOST [--plan-class docker|docker_mt|docker_nvidia_cuda] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
   exit 2
 }
-ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false ALLOW_DIRTY=false
+ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" PLAN_CLASS=docker WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false ALLOW_DIRTY=false
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --app) [ $# -ge 2 ] || usage; APP=$2; shift 2 ;;
     --version) [ $# -ge 2 ] || usage; VERSION=$2; shift 2 ;;
     --signing-host) [ $# -ge 2 ] || usage; SIGNING_HOST=$2; shift 2 ;;
+    --plan-class) [ $# -ge 2 ] || usage; PLAN_CLASS=$2; shift 2 ;;
+    --worker-image) [ $# -ge 2 ] || usage; WORKER_OVERRIDE=$2; shift 2 ;;
     --signing-key-dir) [ $# -ge 2 ] || usage; KEY_DIR=$2; shift 2 ;;
     --signing-dataset) [ $# -ge 2 ] || usage; KEY_DATASET=$2; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
@@ -51,7 +57,14 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENV_NAME" ] && [ -n "$APP" ] && [ -n "$VERSION" ] && [ -n "$SIGNING_HOST" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
-case "$APP" in usnm_ocr | usnm_assess | usnm_gold) ;; *) die "--app must be usnm_ocr, usnm_assess or usnm_gold (scripts/boinc/install.py)" ;; esac
+case "$APP:$PLAN_CLASS" in
+  usnm_ocr:docker | usnm_assess:docker | usnm_gold:docker) ;;
+  usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda)
+    [ -n "$WORKER_OVERRIDE" ] || die "usnm_surya has its own worker image: give --worker-image" ;;
+  *) die "--app and --plan-class must be usnm_ocr, usnm_assess or usnm_gold with docker, or usnm_surya with docker_mt or docker_nvidia_cuda (scripts/boinc/install.py)" ;;
+esac
+[ -z "$WORKER_OVERRIDE" ] || [[ $WORKER_OVERRIDE =~ ^ghcr\.io/tgoodyear/usnm-boinc-worker@sha256:[0-9a-f]{64}$ ]] ||
+  die "--worker-image must be ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>"
 [[ $VERSION =~ ^[1-9][0-9]*\.[0-9]+$ ]] || die "--version must look like 1.0"
 [[ $SIGNING_HOST =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || die "--signing-host must be a host name"
 [[ $KEY_DIR =~ ^/[A-Za-z0-9/._-]+$ ]] || die "--signing-key-dir must be an absolute path"
@@ -61,6 +74,7 @@ cd "$(dirname "$0")/.."
 . scripts/lib/boinc.sh
 boinc_load_settings
 boinc_az_check
+[ -z "$WORKER_OVERRIDE" ] || WORKER_IMAGE=$WORKER_OVERRIDE
 [ -n "$SERVER_IMAGE" ] || die "no server image in $BOINC_SETTINGS: scripts/build-boinc-images.sh --env $ENV_NAME first"
 PUBLIC_KEY=$(jq -r .codeSignPublicKey "$BOINC_SETTINGS")
 [ -n "$PUBLIC_KEY" ] || die "no codeSignPublicKey in $BOINC_SETTINGS"
@@ -75,7 +89,8 @@ sha=$(git rev-parse HEAD)
 registry=$(jq -er .registry infra/names/"$ENV_NAME".json) || die "no registry in infra/names/$ENV_NAME.json"
 APPVER_REPO=usnm-boinc-appver
 APPVER_TAG="$APP-$VERSION"
-VERSION_SUBDIR="apps/$APP/$VERSION/x86_64-pc-linux-gnu__docker"
+[ "$PLAN_CLASS" = docker ] || APPVER_TAG="$APP-$VERSION-${PLAN_CLASS//_/-}"
+VERSION_SUBDIR="apps/$APP/$VERSION/x86_64-pc-linux-gnu__$PLAN_CLASS"
 ssh_host() { ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SIGNING_HOST" "$@"; }
 
 # --- 1. Worker image -------------------------------------------------------------------------
@@ -160,7 +175,7 @@ echo "signing host: $KEY_DATASET unlocked, key present, podman available"
 if $WHAT_IF; then
   cat << PLAN
 would, from commit $sha:
-2. stage $APP $VERSION on the signing host: pull $SERVER_IMAGE (short-lived ACR token), run
+2. stage $APP $VERSION ($PLAN_CLASS) on the signing host: pull $SERVER_IMAGE (short-lived ACR token), run
    scripts/boinc/install.py in it with --network=none, pinned to $WORKER_IMAGE
 3. sign each file with sign_executable (--network=none, key $KEY_DIR read-only); bring back the .sig files
 4. build $registry.azurecr.io/$APPVER_REPO:$APPVER_TAG in ACR Tasks (every signature verified),
@@ -192,7 +207,7 @@ git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc | ssh_host "mkd
 ssh_host "mkdir -p $remote/proj && touch $remote/proj/config.xml &&
   podman run --rm --network=none -v $remote/src:/src:ro -v $remote/proj:/proj --entrypoint python3 $SERVER_IMAGE \
     /src/scripts/boinc/install.py --project /proj --wrapper /usr/local/lib/usnm-boinc/docker_wrapper \
-    --image $WORKER_IMAGE --version $VERSION --app $APP > /dev/null" || die "staging failed on the signing host"
+    --image $WORKER_IMAGE --version $VERSION --app $APP --plan-class $PLAN_CLASS > /dev/null" || die "staging failed on the signing host"
 
 # --- 3. Sign ---------------------------------------------------------------------------------
 
@@ -223,7 +238,7 @@ mv "$work/sigs" "$ctx/sigs"
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
-  --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --file "$ctx/Containerfile" "$ctx" ||
+  --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --file "$ctx/Containerfile" "$ctx" ||
   die "the app version image build failed (a signature that doesn't verify fails it)"
 appver_image="$registry.azurecr.io/$APPVER_REPO@$(digest "$APPVER_REPO" "$APPVER_TAG")"
 echo "   $appver_image"

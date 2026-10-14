@@ -1,0 +1,9 @@
+#!/bin/sh
+# script_validator's compare script for usnm_surya (#516), called as
+# `usnm_surya_compare files files2`: two results' files, five each, in output template order.
+# Exit 0 when they agree (usnm-boinc surya compare: the probe's word-bag Dice floor, until the
+# threshold is measured). Every pair is appended to <project>/surya/pairs.jsonl. Linked into bin/.
+[ "$#" -eq 10 ] || { echo "usnm_surya_compare: expected 10 files, got $#" >&2; exit 2; }
+exec /usr/local/bin/usnm-boinc surya compare --files "$1" "$2" "$3" "$4" "$5" \
+  --files2 "$6" "$7" "$8" "$9" "${10}" \
+  --log "${USNM_SURYA_DIR:-$(cd .. && pwd)/surya}/pairs.jsonl"

@@ -1,0 +1,9 @@
+#!/bin/sh
+# script_validator's init script for usnm_surya (#516), called as `usnm_surya_check files`:
+# script_validator passes one result's five files, in output template order. Exit 0 when the
+# result is well formed. Every result it sees is copied to <project>/surya/seen/<result>/, so
+# each host's timings and diagnostics are kept, not only the canonical result's. BOINC's start
+# runs daemons in <project>/tmp_<host>, so ../surya is the project's surya/. Linked into bin/.
+[ "$#" -eq 5 ] || { echo "usnm_surya_check: expected 5 files, got $#" >&2; exit 2; }
+exec /usr/local/bin/usnm-boinc surya check --files "$1" "$2" "$3" "$4" "$5" \
+  --keep "${USNM_SURYA_DIR:-$(cd .. && pwd)/surya}/seen"

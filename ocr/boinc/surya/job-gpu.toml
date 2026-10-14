@@ -1,0 +1,7 @@
+# usnm_surya, NVIDIA GPU version (plan class docker_nvidia_cuda). use_gpu makes the stock
+# docker_wrapper add --gpus all: Docker needs the NVIDIA Container Toolkit's runtime, Podman a CDI
+# spec (nvidia-ctk cdi generate). The wrapper adds --cpus from the plan class's avg_ncpus (2);
+# 8 GiB, no swap.
+workdir = "/work"
+use_gpu = true
+create_args = "--network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --memory=8g --memory-swap=8g --pids-limit=1024 --tmpfs=/tmp:rw,size=1g"

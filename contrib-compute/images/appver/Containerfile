@@ -17,6 +17,7 @@ FROM ${SERVER_IMAGE}
 ARG APP
 ARG VERSION
 ARG WORKER_IMAGE
+ARG PLAN_CLASS=docker
 COPY src /tmp/appver-src
 COPY sigs /tmp/sigs
 COPY code_sign_public /tmp/code_sign_public
@@ -26,9 +27,9 @@ RUN set -eu; \
     p=/usr/local/lib/usnm-boinc/appver; \
     mkdir -p "$p"; touch "$p/config.xml"; \
     python3 /tmp/appver-src/scripts/boinc/install.py --project "$p" \
-      --wrapper /usr/local/lib/usnm-boinc/docker_wrapper --image "$WORKER_IMAGE" --version "$VERSION" --app "$APP"; \
+      --wrapper /usr/local/lib/usnm-boinc/docker_wrapper --image "$WORKER_IMAGE" --version "$VERSION" --app "$APP" --plan-class "$PLAN_CLASS"; \
     rm "$p/config.xml"; \
-    d="$p/apps/$APP/$VERSION/x86_64-pc-linux-gnu__docker"; \
+    d="$p/apps/$APP/$VERSION/x86_64-pc-linux-gnu__$PLAN_CLASS"; \
     python3 /tmp/check_appver.py --version-dir "$d" --sigs /tmp/sigs --public-key /tmp/code_sign_public; \
     rm -rf /tmp/appver-src /tmp/sigs /tmp/code_sign_public /tmp/check_appver.py; \
     chmod 0755 /usr/local/lib/usnm-boinc/publish-appver.sh

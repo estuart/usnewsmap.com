@@ -75,7 +75,7 @@ render_config() {
   local daemons
   daemons='<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd><output>sample_trivial_validator_usnm_ocr.log</output><pid_file>sample_trivial_validator_usnm_ocr.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd><output>batch_collect_assimilator_usnm_ocr.log</output><pid_file>batch_collect_assimilator_usnm_ocr.pid</pid_file></daemon>'
-  # The assessment app (#456) and the gold check (#462) validate with usnm-boinc, which only the bridge image carries.
+  # The assessment app (#456), the gold check (#462) and the Surya test (#516) validate with usnm-boinc, which only the bridge image carries.
   # A server run from that image adds its daemons and links the validator scripts into bin/.
   # Script names only: script_validator then adds "files" (and "files2") itself. Spelled out,
   # the macros never expand at BOINC 22bbebe0, whose split() keeps the delimiter on each token.
@@ -84,11 +84,15 @@ render_config() {
         <daemon><cmd>script_validator --app usnm_assess --init_script usnm_assess_check --compare_script usnm_assess_compare</cmd><output>script_validator_usnm_assess.log</output><pid_file>script_validator_usnm_assess.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd><output>batch_collect_assimilator_usnm_assess.log</output><pid_file>batch_collect_assimilator_usnm_assess.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_gold --init_script usnm_gold_check</cmd><output>script_validator_usnm_gold.log</output><pid_file>script_validator_usnm_gold.pid</pid_file></daemon>
-        <daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd><output>batch_collect_assimilator_usnm_gold.log</output><pid_file>batch_collect_assimilator_usnm_gold.pid</pid_file></daemon>"
+        <daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd><output>batch_collect_assimilator_usnm_gold.log</output><pid_file>batch_collect_assimilator_usnm_gold.pid</pid_file></daemon>
+        <daemon><cmd>script_validator --app usnm_surya --init_script usnm_surya_check --compare_script usnm_surya_compare</cmd><output>script_validator_usnm_surya.log</output><pid_file>script_validator_usnm_surya.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_surya</cmd><output>batch_collect_assimilator_usnm_surya.log</output><pid_file>batch_collect_assimilator_usnm_surya.pid</pid_file></daemon>"
     if [ -d "$PROJ/bin" ]; then
       ln -sfn "$TEMPLATES/usnm_assess_check" "$PROJ/bin/usnm_assess_check"
       ln -sfn "$TEMPLATES/usnm_assess_compare" "$PROJ/bin/usnm_assess_compare"
       ln -sfn "$TEMPLATES/usnm_gold_check" "$PROJ/bin/usnm_gold_check"
+      ln -sfn "$TEMPLATES/usnm_surya_check" "$PROJ/bin/usnm_surya_check"
+      ln -sfn "$TEMPLATES/usnm_surya_compare" "$PROJ/bin/usnm_surya_compare"
     fi
   fi
   DB_PASSWD="$(cat "$SECRETS/db-runtime")" python3 - "$TEMPLATES/config.xml.template" "$SECRETS/config.xml" "$daemons" <<'PY'

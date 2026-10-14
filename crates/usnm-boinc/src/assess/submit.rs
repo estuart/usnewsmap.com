@@ -87,7 +87,8 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
     out
 }
 
-async fn stage_file(project: &Path, physical: &str, bytes: &[u8]) -> anyhow::Result<()> {
+/// Writes one download file where `dir_hier_path` puts it, readable by Apache.
+pub async fn stage_file(project: &Path, physical: &str, bytes: &[u8]) -> anyhow::Result<()> {
     let output = Command::new(project.join("bin/dir_hier_path"))
         .arg(physical)
         .current_dir(project)

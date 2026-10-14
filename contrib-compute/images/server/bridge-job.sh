@@ -31,6 +31,18 @@
 #                               against the committed lock and writes <campaign>/bundle.tar
 #                               (gold-bundle.sh; the gold bundle job, bridge image only)
 #
+# The Surya 2 test (#516, docs/boinc-surya.md), under $SHARE_DIR/surya/<SURYA_CAMPAIGN> (same
+# name rule as ASSESS_CAMPAIGN):
+#   BRIDGE_STEP=surya-stage     SURYA_PAGES=group:lang:doc_id,... (at most SURYA_MAX, default 20)
+#                               SURYA_ENGINE_IMAGE=sha256:... (the usnm_surya worker image)
+#                               SURYA_ENGINE_LLAMA=sha256:... SURYA_ENGINE_WEIGHTS=sha256:...
+#                               (its USNM_SURYA_LLAMA_IMAGE and USNM_SURYA_WEIGHTS)
+#                               fetches each page's IIIF JPEG from LoC, one request at a time,
+#                               5 s apart
+#   BRIDGE_STEP=surya-submit    [SURYA_MAX=20]
+#   BRIDGE_STEP=surya-summary   prints the kept results and compared pairs (<project>/surya) as
+#                               a Markdown table, and writes it to <campaign>/summary.md
+#
 # The remote hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache), through the
 # hand-off container HANDOFF_URL=https://<account>.blob.core.windows.net/boinc-handoff, read
 # and written with this job's identity:
@@ -64,6 +76,11 @@ if [[ "$step" == assess-* ]]; then
   [[ "${ASSESS_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "ASSESS_CAMPAIGN must be 1-41 of [a-z0-9-]"
   ASSESS="$SHARE_DIR/assess/$ASSESS_CAMPAIGN"
 fi
+SURYA=""
+if [[ "$step" == surya-* ]]; then
+  [[ "${SURYA_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "SURYA_CAMPAIGN must be 1-41 of [a-z0-9-]"
+  SURYA="$SHARE_DIR/surya/$SURYA_CAMPAIGN"
+fi
 GOLD=""
 if [[ "$step" == gold-* ]]; then
   [[ "${GOLD_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "GOLD_CAMPAIGN must be 1-41 of [a-z0-9-]"
@@ -88,6 +105,22 @@ case "$step" in
     python3 /usr/local/lib/usnm-boinc/assess/aggregate.py --scores "$ASSESS/out/scores.jsonl" \
       --results "$ASSESS/out/results.jsonl" --crash "$ASSESS/out/crash.jsonl" > "$ASSESS/out/tables.md"
     exit 0 ;;
+  surya-stage)
+    # No database or secrets: this step only talks to LoC and writes the share.
+    [[ "${SURYA_PAGES:-}" =~ ^[a-z0-9:_,-]+$ ]] || fail "SURYA_PAGES must be group:lang:doc_id,..."
+    page_args=()
+    IFS=, read -r -a pages <<< "$SURYA_PAGES"
+    for p in "${pages[@]}"; do page_args+=(--page "$p"); done
+    exec usnm-boinc surya stage "${page_args[@]}" --root "$SURYA" \
+      --engine-image "${SURYA_ENGINE_IMAGE:?set SURYA_ENGINE_IMAGE}" \
+      --engine-llama "${SURYA_ENGINE_LLAMA:?set SURYA_ENGINE_LLAMA}" \
+      --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" \
+      --max-pages "${SURYA_MAX:-20}" ;;
+  surya-summary)
+    # No database or secrets: reads what the validator kept and writes the campaign's summary.
+    usnm-boinc surya summary --root "$SURYA" --seen "$PROJ/surya/seen" --pairs "$PROJ/surya/pairs.jsonl" \
+      | tee "$SURYA/summary.md"
+    exit 0 ;;
   gold-prepare)
     # No database or secrets: this step only talks to the publishers and writes the share.
     exec usnm-boinc gold prepare --bundle "$GOLD/bundle.tar" --root "$GOLD" ;;
@@ -103,7 +136,7 @@ case "$step" in
     exec usnm-boinc gold trust --reports "$GOLD/out/reports.jsonl" \
       --max-cer "${GOLD_MAX_CER:-0.10}" --out "$SHARE_DIR/gold/trust.json" ;;
 esac
-if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != register-apps ]; then
+if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] && [ "$step" != register-apps ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -149,6 +182,15 @@ case "$step" in
     find "$PROJ/download" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
     rm -f "$stamp"
     exit "$rc" ;;
+  surya-submit)
+    stamp="$(mktemp)"
+    rc=0
+    usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" || rc=$?
+    for d in "$PROJ/download" "$PROJ/templates"; do
+      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
+    done
+    rm -f "$stamp"
+    exit "$rc" ;;
   gold-submit)
     stamp="$(mktemp)"
     rc=0
@@ -185,5 +227,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
 esac

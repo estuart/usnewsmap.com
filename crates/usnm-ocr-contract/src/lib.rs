@@ -22,3 +22,6 @@ pub mod boinc;
 
 /// File-based jobs for the JP2 against IIIF JPEG assessment (#456).
 pub mod assess;
+
+/// File-based jobs for the Surya 2 test on BOINC volunteers (#516).
+pub mod surya;

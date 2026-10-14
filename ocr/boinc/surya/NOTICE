@@ -1,0 +1,5 @@
+This image contains the weights of Surya 2 (datalab-to/surya-ocr-2-gguf) and of Surya's layout model
+(datalab-to/surya_layout2), by Datalab (https://www.datalab.to), unmodified, under the AI Pubs Open
+RAIL-M License (Modified) in /opt/surya/models/LICENSE. The weights and any derivatives are subject to
+the use-based restrictions in paragraph 5 and Attachment A of that licence. Sources and checksums:
+/opt/surya/weights.lock. The image runs them only to read the newspaper page in each BOINC task.

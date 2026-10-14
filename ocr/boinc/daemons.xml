@@ -15,3 +15,7 @@
      No compare script: each result measures its own host. -->
 <daemon><cmd>script_validator --app usnm_gold --init_script usnm_gold_check</cmd><output>script_validator_usnm_gold.log</output><pid_file>script_validator_usnm_gold.pid</pid_file></daemon>
 <daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd><output>batch_collect_assimilator_usnm_gold.log</output><pid_file>batch_collect_assimilator_usnm_gold.pid</pid_file></daemon>
+<!-- The Surya 2 test (#516). Redundancy 2: `usnm-boinc surya check` keeps a copy of every result
+     under <project>/surya/seen; `surya compare` logs every pair to <project>/surya/pairs.jsonl. -->
+<daemon><cmd>script_validator --app usnm_surya --init_script usnm_surya_check --compare_script usnm_surya_compare</cmd><output>script_validator_usnm_surya.log</output><pid_file>script_validator_usnm_surya.pid</pid_file></daemon>
+<daemon><cmd>batch_collect_assimilator --app usnm_surya</cmd><output>batch_collect_assimilator_usnm_surya.log</output><pid_file>batch_collect_assimilator_usnm_surya.pid</pid_file></daemon>

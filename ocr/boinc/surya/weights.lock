@@ -1,0 +1,14 @@
+# Surya 2's weights in the usnm_surya worker image (#516): <path under /opt/surya/models> <URL> <sha256>.
+# The OCR model's GGUF build and its vision projector, run by llama-server, at revision
+# 6a3a4c30e5e74446d4f8b6afd05b2f2da970f470 of datalab-to/surya-ocr-2-gguf (as round 1, #370), and the
+# layout model Surya falls back to when a full-page read fails (datalab-to/surya_layout2 at
+# 0aee81d5fd9275c0582e545bf3a56944b1e75679). LICENSE is Datalab's modified Open RAIL-M, the same file in
+# both repositories; the licence requires a copy with every distribution of the weights.
+# The image's USNM_SURYA_WEIGHTS is sha256: and the sha256 of this file's lines that are not comments.
+LICENSE https://huggingface.co/datalab-to/surya-ocr-2-gguf/resolve/6a3a4c30e5e74446d4f8b6afd05b2f2da970f470/LICENSE b6be9042dce439368b606444256cd97624a97c67dfae33957b87c3a0b461ae03
+surya-2.gguf https://huggingface.co/datalab-to/surya-ocr-2-gguf/resolve/6a3a4c30e5e74446d4f8b6afd05b2f2da970f470/surya-2.gguf 1f18abe17b1ed8b4e47ee9b1ad0e274c93daf5efbb6b29a04ff1712e37051e05
+surya-2-mmproj.gguf https://huggingface.co/datalab-to/surya-ocr-2-gguf/resolve/6a3a4c30e5e74446d4f8b6afd05b2f2da970f470/surya-2-mmproj.gguf 98c0563673b1657ff6d021d1e5f04af06cbf61bb40c63ac613e8bb71b42fb2c0
+layout2/config.json https://huggingface.co/datalab-to/surya_layout2/resolve/0aee81d5fd9275c0582e545bf3a56944b1e75679/config.json bd2db9bcc338841fc4496b10a69f07ccc544b0c80e94d94482295197b23d5605
+layout2/rfdetr_layout.pth https://huggingface.co/datalab-to/surya_layout2/resolve/0aee81d5fd9275c0582e545bf3a56944b1e75679/rfdetr_layout.pth e01b79f858778cdad8a1384e644ac2b35f9c095fbfd102a34942e23f2f179fe7
+layout2/order/config.json https://huggingface.co/datalab-to/surya_layout2/resolve/0aee81d5fd9275c0582e545bf3a56944b1e75679/order/config.json 83e687c922ce1915adb212af882f54ba52dca17c5d556526af9d57c41b6e0124
+layout2/order/order_ar.pt https://huggingface.co/datalab-to/surya_layout2/resolve/0aee81d5fd9275c0582e545bf3a56944b1e75679/order/order_ar.pt f381c38548015cbbe962611cbd2c80c59e88c3c25543ac20df9db16f84923ad8

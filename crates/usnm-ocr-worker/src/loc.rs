@@ -334,6 +334,9 @@ pub struct LocConfig {
     /// Where batch manifests and issue METS are kept, so each is fetched
     /// once. None: memory only.
     pub batch_cache: Option<PathBuf>,
+    /// On a fast, bare 503, ask another item to tell an item error from a
+    /// server problem. Off for callers that must send nothing after a 5xx.
+    pub item_probes: bool,
 }
 
 impl Default for LocConfig {
@@ -350,6 +353,7 @@ impl Default for LocConfig {
             storage_root: format!("{STORAGE_SERVICE_ROOT}ndnp/"),
             batches_root: "https://chroniclingamerica.loc.gov/data/batches/".into(),
             batch_cache: None,
+            item_probes: true,
         }
     }
 }
@@ -777,7 +781,8 @@ impl LocClient {
                         // look the same, only a second fast, bare 503 for
                         // the same file in a row, after the first held, can
                         // be an item error.
-                        let may_be_item = server == Server::Api || prev_bare;
+                        let may_be_item =
+                            self.cfg.item_probes && (server == Server::Api || prev_bare);
                         bare_before = bare;
                         if let (Some(title), Some(_), true, true) =
                             (title, self.health(server), may_be_item, bare)
@@ -886,6 +891,16 @@ impl LocClient {
             .cloned()
             .ok_or_else(|| FetchError::Permanent(format!("loc.gov lists no image for {key}")))?;
         self.iiif_scan(base, size).await
+    }
+
+    /// The page's IIIF service base, through the item API (one request per
+    /// issue), so a caller can pace the image request itself.
+    pub async fn iiif_base_of(&self, key: &PageKey) -> Result<String, FetchError> {
+        let pages = self.issue_pages(key).await?;
+        pages
+            .get(&key.seq)
+            .cloned()
+            .ok_or_else(|| FetchError::Permanent(format!("loc.gov lists no image for {key}")))
     }
 
     /// A file on the storage service (an ALTO next to its JP2), paced like
@@ -1724,6 +1739,32 @@ mod tests {
         assert!(loc.held_until().is_some());
     }
 
+    /// With item probes off, a fast bare 503 sends nothing more: the known
+    /// good item isn't asked again, and the error is a hold.
+    #[tokio::test]
+    async fn without_item_probes_a_503_asks_nothing_more() {
+        let (root, hits) = items_loc(vec![
+            ("sn1/1904-07-29", Answer::Ok),
+            ("sn1/1904-07-30", Answer::Bare503),
+        ])
+        .await;
+        let loc = LocClient::new(LocConfig {
+            api_gap: Duration::from_millis(10),
+            tile_gap: Duration::from_millis(10),
+            attempts: 1,
+            backoff: Duration::from_millis(400),
+            api_root: root.clone(),
+            iiif_root: format!("{root}/iiif/"),
+            item_probes: false,
+            ..LocConfig::default()
+        })
+        .unwrap();
+        loc.set_known_good(loc.item_url(&page("sn1", "1904-07-29")));
+        let e = item(&loc, &page("sn1", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(!hits.lock().unwrap().contains_key("sn1/1904-07-29"));
+    }
+
     #[tokio::test]
     async fn item_errors_across_titles_become_a_hold() {
         let (root, _) = items_loc(vec![
@@ -1823,6 +1864,7 @@ mod tests {
             storage_root: s.storage_root(),
             batches_root: s.batches_root(),
             batch_cache: cache,
+            item_probes: true,
         })
         .unwrap()
     }

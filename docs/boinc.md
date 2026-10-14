@@ -8,6 +8,8 @@ Parquet to `ocr-out`; `ocr-sync` and the release keep their existing decisions.
 A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison
 (#456); see [boinc-assessment.md](boinc-assessment.md). A third, `usnm_gold`,
 scores a host's engine on public ground truth ([Gold check](#gold-check)).
+A fourth, `usnm_surya`, runs Surya 2 on volunteer CPUs and NVIDIA GPUs (#516);
+see [boinc-surya.md](boinc-surya.md).
 Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
 
 <picture>

@@ -1,0 +1,5 @@
+# usnm_surya, CPU version (plan class docker_mt). The wrapper adds --cpus from the plan class's
+# thread count. Round 1 (#370) peaked at 11.8 GB with 8 threads; the cap is 12 GiB, no swap.
+# HOME, the model caches and llama-server's log live on the /tmp tmpfs.
+workdir = "/work"
+create_args = "--network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --memory=12g --memory-swap=12g --pids-limit=1024 --tmpfs=/tmp:rw,size=1g"

@@ -126,6 +126,9 @@ enum Commands {
     /// The gold check as BOINC work (#462), app `usnm_gold`.
     #[command(subcommand)]
     Gold(Gold),
+    /// The Surya 2 test on volunteer CPUs and GPUs (#516), app `usnm_surya`.
+    #[command(subcommand)]
+    Surya(Surya),
     /// The remote hand-off between the OCR node and the BOINC server (#469, docs/boinc.md).
     #[command(subcommand)]
     Handoff(Handoff),
@@ -337,6 +340,114 @@ enum Gold {
         out: PathBuf,
     },
 }
+#[derive(Subcommand)]
+enum Surya {
+    /// Fetch each page's full-size IIIF JPEG from LoC, one request at a time, and write its unit.
+    Stage {
+        /// group:lang:doc_id, e.g. serbian:srp:sn85055101_1917-04-03_ed-1_seq-3; repeat.
+        #[arg(long = "page", required = true)]
+        pages: Vec<usnm_boinc::surya::Page>,
+        #[arg(long)]
+        root: PathBuf,
+        /// The worker image's registry digest (sha256:...).
+        #[arg(long)]
+        engine_image: String,
+        /// The llama.cpp server image it is built on (its USNM_SURYA_LLAMA_IMAGE).
+        #[arg(long)]
+        engine_llama: String,
+        /// Its USNM_SURYA_WEIGHTS.
+        #[arg(long)]
+        engine_weights: String,
+        #[arg(long, default_value = "0.22.1")]
+        engine_surya: String,
+        #[arg(long, value_delimiter = ',', default_value = "tiled,whole,capped")]
+        gpu_modes: Vec<SuryaMode>,
+        #[arg(long, value_delimiter = ',', default_value = "tiled")]
+        cpu_modes: Vec<SuryaMode>,
+        #[arg(long, default_value_t = 1800)]
+        gpu_timeout_secs: u32,
+        #[arg(long, default_value_t = 5400)]
+        cpu_timeout_secs: u32,
+        #[arg(long, default_value_t = 5)]
+        gap_secs: u64,
+        #[arg(long, default_value_t = 20)]
+        max_pages: usize,
+    },
+    /// Hand staged units to create_work, two results each.
+    Submit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        max_units: usize,
+    },
+    /// Write a unit from a local image, to check a host or the image without LoC or BOINC.
+    /// Inside the worker image the engine values default to the image's own.
+    LocalUnit {
+        #[arg(long)]
+        image: PathBuf,
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(
+            long,
+            default_value = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        )]
+        engine_image: String,
+        #[arg(long, env = "USNM_SURYA_LLAMA_IMAGE")]
+        engine_llama: String,
+        #[arg(long, env = "USNM_SURYA_WEIGHTS")]
+        engine_weights: String,
+        #[arg(long, env = "USNM_SURYA_VERSION", default_value = "0.22.1")]
+        engine_surya: String,
+        #[arg(long, value_delimiter = ',', default_value = "whole")]
+        modes: Vec<SuryaMode>,
+        #[arg(long, default_value_t = 1800)]
+        timeout_secs: u32,
+    },
+    /// script_validator's init script: check one result (five files); --keep copies it there.
+    Check {
+        #[arg(long, num_args = 5, required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        keep: Option<PathBuf>,
+    },
+    /// script_validator's compare script: two results of one unit; --log appends the pair.
+    Compare {
+        #[arg(long, num_args = 5, required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long, num_args = 5, required = true)]
+        files2: Vec<PathBuf>,
+        #[arg(long, default_value_t = usnm_ocr_contract::surya::PROBE_MIN_DICE)]
+        min_dice: f64,
+        #[arg(long)]
+        log: Option<PathBuf>,
+    },
+    /// Print a Markdown table of the kept results and the logged pairs.
+    Summary {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        seen: PathBuf,
+        #[arg(long)]
+        pairs: PathBuf,
+    },
+}
+#[derive(Clone, Copy, ValueEnum)]
+enum SuryaMode {
+    Tiled,
+    Whole,
+    Capped,
+}
+impl From<SuryaMode> for usnm_ocr_contract::surya::InputMode {
+    fn from(m: SuryaMode) -> Self {
+        match m {
+            SuryaMode::Tiled => Self::Tiled,
+            SuryaMode::Whole => Self::Whole,
+            SuryaMode::Capped => Self::Capped,
+        }
+    }
+}
 #[derive(Clone, Copy, ValueEnum)]
 enum AssessMode {
     Ocr,
@@ -475,6 +586,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Assess(a) => assess(a).await?,
         Commands::Gold(g) => gold(g).await?,
+        Commands::Surya(x) => surya(x).await?,
         Commands::Handoff(h) => handoff(h).await?,
         Commands::Status { root } => {
             for r in records(&root)? {
@@ -622,6 +734,93 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
             for (image, hosts) in &t.hosts {
                 eprintln!("{image}: {} trusted hosts", hosts.len());
             }
+        }
+    }
+    Ok(())
+}
+
+async fn surya(c: Surya) -> anyhow::Result<()> {
+    use usnm_boinc::surya as x;
+    match c {
+        Surya::Stage {
+            pages,
+            root,
+            engine_image,
+            engine_llama,
+            engine_weights,
+            engine_surya,
+            gpu_modes,
+            cpu_modes,
+            gpu_timeout_secs,
+            cpu_timeout_secs,
+            gap_secs,
+            max_pages,
+        } => {
+            let s = x::stage::run(&x::stage::Options {
+                pages,
+                root,
+                engine: usnm_ocr_contract::surya::Engine {
+                    image: engine_image,
+                    llama: engine_llama,
+                    surya: engine_surya,
+                    weights: engine_weights,
+                },
+                gpu_modes: gpu_modes.into_iter().map(Into::into).collect(),
+                cpu_modes: cpu_modes.into_iter().map(Into::into).collect(),
+                gpu_timeout_secs,
+                cpu_timeout_secs,
+                gap: std::time::Duration::from_secs(gap_secs),
+                max_pages,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Surya::Submit {
+            root,
+            project,
+            max_units,
+        } => {
+            let s = x::submit::run(&x::submit::Options {
+                root,
+                project,
+                max_units,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Surya::LocalUnit {
+            image,
+            dir,
+            engine_image,
+            engine_llama,
+            engine_weights,
+            engine_surya,
+            modes,
+            timeout_secs,
+        } => {
+            let j = x::stage::local_unit(
+                &image,
+                &dir,
+                usnm_ocr_contract::surya::Engine {
+                    image: engine_image,
+                    llama: engine_llama,
+                    surya: engine_surya,
+                    weights: engine_weights,
+                },
+                modes.into_iter().map(Into::into).collect(),
+                timeout_secs,
+            )?;
+            println!("{}", j.id);
+        }
+        Surya::Check { files, keep } => x::validate::check(&files, keep.as_deref())?,
+        Surya::Compare {
+            files,
+            files2,
+            min_dice,
+            log,
+        } => x::validate::compare(&files, &files2, min_dice, log.as_deref())?,
+        Surya::Summary { root, seen, pairs } => {
+            print!("{}", x::summary::run(&root, &seen, &pairs)?)
         }
     }
     Ok(())
