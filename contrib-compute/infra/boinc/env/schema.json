@@ -4,7 +4,7 @@
   "description": "Public settings that scripts/provision-boinc.sh deploys as the stack usnm-boinc-<env> into usnm-boinc-rg-<env>, and scripts/build-boinc-images.sh updates with the images it builds. Nothing secret belongs here: the secrets are made in Azure (contrib-compute/infra/boinc/modules/keyvault.bicep). Keys sorted. provision-boinc.sh checks the same rules with jq.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["assessment", "codeSignPublicKey", "images", "location", "operator", "projectUrl", "subscriptionId"],
+  "required": ["assessment", "codeSignPublicKey", "goldBundle", "images", "location", "operator", "projectUrl", "subscriptionId"],
   "properties": {
     "$schema": {
       "type": "string",
@@ -17,6 +17,10 @@
     "codeSignPublicKey": {
       "type": "string",
       "description": "The PUBLIC half of the offline code-signing key (code_sign_public), as text. Empty until it is made on the offline machine. The private half never comes here or to Azure."
+    },
+    "goldBundle": {
+      "type": "boolean",
+      "description": "Deploy the gold bundle job, which builds the gold bundle v1 from its publishers onto the share inside the VNet (docs/boinc.md#build-the-gold-bundle): main.bicep's goldBundle parameter."
     },
     "images": {
       "type": "object",

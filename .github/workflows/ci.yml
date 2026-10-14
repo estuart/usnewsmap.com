@@ -101,7 +101,9 @@ jobs:
           for f in boinc/project.xml boinc/plan_class_spec.xml boinc/config.xml.template; do
             python3 -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$f"
           done
-      - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh images/appver/*.sh
+      - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh images/appver/*.sh images/bridge/*.sh
+      - name: The gold-bundle step's tests pass
+        run: python3 -m unittest -v images/bridge/test_gold_bundle.py
       # The app version's signature checks and the installer (no server needed).
       - name: The app version checks' tests pass
         working-directory: .
@@ -161,6 +163,12 @@ jobs:
             -f contrib-compute/images/bridge/Containerfile --build-arg SERVER_IMAGE=usnm-boinc-server:check \
             --build-arg BIN_IMAGE=usnm-boinc-bridge-bin:check .
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
+          # The gold-bundle step's tools (docs/boinc.md#build-the-gold-bundle).
+          docker run --rm --entrypoint sh usnm-boinc-bridge:check -c 'usnm-ocr-survey --help > /dev/null &&
+            bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"11.3.0\", PIL.__version__" &&
+            python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/gold.py --help > /dev/null &&
+            cd /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey && python3 -c "import gold, crops, altotext, locfetch" &&
+            test -f /usr/local/lib/usnm-boinc/gold-bundle.sh && test -s /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json'
 
   # The page-language detector on text of known language (05 §5.5.8): behind
   # #[ignore], so the rust job doesn't run it.

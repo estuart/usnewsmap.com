@@ -22,6 +22,11 @@ param workloadProfileName string
 param command array = [ '/usr/local/bin/bridge-job' ]
 @description('Seconds before a run is stopped.')
 param timeoutSeconds int = 1800
+@description('Settings added to the job\'s own, as { name, value } (the gold bundle job sets its step this way).')
+param extraEnv array = []
+@description('CPU cores and memory of a run.')
+param cpu string = '0.5'
+param memory string = '1Gi'
 
 resource job 'Microsoft.App/jobs@2024-03-01' = {
   name: jobName
@@ -46,8 +51,8 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
           name: 'bridge'
           image: image
           command: command
-          resources: { cpu: json('0.5'), memory: '1Gi' }
-          env: [
+          resources: { cpu: json(cpu), memory: memory }
+          env: concat([
             { name: 'AZURE_CLIENT_ID', value: identityClientId }
             { name: 'KEY_VAULT_NAME', value: keyVaultName }
             { name: 'DB_HOST', value: mysqlHost }
@@ -55,7 +60,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
             { name: 'MASTER_HOST', value: masterHost }
             { name: 'PROJECT_DIR', value: '/project' }
             { name: 'HANDOFF_DIR', value: '/project/handoff' }
-          ]
+          ], extraEnv)
           volumeMounts: [ { volumeName: 'project', mountPath: '/project' } ]
         }
       ]

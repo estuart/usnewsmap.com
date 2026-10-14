@@ -544,6 +544,53 @@ scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN
 
 A unit left with a `submitting` marker is handled as for the assessment.
 
+### Build the gold bundle
+
+The bundle tar can be built inside the VNet, so nothing passes through an
+operator's machine. The job needs a bridge image that has the step, so build it first
+(`scripts/build-boinc-images.sh`, which rewrites `images.bridge`). Then set
+`"goldBundle": true` in `contrib-compute/infra/boinc/env/<env>.json` in the same
+commit as the new digest; it is false until then. After
+`scripts/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
+output `goldBundleJobName`). It runs the bridge image's `gold-bundle` step with
+`GOLD_CAMPAIGN=v1-tess550` set in the job itself, so it needs no override:
+
+```sh
+az containerapp job start --subscription <subscription> --resource-group usnm-boinc-rg-prod \
+  --name usnm-boinc-gold-caj-prod --query name -o tsv
+```
+
+The step (`contrib-compute/images/bridge/gold-bundle.sh`):
+
+1. runs `gold.py public-fetch` for `bln600`, `overproof-ca` (`--pages 20`),
+   `newseye-bnf`, `newseye-nlf-fi` and `newseye-nlf-sv` (`--subset validation`)
+   and `nzz` into `<share>/gold/build-v1/data`. gold.py keeps its own pacing:
+   one request at a time, a second apart, and loc.gov paced as `locfetch` paces
+   it. A file that's already downloaded isn't fetched again, so a rerun resumes;
+2. runs `gold.py public-convert` for each, with the flags of the 13 October 2026
+   runs ([ocr-scoring-guide.md](ocr-scoring-guide.md#fetch-and-convert)): `--count 600 --per-page 1`
+   for BLN600, `--count 600 --per-page 50` for Overproof, `--count 60` for the others;
+3. runs `usnm-ocr-survey bundle-build --version 1 --seed 457 --per-source 30` with
+   BLN600's zip as `--original`, writing its lock beside the bundle, then
+   `bundle-verify` on the tar;
+4. stops, and installs nothing, unless that lock equals the committed
+   `fixtures/ocr-gold/bundle-v1.lock.json`, the tar's sha256 is
+   `42520de42c7597bef4ea0ef3508797bfb7db129dd09c31e3d5a2236222be9183` and the
+   manifest's is `150e20d75a5357caeeb6eb63911a3d94348e617879f7b0de16c7b1a54670fe3a`;
+5. writes `<share>/gold/v1-tess550/bundle.tar` (beside it first, then renamed).
+   A bundle already there with that sha256 ends the run at once; one with another
+   sha256 is refused. One run at a time: a second run stops on the lock
+   `<share>/gold/.build-v1.lock`.
+
+The image carries Pillow 11.3.0 (the CI's version, from its manylinux wheel)
+and bsdtar for BLN600's AES zip. The crops are JPEG re-encodes, so a different
+Pillow or libjpeg could change the tar's bytes, and step 4 would catch that.
+UNVERIFIED: that this build reproduces the lock byte for byte (it was built on
+another machine), and how long the run takes on the share. The job allows six
+hours.
+
+Then run `gold-prepare` as above.
+
 **Not verified** (check in the live acceptance exercise):
 
 - that stock `create_work --remote_file` keeps `<sticky/>` and `<no_delete/>`

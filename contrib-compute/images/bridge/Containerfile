@@ -18,4 +18,26 @@ COPY contrib-compute/images/bridge/usnm_assess_check contrib-compute/images/brid
      /usr/local/lib/usnm-boinc/
 COPY docs/reports/2026-10-jp2-vs-jpeg-ocr/score.py docs/reports/2026-10-jp2-vs-jpeg-ocr/aggregate.py \
      /usr/local/lib/usnm-boinc/assess/
+# The gold-bundle step (docs/boinc.md#build-the-gold-bundle): gold.py with Pillow and bsdtar
+# (BLN600's zip is AES encrypted), usnm-ocr-survey, and the committed lock it must reproduce.
+# Pillow is the CI's version (ci.yml), from its manylinux wheel, checked by sha256: the crops
+# are JPEG re-encodes, so the tar's bytes depend on it.
+ARG PILLOW_URL=https://files.pythonhosted.org/packages/f2/2f/d7675ecae6c43e9f12aa8d58b6012683b20b6edfbdac7abcb4e6af7a3784/pillow-11.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+ARG PILLOW_SHA256=106064daa23a745510dabce1d84f29137a37224831d88eb4ce94bb187b1d7e5f
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libarchive-tools \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL -o /tmp/pillow.whl "$PILLOW_URL" \
+ && echo "$PILLOW_SHA256  /tmp/pillow.whl" | sha256sum -c - \
+ && python3 -m zipfile -e /tmp/pillow.whl /usr/local/lib/usnm-boinc/gold/py \
+ && rm /tmp/pillow.whl
+ENV PYTHONPATH=/usr/local/lib/usnm-boinc/gold/py
+COPY --from=bin /usnm-ocr-survey /usr/local/bin/usnm-ocr-survey
+# gold.py and the modules it imports, in the repository's layout: locfetch.py finds jaocr.py
+# and alto.py at ../../ja-ocr (their Azure imports are lazy and unused here).
+COPY scripts/ocr-survey/gold.py scripts/ocr-survey/locfetch.py scripts/ocr-survey/crops.py \
+     scripts/ocr-survey/altotext.py /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/
+COPY ja-ocr/jaocr.py ja-ocr/alto.py /usr/local/lib/usnm-boinc/gold/ja-ocr/
+COPY fixtures/ocr-gold/bundle-v1.lock.json /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json
+COPY contrib-compute/images/bridge/gold-bundle.sh /usr/local/lib/usnm-boinc/gold-bundle.sh
 ENTRYPOINT ["/usr/local/bin/bridge-job"]

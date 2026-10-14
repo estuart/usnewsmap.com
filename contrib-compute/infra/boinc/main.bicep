@@ -38,6 +38,9 @@ param publishImage string = ''
 @description('Run the server from the bridge image (the server image plus usnm-boinc), so the usnm_assess validator (#456) can run. Off by default.')
 param assessment bool = false
 
+@description('Deploy the gold bundle job (docs/boinc.md#build-the-gold-bundle): the bridge image running the gold-bundle step, which builds the gold bundle v1 from its publishers onto the share. Off by default.')
+param goldBundle bool = false
+
 @description('Seconds before a bridge job run is stopped. assess-stage fetches at 5 s per request, so a longer limit lets one run stage more pages.')
 param bridgeTimeoutSeconds int = 1800
 
@@ -77,6 +80,7 @@ var names = {
   mysql: usnmGlobalName('boinc', 'mysql', envName, sfx)
   mysqlDnsZone: 'usnm-boinc-${envName}.private.mysql.database.azure.com'
   initJob: usnmName('boinc-init', 'caj', envName)
+  goldBundleJob: usnmName('boinc-gold', 'caj', envName)
   publishJob: usnmName('boinc-publish', 'caj', envName)
   secretsIdentity: usnmName('boinc-secrets', 'id', envName)
   secretsJob: usnmName('boinc-secrets', 'caj', envName)
@@ -282,6 +286,37 @@ module publishJob 'modules/bridge-job.bicep' = if (withApp && !empty(publishImag
   }
 }
 
+// The gold bundle v1, built inside the VNet from the datasets' publishers onto the share
+// (gold-bundle.sh): the bridge job's image, mounts and settings, its step fixed in the job, so a
+// plain `az containerapp job start` runs it. Six hours: gold.py paces its downloads, and the
+// datasets are unpacked on the share.
+module goldBundleJob 'modules/bridge-job.bicep' = if (withApp && goldBundle) {
+  name: 'gold-bundle-job'
+  dependsOn: [ registry ]
+  params: {
+    jobName: names.goldBundleJob
+    location: location
+    environmentId: app!.outputs.environmentId
+    identityId: identity.id
+    identityClientId: identity.properties.clientId
+    image: bridgeImage
+    registryServer: registryServer
+    keyVaultName: vault.outputs.name
+    mysqlHost: mysql.outputs.host
+    databaseName: mysql.outputs.databaseName
+    masterHost: masterHost
+    projectStorageName: app!.outputs.projectStorageName
+    workloadProfileName: app!.outputs.workloadProfileName
+    timeoutSeconds: 21600
+    cpu: '1'
+    memory: '2Gi'
+    extraEnv: [
+      { name: 'BRIDGE_STEP', value: 'gold-bundle' }
+      { name: 'GOLD_CAMPAIGN', value: 'v1-tess550' }
+    ]
+  }
+}
+
 module secretsJob 'modules/secrets-job.bicep' = if (withApp) {
   name: 'secrets-job'
   dependsOn: [ registry ]
@@ -300,6 +335,7 @@ module secretsJob 'modules/secrets-job.bicep' = if (withApp) {
 
 output appFqdn string = withApp ? app!.outputs.fqdn : ''
 output bridgeJobName string = withApp ? bridgeJob!.outputs.name : ''
+output goldBundleJobName string = withApp && goldBundle ? goldBundleJob!.outputs.name : ''
 output keyVaultName string = vault.outputs.name
 output mysqlHost string = mysql.outputs.host
 output publishJobName string = withApp && !empty(publishImage) ? publishJob!.outputs.name : ''

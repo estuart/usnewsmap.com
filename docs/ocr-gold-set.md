@@ -265,7 +265,7 @@ cargo run --release -p usnm-ocr-survey -- bundle-build --version 1 --per-source 
 cargo run --release -p usnm-ocr-survey -- bundle-verify --bundle OUT/bundle/usnm-ocr-gold-v1.tar
 ```
 
-`--original` is the downloaded archive of a reference-only source; the builder checks it against `SOURCE.json` and reads the members to record their checksums, and copies nothing from it. No dataset content is committed. The repository holds only the lock, `fixtures/ocr-gold/bundle-v1.lock.json`: version, seed, crop ids, file checksums, remotes, the manifest's and the tar's sha256.
+The deployed BOINC server can run the same build inside its VNet and check it against the lock: [Build the gold bundle](boinc.md#build-the-gold-bundle). `--original` is the downloaded archive of a reference-only source; the builder checks it against `SOURCE.json` and reads the members to record their checksums, and copies nothing from it. No dataset content is committed. The repository holds only the lock, `fixtures/ocr-gold/bundle-v1.lock.json`: version, seed, crop ids, file checksums, remotes, the manifest's and the tar's sha256.
 
 **Version 1** (built 2026-10-13, seed 457, 30 per source): 142 crops, 30 BLN600, 30 Overproof CA (from 18 LoC pages), 24 NewsEye BnF, 18 NewsEye NLF Finnish, 10 NewsEye NLF Swedish and 30 NZZ lines. The tar is 9.6 MB (9.1 MB of shipped crops, a 140 KB manifest, 128 KB of licence files). A client also downloads 19 remotes: the 68 MB BLN600 zip and 18 page images. All 18 LoC page images matched the checksums recorded at conversion when fetched again on the same day.
 

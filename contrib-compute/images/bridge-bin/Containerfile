@@ -1,4 +1,5 @@
-# The usnm-boinc binary alone (PR #441's crate), compiled in release mode. scripts/build-boinc-images.sh
+# The usnm-boinc binary (PR #441's crate) and usnm-ocr-survey (the gold bundle builder, for the
+# gold-bundle step), compiled in release mode. scripts/build-boinc-images.sh
 # tags it with a hash of the Rust sources (crates/, Cargo.toml, Cargo.lock, rust-toolchain.toml)
 # and this file, and builds it only when that tag is missing; the bridge image copies it out.
 #
@@ -7,7 +8,8 @@ FROM mirror.gcr.io/library/rust:1-bookworm@sha256:114c7a4425406451c2866b6aafe69f
 ARG BUILD_JOBS=2
 WORKDIR /src
 COPY . .
-RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
+RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc -p usnm-ocr-survey
 
 FROM scratch
 COPY --from=build /src/target/release/usnm-boinc /usnm-boinc
+COPY --from=build /src/target/release/usnm-ocr-survey /usnm-ocr-survey
