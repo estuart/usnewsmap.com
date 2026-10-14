@@ -1,6 +1,6 @@
 # BUDA spike procedure for #481
 
-Status: prepared, not executed against a BOINC server. See the [observations](../../notes/2026-10-14-buda-evaluation.md) and [proposed ADR](../../design/adr/0020-boinc-buda-evaluation.md). The procedure extends the existing apps; it does not replace them.
+Status: prepared, not executed against a BOINC server. See the [observations](../../notes/2026-10-14-buda-evaluation.md), [completed Mac standalone tests](../../notes/2026-10-14-buda-mac-offline-tests.md) and [proposed ADR](../../design/adr/0020-boinc-buda-evaluation.md). The procedure extends the existing apps; it does not replace them.
 
 ## Inputs and baseline
 
@@ -92,7 +92,9 @@ If stock script dispatch is unsuitable, the upstream change needs to pass truste
 
 ## Test the arm64 Mac
 
-The version 22 asset `docker_wrapper-22-apple-darwin` contains both `x86_64` and `arm64` slices. Native launch/config parsing was observed, but no BOINC task ran. Before proceeding, install a supported Mac BOINC client and Podman using [BOINC's Mac setup](https://github.com/BOINC/boinc/wiki/Installing-Docker-on-Mac), then check the client's runtime detection. BOINC manages its own Podman machine; follow that setup rather than creating an unrelated machine.
+The [native ARM worker build and tests](../../notes/2026-10-14-buda-native-arm64.md) now provide a local ARM image and a dedicated native-only build environment. Use that architecture for further Mac testing. Publishing the image and registering/signing the app version remain server/release work; generate fresh cohorts using the native release digest when one exists.
+
+The version 22 asset `docker_wrapper-22-apple-darwin` contains both `x86_64` and `arm64` slices. BOINC 8.2.15 is now installed and detects the existing Podman 5.5.2. Native ARM payload and emulated OCR standalone tests passed; cold standalone building needs a heartbeat, and paused-task restart failed because the installed helper reparses the state format as shell syntax. No client-scheduled BOINC task ran. See the [measured results and reproduction](../../notes/2026-10-14-buda-mac-offline-tests.md) before proceeding. On a fresh host, follow [BOINC's Mac setup](https://github.com/BOINC/boinc/wiki/Installing-Docker-on-Mac). BOINC manages its own Podman machine, separate from a Desktop user's machine.
 
 Register a signed BUDA app version for the Mac client's actual primary platform (expected `arm64-apple-darwin__docker`, confirm from its scheduler request). Use the universal wrapper, and add an ARM science variant with the same immutable worker digest only if that image provides Linux arm64. Record the registry manifest architecture and the selected variant. The setup guide's Intel-only app registration does not cover a native arm64 BUDA client: the pinned scheduler deliberately suppresses Intel fallback for BUDA.
 

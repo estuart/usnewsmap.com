@@ -1,16 +1,16 @@
 # ADR-0020: Retain separate BOINC apps while evaluating BUDA
 
-- **Status:** Proposed; source review and Mac launch smoke completed, server spike pending
+- **Status:** Proposed; source review and Mac standalone tests completed, server spike pending
 - **Date:** 2026-10-14
 - **Extends:** [ADR-0019](0019-boinc-server-hosting.md)
 - **Issue:** [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481)
-- **Evidence:** [evaluation note](../../notes/2026-10-14-buda-evaluation.md) and [remaining spike procedure](../../experiments/2026-10-14-buda/README.md)
+- **Evidence:** [evaluation note](../../notes/2026-10-14-buda-evaluation.md), [Mac standalone tests](../../notes/2026-10-14-buda-mac-offline-tests.md), [native ARM worker tests](../../notes/2026-10-14-buda-native-arm64.md) and [remaining spike procedure](../../experiments/2026-10-14-buda/README.md)
 
 ## Context
 
 The project has three stock BOINC Docker-wrapper apps: `usnm_ocr`, `usnm_assess` and `usnm_gold`. BUDA could replace their signed app versions with one `buda` app, using science-app variants for the worker files. This would reduce release administration, but changes how science code is authorized, how results are validated and how pending tasks select worker files.
 
-The review used the repository's pinned BOINC commit, `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`. The published version 22 Mac wrapper was inspected and launched natively on an arm64 Mac. There was no access to the project server, database or signing host. The Mac had no BOINC client or Podman installation. These observations are not an end-to-end BUDA result.
+The review used the repository's pinned BOINC commit, `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`. The published version 22 Mac wrapper was inspected and launched natively on an arm64 Mac. A follow-up installed BOINC 8.2.15, verified the existing Podman installation and ran standalone tasks through the stock Mac helper: native ARM payload execution and emulated OCR passed, while cold standalone building and paused-task restart exposed limitations. There was no access to the project server, database or signing host. These observations are not an end-to-end BUDA result.
 
 ## Proposed decision
 
@@ -21,7 +21,7 @@ Retain the three separate BOINC apps. Run BUDA only as an additional experimenta
 3. **Preserve offline authorization of executable inputs.** BUDA variant Dockerfiles and `job.toml` files are workunit inputs rather than signed app-version files. A digest-pinned `FROM` preserves the selected base image but does not authenticate the Dockerfile or runtime configuration: either could change the command, networking or mounts. Adopting BUDA would require an explicit acceptance of that trust change or a signed launcher/manifest verification design before executing science code.
 4. **Freeze science-app names for each worker release.** The scheduler reads current variants and adds their files when sending a task. A mutable variant is not a version pinned into each queued workunit. Replacing it can send pending or replacement results to different code. A migration must journal the science-app identity, image digest, platform/variant policy, batch ID and workunit name, retain old variants until cohorts drain, and prove crash recovery and retries preserve that identity.
 5. **Reuse pinned images, with a local build step.** A variant can contain `FROM ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest>` and the existing `job.toml`. The wrapper still builds a small derived image on the volunteer host; it is not a registry-pull-only mode. Its default image name is workunit-specific. Cold/warm bandwidth and build time need measuring before claiming a caching improvement. Keep the existing runtime limits and native output checks.
-6. **Treat platform support separately from BUDA adoption.** The published Mac wrapper contains both arm64 and x86_64 code, but a native arm64 client needs an app version registered for its primary platform and a matching ARM science variant. The pinned scheduler prevents BUDA's fallback to an Intel app version on an ARM Mac. The worker image also needs a compatible architecture; a universal host wrapper does not make a Linux worker image multi-architecture. The same wrapper can be used by separate apps, so BUDA is not required to add Mac support.
+6. **Treat platform support separately from BUDA adoption.** The published Mac wrapper contains both arm64 and x86_64 code, but a native arm64 client needs an app version registered for its primary platform and a matching ARM science variant. The pinned scheduler prevents BUDA's fallback to an Intel app version on an ARM Mac. A local native ARM engine/worker build and standalone OCR execution now pass, with a new image and cohort identity; it is not a published/signed app release. The same wrapper can be used by separate apps, so BUDA is not required to add Mac support. The Mac helper's pause-restart failure still needs resolution independently of BUDA.
 
 ## Alternatives
 

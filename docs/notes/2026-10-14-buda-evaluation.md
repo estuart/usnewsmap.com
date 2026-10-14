@@ -4,6 +4,8 @@
 
 ## The question
 
+Follow-up: [Mac tests without a project server](2026-10-14-buda-mac-offline-tests.md) records installation, standalone container execution and failures. It also corrects this note's initial conclusion that Podman was absent: Podman was already installed outside the checked PATH; BOINC's required Mac helper was missing.
+
 Can BUDA replace the three signed Docker-wrapper apps while preserving their validation, worker image pins and the bridge's native publication/recovery contract? The proposed decision is [ADR-0020](../design/adr/0020-boinc-buda-evaluation.md). The [spike procedure](../experiments/2026-10-14-buda/README.md) describes the tests still needed.
 
 ## What we checked
