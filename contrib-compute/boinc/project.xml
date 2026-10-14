@@ -24,7 +24,7 @@
     </app>
     <app>
         <name>usnm_gold</name>
-        <user_friendly_name>usnewsmap OCR gold check (scores the host's engine on public ground truth)</user_friendly_name>
+        <user_friendly_name>usnewsmap OCR gold check (scores the host engine on public ground truth)</user_friendly_name>
         <min_version>0</min_version>
         <deprecated>0</deprecated>
         <homogeneous_redundancy>0</homogeneous_redundancy>

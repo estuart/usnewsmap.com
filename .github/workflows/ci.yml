@@ -101,6 +101,17 @@ jobs:
           for f in boinc/project.xml boinc/plan_class_spec.xml boinc/config.xml.template; do
             python3 -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$f"
           done
+      - name: project.xml has no quotes or backslashes in its text
+        # xadd (BoincApp::insert) puts user_friendly_name into SQL unescaped; an apostrophe
+        # failed register-apps on prod (#469). Checks parsed text, so &apos; / &#39; count too.
+        run: |
+          python3 - boinc/project.xml <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          bad = [(e.tag, e.text) for e in ET.parse(sys.argv[1]).iter() if e.text and any(c in e.text for c in "'\\\"")]
+          for tag, text in bad:
+              print(f"error: <{tag}> in boinc/project.xml has a quote or backslash, which xadd inserts into SQL unescaped: {text!r}")
+          sys.exit(1 if bad else 0)
+          PY
       - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh images/appver/*.sh images/bridge/*.sh
       - name: The gold-bundle step's tests pass
         run: python3 -m unittest -v images/bridge/test_gold_bundle.py
