@@ -412,5 +412,68 @@ class PublicConvert(unittest.TestCase):
                 self.assertEqual(perfect["char_edits"], 0)
 
 
+class DownloadZip(unittest.TestCase):
+    """download_zip() refetches a cached file that is not a readable zip, including one whose
+    central directory is intact but whose member data is corrupt."""
+
+    def run_with(self, first: bytes, good: bytes) -> list[str]:
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "a.zip"
+            dest.write_bytes(first)
+
+            def fake_download(url, path):
+                calls.append(url)
+                if not path.exists():
+                    path.write_bytes(good)
+
+            orig = gold.download
+            gold.download = fake_download
+            import time
+            real_sleep, time.sleep = time.sleep, lambda s: None
+            try:
+                gold.download_zip("https://example.org/a.zip", dest)
+                self.assertEqual(dest.read_bytes(), good)
+            finally:
+                gold.download = orig
+                time.sleep = real_sleep
+        return calls
+
+    @staticmethod
+    def make_zip(data: bytes = b"hello world " * 100) -> bytes:
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("x.txt", data)
+        return buf.getvalue()
+
+    def test_good_zip_kept(self):
+        good = self.make_zip()
+        self.assertEqual(len(self.run_with(good, good)), 1)
+
+    def test_html_reply_refetched(self):
+        self.assertEqual(len(self.run_with(b"<html>rate limited</html>", self.make_zip())), 2)
+
+    def test_corrupt_member_refetched(self):
+        good = self.make_zip()
+        bad = bytearray(good)
+        i = bad.find(b"hello world")
+        bad[i:i + 5] = b"HELLO"  # same length: headers intact, CRC wrong
+        self.assertTrue(__import__("zipfile").is_zipfile(__import__("io").BytesIO(bytes(bad))))
+        self.assertEqual(len(self.run_with(bytes(bad), good)), 2)
+
+    def test_damaged_deflate_stream_refetched(self):
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("x.txt", b"hello world " * 200)
+        bad = bytearray(buf.getvalue())
+        start = 30 + len("x.txt")  # local header, then the compressed data
+        bad[start] = 0xFF  # an invalid deflate block type: zlib.error, not BadZipFile
+        self.assertEqual(len(self.run_with(bytes(bad), self.make_zip())), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
