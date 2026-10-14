@@ -32,6 +32,24 @@ RUN set -eu; mkdir -p /models; cd /models; \
       echo "$sum  $name" | sha256sum --check --quiet; \
     done
 
+# Tesseract's command-line main() calls feenableexcept(FE_DIVBYZERO |
+# FE_OVERFLOW | FE_INVALID) (src/tesseract.cpp), so floating-point traps stay
+# on while Leptonica decodes the image. OpenJPEG's SSE 9/7 inverse wavelet
+# overflows to infinity on some coefficients of many LoC JP2s, harmless when
+# traps are off (opj_decompress reads the same files), and the trap kills
+# Tesseract with SIGFPE (exit 136) before any OCR (#455). This preloaded
+# library makes feenableexcept a no-op, so the engine runs with the default
+# masked floating-point environment, as Tesseract used as a library does.
+FROM ${BASE} AS fpshim
+ARG SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+      "$SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+ && apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY fpshim.c /fpshim.c
+RUN gcc -O2 -shared -fPIC -Wall -Werror -o /libusnm-nofpe.so /fpshim.c
+
 FROM ${BASE}
 ARG SNAPSHOT
 RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
@@ -40,7 +58,8 @@ RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuit
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       tesseract-ocr=5.5.0-1+b1 libtesseract5=5.5.0-1+b1 \
  && rm -rf /var/lib/apt/lists/* /usr/share/tesseract-ocr/5/tessdata/*.traineddata
-ENV TESSDATA_PREFIX=/opt/tessdata OMP_THREAD_LIMIT=1
+COPY --from=fpshim /libusnm-nofpe.so /usr/local/lib/libusnm-nofpe.so
+ENV TESSDATA_PREFIX=/opt/tessdata OMP_THREAD_LIMIT=1 LD_PRELOAD=/usr/local/lib/libusnm-nofpe.so
 COPY --from=models /models/tessdata/ /opt/tessdata/
 COPY models.lock /opt/tessdata/models.lock
 # The output configs (txt, alto) live beside the models: without them
