@@ -5,8 +5,8 @@
   "goldBundle": true,
   "images": {
     "appver": "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:8dfddf08951de72be9ebd381646cf9ab8a463b0fd96a56844e6828edbe583d9c",
-    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:e0d522302e29f10cfef21068af34ab8773935a1601bba58808f280809c48d08a",
-    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:186fcd703175148a17791c9af7c1b5150943d82b53f164464789a9c2530a296a",
+    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:fea853fb0ad8f1c832772c1c2c0ec344612a7e591c7d35c2fde40baf2ed89169",
+    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:0746c1933b020ad95783ec6c4fb832190c289916c8e5a033281bf7d63dab643e",
     "worker": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:9c8eac0485d52e6f8f060f665371d60bf84356bc4b177f32f4aa3f5ccf9307b9"
   },
   "location": "westus2",
