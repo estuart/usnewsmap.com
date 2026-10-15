@@ -22,10 +22,11 @@ Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
 
 ## Boundaries
 
-- Linux x86-64 first, with compatible recent stock BOINC and Docker. The stock
-  Docker wrapper is the only app type in this pilot. Volunteers need permission
-  to run Docker containers; hosts without that capability (including restricted
-  or unprivileged containers) cannot participate. A native app is future work.
+- Linux x86-64 first, with compatible recent stock BOINC and a working container runtime. The stock
+  Docker wrapper supports both Docker and Podman. The [volunteer guide](boinc-volunteer.md)
+  supplies an opt-in rootless Podman profile and a mandatory startup preflight for
+  slot access, actual cgroup limits and pause/resume. Restricted hosts that cannot
+  satisfy these checks cannot participate. A native app is future work.
 - Explicit cohorts of 1-100 pages from one batch, selected from the prefetch
   manifest. No automatic consumption of Azure queues or LoC fetching.
 - Central bridge: native work reservations, BOINC staging/submission, validation

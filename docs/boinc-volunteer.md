@@ -4,39 +4,66 @@ Volunteers run OCR on historical newspaper pages from Chronicling America (Libra
 
 Status: a pilot for trusted friends. The project server is up and `usnm_ocr` and `usnm_gold` are published; work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc.md](boinc.md).
 
-## 1. Check the prerequisites
+## 1. Set up and check the host
 
-You need all of these ([boinc.md](boinc.md#boundaries)):
+Use a dedicated BOINC service on Linux x86-64 with enough RAM for a 1536 MiB task (at least 4 GiB is recommended for the default profile). The rootless Podman profile below needs systemd, cgroup v2, Python 3.9 or later, Podman, and a stock BOINC client version 8.2.13 or later. The stock wrapper supports Podman directly; a Docker daemon and Docker-group membership are not required. BOINC still calls the scheduler plan class `docker` and logs `Docker: version ... (podman)`.
 
-- Linux on x86-64. No other platform has an app version.
-- A BOINC client, version 8.2.13 or later. Distribution packages are too old (Debian 13 ships 8.0.4, Ubuntu 24.04 ships 7.24.1): use the BOINC project's own package repository (below).
-- Docker, which the BOINC client's user is allowed to run. Every task runs in a Docker container started by the stock BOINC Docker wrapper. Hosts that can't run Docker can't take part. An unprivileged Proxmox LXC container with `nesting=1,keyctl=1` runs Docker (Debian's `docker.io`) well enough to pass the checks below.
+A container starting successfully does not establish that its resource limits or pause work. On a real RHEL host, Podman accepted CPU/memory flags without a usable cgroup, and SELinux blocked the wrapper's slot mount. The startup preflight below checks actual kernel limits and slot access and refuses to start BOINC on failure. See the [live measurement](notes/2026-10-14-boinc-volunteer-preflight.md).
 
-Check them:
+### Install prerequisites
 
-```sh
-uname -m                 # expect: x86_64
-boinc --version          # expect: 8.2.13 or later
-docker version           # expect: a Client and a Server section, no permission error
-```
+Get a recent client from the [BOINC project's packages](https://boinc.berkeley.edu/linux_install.php), then check `boinc --version`. Some distribution clients are older than the required 8.2.13. Upstream packages may put `boinc` and `boinccmd` in `/usr/local/bin`; use their full paths if needed.
 
-If `boinc --version` is missing or older than 8.2.13, install the client from the BOINC project's repository (https://boinc.berkeley.edu/linux_install.php). On Debian 13 (trixie), as root:
+On Debian/Ubuntu, install the runtime and user-session prerequisites:
 
 ```sh
-curl -fsSL https://boinc.berkeley.edu/dl/linux/stable/trixie/boinc.gpg -o /usr/share/keyrings/boinc.asc
-echo "deb [signed-by=/usr/share/keyrings/boinc.asc] https://boinc.berkeley.edu/dl/linux/stable/trixie trixie main" > /etc/apt/sources.list.d/boinc.list
-apt-get update && apt-get install boinc-client docker.io
+sudo apt-get install podman uidmap dbus-user-session python3 ca-certificates
 ```
 
-For Ubuntu 24.04 use `noble` in place of `trixie`. This package installs `boinc` and `boinccmd` in `/usr/local/bin`, which is not on root's `PATH` in some shells (a bare `pct exec`, for example); use the full path if `boinccmd` is not found. Its data directory is `/var/lib/boinc` (Debian's own package used `/var/lib/boinc-client`).
-
-Then check that the BOINC service user can run a container. The user is `boinc` on Debian and Ubuntu packages; other distributions may differ (UNVERIFIED):
+On RHEL, install the runtime and SELinux policy-management tools:
 
 ```sh
-sudo -u boinc docker run --rm hello-world   # expect: "Hello from Docker!" (minimal images lack sudo: apt-get install sudo)
+sudo dnf install podman shadow-utils python3 ca-certificates policycoreutils-python-utils
 ```
 
-If that fails with a permission error, add the user to the `docker` group and restart the client (verified on Debian 13; UNVERIFIED on other distributions): `sudo usermod --append --groups docker boinc && sudo systemctl restart boinc-client`.
+The official BOINC package must give its unprivileged service user a non-overlapping subordinate UID/GID allocation. The helper verifies an allocation exists; it does not invent ranges that could overlap another user. It also refuses a root BOINC service, cgroup v1, nonstandard/symlinked configuration files, or queued/running work. For an existing client, select **No new tasks** and finish/report its tasks before reconfiguration.
+
+### Preview, install, then attach
+
+From a current checkout of this repository, preview the setup and then install it:
+
+```sh
+python3 scripts/boinc/setup_volunteer.py
+
+# After reviewing the preview:
+sudo python3 scripts/boinc/setup_volunteer.py --apply
+```
+
+The helper detects the service's existing data directory and uses the published worker digest in this checkout's `contrib-compute/infra/boinc/env/prod.json` (`images.worker`). It does not move data. The default service is `boinc-client.service`; use `--service` if the installed package names it differently. `--data-dir` and `--image` can override the detected directory and released image, but the directory must still be the service's existing working directory and the image must use its full immutable digest.
+
+The helper preserves account data and unrelated settings, backs up the changed preference/configuration XML, and sets a conservative pilot profile: one BOINC CPU, no GPUs, idle-only processing after five minutes, no battery use, 50% memory allowance, and no extra work buffer. Apps stay in memory while suspended so the wrapper can pause their container. CPU-load suspension is disabled because the client can count whole-machine load against its simulated single CPU; the idle policy and actual per-container CPU limit remain active.
+
+Installation enables the BOINC user's systemd session at boot and configures Podman to use that session for cgroups. It makes the service's cgroups writable (`ProtectControlGroups=false`); the unprivileged UID still limits which cgroups it can modify. It allows read-only home-directory traversal while keeping the data directory writable and retaining the service's other restrictions. Podman's container monitors run with the container, and runtime files survive service restarts. Only the slots directory receives a persistent `container_file_t` label when SELinux is enabled; SELinux remains enabled and the account/config files outside slots retain their labels. The helper does not grant Docker access or change other users' Podman settings. If this dedicated account already belongs to `docker`, an administrator can remove that unused access.
+
+The preflight runs in `ExecStartPre` as the service user, with the same service restrictions the client will have. It uses a disposable slot, the pinned worker image, and the task's runtime options to check:
+
+- a mode-0600 input can be read through the same mount the wrapper uses, and a mode-0644 output is readable by the host;
+- the **kernel** reports one CPU, 1536 MiB of memory, no extra swap, and 64 processes;
+- the root filesystem is read-only and the container has no network routes;
+- Podman actually enters paused and running states, and its probe can be removed.
+
+It does not add `:z` or `:Z` to hide a broken slots label. The installer also rejects conflicting service overrides. Each restart repeats the checks; a failure prevents BOINC startup. The initial run may pull the worker image and the upstream hello-world image used by stock BOINC runtime detection. No account key is required by setup or preflight.
+
+Inspect the result:
+
+```sh
+sudo journalctl -u boinc-client.service --no-pager -n 30
+# expect: BOINC host preflight passed ...
+```
+
+This is host readiness, not server acceptance. After attaching, still verify one task's output upload, validation, and collection. A scheduler completion report or exit code 0 alone is insufficient.
+
+The measured profile is RHEL 10.2 x86-64, SELinux enforcing, BOINC 8.2.13, and Podman 5.8.2. Debian/Ubuntu installation and other distributions remain UNVERIFIED until the same live checks are recorded. Windows/macOS support is separate. Docker remains an existing pilot option; this helper and its rootless guarantees apply to Podman only.
 
 ## 2. Attach to the project
 
@@ -56,14 +83,14 @@ boinccmd --create_account https://boinc.usnewsmap.com/ YOUR_EMAIL YOUR_PASSWORD 
 boinccmd --lookup_account https://boinc.usnewsmap.com/ YOUR_EMAIL YOUR_PASSWORD
 ```
 
-Then attach with the key:
+BOINC Manager can add the project using its URL and your account login. For a command-line client, attach with the key:
 
 ```sh
 boinccmd --project_attach https://boinc.usnewsmap.com/ ACCOUNT_KEY
 boinccmd --get_project_status   # expect: an entry whose master URL is https://boinc.usnewsmap.com/
 ```
 
-`boinccmd --get_messages 0` then shows `Master file download succeeded` and `Scheduler request completed`. The client also logs `Docker: version ...` at start-up; if that line is missing, the scheduler sends this host no work.
+`boinccmd --get_messages 0` then shows `Master file download succeeded` and `Scheduler request completed`. The client also logs `Docker: version ... (podman)` at start-up for this profile; if that line is missing, the scheduler sends this host no work.
 
 Set idle-only processing and conservative limits in your BOINC preferences, as the pilot asks. On a headless host or a container, the client may log `Suspending computation - CPU is busy` because it sees the whole machine's load; set `<suspend_cpu_usage>0</suspend_cpu_usage>` in `/var/lib/boinc/global_prefs_override.xml` and run `boinccmd --read_global_prefs_override`.
 
@@ -96,12 +123,12 @@ Per task, from `ocr/boinc/job.toml`: one CPU, 1536 MiB of memory with no extra s
 
 Network, step by step:
 
-| Step                                                        | Who connects                   | To where                              |
-| ----------------------------------------------------------- | ------------------------------ | ------------------------------------- |
-| scheduler requests, downloads of inputs, uploads of results | the BOINC client               | `https://boinc.usnewsmap.com/`        |
-| worker image                                                | Docker, started by the wrapper | the registry named in the app version |
-| gold originals                                              | the BOINC client               | figshare (BLN600) and tile.loc.gov    |
-| the task itself                                             | nobody                         | no network inside the container       |
+| Step                                                        | Who connects                               | To where                              |
+| ----------------------------------------------------------- | ------------------------------------------ | ------------------------------------- |
+| scheduler requests, downloads of inputs, uploads of results | the BOINC client                           | `https://boinc.usnewsmap.com/`        |
+| worker image                                                | Podman (or Docker), started by the wrapper | the registry named in the app version |
+| gold originals                                              | the BOINC client                           | figshare (BLN600) and tile.loc.gov    |
+| the task itself                                             | nobody                                     | no network inside the container       |
 
 What leaves your machine: the result files in the table in section 3, and what any stock BOINC client sends its project (host description, account details). The project stores your email address, name, IP address and account key. Privacy is on by default, and you can delete your account ([design](../contrib-compute/docs/design.md), Privacy). Web server and scheduler logs keep IP addresses for 30 days.
 
@@ -119,7 +146,9 @@ Success: a task moves from downloading to running to uploaded, and the event log
 ## 6. Troubleshooting
 
 - **No tasks.** Work goes out in small cohorts; there may be none queued. Run `boinccmd --project https://boinc.usnewsmap.com/ update` and check the event log.
-- **Tasks fail at once.** Check the event log for a Docker error. Run the `hello-world` check in section 1 as the BOINC user.
+- **Client will not start.** Read `journalctl -u boinc-client.service`. A slot/SELinux error needs the slots-only label; missing limits need a working user systemd session, cgroup v2 and writable delegated cgroups. Re-run the setup preview and fix its diagnostic. Do not disable the preflight to accept work.
+- **Tasks fail at once.** Check the event log for a runtime or slot error. A hello-world check alone is insufficient; the startup preflight exercises the real task limits and mount.
+- **Upload fails.** An upload error is not a completed acceptance test even if the scheduler receives a completion report. Preserve a local result when diagnosing, stop requesting new tasks, and report the upload-server message to the project operator.
 - **Tasks fail after a while.** A page may need more than 1536 MiB, or the engine may have crashed. Either is a failed task, which the project sees ([boinc.md](boinc.md#allocation-and-recovery)). If every task fails, detach and report it.
 - **Gold downloads fail.** The client fetches from figshare and tile.loc.gov; make sure your network allows both. UNVERIFIED: that the client follows figshare's redirect.
 
@@ -130,3 +159,7 @@ boinccmd --project https://boinc.usnewsmap.com/ detach
 ```
 
 The client stops its tasks for this project and deletes the project's files, sticky files included. To delete your account too, use the project website.
+
+## Remove the managed profile
+
+First select **No new tasks** and let BOINC finish and report all queued and running work before stopping the service. Stopping BOINC with unfinished work can leave task containers paused in the profile's managed Podman storage; removing the drop-in also removes `CONTAINERS_STORAGE_CONF` and `XDG_RUNTIME_DIR`, so restarting cannot find those containers and may recreate tasks while leaving the originals stranded. Once all work is reported, stop BOINC, remove `/etc/systemd/system/boinc-client.service.d/zz-usnm-volunteer.conf`, and restore the XML state recorded on first installation in `/etc/usnm-boinc-volunteer/boinc-client.service/backups/` (substitute the service name if different): copy back each backed-up XML file, or if `<file>.absent` is present because the file did not exist before installation, delete that XML file (or remove only this profile's settings if you added others afterward). Run `systemctl daemon-reload` before starting the client. Account data and container images are retained. Only disable the user's lingering session or remove its slots-label rule when that user/slots tree no longer needs them. Do not remove the preflight while continuing to rely on this profile's resource/isolation guarantees.

@@ -121,6 +121,7 @@ jobs:
         working-directory: .
         run: |
           python3 -m unittest -v scripts/boinc/test_install.py
+          python3 -m unittest -v scripts/boinc/test_volunteer.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
       - name: Install Bicep
         working-directory: .
