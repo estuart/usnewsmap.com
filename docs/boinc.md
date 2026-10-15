@@ -9,7 +9,10 @@ A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison
 (#456); see [boinc-assessment.md](boinc-assessment.md). A third, `usnm_gold`,
 scores a host's engine on public ground truth ([Gold check](#gold-check)).
 A fourth, `usnm_surya`, runs Surya 2 on volunteer CPUs and NVIDIA GPUs (#516);
-see [boinc-surya.md](boinc-surya.md).
+see [boinc-surya.md](boinc-surya.md). A fifth and sixth, `usnm_quality` and
+`usnm_qwen`, score per-page OCR quality without ground truth and transcribe
+deterministic word crops with Qwen3-VL (#522); see
+[boinc-quality.md](boinc-quality.md).
 Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
 
 <picture>
@@ -286,9 +289,10 @@ the template's settings. Run one step at a time.
 ### Register the apps
 
 `make_project` and `bin/xadd` run once, at `--init-project`. An app added to
-`contrib-compute/boinc/project.xml` later (`usnm_assess`, `usnm_gold`) is not in the
-database until `xadd` runs again. The `register-apps` step copies the deployed image's
-`project.xml` into the project and runs `bin/xadd`:
+`contrib-compute/boinc/project.xml` later (`usnm_assess`, `usnm_gold`, `usnm_surya`,
+`usnm_quality`, `usnm_qwen`) is not in the database until `xadd` runs again. The
+`register-apps` step copies the deployed image's `project.xml` into the project and
+runs `bin/xadd`:
 
 ```sh
 scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15

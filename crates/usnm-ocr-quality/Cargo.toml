@@ -1,0 +1,21 @@
+[package]
+name = "usnm-ocr-quality"
+version = "0.1.0"
+description = "Per-page OCR quality without transcription (#522): alignment with backtrace, the three-cornered-hat error model, consensus, findability, confusion pairs, scan features and crop selection"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+usnm-alto.workspace = true
+usnm-ocr-contract.workspace = true
+usnm-ocr-survey.workspace = true
+anyhow.workspace = true
+image.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-normalization.workspace = true
+
+[lints]
+workspace = true

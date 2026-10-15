@@ -129,6 +129,12 @@ enum Commands {
     /// The Surya 2 test on volunteer CPUs and GPUs (#516), app `usnm_surya`.
     #[command(subcommand)]
     Surya(Surya),
+    /// The OCR quality estimate on volunteer CPUs (#522), app `usnm_quality`.
+    #[command(subcommand)]
+    Quality(Quality),
+    /// The vision-language readings on volunteer GPUs and CPUs (#522), app `usnm_qwen`.
+    #[command(subcommand)]
+    Qwen(Qwen),
     /// The remote hand-off between the OCR node and the BOINC server (#469, docs/boinc.md).
     #[command(subcommand)]
     Handoff(Handoff),
@@ -444,6 +450,314 @@ enum Surya {
         pairs: PathBuf,
     },
 }
+#[derive(Subcommand)]
+enum Quality {
+    /// Draw the campaign's pages from the prefetch manifest, stratified as the assessment's sample.
+    Sample {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 500)]
+        pages: usize,
+        #[arg(long, default_value_t = 2)]
+        min_per_stratum: usize,
+        #[arg(long)]
+        seed: String,
+        /// JSON object: LCCN to the title's MARC language codes.
+        #[arg(long)]
+        title_languages: Option<PathBuf>,
+        /// Doc ids that have an American Stories text, one per line; pages not in it are left out.
+        #[arg(long)]
+        with_as: Option<PathBuf>,
+        /// Explicit doc ids, one per line, instead of a random draw.
+        #[arg(long)]
+        pages_file: Option<PathBuf>,
+    },
+    /// Export each page's non-LoC texts (American Stories, ocr-local) and our ALTO from the curated store.
+    TextsExport {
+        #[arg(long)]
+        curated_url: String,
+        #[arg(long)]
+        out_dir: PathBuf,
+        #[arg(long)]
+        sample: Option<PathBuf>,
+        #[arg(long = "doc-id")]
+        doc_ids: Vec<String>,
+    },
+    /// Write <lang>.txt function-word files from the embedded word lists.
+    FunctionWords {
+        #[arg(long = "lang", required = true)]
+        langs: Vec<String>,
+        #[arg(long, default_value_t = 100)]
+        top: usize,
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
+    /// Fetch each page's JPEG and ALTO from LoC (or read the hand-off scans), join its texts, write its unit.
+    Stage {
+        /// Repeatable page spec: group:lang:doc_id:batch[+batch...] (batches as <name>_ver<NN>).
+        #[arg(long = "page")]
+        pages: Vec<usnm_boinc::surya::Page>,
+        /// Or a sample (quality sample): its rows become pages of --group.
+        #[arg(long)]
+        sample: Option<PathBuf>,
+        #[arg(long, default_value = "sample")]
+        group: String,
+        #[arg(long)]
+        root: PathBuf,
+        /// The worker image's registry digest (sha256:...).
+        #[arg(long)]
+        engine_image: String,
+        /// The hand-off job's texts/ export: one <doc_id>.json per page.
+        #[arg(long)]
+        texts_dir: PathBuf,
+        /// The hand-off container's scans/ (<doc_id>.jpg, <doc_id>.xml), read instead of LoC when present.
+        #[arg(long)]
+        scans_dir: Option<PathBuf>,
+        /// The campaign's place names: a .txt (one per line) or the catalog's places.json.
+        #[arg(long)]
+        places: PathBuf,
+        /// Directory of <lang>.txt function-word files, one word per line.
+        #[arg(long, alias = "function-words")]
+        function_words_dir: PathBuf,
+        /// The readers every unit compares, in report order.
+        #[arg(long, value_delimiter = ',', default_value = "loc,as")]
+        readers: Vec<String>,
+        #[arg(long, default_value_t = 522)]
+        crop_seed: u64,
+        #[arg(long, default_value_t = 12)]
+        k_crops: u32,
+        #[arg(long, default_value_t = 5)]
+        gap_secs: u64,
+        #[arg(long, default_value_t = 20)]
+        max_pages: usize,
+        /// The scan archive's container URL (https://<account>.blob.core.windows.net/scans); read first with the job's identity.
+        #[arg(long)]
+        scan_archive: Option<String>,
+        /// Where batch manifests and METS are kept between runs.
+        #[arg(long)]
+        batch_cache: Option<PathBuf>,
+    },
+    /// Hand staged units to create_work, two results each.
+    Submit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value_t = 100)]
+        max_units: usize,
+    },
+    /// Write a unit from local files, to check a host or the image without LoC or BOINC.
+    LocalUnit {
+        #[arg(long)]
+        page: PathBuf,
+        #[arg(long)]
+        alto: PathBuf,
+        /// texts.json.
+        #[arg(long)]
+        texts: PathBuf,
+        #[arg(long)]
+        places: PathBuf,
+        #[arg(long)]
+        function_words: PathBuf,
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(
+            long,
+            default_value = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        )]
+        engine_image: String,
+        #[arg(long, default_value_t = 522)]
+        crop_seed: u64,
+        #[arg(long, default_value_t = 12)]
+        k_crops: u32,
+    },
+    /// script_validator's init script: check one result (three files); --keep copies it there.
+    Check {
+        #[arg(long, num_args = 3, required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        keep: Option<PathBuf>,
+    },
+    /// script_validator's compare script: two results of one unit; --log appends the pair.
+    Compare {
+        #[arg(long, num_args = 3, required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long, num_args = 3, required = true)]
+        files2: Vec<PathBuf>,
+        #[arg(long)]
+        log: Option<PathBuf>,
+    },
+    /// Join both apps' canonical results per page into the campaign's Parquet tables and summary.
+    Collect {
+        #[arg(long)]
+        campaign: String,
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        spool: PathBuf,
+        #[arg(long)]
+        qwen_root: PathBuf,
+        #[arg(long)]
+        qwen_spool: PathBuf,
+        /// A local directory instead of the curated store.
+        #[arg(
+            long,
+            required_unless_present = "curated_url",
+            conflicts_with = "curated_url"
+        )]
+        out_dir: Option<PathBuf>,
+        #[arg(long)]
+        curated_url: Option<String>,
+    },
+    /// Run the estimator on gold crops with a transcription and report its error per reader.
+    Calibrate {
+        /// Gold-style crops.jsonl with transcriptions.
+        #[arg(long)]
+        crops: PathBuf,
+        /// ENGINE=FILE.jsonl (rows {"crop_id", "text"}); repeat.
+        #[arg(long = "hyp", required = true)]
+        hyps: Vec<String>,
+        /// Vision-language readings per crop (rows {"crop_id", "text"}).
+        #[arg(long)]
+        readings: Option<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Run the unit's computation offline on <dir>/<doc_id>/{page.jpg, loc.xml, texts.json}.
+    Estimate {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        places: PathBuf,
+        #[arg(long)]
+        function_words: PathBuf,
+        #[arg(long, default_value_t = 522)]
+        crop_seed: u64,
+        #[arg(long, default_value_t = 12)]
+        k_crops: u32,
+        /// Survey layout (<dir>/sample/images): NAME=PATTERN, the * standing for the page name; repeat.
+        #[arg(long = "reader")]
+        readers: Vec<String>,
+    },
+    /// Print a Markdown table of the kept results and the logged pairs.
+    Summary {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        seen: PathBuf,
+        #[arg(long)]
+        pairs: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum Qwen {
+    /// Cut each staged quality page's crops (the same seed) and write its unit.
+    Stage {
+        /// The usnm_quality staging root whose units to cut crops from.
+        #[arg(long)]
+        quality_root: PathBuf,
+        #[arg(long)]
+        root: PathBuf,
+        /// The worker image's registry digest (sha256:...).
+        #[arg(long)]
+        engine_image: String,
+        /// The llama.cpp server image it is built on (its USNM_QWEN_LLAMA_IMAGE).
+        #[arg(long)]
+        engine_llama: String,
+        /// Its USNM_QWEN_WEIGHTS.
+        #[arg(long)]
+        engine_weights: String,
+        #[arg(long, default_value_t = 1800)]
+        gpu_timeout_secs: u32,
+        #[arg(long, default_value_t = 7200)]
+        cpu_timeout_secs: u32,
+        /// Output tokens allowed per 1,000 square pixels of crop.
+        #[arg(long, default_value_t = 4)]
+        max_tokens_per_1000px2: u32,
+        #[arg(long, default_value_t = 20)]
+        max_pages: usize,
+    },
+    /// Hand staged units to create_work, two results each.
+    Submit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        max_units: usize,
+    },
+    /// Write a unit from a local page and ALTO, to check a host or the image without LoC or BOINC.
+    /// Inside the worker image the engine values default to the image's own.
+    LocalUnit {
+        #[arg(
+            long,
+            required_unless_present = "synthetic",
+            conflicts_with = "synthetic"
+        )]
+        image: Option<PathBuf>,
+        #[arg(
+            long,
+            required_unless_present = "synthetic",
+            conflicts_with = "synthetic"
+        )]
+        alto: Option<PathBuf>,
+        /// Use the built-in synthetic page (two lines of block capitals) instead of --image and --alto.
+        #[arg(long)]
+        synthetic: bool,
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(
+            long,
+            default_value = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        )]
+        engine_image: String,
+        #[arg(long, env = "USNM_QWEN_LLAMA_IMAGE")]
+        engine_llama: String,
+        #[arg(long, env = "USNM_QWEN_WEIGHTS")]
+        engine_weights: String,
+        #[arg(long, default_value_t = 522)]
+        crop_seed: u64,
+        #[arg(long, default_value_t = 12)]
+        k_crops: u32,
+        #[arg(long, default_value_t = 1800)]
+        timeout_secs: u32,
+        #[arg(long, default_value_t = 4)]
+        max_tokens_per_1000px2: u32,
+    },
+    /// Print llama-server's version and the model files in the image, without loading a model.
+    Probe,
+    /// script_validator's init script: check one result (three files); --keep copies it there.
+    Check {
+        #[arg(long, num_args = 3, required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        keep: Option<PathBuf>,
+    },
+    /// script_validator's compare script: two results of one unit; --log appends the pair.
+    Compare {
+        #[arg(long, num_args = 3, required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long, num_args = 3, required = true)]
+        files2: Vec<PathBuf>,
+        #[arg(long, default_value_t = usnm_ocr_contract::qwen::PROBE_MIN_DICE)]
+        min_dice: f64,
+        #[arg(long)]
+        log: Option<PathBuf>,
+    },
+    /// Print a Markdown table of the kept results and the logged pairs.
+    Summary {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        seen: PathBuf,
+        #[arg(long)]
+        pairs: PathBuf,
+    },
+}
 #[derive(Clone, Copy, ValueEnum)]
 enum SuryaMode {
     Tiled,
@@ -598,6 +912,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Assess(a) => assess(a).await?,
         Commands::Gold(g) => gold(g).await?,
         Commands::Surya(x) => surya(x).await?,
+        Commands::Quality(q) => quality(q).await?,
+        Commands::Qwen(q) => qwen(q).await?,
         Commands::Handoff(h) => handoff(h).await?,
         Commands::Status { root } => {
             for r in records(&root)? {
@@ -835,6 +1151,304 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
             log,
         } => x::validate::compare(&files, &files2, min_dice, log.as_deref())?,
         Surya::Summary { root, seen, pairs } => {
+            print!("{}", x::summary::run(&root, &seen, &pairs)?)
+        }
+    }
+    Ok(())
+}
+
+async fn quality(c: Quality) -> anyhow::Result<()> {
+    use usnm_boinc::quality as x;
+    match c {
+        Quality::Sample {
+            manifest,
+            out,
+            pages,
+            min_per_stratum,
+            seed,
+            title_languages,
+            with_as,
+            pages_file,
+        } => {
+            let s = x::sample::run(&x::sample::Options {
+                manifest,
+                out,
+                pages,
+                min_per_stratum,
+                seed,
+                title_languages,
+                with_as,
+                pages_file,
+            })?;
+            eprintln!("{s:?}");
+        }
+        Quality::TextsExport {
+            curated_url,
+            out_dir,
+            sample,
+            doc_ids,
+        } => {
+            let s = x::stage::texts_export(&x::stage::TextsExportOptions {
+                curated_url,
+                out_dir,
+                sample,
+                doc_ids,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Quality::FunctionWords {
+            langs,
+            top,
+            out_dir,
+        } => {
+            x::stage::write_function_words(&langs, top, &out_dir)?;
+        }
+        Quality::Stage {
+            pages,
+            sample,
+            group,
+            root,
+            engine_image,
+            texts_dir,
+            scans_dir,
+            places,
+            function_words_dir,
+            readers,
+            crop_seed,
+            k_crops,
+            gap_secs,
+            max_pages,
+            scan_archive,
+            batch_cache,
+        } => {
+            let s = x::stage::run(&x::stage::Options {
+                pages,
+                sample,
+                group,
+                root,
+                engine: usnm_ocr_contract::quality::Engine {
+                    image: engine_image,
+                },
+                texts_dir,
+                scans_dir,
+                places,
+                function_words_dir,
+                readers,
+                crop_seed,
+                k_crops,
+                gap: std::time::Duration::from_secs(gap_secs),
+                max_pages,
+                scan_archive,
+                batch_cache,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Quality::Submit {
+            root,
+            project,
+            max_units,
+        } => {
+            let s = x::submit::run(&x::submit::Options {
+                root,
+                project,
+                max_units,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Quality::LocalUnit {
+            page,
+            alto,
+            texts,
+            places,
+            function_words,
+            dir,
+            engine_image,
+            crop_seed,
+            k_crops,
+        } => {
+            let texts: usnm_ocr_contract::quality::Texts = serde_json::from_slice(
+                &usnm_boinc::read(&texts, usnm_ocr_contract::quality::MAX_TEXTS)?,
+            )?;
+            let j = x::stage::local_unit(&x::stage::LocalUnit {
+                page: &usnm_boinc::read(&page, usnm_ocr_contract::quality::MAX_SCAN)?,
+                alto: &usnm_boinc::read(&alto, usnm_ocr_contract::quality::MAX_ALTO)?,
+                texts: &texts,
+                places: &std::fs::read_to_string(&places)?,
+                dir: &dir,
+                engine: usnm_ocr_contract::quality::Engine {
+                    image: engine_image,
+                },
+                function_words: x::stage::read_words(&function_words)?,
+                crop_seed,
+                k_crops,
+            })?;
+            println!("{}", j.id);
+        }
+        Quality::Check { files, keep } => x::validate::check(&files, keep.as_deref())?,
+        Quality::Compare { files, files2, log } => {
+            x::validate::compare(&files, &files2, log.as_deref())?
+        }
+        Quality::Collect {
+            campaign,
+            root,
+            spool,
+            qwen_root,
+            qwen_spool,
+            out_dir,
+            curated_url,
+        } => {
+            let s = x::collect::run(&x::collect::Options {
+                campaign,
+                root,
+                spool,
+                qwen_root,
+                qwen_spool,
+                out_dir,
+                curated_url,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Quality::Calibrate {
+            crops,
+            hyps,
+            readings,
+            out,
+        } => {
+            let rows = x::calibrate::run(&x::calibrate::Options {
+                crops,
+                hyps,
+                readings,
+                out,
+            })?;
+            for r in rows {
+                println!("{}", serde_json::to_string(&r)?);
+            }
+        }
+        Quality::Estimate {
+            dir,
+            out,
+            places,
+            function_words,
+            crop_seed,
+            k_crops,
+            readers,
+        } => {
+            let s = x::estimate::run(&x::estimate::Options {
+                dir,
+                out,
+                places,
+                function_words,
+                crop_seed,
+                k_crops,
+                readers,
+            })?;
+            eprintln!("{s:?}");
+        }
+        Quality::Summary { root, seen, pairs } => {
+            print!("{}", x::summary::run(&root, &seen, &pairs)?)
+        }
+    }
+    Ok(())
+}
+
+async fn qwen(c: Qwen) -> anyhow::Result<()> {
+    use usnm_boinc::qwen as x;
+    match c {
+        Qwen::Stage {
+            quality_root,
+            root,
+            engine_image,
+            engine_llama,
+            engine_weights,
+            gpu_timeout_secs,
+            cpu_timeout_secs,
+            max_tokens_per_1000px2,
+            max_pages,
+        } => {
+            let s = x::stage::run(&x::stage::Options {
+                quality_root,
+                root,
+                engine: usnm_ocr_contract::qwen::Engine {
+                    image: engine_image,
+                    llama: engine_llama,
+                    models: x::default_models(),
+                    weights: engine_weights,
+                },
+                gpu_timeout_secs,
+                cpu_timeout_secs,
+                max_tokens_per_1000px2,
+                max_pages,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Qwen::Submit {
+            root,
+            project,
+            max_units,
+        } => {
+            let s = x::submit::run(&x::submit::Options {
+                root,
+                project,
+                max_units,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Qwen::LocalUnit {
+            image,
+            alto,
+            synthetic,
+            dir,
+            engine_image,
+            engine_llama,
+            engine_weights,
+            crop_seed,
+            k_crops,
+            timeout_secs,
+            max_tokens_per_1000px2,
+        } => {
+            let engine = usnm_ocr_contract::qwen::Engine {
+                image: engine_image,
+                llama: engine_llama,
+                models: x::default_models(),
+                weights: engine_weights,
+            };
+            let j = if synthetic {
+                x::stage::synthetic_unit(
+                    &dir,
+                    engine,
+                    k_crops,
+                    timeout_secs,
+                    max_tokens_per_1000px2,
+                )?
+            } else {
+                x::stage::local_unit(
+                    &image.context("--image")?,
+                    &alto.context("--alto")?,
+                    &dir,
+                    engine,
+                    crop_seed,
+                    k_crops,
+                    timeout_secs,
+                    max_tokens_per_1000px2,
+                )?
+            };
+            println!("{}", j.id);
+        }
+        Qwen::Probe => print!("{}", x::work::probe()),
+        Qwen::Check { files, keep } => x::validate::check(&files, keep.as_deref())?,
+        Qwen::Compare {
+            files,
+            files2,
+            min_dice,
+            log,
+        } => x::validate::compare(&files, &files2, min_dice, log.as_deref())?,
+        Qwen::Summary { root, seen, pairs } => {
             print!("{}", x::summary::run(&root, &seen, &pairs)?)
         }
     }

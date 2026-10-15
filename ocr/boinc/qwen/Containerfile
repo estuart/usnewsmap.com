@@ -1,0 +1,53 @@
+# The usnm_qwen worker image (#522): Qwen3-VL on llama.cpp's server, and usnm-boinc, which runs one
+# BOINC unit (docs/boinc-quality.md). One image serves both app versions: llama.cpp's CUDA server
+# image loads its CUDA backend when the container sees an NVIDIA GPU and falls back to its CPU
+# backends otherwise (GGML_BACKEND_DL, GGML_CPU_ALL_VARIANTS). No Python: usnm-boinc starts
+# /app/llama-server itself and talks to it over the loopback.
+#
+# LLAMA_DIGEST is the same server-cuda image the Surya worker uses: llama.cpp build 11610
+# (commit 091b6a7fc, "version: 0.6.0-dev"), which reads Qwen3-VL (support landed in llama.cpp in
+# October 2025, long before this build). Weights come from Hugging Face at pinned revisions and
+# are checked against weights.lock; the image carries the Apache-2.0 text beside them, and NOTICE.
+#
+# Build from the repository root:
+#   docker build -f ocr/boinc/qwen/Containerfile -t usnm-boinc-qwen .
+ARG LLAMA_DIGEST=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea
+
+FROM rust:1-bookworm AS build
+ARG BUILD_JOBS=2
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc
+
+FROM rust:1-bookworm AS weights
+COPY ocr/boinc/qwen/weights.lock /weights.lock
+RUN set -eu; mkdir -p /models; cd /models; \
+    grep -v '^#' /weights.lock | while read -r path url sum; do \
+      mkdir -p "$(dirname "$path")"; \
+      curl -fsSL --retry 3 -o "$path" "$url"; \
+      echo "$sum  $path" | sha256sum -c --quiet -; \
+    done; \
+    echo "sha256:$(grep -v '^#' /weights.lock | sha256sum | cut -d' ' -f1)" > /weights.digest
+
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda@${LLAMA_DIGEST}
+ARG LLAMA_DIGEST
+# procps for the diagnostics; nothing else is added to the base.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=weights /models/ /opt/qwen/models/
+COPY --from=weights /weights.digest /opt/qwen/weights.digest
+COPY ocr/boinc/qwen/weights.lock ocr/boinc/qwen/NOTICE /opt/qwen/
+COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
+# USNM_QWEN_WEIGHTS must equal /opt/qwen/weights.digest; the build fails otherwise.
+ARG QWEN_WEIGHTS=sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd
+RUN test "$(cat /opt/qwen/weights.digest)" = "$QWEN_WEIGHTS"
+ENV PATH=/app:$PATH HOME=/tmp \
+    USNM_QWEN_LLAMA_IMAGE=${LLAMA_DIGEST} USNM_QWEN_WEIGHTS=${QWEN_WEIGHTS}
+# The CUDA base asks the NVIDIA Container Toolkit's legacy hook (Docker) to refuse drivers older
+# than CUDA 12.8. CUDA 12's minor version compatibility runs this build on any CUDA 12 driver, so
+# the check is off; the plan class asks for CUDA 12.0 and the diagnostics record the driver.
+ENV NVIDIA_DISABLE_REQUIRE=1
+# Stock docker_wrapper mounts the BOINC slot at /work (job-cpu.toml, job-gpu.toml).
+ENTRYPOINT []
+CMD ["/usr/local/bin/usnm-boinc", "work", "--dir", "/work"]

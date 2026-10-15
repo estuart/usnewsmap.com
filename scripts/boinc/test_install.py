@@ -67,6 +67,24 @@ class InstallTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_ocr", "docker_nvidia_cuda")
 
+    def test_quality_and_qwen_apps(self):
+        quality = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_quality", "docker")
+        self.assertEqual(quality.name, "x86_64-pc-linux-gnu__docker")
+        self.assertNotIn("use_gpu", (quality / "job_1.toml").read_text())
+        for name in ["usnm_quality_in", "usnm_quality_out"]:
+            self.assertTrue((self.project / "templates" / name).is_file())
+        self.assertIn("<sticky/>", (self.project / "templates" / "usnm_quality_in").read_text())
+        cpu = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_qwen", "docker_mt")
+        gpu = module.install(self.project, self.wrapper, IMAGE, "1.1", "usnm_qwen", "docker_nvidia_cuda")
+        self.assertIn("use_gpu = true", (gpu / "job_1.toml").read_text())
+        self.assertNotIn("use_gpu", (cpu / "job_1.toml").read_text())
+        for name in ["usnm_qwen_in", "usnm_qwen_out"]:
+            self.assertTrue((self.project / "templates" / name).is_file())
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_quality", "docker_mt")
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_qwen", "docker")
+
 
 if __name__ == "__main__":
     unittest.main()

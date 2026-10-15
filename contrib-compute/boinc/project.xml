@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!-- Input for BOINC's `xadd`: the OCR app, the assessment app (#456), the gold check (#462) and the Surya 2 test (#516), one platform to start. See docs/interface.md.
+<!-- Input for BOINC's `xadd`: the OCR app, the assessment app (#456), the gold check (#462), the Surya 2 test (#516) and the OCR quality estimate's two apps (#522), one platform to start. See docs/interface.md.
      Add further <platform> entries (aarch64-unknown-linux-gnu, ...) when those builds exist. -->
 <boinc>
     <app>
@@ -35,6 +35,26 @@
     <app>
         <name>usnm_surya</name>
         <user_friendly_name>usnewsmap Surya 2 OCR test (CPU and NVIDIA GPU, one page per task)</user_friendly_name>
+        <min_version>0</min_version>
+        <deprecated>0</deprecated>
+        <homogeneous_redundancy>0</homogeneous_redundancy>
+        <weight>1</weight>
+        <beta>0</beta>
+        <target_nresults>2</target_nresults>
+    </app>
+    <app>
+        <name>usnm_quality</name>
+        <user_friendly_name>usnewsmap OCR quality estimate (compares the texts of one page per task)</user_friendly_name>
+        <min_version>0</min_version>
+        <deprecated>0</deprecated>
+        <homogeneous_redundancy>0</homogeneous_redundancy>
+        <weight>1</weight>
+        <beta>0</beta>
+        <target_nresults>2</target_nresults>
+    </app>
+    <app>
+        <name>usnm_qwen</name>
+        <user_friendly_name>usnewsmap OCR readings with Qwen3-VL (CPU and NVIDIA GPU, one page per task)</user_friendly_name>
         <min_version>0</min_version>
         <deprecated>0</deprecated>
         <homogeneous_redundancy>0</homogeneous_redundancy>

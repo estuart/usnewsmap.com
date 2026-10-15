@@ -1,0 +1,9 @@
+#!/bin/sh
+# script_validator's compare script for usnm_qwen (#522), called as
+# `usnm_qwen_compare files files2`: two results' files, three each, in output template order.
+# Exit 0 when they agree (usnm-boinc qwen compare: per crop, both read or neither, and the word-bag
+# Dice floor until the threshold is measured). Every pair is appended to
+# <project>/qwen/pairs.jsonl. Linked into bin/.
+[ "$#" -eq 6 ] || { echo "usnm_qwen_compare: expected 6 files, got $#" >&2; exit 2; }
+exec /usr/local/bin/usnm-boinc qwen compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
+  --log "${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}/pairs.jsonl"

@@ -41,17 +41,17 @@ const ENV_IMAGE_LLAMA: &str = "USNM_SURYA_LLAMA_IMAGE";
 const ENV_VERSION: &str = "USNM_SURYA_VERSION";
 const ENV_WEIGHTS: &str = "USNM_SURYA_WEIGHTS";
 /// x86-64 Linux: 4 KiB pages, 100 clock ticks a second.
-const PAGE_KIB: u64 = 4;
-const TICKS: f64 = 100.0;
+pub(crate) const PAGE_KIB: u64 = 4;
+pub(crate) const TICKS: f64 = 100.0;
 
 /// The diagnostics text, kept under [`MAX_DIAG`]: each section is cut to its
 /// own cap and the whole to the limit, with a note where it was cut.
 pub struct Diag(String);
 impl Diag {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(String::new())
     }
-    fn section(&mut self, title: &str, body: &str, cap: usize) {
+    pub(crate) fn section(&mut self, title: &str, body: &str, cap: usize) {
         let _ = writeln!(self.0, "== {title}");
         let body = body.trim_end();
         if body.len() > cap {
@@ -69,7 +69,7 @@ impl Diag {
             let _ = writeln!(self.0, "{body}");
         }
     }
-    fn finish(mut self) -> Vec<u8> {
+    pub(crate) fn finish(mut self) -> Vec<u8> {
         let limit = MAX_DIAG - 64;
         if self.0.len() > limit {
             let mut end = limit;
@@ -84,7 +84,7 @@ impl Diag {
 }
 
 /// The last `n` bytes of `s`, from a character boundary.
-fn tail(s: &str, n: usize) -> &str {
+pub(crate) fn tail(s: &str, n: usize) -> &str {
     let mut i = s.len().saturating_sub(n);
     while !s.is_char_boundary(i) {
         i += 1;
@@ -94,7 +94,11 @@ fn tail(s: &str, n: usize) -> &str {
 
 /// Runs a short command with a deadline; its stdout and stderr, or why it
 /// didn't run.
-fn quick(program: &str, args: &[&str], deadline: Duration) -> Result<(bool, String), String> {
+pub(crate) fn quick(
+    program: &str,
+    args: &[&str],
+    deadline: Duration,
+) -> Result<(bool, String), String> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -150,7 +154,7 @@ const INIT_FIELDS: [&str; 10] = [
     "rsc_memory_bound",
 ];
 
-fn boinc_info(work: &Path, host: &mut Host, diag: &mut Diag) {
+pub(crate) fn boinc_info(work: &Path, host: &mut Host, diag: &mut Diag) {
     let Ok(xml) = std::fs::read_to_string(work.join("init_data.xml")) else {
         diag.section("boinc", "no init_data.xml in the slot", 256);
         return;
@@ -185,7 +189,7 @@ fn boinc_info(work: &Path, host: &mut Host, diag: &mut Diag) {
     diag.section("boinc (init_data.xml, selected fields)", &body, 2048);
 }
 
-fn container_info(host: &mut Host, diag: &mut Diag) {
+pub(crate) fn container_info(host: &mut Host, diag: &mut Diag) {
     let mut body = String::new();
     // Podman writes the engine and whether it is rootless here; Docker
     // leaves an empty /.dockerenv.
@@ -240,7 +244,7 @@ fn container_info(host: &mut Host, diag: &mut Diag) {
 /// What the container sees of NVIDIA GPUs. Returns the index to run on:
 /// BOINC's `gpu_device_num` when the container sees that GPU (the wrapper
 /// passes all of them), else the first; none when nvidia-smi sees no GPU.
-fn gpu_info(host: &mut Host, diag: &mut Diag) -> Option<u32> {
+pub(crate) fn gpu_info(host: &mut Host, diag: &mut Diag) -> Option<u32> {
     let mut body = String::new();
     let mut devices: Vec<String> = std::fs::read_dir("/dev")
         .map(|d| {
@@ -390,7 +394,7 @@ fn prepare(work: &Path) -> anyhow::Result<Job> {
 /// (the container's own pid namespace, which holds only this unit) they are
 /// every other pid; otherwise, to be safe outside a container, only the
 /// runner's process group.
-fn others(pgid: i32) -> Vec<i32> {
+pub(crate) fn others(pgid: i32) -> Vec<i32> {
     let me = i32::try_from(std::process::id()).unwrap_or(-1);
     let pids = std::fs::read_dir("/proc")
         .map(|d| {
@@ -421,7 +425,7 @@ fn others(pgid: i32) -> Vec<i32> {
 
 /// As pid 1, collects orphans that exited (llama-server once its parent is
 /// gone), so they leave /proc.
-fn reap() {
+pub(crate) fn reap() {
     if std::process::id() == 1 {
         while let Ok(Some(_)) = rustix::process::wait(rustix::process::WaitOptions::NOHANG) {}
     }
@@ -429,7 +433,7 @@ fn reap() {
 
 /// Kills the runner's process group and, in a container, every other
 /// process (llama-server among them).
-fn kill_all(pgid: i32) {
+pub(crate) fn kill_all(pgid: i32) {
     if let Some(p) = rustix::process::Pid::from_raw(pgid) {
         let _ = rustix::process::kill_process_group(p, rustix::process::Signal::KILL);
     }
@@ -442,7 +446,7 @@ fn kill_all(pgid: i32) {
 
 /// The summed RSS (KiB) of the runner's processes ([`others`]), and their
 /// CPU ticks per process, from /proc.
-fn runner_stats(pgid: i32, cpu: &mut BTreeMap<i32, u64>) -> u64 {
+pub(crate) fn runner_stats(pgid: i32, cpu: &mut BTreeMap<i32, u64>) -> u64 {
     let mut rss = 0;
     for pid in others(pgid) {
         let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
@@ -464,7 +468,7 @@ fn runner_stats(pgid: i32, cpu: &mut BTreeMap<i32, u64>) -> u64 {
     rss
 }
 
-fn gpu_mem_used(index: u32) -> Option<u64> {
+pub(crate) fn gpu_mem_used(index: u32) -> Option<u64> {
     let (ok, out) = quick(
         "nvidia-smi",
         &[
@@ -482,7 +486,7 @@ fn gpu_mem_used(index: u32) -> Option<u64> {
 
 /// llama-server's log lines that say which device it used, and the
 /// "offloaded N/M layers to GPU" count.
-fn llama_device(log: &str) -> (String, Option<String>, String) {
+pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
     let mut lines = String::new();
     let mut offload = None;
     let mut cuda = false;

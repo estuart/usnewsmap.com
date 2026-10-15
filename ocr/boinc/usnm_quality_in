@@ -1,0 +1,14 @@
+<input_template>
+  <file_info><number>0</number></file_info>
+  <file_info><number>1</number></file_info>
+  <file_info><number>2</number></file_info>
+  <file_info><number>3</number><sticky/></file_info>
+  <file_info><number>4</number></file_info>
+  <workunit>
+    <file_ref><file_number>0</file_number><open_name>page.jpg</open_name><copy_file/></file_ref>
+    <file_ref><file_number>1</file_number><open_name>loc.xml</open_name><copy_file/></file_ref>
+    <file_ref><file_number>2</file_number><open_name>texts.json</open_name><copy_file/></file_ref>
+    <file_ref><file_number>3</file_number><open_name>places.txt</open_name><copy_file/></file_ref>
+    <file_ref><file_number>4</file_number><open_name>quality.json</open_name><copy_file/></file_ref>
+  </workunit>
+</input_template>

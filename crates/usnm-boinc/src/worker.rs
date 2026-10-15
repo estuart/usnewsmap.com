@@ -19,6 +19,12 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     if work.join(crate::surya::JOB_FILE).exists() {
         return crate::surya::work::run(&work).await;
     }
+    if work.join(crate::quality::JOB_FILE).exists() {
+        return crate::quality::work::run(&work).await;
+    }
+    if work.join(crate::qwen::JOB_FILE).exists() {
+        return crate::qwen::work::run(&work).await;
+    }
     for name in ["result.json", "text.txt", "layout.xml", "fraction_done"] {
         let p = work.join(name);
         if p.exists() {

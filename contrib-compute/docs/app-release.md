@@ -12,6 +12,20 @@ scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-h
 `usbbak/signing`) name where the private key is on the signing host. `--what-if` runs the
 read-only checks and prints the plan.
 
+`usnm_ocr`, `usnm_assess`, `usnm_gold` and `usnm_quality` use `--plan-class docker` (the
+default) and `images.worker` from `infra/boinc/env/<env>.json`. `usnm_surya` (#516) and
+`usnm_qwen` (#522) have their own worker images (`.github/workflows/boinc-surya.yml` and
+`.github/workflows/boinc-qwen.yml`) and two plan classes (`docker_mt` for version `1.0`,
+`docker_nvidia_cuda` for version `1.1`), passed with `--plan-class` and `--worker-image`:
+
+```sh
+scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host HOST
+scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt \
+  --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
+scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda \
+  --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
+```
+
 ## What it needs
 
 - The server and bridge images in `infra/boinc/env/<env>.json` (`scripts/build-boinc-images.sh`)
@@ -67,10 +81,49 @@ flowchart LR
    holds the last published version (rerunning it is safe: it changes nothing when the version
    is already there). `--publish-image` overrides it for one deployment.
 
-## Test client (not built yet)
+## Test client
 
-An end-to-end test needs a BOINC client with Docker, attached to the master URL with a test
-account, that gets one reserved job submitted through the bridge job (design.md, section 4)
-and returns a result that validates and is assimilated. Container Apps cannot run Docker in a
-container, and neither can ACI. The plan is a small spot VM, defined in Bicep in its own group,
-created for the test and deleted after it, so nothing stands between tests. The design is in issue #484.
+An end-to-end test needs a BOINC client with Docker (and an NVIDIA GPU for `docker_nvidia_cuda`
+versions), attached to the master URL with a test account, that downloads a staged workunit
+and returns a result that validates and is assimilated (#484). Container Apps and ACI cannot
+run Docker in a container, so `scripts/boinc-test-client.sh` and
+`contrib-compute/infra/boinc/test-client.bicep` deploy a short-lived VM in its own resource
+group (`usnm-boinc-test-rg-<env>`) and delete the group when the test is done:
+
+```sh
+scripts/boinc-test-client.sh --env prod --create [--sku Standard_NC4as_T4_v3] [--spot|--paygo] \
+  [--authenticator-file <path>] [--what-if]
+scripts/boinc-test-client.sh --env prod --delete [--what-if]
+```
+
+Flags:
+
+- `--env <prod|dev>`: reads subscription, location and `projectUrl` from
+  `contrib-compute/infra/boinc/env/<env>.json`, and checks that the `usnm-boinc-<env>` stack is
+  deployed.
+- `--create`: creates `usnm-boinc-test-rg-<env>` and deploys
+  `contrib-compute/infra/boinc/test-client.bicep`. By default, cloud-init creates a fresh
+  disposable test volunteer account on the server with `boinccmd --create_account`; if
+  `--authenticator-file <PATH>` is given, the script reads that file into a mode-`0600`
+  `@params` file and passes it to the `@secure()` `projectAuthenticator` parameter without
+  putting the value in process arguments or stdout.
+- `--delete`: deletes the resource group `usnm-boinc-test-rg-<env>` and everything in it, so
+  nothing stands between tests.
+- `--sku <SKU>`: Azure VM size (default `Standard_NC4as_T4_v3`, 4 vCPUs, 28 GiB RAM, 1x NVIDIA
+  T4 16 GiB, which exercises `docker`, `docker_mt` and `docker_nvidia_cuda`).
+- `--spot` / `--paygo`: deploys as an Azure Spot VM with `Delete` eviction policy (`--spot`,
+  the default) or a regular pay-as-you-go VM (`--paygo`).
+- `--what-if`: checks settings and prints the plan without creating or deleting resources.
+
+`contrib-compute/infra/boinc/test-client.bicep` provisions an Ubuntu 24.04 LTS x86-64 VM in
+its own VNet (`100.64.0.0/24`, RFC 6598 shared address space) with an NSG that denies all
+inbound traffic; outbound HTTPS reaches `https://<masterHost>/usnmocr/`, `ghcr.io`, and the
+Ubuntu, BOINC (`https://boinc.berkeley.edu/dl/linux/stable/noble`), and NVIDIA package
+repositories. Cloud-init installs Docker, `boinc-client` (>= 8.2.13 from the upstream BOINC
+noble repository, using `/var/lib/boinc`), and (when an NVIDIA GPU is present) the NVIDIA
+driver and `nvidia-container-toolkit`, adds `boinc` to the `docker` group, starts the client,
+creates a disposable account when `projectAuthenticator` is empty, and runs
+`boinccmd --project_attach https://<masterHost>/usnmocr/ <authenticator>`.
+
+UNVERIFIED against a live deployment: cloud-init package installation, GPU detection by
+`boinc-client`, workunit execution on the VM, and end-to-end result assimilation.

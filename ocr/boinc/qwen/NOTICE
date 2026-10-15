@@ -1,0 +1,7 @@
+This image contains the weights of Qwen3-VL-8B-Instruct (Qwen/Qwen3-VL-8B-Instruct-GGUF, a GGUF
+build at Q4_K_M with its Q8_0 vision projector) and Qwen3-VL-2B-Instruct (ggml-org/Qwen3-VL-2B-Instruct-GGUF,
+Q8_0 with its Q8_0 vision projector), by the Qwen team at Alibaba Cloud (https://github.com/QwenLM/Qwen3-VL),
+unmodified, under the Apache License, Version 2.0, in /opt/qwen/models/LICENSE. Sources and checksums:
+/opt/qwen/weights.lock. The image runs them only to transcribe the crops of the newspaper page in each
+BOINC task; the model is a reader, not a judge, and its text is compared with the other readers' on the
+project's server.

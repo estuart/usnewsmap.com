@@ -37,7 +37,8 @@ pub struct Options {
     pub title_languages: Option<PathBuf>,
 }
 
-type Key = (String, i32, String, String);
+/// A stratum: language, decade, batch prefix, damage bin.
+pub type Key = (String, i32, String, String);
 
 pub fn damage_bin(rate: f64) -> &'static str {
     if rate < 0.1 {
@@ -53,8 +54,12 @@ pub fn prefix(batch: &str) -> &str {
     batch.split('_').next().unwrap_or(batch)
 }
 
-fn order(seed: &str, salt: &str, doc_id: &str) -> String {
-    sha256(format!("{seed}\0{salt}\0{doc_id}").as_bytes())
+pub fn order(seed: &str, mode: Mode, doc_id: &str) -> String {
+    let stream = match mode {
+        Mode::Ocr => "ocr",
+        Mode::Crash => "crash",
+    };
+    sha256(format!("{seed}\0{stream}\0{doc_id}").as_bytes())
 }
 
 /// How many pages each stratum gets out of `n`.
@@ -73,12 +78,11 @@ pub fn allocate(sizes: &BTreeMap<Key, usize>, n: usize, min: usize) -> BTreeMap<
         .collect()
 }
 
-fn draw(
+pub fn draw(
     strata: &BTreeMap<Key, Vec<(ManifestRow, String)>>,
     n: usize,
     min: usize,
     seed: &str,
-    salt: &str,
     skip: &BTreeSet<String>,
     mode: Mode,
 ) -> Vec<(String, SampleRow)> {
@@ -89,7 +93,7 @@ fn draw(
                 .iter()
                 .filter(|(r, _)| !skip.contains(&r.doc_id))
                 .collect();
-            v.sort_by_cached_key(|(r, _)| order(seed, salt, &r.doc_id));
+            v.sort_by_cached_key(|(r, _)| order(seed, mode, &r.doc_id));
             (k.clone(), v)
         })
         .filter(|(_, v)| !v.is_empty())
@@ -101,7 +105,7 @@ fn draw(
         let t = take[k];
         for (r, lang) in pool.iter().take(t) {
             out.push((
-                order(seed, salt, &r.doc_id),
+                order(seed, mode, &r.doc_id),
                 SampleRow {
                     batch: r.batch.clone(),
                     batch_version: r.batch_version,
@@ -135,10 +139,22 @@ pub struct Summary {
     pub crash: usize,
 }
 
-pub fn run(opts: &Options) -> anyhow::Result<Summary> {
-    ensure!(opts.ocr_pages > 0, "--ocr-pages must be positive");
-    ensure!(!opts.seed.is_empty(), "--seed must not be empty");
-    let titles: BTreeMap<String, Vec<String>> = match &opts.title_languages {
+/// The manifest's pages by stratum, with the language each would be
+/// OCRed in. Pages with no language, or none the engine lock routes, are
+/// left out and counted.
+pub struct Strata {
+    pub strata: BTreeMap<Key, Vec<(ManifestRow, String)>>,
+    pub manifest_pages: usize,
+    pub no_language: usize,
+    pub no_model: usize,
+}
+
+/// Reads a prefetch manifest built with `--min-damage 0` into strata.
+pub fn read_strata(
+    manifest: &std::path::Path,
+    title_languages: Option<&std::path::Path>,
+) -> anyhow::Result<Strata> {
+    let titles: BTreeMap<String, Vec<String>> = match title_languages {
         Some(p) => serde_json::from_slice(&std::fs::read(p)?).context("reading title languages")?,
         None => BTreeMap::new(),
     };
@@ -149,7 +165,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         .filter_map(|s| s.strip_prefix("tessdata/")?.strip_suffix(".traineddata"))
         .map(str::to_owned)
         .collect();
-    let rows = decode_where(bytes::Bytes::from(std::fs::read(&opts.manifest)?), |_| true)?;
+    let rows = decode_where(bytes::Bytes::from(std::fs::read(manifest)?), |_| true)?;
     // The usual prefetch manifest holds only pages above a damage rate
     // (`ocr-prefetch-manifest --min-damage`, 0.25 by default): a sample of
     // that is not a sample of the corpus.
@@ -162,22 +178,23 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         "the manifest's lowest damage rate is {lowest:.3}: it looks filtered by damage. \
          Build one with `usnm-ingest ocr-prefetch-manifest --min-damage 0`"
     );
-    let mut summary = Summary {
+    let mut out = Strata {
+        strata: BTreeMap::new(),
         manifest_pages: rows.len(),
-        ..Default::default()
+        no_language: 0,
+        no_model: 0,
     };
-    let mut strata: BTreeMap<Key, Vec<(ManifestRow, String)>> = BTreeMap::new();
     for r in rows {
         let empty = vec![];
         let title = titles.get(&r.lccn).unwrap_or(&empty);
         let Some(lang) =
             usnm_ingest::ocr_local::enqueue::message_language(r.lang.as_deref(), title)
         else {
-            summary.no_language += 1;
+            out.no_language += 1;
             continue;
         };
         if engine::route(&lang, &installed).is_none() {
-            summary.no_model += 1;
+            out.no_model += 1;
             continue;
         }
         let key = (
@@ -186,15 +203,28 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             prefix(&r.batch).to_owned(),
             damage_bin(r.damage_rate).to_owned(),
         );
-        strata.entry(key).or_default().push((r, lang));
+        out.strata.entry(key).or_default().push((r, lang));
     }
+    Ok(out)
+}
+
+pub fn run(opts: &Options) -> anyhow::Result<Summary> {
+    ensure!(opts.ocr_pages > 0, "--ocr-pages must be positive");
+    ensure!(!opts.seed.is_empty(), "--seed must not be empty");
+    let read = read_strata(&opts.manifest, opts.title_languages.as_deref())?;
+    let strata = read.strata;
+    let mut summary = Summary {
+        manifest_pages: read.manifest_pages,
+        no_language: read.no_language,
+        no_model: read.no_model,
+        ..Default::default()
+    };
     summary.strata = strata.len();
     let ocr = draw(
         &strata,
         opts.ocr_pages,
         opts.min_per_stratum,
         &opts.seed,
-        "ocr",
         &BTreeSet::new(),
         Mode::Ocr,
     );
@@ -207,7 +237,6 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             opts.crash_pages,
             opts.min_per_stratum,
             &opts.seed,
-            "crash",
             &taken,
             Mode::Crash,
         )
@@ -227,12 +256,12 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
     Ok(summary)
 }
 
-fn key_of(r: &SampleRow) -> Key {
+pub fn key_of(r: &SampleRow) -> Key {
     (r.lang.clone(), r.decade, r.prefix.clone(), r.damage.clone())
 }
 
 /// Fills both weights from the stratum sizes and the two draws.
-fn weigh(ocr: &mut [(String, SampleRow)], crash: &mut [(String, SampleRow)]) {
+pub fn weigh(ocr: &mut [(String, SampleRow)], crash: &mut [(String, SampleRow)]) {
     let mut drawn: BTreeMap<Key, (usize, usize)> = BTreeMap::new();
     for (_, r) in ocr.iter() {
         drawn.entry(key_of(r)).or_default().0 += 1;

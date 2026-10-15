@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 usnm-core.workspace = true
 usnm-ocr-contract.workspace = true
+usnm-ocr-quality.workspace = true
 usnm-ocr-survey.workspace = true
 usnm-overlay.workspace = true
 usnm-store.workspace = true
@@ -17,9 +18,14 @@ usnm-alto.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
 usnm-ingest = { path = "../usnm-ingest" }
 anyhow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+parquet.workspace = true
+base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 clap.workspace = true
+image.workspace = true
 rustix = { workspace = true, features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true

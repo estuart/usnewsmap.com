@@ -1,0 +1,6 @@
+# usnm_qwen, CPU version (plan class docker_mt). The wrapper adds --cpus from the plan class's
+# thread count. The host runs Qwen3-VL-2B at Q8_0 (about 3 GiB for the model, its projector and
+# one crop's context); the cap is 6 GiB, no swap. llama-server's log and the crops live on the
+# /tmp tmpfs.
+workdir = "/work"
+create_args = "--network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --memory=6g --memory-swap=6g --pids-limit=1024 --tmpfs=/tmp:rw,size=1g"

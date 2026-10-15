@@ -1,0 +1,10 @@
+#!/bin/sh
+# script_validator's init script for usnm_qwen (#522), called as `usnm_qwen_check files`:
+# script_validator passes one result's three files (readings.json, result.json, diag.txt), in
+# output template order. Exit 0 when the result is well formed. Every result it sees is copied to
+# <project>/qwen/seen/<result>/, so each host's readings, timings and diagnostics are kept, not
+# only the canonical result's. BOINC's start runs daemons in <project>/tmp_<host>, so ../qwen is
+# the project's qwen/. Linked into bin/.
+[ "$#" -eq 3 ] || { echo "usnm_qwen_check: expected 3 files, got $#" >&2; exit 2; }
+exec /usr/local/bin/usnm-boinc qwen check --files "$1" "$2" "$3" \
+  --keep "${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}/seen"

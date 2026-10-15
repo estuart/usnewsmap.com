@@ -19,3 +19,13 @@
      under <project>/surya/seen; `surya compare` logs every pair to <project>/surya/pairs.jsonl. -->
 <daemon><cmd>script_validator --app usnm_surya --init_script usnm_surya_check --compare_script usnm_surya_compare</cmd><output>script_validator_usnm_surya.log</output><pid_file>script_validator_usnm_surya.pid</pid_file></daemon>
 <daemon><cmd>batch_collect_assimilator --app usnm_surya</cmd><output>batch_collect_assimilator_usnm_surya.log</output><pid_file>batch_collect_assimilator_usnm_surya.pid</pid_file></daemon>
+<!-- The OCR quality estimate (#522). Redundancy 2: `usnm-boinc quality check` keeps a copy of every
+     result under <project>/quality/seen; `quality compare` requires the canonical records equal and
+     logs every pair to <project>/quality/pairs.jsonl. -->
+<daemon><cmd>script_validator --app usnm_quality --init_script usnm_quality_check --compare_script usnm_quality_compare</cmd><output>script_validator_usnm_quality.log</output><pid_file>script_validator_usnm_quality.pid</pid_file></daemon>
+<daemon><cmd>batch_collect_assimilator --app usnm_quality</cmd><output>batch_collect_assimilator_usnm_quality.log</output><pid_file>batch_collect_assimilator_usnm_quality.pid</pid_file></daemon>
+<!-- The vision-language readings (#522). Redundancy 2: `usnm-boinc qwen check` keeps a copy of every
+     result under <project>/qwen/seen; `qwen compare` logs every pair's per-crop Dice to
+     <project>/qwen/pairs.jsonl. -->
+<daemon><cmd>script_validator --app usnm_qwen --init_script usnm_qwen_check --compare_script usnm_qwen_compare</cmd><output>script_validator_usnm_qwen.log</output><pid_file>script_validator_usnm_qwen.pid</pid_file></daemon>
+<daemon><cmd>batch_collect_assimilator --app usnm_qwen</cmd><output>batch_collect_assimilator_usnm_qwen.log</output><pid_file>batch_collect_assimilator_usnm_qwen.pid</pid_file></daemon>

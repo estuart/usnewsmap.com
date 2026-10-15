@@ -2917,12 +2917,17 @@ name = "usnm-boinc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-array",
+ "arrow-schema",
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "clap",
+ "image",
  "md-5",
+ "parquet",
  "rustix",
  "serde",
  "serde_json",
@@ -2933,6 +2938,7 @@ dependencies = [
  "usnm-core",
  "usnm-ingest",
  "usnm-ocr-contract",
+ "usnm-ocr-quality",
  "usnm-ocr-survey",
  "usnm-ocr-worker",
  "usnm-overlay",
@@ -3060,6 +3066,21 @@ dependencies = [
  "usnm-core",
  "usnm-ocr-contract",
  "usnm-ocr-worker",
+]
+
+[[package]]
+name = "usnm-ocr-quality"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "schemars",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "usnm-alto",
+ "usnm-ocr-contract",
+ "usnm-ocr-survey",
 ]
 
 [[package]]

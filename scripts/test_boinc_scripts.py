@@ -196,5 +196,284 @@ class BaseVarsMatchBicep(unittest.TestCase):
         self.assertEqual(sorted(script), sorted(bicep))
 
 
+TEST_CLIENT_SCRIPT = os.path.join(HERE, "boinc-test-client.sh")
+APP_RELEASE_SCRIPT = os.path.join(HERE, "boinc-app-release.sh")
+HANDOFF_JOB_SCRIPT = os.path.join(ROOT, "contrib-compute/images/bridge/handoff-job.sh")
+BRIDGE_JOB_SCRIPT = os.path.join(ROOT, "contrib-compute/images/server/bridge-job.sh")
+
+STUB_TEST_CLIENT_AZ = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG"
+case "$*" in
+  "account show"*) echo "$STUB_SUB" ;;
+  "group show"*) ;;
+  "stack group show"*)
+    if [ -n "${STUB_NO_VAULT:-}" ]; then echo '{}'
+    else echo '{"keyVaultName": {"type": "String", "value": "usnmboinckvprod"}}'; fi ;;
+  "group create"*) ;;
+  "group exists"*) echo "${STUB_GROUP_EXISTS:-true}" ;;
+  "group delete"*) ;;
+  "deployment group create"*)
+    for arg in "$@"; do
+      case "$arg" in
+        @*) cp "${arg#@}" "$STUB_PARAMS_OUT" ;;
+      esac
+    done ;;
+  *) echo "stub az: unexpected call: $*" >&2; exit 9 ;;
+esac
+"""
+
+
+class TestClient(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        bin_dir = os.path.join(self.tmp, "bin")
+        os.mkdir(bin_dir)
+        with open(os.path.join(bin_dir, "az"), "w") as f:
+            f.write(STUB_TEST_CLIENT_AZ)
+        os.chmod(os.path.join(bin_dir, "az"), 0o755)
+        self.log = os.path.join(self.tmp, "az.log")
+        self.params_out = os.path.join(self.tmp, "params.json")
+        self.env = {
+            "PATH": bin_dir + os.pathsep + os.environ["PATH"],
+            "HOME": self.tmp,
+            "TMPDIR": self.tmp,
+            "STUB_LOG": self.log,
+            "STUB_SUB": SUB,
+            "STUB_PARAMS_OUT": self.params_out,
+        }
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def run_script(self, *args, **extra):
+        return subprocess.run(
+            [TEST_CLIENT_SCRIPT, "--env", "prod", *args],
+            cwd=ROOT,
+            env={**self.env, **extra},
+            capture_output=True,
+            text=True,
+        )
+
+    def calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as f:
+            return f.read().splitlines()
+
+    def test_create_defaults_to_disposable_account_and_deploys_test_group(self):
+        r = self.run_script("--create")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        self.assertTrue(any(c.startswith("group create --name usnm-boinc-test-rg-prod") for c in calls))
+        self.assertTrue(any(c.startswith("deployment group create --name usnm-boinc-test-prod --resource-group usnm-boinc-test-rg-prod") for c in calls))
+        with open(self.params_out) as f:
+            params = json.load(f)["parameters"]
+        self.assertEqual(params["env"]["value"], "prod")
+        self.assertEqual(params["vmSize"]["value"], "Standard_NC4as_T4_v3")
+        self.assertIs(params["spot"]["value"], True)
+        self.assertEqual(params["projectUrl"]["value"], "https://boinc.usnewsmap.com/usnmocr/")
+        self.assertEqual(params["projectAuthenticator"]["value"], "")
+
+    def test_create_supports_paygo_custom_sku_and_authenticator_file(self):
+        auth_file = os.path.join(self.tmp, "auth.txt")
+        with open(auth_file, "w") as f:
+            f.write("0123456789abcdef0123456789abcdef\n")
+        r = self.run_script("--create", "--paygo", "--sku", "Standard_D4s_v5", "--authenticator-file", auth_file)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.params_out) as f:
+            params = json.load(f)["parameters"]
+        self.assertEqual(params["vmSize"]["value"], "Standard_D4s_v5")
+        self.assertIs(params["spot"]["value"], False)
+        self.assertEqual(params["projectAuthenticator"]["value"], "0123456789abcdef0123456789abcdef")
+
+    def test_create_what_if_does_not_create_group_or_deployment(self):
+        r = self.run_script("--create", "--what-if")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("would create usnm-boinc-test-rg-prod", r.stdout)
+        self.assertFalse([c for c in self.calls() if c.startswith("group create") or c.startswith("deployment group create")])
+
+    def test_create_fails_when_stack_or_authenticator_file_is_invalid(self):
+        r = self.run_script("--create", STUB_NO_VAULT="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("has no keyVaultName output", r.stderr)
+        self.assertFalse([c for c in self.calls() if c.startswith("group create")])
+
+        empty_auth = os.path.join(self.tmp, "empty.txt")
+        open(empty_auth, "w").close()
+        r = self.run_script("--create", "--authenticator-file", empty_auth)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("must contain a non-empty BOINC authenticator", r.stderr)
+
+    def test_delete_removes_group_or_respects_what_if(self):
+        r = self.run_script("--delete", "--what-if")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("would delete resource group usnm-boinc-test-rg-prod", r.stdout)
+        self.assertFalse([c for c in self.calls() if c.startswith("group delete")])
+
+        r = self.run_script("--delete")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(any(c.startswith("group delete --name usnm-boinc-test-rg-prod --yes --no-wait") for c in self.calls()))
+
+    def test_rejects_invalid_arguments(self):
+        for bad in (["--create", "--delete"], [], ["--create", "--sku", "bad/sku"], ["--create", "--authenticator-file", "/nonexistent/auth"]):
+            r = self.run_script(*bad)
+            self.assertNotEqual(r.returncode, 0, bad)
+
+
+class AppReleaseArgs(unittest.TestCase):
+    def run_release(self, *args):
+        return subprocess.run(
+            [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0", "--signing-host", "bad host!", *args],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_allows_quality_and_qwen_plan_classes(self):
+        img = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "a" * 64
+        r = self.run_release("--app", "usnm_quality", "--plan-class", "docker")
+        self.assertIn("--signing-host must be a host name", r.stderr)
+
+        for pc in ("docker_mt", "docker_nvidia_cuda"):
+            r = self.run_release("--app", "usnm_qwen", "--plan-class", pc, "--worker-image", img)
+            self.assertIn("--signing-host must be a host name", r.stderr)
+
+    def test_rejects_qwen_without_worker_image_or_wrong_plan_class(self):
+        r = self.run_release("--app", "usnm_qwen", "--plan-class", "docker_nvidia_cuda")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("usnm_qwen has its own worker image: give --worker-image", r.stderr)
+
+        r = self.run_release("--app", "usnm_qwen", "--plan-class", "docker")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--app and --plan-class", r.stderr)
+
+        r = self.run_release("--app", "usnm_quality", "--plan-class", "docker_mt")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--app and --plan-class", r.stderr)
+
+
+class HandoffAndBridgeQualitySteps(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        bin_dir = os.path.join(self.tmp, "bin")
+        os.mkdir(bin_dir)
+        self.log = os.path.join(self.tmp, "usnm-boinc.log")
+        stub = os.path.join(bin_dir, "usnm-boinc")
+        with open(stub, "w") as f:
+            f.write(
+                '#!/usr/bin/env bash\n'
+                'printf "%s\\n" "$*" >> "$STUB_LOG"\n'
+                'while [ $# -gt 0 ]; do\n'
+                '  if [ "$1" = "--to" ]; then\n'
+                '    mkdir -p "$2" && : > "$2/sample.jsonl"\n'
+                '    shift 2\n'
+                '  else\n'
+                '    shift\n'
+                '  fi\n'
+                'done\n'
+            )
+        os.chmod(stub, 0o755)
+        self.env = {
+            "PATH": bin_dir + os.pathsep + os.environ["PATH"],
+            "TMPDIR": self.tmp,
+            "STUB_LOG": self.log,
+        }
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as f:
+            return f.read().splitlines()
+
+    def test_handoff_texts_export(self):
+        env = {
+            **self.env,
+            "HANDOFF_STEP": "texts-export",
+            "HANDOFF_URL": "https://usnmst.blob.core.windows.net/boinc-handoff",
+            "CURATED_URL": "https://usnmst.blob.core.windows.net/curated",
+            "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/",
+            "REFERENCE_URL": "https://usnmst.blob.core.windows.net/reference",
+            "OUT_URL": "https://usnmst.blob.core.windows.net/ocr-out",
+            "HANDOFF_PAGES": "sn83045462_1890-05-03_ed-1_seq-1,sn83045462_1890-05-03_ed-1_seq-2",
+            "HANDOFF_SAMPLE": "sample.jsonl",
+        }
+        r = subprocess.run([HANDOFF_JOB_SCRIPT], cwd=ROOT, env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 3)
+        self.assertIn("handoff get --from-url https://usnmst.blob.core.windows.net/boinc-handoff --prefix quality-samples", calls[0])
+        self.assertIn("quality texts-export --curated-url https://usnmst.blob.core.windows.net/curated", calls[1])
+        self.assertIn("--doc-id sn83045462_1890-05-03_ed-1_seq-1 --doc-id sn83045462_1890-05-03_ed-1_seq-2", calls[1])
+        self.assertIn("sample.jsonl", calls[1])
+        self.assertIn("handoff put", calls[2])
+        self.assertIn("--prefix texts", calls[2])
+
+    def test_bridge_quality_and_qwen_steps(self):
+        share = os.path.join(self.tmp, "share")
+        proj = os.path.join(share, "usnmocr")
+        os.makedirs(proj)
+        open(os.path.join(proj, ".usnm-initialised"), "w").close()
+        bridge_copy = os.path.join(self.tmp, "bridge-job.sh")
+        lib_path = os.path.join(ROOT, "contrib-compute/images/server/lib.sh")
+        with open(BRIDGE_JOB_SCRIPT) as src, open(bridge_copy, "w") as dst:
+            dst.write(src.read().replace("/usr/local/lib/usnm-boinc/lib.sh", lib_path))
+        os.chmod(bridge_copy, 0o755)
+        base = {
+            **self.env,
+            "KEY_VAULT_NAME": "usnmboinckvprod",
+            "DB_HOST": "db.example.org",
+            "DB_NAME": "usnmocr",
+            "MASTER_HOST": "boinc.usnewsmap.com",
+            "PROJECT_DIR": share,
+            "QUALITY_CAMPAIGN": "pilot-1",
+            "QWEN_CAMPAIGN": "pilot-1",
+            "QUALITY_ENGINE_IMAGE": "sha256:" + "0" * 64,
+            "QWEN_ENGINE_IMAGE": "sha256:" + "1" * 64,
+            "QWEN_ENGINE_LLAMA": "sha256:" + "2" * 64,
+            "QWEN_ENGINE_WEIGHTS": "sha256:" + "3" * 64,
+        }
+        r = subprocess.run(
+            [bridge_copy],
+            cwd=ROOT,
+            env={
+                **base,
+                "BRIDGE_STEP": "quality-stage",
+                "HANDOFF_URL": "https://usnmst.blob.core.windows.net/boinc-handoff",
+                "QUALITY_LANGS": "eng,deu",
+                "QUALITY_PAGES": "probe:eng:sn83045462_1890-05-03_ed-1_seq-1:dlc_abc_ver01",
+            },
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        self.assertTrue(any("handoff get --from-url https://usnmst.blob.core.windows.net/boinc-handoff --prefix texts" in c for c in calls))
+        self.assertTrue(any("quality function-words --lang eng --lang deu" in c for c in calls))
+        self.assertTrue(any("quality stage --page probe:eng:sn83045462_1890-05-03_ed-1_seq-1:dlc_abc_ver01" in c for c in calls))
+
+        r = subprocess.run(
+            [bridge_copy],
+            cwd=ROOT,
+            env={**base, "BRIDGE_STEP": "qwen-stage"},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(any("qwen stage --quality-root" in c for c in self.calls()))
+
+        r = subprocess.run(
+            [bridge_copy],
+            cwd=ROOT,
+            env={**base, "BRIDGE_STEP": "quality-collect", "QUALITY_SPOOL": "/spool/q", "QWEN_SPOOL": "/spool/v"},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(any("quality collect --campaign pilot-1" in c for c in self.calls()))
+
+
 if __name__ == "__main__":
     unittest.main()

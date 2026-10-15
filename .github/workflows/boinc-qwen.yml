@@ -1,0 +1,98 @@
+name: boinc-qwen
+# The usnm_qwen worker image (#522, docs/boinc-quality.md): Qwen3-VL on llama.cpp's CUDA server
+# image, with usnm-boinc. A manual run on main publishes it to the public package
+# ghcr.io/tgoodyear/usnm-boinc-worker under the tag qwen-<commit>, and its summary gives the
+# registry digest and the two values a campaign is staged with. A pull request that changes what
+# it is built from builds it without pushing.
+#
+# It shares the worker's package, which is already public, so volunteers' Docker or Podman can
+# pull it anonymously; only the digest is used.
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-qwen ({0})', inputs.correlation) || github.event.pull_request.title }}
+on:
+  workflow_dispatch:
+    inputs:
+      correlation:
+        description: "Identifies this run, for finding it after the dispatch"
+        required: false
+        default: "manual"
+  pull_request:
+    paths:
+      - ".github/workflows/boinc-qwen.yml"
+      - ".github/actions/boinc-qwen-build/**"
+      - "ocr/boinc/qwen/**"
+      # The image builds usnm-boinc from this checkout.
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".dockerignore"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boinc-qwen-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/tgoodyear/usnm-boinc-worker
+
+jobs:
+  # Pull requests: build and check only, with a read-only token.
+  check:
+    name: qwen worker image (build)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/boinc-qwen-build
+        with:
+          image: ${{ env.IMAGE }}
+          tag: qwen-${{ github.sha }}
+
+  # A manual run on main: the same build, then the push. Only this job can write packages.
+  publish:
+    name: qwen worker image (build, push)
+    # Only main, so what is published went through review and branch protection.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/boinc-qwen-build
+        with:
+          image: ${{ env.IMAGE }}
+          tag: qwen-${{ github.sha }}
+      - name: Push to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          SHA: ${{ github.sha }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          docker push "$IMAGE:qwen-$SHA"
+          digest=$(docker buildx imagetools inspect "$IMAGE:qwen-$SHA" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no registry digest after the push"; exit 1; }
+          docker logout ghcr.io
+          env=$(docker image inspect --format '{{json .Config.Env}}' "$IMAGE:qwen-$SHA")
+          llama=$(jq -r '.[] | select(startswith("USNM_QWEN_LLAMA_IMAGE=")) | sub("^[^=]*="; "")' <<< "$env")
+          weights=$(jq -r '.[] | select(startswith("USNM_QWEN_WEIGHTS=")) | sub("^[^=]*="; "")' <<< "$env")
+          {
+            echo "### Qwen worker image"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| image (release --worker-image) | \`$IMAGE@$digest\` |"
+            echo "| digest (QWEN_ENGINE_IMAGE) | \`$digest\` |"
+            echo "| QWEN_ENGINE_LLAMA | \`$llama\` |"
+            echo "| QWEN_ENGINE_WEIGHTS | \`$weights\` |"
+            echo "| commit | \`$SHA\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -25,3 +25,11 @@ pub mod assess;
 
 /// File-based jobs for the Surya 2 test on BOINC volunteers (#516).
 pub mod surya;
+
+/// File-based jobs for the OCR quality estimate on BOINC (#522): the CPU
+/// app `usnm_quality`.
+pub mod quality;
+
+/// File-based jobs for the vision-language readings on BOINC (#522): the
+/// GPU app `usnm_qwen`, with its CPU fallback.
+pub mod qwen;

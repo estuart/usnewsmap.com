@@ -19,6 +19,10 @@ TEMPLATES = {
     "usnm_gold": ["usnm_gold_out"],
     # The Surya 2 test (#516): its own worker image, a CPU and a GPU version.
     "usnm_surya": ["usnm_surya_in", "usnm_surya_out"],
+    # The OCR quality estimate (#522): the CPU app runs in the worker image under the docker
+    # class; the Qwen app has its own image, a CPU and a GPU version.
+    "usnm_quality": ["usnm_quality_in", "usnm_quality_out"],
+    "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_out"],
 }
 
 # The plan classes an app version can be installed for (contrib-compute/boinc/plan_class_spec.xml),
@@ -29,6 +33,9 @@ JOB_TOML = {
     ("usnm_gold", "docker"): "ocr/boinc/job.toml",
     ("usnm_surya", "docker_mt"): "ocr/boinc/surya/job-cpu.toml",
     ("usnm_surya", "docker_nvidia_cuda"): "ocr/boinc/surya/job-gpu.toml",
+    ("usnm_quality", "docker"): "ocr/boinc/job.toml",
+    ("usnm_qwen", "docker_mt"): "ocr/boinc/qwen/job-cpu.toml",
+    ("usnm_qwen", "docker_nvidia_cuda"): "ocr/boinc/qwen/job-gpu.toml",
 }
 
 

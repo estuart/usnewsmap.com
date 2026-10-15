@@ -11,6 +11,7 @@ members = [
     "crates/usnm-ocr-adapter",
     "crates/usnm-ocr-contract",
     "crates/usnm-ocr-dash",
+    "crates/usnm-ocr-quality",
     "crates/usnm-ocr-survey",
     "crates/usnm-ocr-worker",
     "crates/usnm-overlay",
@@ -28,6 +29,7 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 usnm-alto = { path = "crates/usnm-alto" }
 usnm-core = { path = "crates/usnm-core" }
 usnm-ocr-contract = { path = "crates/usnm-ocr-contract" }
+usnm-ocr-quality = { path = "crates/usnm-ocr-quality" }
 usnm-ocr-survey = { path = "crates/usnm-ocr-survey" }
 usnm-overlay = { path = "crates/usnm-overlay" }
 usnm-search = { path = "crates/usnm-search" }
@@ -55,6 +57,9 @@ http-body-util = "0.1"
 futures = "0.3"
 governor = "0.10"
 httpdate = "1"
+# JPEG and PNG decoding for the gold bundle (usnm-ocr-survey) and the page features of the OCR
+# quality estimate (usnm-ocr-quality, #522).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # The md5s in LoC's BagIt batch manifests, checked against each fetched JP2 (#368).
 md-5 = "0.11"
 # The bounded ALTO reader (usnm-alto): streaming, no DTD processing.

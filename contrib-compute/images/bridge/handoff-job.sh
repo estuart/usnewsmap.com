@@ -19,6 +19,12 @@
 #                         usnm-boinc collect --trust into ocr-out (a terminal BOINC failure:
 #                         collect without a host or trust list, which marks the job failed) and
 #                         writes back that job's entry
+#   HANDOFF_STEP=texts-export
+#                         [HANDOFF_PAGES=<doc_id>[,<doc_id>...]]
+#                         [HANDOFF_SAMPLE=<file name under quality-samples/>]
+#                         exports texts/<doc_id>.json (and <doc_id>.ours.xml when present) from
+#                         CURATED_URL with usnm-boinc quality texts-export, and uploads the
+#                         directory to HANDOFF_URL under texts/ (#522)
 #
 # Only the entries a run touched go back, so runs for different jobs don't undo each other.
 # Run one execution at a time all the same (scripts/start-boinc-bridge.sh refuses to start
@@ -36,7 +42,6 @@ done
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 root="$work/dispatch"
-usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix dispatch --to "$root"
 # put_back DIR...: writes each journal directory (relative to the root) back, retrying.
 put_back() {
   local d try
@@ -57,6 +62,7 @@ case "${HANDOFF_STEP:-}" in
       [[ $HANDOFF_MANIFEST != *..* ]] || fail "HANDOFF_MANIFEST is a path under manifests/"
     [[ ${HANDOFF_PAGES:-} =~ ^[A-Za-z0-9/_,-]+$ ]] || fail "HANDOFF_PAGES is a comma-separated list of page keys"
     : "${HANDOFF_BATCH:?set HANDOFF_BATCH}" "${HANDOFF_PLAN:?set HANDOFF_PLAN}" "${ENGINE_IMAGE:?set ENGINE_IMAGE}"
+    usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix dispatch --to "$root"
     usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix scans --to "$work/scans"
     usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix manifests --to "$work/manifests"
     [ -f "$work/manifests/$HANDOFF_MANIFEST" ] || fail "no manifests/$HANDOFF_MANIFEST in the hand-off container"
@@ -79,6 +85,7 @@ case "${HANDOFF_STEP:-}" in
     exit "$rc" ;;
   collect)
     [[ ${JOB_ID:-} =~ ^[0-9a-f]{64}$ ]] || fail "JOB_ID is a job id (64 hex)"
+    usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix dispatch --to "$root"
     host=$(usnm-boinc handoff get-spool --from-url "$HANDOFF_URL" --job "$JOB_ID" \
       --spool "$work/spool" --trust-out "$work/trust.json")
     rc=0
@@ -99,5 +106,24 @@ case "${HANDOFF_STEP:-}" in
     fi
     put_back "jobs/$JOB_ID" "quarantine/$JOB_ID"
     exit "$rc" ;;
-  *) fail "HANDOFF_STEP must be export or collect" ;;
+  texts-export)
+    [ -n "${HANDOFF_PAGES:-}" ] || [ -n "${HANDOFF_SAMPLE:-}" ] ||
+      fail "set HANDOFF_PAGES and/or HANDOFF_SAMPLE"
+    doc_args=()
+    if [ -n "${HANDOFF_PAGES:-}" ]; then
+      [[ $HANDOFF_PAGES =~ ^[A-Za-z0-9_,-]+$ ]] || fail "HANDOFF_PAGES is a comma-separated list of doc ids"
+      IFS=, read -r -a docs <<< "$HANDOFF_PAGES"
+      for d in "${docs[@]}"; do doc_args+=(--doc-id "$d"); done
+    fi
+    if [ -n "${HANDOFF_SAMPLE:-}" ]; then
+      [[ $HANDOFF_SAMPLE =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && [[ $HANDOFF_SAMPLE != *..* ]] ||
+        fail "HANDOFF_SAMPLE is a file name under quality-samples/"
+      usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix quality-samples --to "$work/samples"
+      [ -f "$work/samples/$HANDOFF_SAMPLE" ] || fail "no quality-samples/$HANDOFF_SAMPLE in the hand-off container"
+      doc_args+=(--sample "$work/samples/$HANDOFF_SAMPLE")
+    fi
+    mkdir -p "$work/texts"
+    usnm-boinc quality texts-export --curated-url "$CURATED_URL" --out-dir "$work/texts" "${doc_args[@]}"
+    usnm-boinc handoff put --from "$work/texts" --to-url "$HANDOFF_URL" --prefix texts ;;
+  *) fail "HANDOFF_STEP must be export, collect or texts-export" ;;
 esac

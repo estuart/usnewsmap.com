@@ -1,0 +1,13 @@
+# Qwen3-VL's weights in the usnm_qwen worker image (#522): <path under /opt/qwen/models> <URL> <sha256>.
+# Two GGUF builds with their vision projectors, run by llama-server: Qwen3-VL-8B-Instruct at Q4_K_M from
+# Qwen/Qwen3-VL-8B-Instruct-GGUF at revision f982a07559d4a2f6c8744d840bf6fccab30eea96 (for a GPU with
+# 7,000 MB free) and Qwen3-VL-2B-Instruct at Q8_0 from ggml-org/Qwen3-VL-2B-Instruct-GGUF at revision
+# ea6a11058182570be6436b9a2e4ee7f7b49f908d (smaller GPUs and CPUs). Both model cards declare Apache-2.0,
+# the licence of Qwen/Qwen3-VL-8B-Instruct and Qwen/Qwen3-VL-2B-Instruct; neither GGUF repository carries
+# the licence text, so it comes from the Apache Software Foundation and is kept beside the weights.
+# The image's USNM_QWEN_WEIGHTS is sha256: and the sha256 of this file's lines that are not comments.
+LICENSE https://www.apache.org/licenses/LICENSE-2.0.txt cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+Qwen3VL-8B-Instruct-Q4_K_M.gguf https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/f982a07559d4a2f6c8744d840bf6fccab30eea96/Qwen3VL-8B-Instruct-Q4_K_M.gguf 67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2
+mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/f982a07559d4a2f6c8744d840bf6fccab30eea96/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd
+Qwen3-VL-2B-Instruct-Q8_0.gguf https://huggingface.co/ggml-org/Qwen3-VL-2B-Instruct-GGUF/resolve/ea6a11058182570be6436b9a2e4ee7f7b49f908d/Qwen3-VL-2B-Instruct-Q8_0.gguf b7802e29f71a9e5b5e3f83f613df898a2204342dcea71a231ea501d481813c39
+mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf https://huggingface.co/ggml-org/Qwen3-VL-2B-Instruct-GGUF/resolve/ea6a11058182570be6436b9a2e4ee7f7b49f908d/mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf 69066c8f279ec85ff48ab4059f6ebba0d2932ca57667f2bbdac7d9805bca9e7b
