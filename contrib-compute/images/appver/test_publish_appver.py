@@ -30,13 +30,13 @@ class PublishTests(unittest.TestCase):
         self.script = self.root / 'publish.sh'
         self.script.write_text(script)
 
-    def publish(self, platform, payload='wrapper'):
-        src = self.source / 'apps/usnm_ocr/1.0' / f'{platform}__docker'
+    def publish(self, platform, payload='wrapper', version='1.0'):
+        src = self.source / f'apps/usnm_ocr/{version}' / f'{platform}__docker'
         src.mkdir(parents=True, exist_ok=True)
         (src / 'docker_wrapper').write_text(payload)
         return subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
                               env={**os.environ, 'PROJ': str(self.project), 'APPVER_APP': 'usnm_ocr',
-                                   'APPVER_VERSION': '1.0', 'APPVER_PLATFORM': platform})
+                                   'APPVER_VERSION': version, 'APPVER_PLATFORM': platform})
 
     def test_sibling_platform_publish_and_replay_preserve_linux(self):
         self.assertEqual(self.publish('x86_64-pc-linux-gnu', 'linux').returncode, 0)
@@ -62,6 +62,17 @@ class PublishTests(unittest.TestCase):
         self.assertFalse((self.project / 'apps/usnm_ocr/1.0/arm64-apple-darwin__docker').exists())
         self.assertEqual((self.project / 'calls').read_bytes(), calls)
         self.assertFalse((self.project / '.usnm-publish.lock').exists())
+
+    def test_new_version_atomically_updates_changed_template(self):
+        self.assertEqual(self.publish('x86_64-pc-linux-gnu', 'v1.0', version='1.0').returncode, 0)
+        template = self.project / 'templates/usnm_ocr_1.0.xml'
+        old_ino = template.stat().st_ino
+        (self.source / 'templates' / 'usnm_ocr_1.0.xml').write_text('v1.1 template')
+        self.assertEqual(self.publish('x86_64-pc-linux-gnu', 'v1.1', version='1.1').returncode, 0)
+        self.assertEqual(template.read_text(), 'v1.1 template')
+        self.assertNotEqual(template.stat().st_ino, old_ino)
+        (self.source / 'templates' / 'usnm_ocr_1.0.xml').write_text('drifted sibling template')
+        self.assertNotEqual(self.publish('arm64-apple-darwin', 'v1.1-mac', version='1.1').returncode, 0)
 
 
 if __name__ == '__main__':

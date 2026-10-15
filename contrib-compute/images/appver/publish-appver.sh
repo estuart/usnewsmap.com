@@ -39,14 +39,20 @@ if ! mkdir "$lock" 2> /dev/null; then
 fi
 trap 'rm -rf "$lock"' EXIT
 mkdir -p "$PROJ/apps/$APPVER_APP" "$PROJ/templates"
+has_existing_version=false
+if [ -d "$version_dir" ] && [ -n "$(find "$version_dir" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -print -quit)" ]; then
+  has_existing_version=true
+fi
 # Adding a sibling platform or re-running a published version must not rewrite existing shared templates.
-for t in "$src"/templates/*; do
-  n=$(basename "$t")
-  if [ -e "$PROJ/templates/$n" ]; then
-    cmp -s "$t" "$PROJ/templates/$n" ||
-      fail "templates/$n on the share differs from this image's; a changed template is a new version"
-  fi
-done
+if [ "$has_existing_version" = true ]; then
+  for t in "$src"/templates/*; do
+    n=$(basename "$t")
+    if [ -e "$PROJ/templates/$n" ]; then
+      cmp -s "$t" "$PROJ/templates/$n" ||
+        fail "templates/$n on the share differs from this image's; a changed template requires a new version"
+    fi
+  done
+fi
 if [ -e "$dst" ]; then
   diff -r "$source_dir" "$dst" > /dev/null ||
     fail "$dst is already on the share and differs from this image: versions are immutable, release a new version"
@@ -61,10 +67,14 @@ else
 fi
 for t in "$src"/templates/*; do
   n=$(basename "$t")
-  if [ ! -e "$PROJ/templates/$n" ]; then
-    cp "$t" "$PROJ/templates/$n"
-    log "installed templates/$n"
+  if [ -e "$PROJ/templates/$n" ] && cmp -s "$t" "$PROJ/templates/$n"; then
+    continue
   fi
+  tmp_tpl=$(mktemp "$PROJ/templates/.$n.XXXXXX")
+  cp "$t" "$tmp_tpl"
+  chmod 0644 "$tmp_tpl"
+  mv -f "$tmp_tpl" "$PROJ/templates/$n" || { rm -f "$tmp_tpl"; fail "can't install templates/$n"; }
+  log "installed templates/$n"
 done
 fetch_secrets
 render_config
