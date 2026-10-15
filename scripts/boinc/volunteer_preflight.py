@@ -82,12 +82,23 @@ def wait_state(name, status, runner):
     raise PreflightError(f"Podman did not enter {status}; pause/resume is unusable.")
 
 
-def preflight(data_dir, image, runner=None):
+def preflight(data_dir, image, runner=None, service=None):
     runner = runner or run
     if not IMAGE.fullmatch(image):
         raise PreflightError("--image must name a registry image pinned by its full sha256 digest.")
     if os.geteuid() == 0:
         raise PreflightError("Run the preflight as the BOINC service user inside its systemd service, not with sudo/root.")
+    if service is not None:
+        uid = os.geteuid()
+        expected = {
+            "HOME": str(data_dir),
+            "XDG_RUNTIME_DIR": f"/run/usnm-boinc-{uid}-{service.removesuffix('.service')}",
+            "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
+            "CONTAINERS_CONF": f"/etc/usnm-boinc-volunteer/{service}/containers.conf",
+            "CONTAINERS_STORAGE_CONF": f"/etc/usnm-boinc-volunteer/{service}/storage.conf",
+        }
+        if any(os.environ.get(key) != value for key, value in expected.items()):
+            raise PreflightError("Managed Podman service environment was overridden or unset; resolve conflicting systemd drop-ins or EnvironmentFile settings.")
     check_info(json.loads(runner(["podman", "info", "--format=json"])))
     slots = data_dir.resolve(strict=True) / "slots"
     if not slots.is_dir() or not os.access(slots, os.W_OK):
@@ -152,13 +163,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--service")
     args = parser.parse_args()
     def interrupted(signum, frame):
         raise PreflightError("Startup preflight interrupted; no work may be accepted.")
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     try:
-        result = preflight(args.data_dir, args.image)
+        result = preflight(args.data_dir, args.image, service=args.service)
     except (PreflightError, OSError, json.JSONDecodeError) as error:
         print(f"BOINC host preflight FAILED: {error}", file=sys.stderr)
         return 1

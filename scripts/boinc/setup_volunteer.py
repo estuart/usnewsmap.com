@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 SERVICE = re.compile(r"[A-Za-z0-9_-]{1,80}\.service\Z")
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z")
+START_TIMEOUT = 660
 PREFS = {
     "run_on_batteries": "0", "run_if_user_active": "0", "run_gpu_if_user_active": "0",
     "idle_time_to_run": "5", "max_ncpus_pct": "100", "cpu_usage_limit": "100",
@@ -28,8 +29,8 @@ class SetupError(RuntimeError):
     pass
 
 
-def run(args):
-    result = subprocess.run(args, capture_output=True, text=True, timeout=180)
+def run(args, timeout=180):
+    result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
         raise SetupError(f"{args[0]} failed: {(result.stderr or result.stdout).strip()[-2000:]}")
     return result.stdout.strip()
@@ -102,7 +103,7 @@ ProtectControlGroups=false
 ProtectHome=read-only
 ReadWritePaths={data_dir} /tmp /var/tmp
 TimeoutStartSec=10min
-ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image}
+ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image} --service={service}
 """
     # Separate, service-selected config; do not replace a user's global Podman configuration.
     containers = '[engine]\ncgroup_manager="systemd"\nconmon_cgroup="pod"\n'
@@ -110,7 +111,7 @@ ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image}
     return config_dir, dropin, containers, storage
 
 
-def check_effective(service, data_dir, config_dir, uid):
+def check_effective(service, data_dir, config_dir, uid, image=None):
     environment = dict(item.split("=", 1) for item in shlex.split(run(["systemctl", "show", service, "--property=Environment", "--value"])) if "=" in item)
     runtime = f"usnm-boinc-{uid}-{service.removesuffix('.service')}"
     expected = {
@@ -121,12 +122,61 @@ def check_effective(service, data_dir, config_dir, uid):
     }
     if any(environment.get(key) != value for key, value in expected.items()):
         raise SetupError("Another service drop-in overrides the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
+    unset = shlex.split(run(["systemctl", "show", service, "--property=UnsetEnvironment", "--value"]))
+    if any(token.split("=", 1)[0] in expected for token in unset):
+        raise SetupError("Another service drop-in unsets the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
+    for raw in run(["systemctl", "show", service, "--property=EnvironmentFiles", "--value"]).splitlines():
+        entry = raw.strip()
+        if not entry:
+            continue
+        ignore_errors = entry.endswith(" (ignore_errors=yes)")
+        for suffix in [" (ignore_errors=yes)", " (ignore_errors=no)"]:
+            if entry.endswith(suffix):
+                entry = entry[:-len(suffix)].strip()
+                break
+        if entry.startswith("-"):
+            ignore_errors = True
+            entry = entry[1:].strip()
+        env_path = Path(entry)
+        if not env_path.is_file():
+            if not ignore_errors:
+                raise SetupError(f"Required EnvironmentFile {env_path} is missing. Inspect systemctl cat before starting BOINC.")
+            continue
+        for line in env_path.read_text().splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("#", ";")):
+                continue
+            if stripped.startswith("export "):
+                stripped = stripped[len("export "):].strip()
+            key, sep, value = stripped.partition("=")
+            key, value = key.strip(), value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            if key in expected and (not sep or value != expected[key]):
+                raise SetupError("An EnvironmentFile overrides the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
     if run(["systemctl", "show", service, "--property=ProtectControlGroups", "--value"]) not in ["no", "false"]:
         raise SetupError("Another service drop-in makes cgroups read-only. Resolve that conflict before starting BOINC.")
     if run(["systemctl", "show", service, "--property=RuntimeDirectoryPreserve", "--value"]) != "yes":
         raise SetupError("The service must preserve Podman runtime files across a restart.")
     commands = run(["systemctl", "show", service, "--property=ExecStartPre", "--value"])
-    if "/usr/local/lib/usnm-boinc-volunteer/preflight.py" not in commands:
+    preflight_path = "/usr/local/lib/usnm-boinc-volunteer/preflight.py"
+    blocks = re.findall(r"\{([^}]*)\}", commands)
+    matched = 0
+    for block in blocks:
+        fields = dict(part.strip().split("=", 1) for part in block.split(";") if "=" in part)
+        argv = shlex.split(fields.get("argv[]", ""))
+        if preflight_path not in block and preflight_path not in argv:
+            continue
+        matched += 1
+        valid_argv = (
+            len(argv) == 5
+            and argv[:3] == ["/usr/bin/python3", preflight_path, f"--data-dir={data_dir}"]
+            and (argv[3] == f"--image={image}" if image is not None else argv[3].startswith("--image=") and bool(IMAGE.fullmatch(argv[3].removeprefix("--image="))))
+            and argv[4] == f"--service={service}"
+        )
+        if fields.get("path") != "/usr/bin/python3" or not valid_argv or fields.get("ignore_errors") != "no":
+            raise SetupError("Another service drop-in altered or weakened the startup preflight. Resolve that conflict before starting BOINC.")
+    if not matched:
         raise SetupError("Another service drop-in removed the startup preflight. Resolve that conflict before starting BOINC.")
 
 
@@ -149,10 +199,14 @@ def write_file(path, content, uid=0, gid=0, mode=0o640):
 
 
 def backup(path, directory):
+    target = directory / path.name
+    absent = directory / (path.name + ".absent")
+    if target.exists() or absent.exists():
+        return
     if path.exists():
-        target = directory / path.name
-        if not target.exists():
-            write_file(target, path.read_text(), mode=0o600)
+        write_file(target, path.read_text(), mode=0o600)
+    else:
+        write_file(absent, "", mode=0o600)
 
 
 def setup(service, data_dir, image, apply=False):
@@ -221,7 +275,7 @@ def setup(service, data_dir, image, apply=False):
     run(["systemctl", "stop", service])
     if active_work(data_dir):
         if was_active:
-            run(["systemctl", "start", service])
+            run(["systemctl", "start", service], timeout=START_TIMEOUT)
         raise SetupError("Work arrived before the service stopped; left its configuration unchanged. Drain it and retry.")
     config_dir.mkdir(parents=True, exist_ok=True)
     backups = config_dir / "backups"
@@ -258,8 +312,8 @@ def setup(service, data_dir, image, apply=False):
     run(["systemctl", "start", f"user@{account.pw_uid}.service"])
     write_file(target, dropin, mode=0o644)
     run(["systemctl", "daemon-reload"])
-    check_effective(service, data_dir, config_dir, account.pw_uid)
-    run(["systemctl", "start", service])
+    check_effective(service, data_dir, config_dir, account.pw_uid, image)
+    run(["systemctl", "start", service], timeout=START_TIMEOUT)
     print("Profile installed; BOINC started only after its preflight passed. Attach through BOINC Manager, then check one task's upload and validation.")
 
 

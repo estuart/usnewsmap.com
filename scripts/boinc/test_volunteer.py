@@ -127,6 +127,30 @@ class PreflightTest(unittest.TestCase):
                 pre.preflight(self.data, image, runtime)
         self.assertEqual(runtime.calls, [])
 
+    def test_service_environment_override_or_removal_fails_before_podman(self):
+        service = "boinc-client.service"
+        expected = {
+            "HOME": str(self.data),
+            "XDG_RUNTIME_DIR": "/run/usnm-boinc-1000-boinc-client",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+            "CONTAINERS_CONF": f"/etc/usnm-boinc-volunteer/{service}/containers.conf",
+            "CONTAINERS_STORAGE_CONF": f"/etc/usnm-boinc-volunteer/{service}/storage.conf",
+        }
+        with patch.dict(pre.os.environ, expected, clear=True):
+            self.assertTrue(pre.preflight(self.data, IMAGE, Runtime(), service=service)["rootless"])
+        for key in ["XDG_RUNTIME_DIR", "CONTAINERS_STORAGE_CONF"]:
+            overridden = dict(expected, **{key: "/var/lib/unmanaged"})
+            runtime = Runtime()
+            with patch.dict(pre.os.environ, overridden, clear=True):
+                with self.assertRaises(pre.PreflightError):
+                    pre.preflight(self.data, IMAGE, runtime, service=service)
+            self.assertEqual(runtime.calls, [])
+            removed = {k: v for k, v in expected.items() if k != key}
+            with patch.dict(pre.os.environ, removed, clear=True):
+                with self.assertRaises(pre.PreflightError):
+                    pre.preflight(self.data, IMAGE, runtime, service=service)
+            self.assertEqual(runtime.calls, [])
+
 
 class SetupTest(unittest.TestCase):
     def test_overlapping_subordinate_ids_are_rejected_without_reallocation(self):
@@ -163,7 +187,7 @@ class SetupTest(unittest.TestCase):
 
     def test_managed_dropin_preflights_inside_service_and_preserves_runtime(self):
         _, dropin, config, _ = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
-        self.assertIn("ExecStartPre=/usr/bin/python3", dropin)
+        self.assertIn("ExecStartPre=/usr/bin/python3 /usr/local/lib/usnm-boinc-volunteer/preflight.py --data-dir=/var/lib/boinc --image=" + IMAGE + " --service=boinc-client.service", dropin)
         self.assertIn("RuntimeDirectoryPreserve=yes", dropin)
         self.assertIn("ProtectControlGroups=false", dropin)
         self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/999/bus", dropin)
@@ -180,18 +204,91 @@ class SetupTest(unittest.TestCase):
             "CONTAINERS_CONF": str(config / "containers.conf"),
             "CONTAINERS_STORAGE_CONF": str(config / "storage.conf"),
         }
-        properties = {"Environment": " ".join(f"{k}={v}" for k, v in environment.items()), "ProtectControlGroups": "no", "RuntimeDirectoryPreserve": "yes", "ExecStartPre": "/usr/local/lib/usnm-boinc-volunteer/preflight.py"}
-        def command(args):
-            key = next(item.removeprefix("--property=") for item in args if item.startswith("--property="))
-            return properties[key]
-        with patch.object(setup, "run", side_effect=command):
-            setup.check_effective(service, data, config, 999)
-            for key, bad in [("Environment", "HOME=/old"), ("ProtectControlGroups", "yes"), ("RuntimeDirectoryPreserve", "no"), ("ExecStartPre", "")]:
-                original = properties[key]
-                properties[key] = bad
-                with self.assertRaises(setup.SetupError):
-                    setup.check_effective(service, data, config, 999)
-                properties[key] = original
+        optional_pre = "{ path=/bin/chown ; argv[]=/bin/chown boinc:boinc /var/lib/boinc ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
+        valid_pre = (
+            "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 /usr/local/lib/usnm-boinc-volunteer/preflight.py "
+            f"--data-dir={data} --image={IMAGE} --service={service} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            env_dir = Path(tmp)
+            harmless_env = env_dir / "harmless.env"
+            harmless_env.write_text("# comment\nBOINC_OPTS=\"--dir /var/lib/boinc\"\n")
+            override_runtime = env_dir / "override-runtime.env"
+            override_runtime.write_text("XDG_RUNTIME_DIR=/run/unmanaged\n")
+            override_storage = env_dir / "override-storage.env"
+            override_storage.write_text("export CONTAINERS_STORAGE_CONF=\"/etc/containers/storage.conf\"\n")
+            missing_env = env_dir / "missing.env"
+            properties = {
+                "Environment": " ".join(f"{k}={v}" for k, v in environment.items()),
+                "UnsetEnvironment": "UNRELATED_VAR",
+                "EnvironmentFiles": f"{harmless_env} (ignore_errors=no)\n{missing_env} (ignore_errors=yes)",
+                "ProtectControlGroups": "no",
+                "RuntimeDirectoryPreserve": "yes",
+                "ExecStartPre": f"{optional_pre}\n{valid_pre}",
+            }
+            def command(args, timeout=180):
+                key = next(item.removeprefix("--property=") for item in args if item.startswith("--property="))
+                return properties[key]
+            with patch.object(setup, "run", side_effect=command):
+                setup.check_effective(service, data, config, 999, IMAGE)
+                bad_cases = [
+                    ("Environment", "HOME=/old"),
+                    ("UnsetEnvironment", "XDG_RUNTIME_DIR"),
+                    ("UnsetEnvironment", f"CONTAINERS_STORAGE_CONF={config / 'storage.conf'}"),
+                    ("EnvironmentFiles", f"{override_runtime} (ignore_errors=yes)"),
+                    ("EnvironmentFiles", f"{override_storage} (ignore_errors=no)"),
+                    ("EnvironmentFiles", f"{missing_env} (ignore_errors=no)"),
+                    ("ProtectControlGroups", "yes"),
+                    ("RuntimeDirectoryPreserve", "no"),
+                    ("ExecStartPre", ""),
+                    ("ExecStartPre", optional_pre),
+                    ("ExecStartPre", valid_pre.replace("ignore_errors=no", "ignore_errors=yes")),
+                    ("ExecStartPre", valid_pre.replace("path=/usr/bin/python3", "path=/bin/true")),
+                    ("ExecStartPre", valid_pre.replace(f"--service={service}", "--service=other.service")),
+                    ("ExecStartPre", valid_pre.replace(f"--image={IMAGE}", "--image=registry.example.org/usnm/worker@sha256:" + "b" * 64)),
+                ]
+                for key, bad in bad_cases:
+                    with self.subTest(key=key, bad=bad):
+                        original = properties[key]
+                        properties[key] = bad
+                        with self.assertRaises(setup.SetupError):
+                            setup.check_effective(service, data, config, 999, IMAGE)
+                        properties[key] = original
+
+    def test_backup_records_initial_absence_and_preserves_original_across_reapply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            backups = root / "backups"
+            data.mkdir()
+            backups.mkdir()
+            cc = data / "cc_config.xml"
+            prefs = data / "global_prefs_override.xml"
+            original_prefs = "<global_preferences><disk_max_used_gb>12</disk_max_used_gb></global_preferences>\n"
+            prefs.write_text(original_prefs)
+            with patch.object(setup.os, "fchown"):
+                setup.backup(cc, backups)
+                setup.backup(prefs, backups)
+                self.assertTrue((backups / "cc_config.xml.absent").exists())
+                self.assertFalse((backups / "cc_config.xml").exists())
+                self.assertEqual((backups / "global_prefs_override.xml").read_text(), original_prefs)
+                self.assertFalse((backups / "global_prefs_override.xml.absent").exists())
+                cc.write_text(setup.merge_xml(cc, "cc_config", {"ncpus": "1", "no_gpus": "1"}, "options"))
+                prefs.write_text(setup.merge_xml(prefs, "global_preferences", setup.PREFS))
+                setup.backup(cc, backups)
+                setup.backup(prefs, backups)
+                self.assertTrue((backups / "cc_config.xml.absent").exists())
+                self.assertFalse((backups / "cc_config.xml").exists())
+                self.assertEqual((backups / "global_prefs_override.xml").read_text(), original_prefs)
+
+    def test_start_timeout_exceeds_unit_startup_deadline(self):
+        self.assertGreater(setup.START_TIMEOUT, 600)
+        completed = unittest.mock.Mock(returncode=0, stdout="ok\n", stderr="")
+        with patch.object(setup.subprocess, "run", return_value=completed) as subrun:
+            setup.run(["systemctl", "stop", "boinc-client.service"])
+            setup.run(["systemctl", "start", "boinc-client.service"], timeout=setup.START_TIMEOUT)
+            self.assertEqual(subrun.call_args_list[0].kwargs["timeout"], 180)
+            self.assertEqual(subrun.call_args_list[1].kwargs["timeout"], setup.START_TIMEOUT)
 
     def test_duplicate_settings_and_wrong_xml_fail_without_writing(self):
         with tempfile.TemporaryDirectory() as tmp:
