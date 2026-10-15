@@ -23,3 +23,4 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0017](0017-resource-naming.md)                 | Resource naming: usnm-{function}-{type}-{env}, adopted at natural points, stateful prod names kept until a rebuild     | Proposed                                |
 | [0018](0018-scan-archive.md)                    | Scan archive: Cold-tier blobs, read through a small API with signed tickets                                            | Proposed                                |
 | [0019](0019-boinc-server-hosting.md)            | Hosting for the stock BOINC server that #441's pilot submits to: Container App, MySQL, Azure Files, a bridge job       | Proposed                                |
+| [0020](0020-boinc-buda-evaluation.md)           | Retain separate BOINC apps while evaluating BUDA                                                                       | Proposed; server spike pending          |

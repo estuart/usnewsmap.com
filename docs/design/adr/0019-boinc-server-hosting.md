@@ -5,6 +5,7 @@
 - **Extends:** ADR-0015 (on-prem OCR workers) and ADR-0016 (pluggable OCR engines)
 - **Amends:** ADR-0009 for the BOINC project server only, in three places (decision 5)
 - **Code and docs:** [`contrib-compute/`](../../../contrib-compute/README.md)
+- **Follow-up:** [ADR-0020](0020-boinc-buda-evaluation.md) evaluates BUDA; separate science apps remain the proposed choice while the server spike is pending.
 
 ## Context
 
