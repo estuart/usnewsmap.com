@@ -70,9 +70,10 @@ def merge_xml(path, root_name, edits, section=None):
         raise SetupError(f"Unexpected XML root in {path}; refusing to replace it.")
     target = root
     if section:
-        target = root.find(section)
-        if target is None:
-            target = ET.SubElement(root, section)
+        sections = root.findall(section)
+        if len(sections) > 1:
+            raise SetupError(f"Duplicate {section} sections in {path}; resolve them first.")
+        target = sections[0] if sections else ET.SubElement(root, section)
     for name, value in edits.items():
         existing = target.findall(name)
         if len(existing) > 1:
@@ -88,6 +89,10 @@ def profile(service, data_dir, image, uid):
     runtime = f"usnm-boinc-{uid}-{service.removesuffix('.service')}"
     preflight = "/usr/local/lib/usnm-boinc-volunteer/preflight.py"
     dropin = f"""# Managed by scripts/boinc/setup_volunteer.py. See docs/boinc-volunteer.md.
+[Unit]
+Requires=user@{uid}.service
+After=user@{uid}.service
+
 [Service]
 Environment=HOME={data_dir}
 Environment=XDG_RUNTIME_DIR=/run/{runtime}
@@ -111,20 +116,8 @@ ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image} 
     return config_dir, dropin, containers, storage
 
 
-def check_effective(service, data_dir, config_dir, uid, image=None):
-    environment = dict(item.split("=", 1) for item in shlex.split(run(["systemctl", "show", service, "--property=Environment", "--value"])) if "=" in item)
-    runtime = f"usnm-boinc-{uid}-{service.removesuffix('.service')}"
-    expected = {
-        "HOME": str(data_dir), "XDG_RUNTIME_DIR": f"/run/{runtime}",
-        "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
-        "CONTAINERS_CONF": str(config_dir / "containers.conf"),
-        "CONTAINERS_STORAGE_CONF": str(config_dir / "storage.conf"),
-    }
-    if any(environment.get(key) != value for key, value in expected.items()):
-        raise SetupError("Another service drop-in overrides the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
-    unset = shlex.split(run(["systemctl", "show", service, "--property=UnsetEnvironment", "--value"]))
-    if any(token.split("=", 1)[0] in expected for token in unset):
-        raise SetupError("Another service drop-in unsets the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
+def read_environment_files(service):
+    entries = []
     for raw in run(["systemctl", "show", service, "--property=EnvironmentFiles", "--value"]).splitlines():
         entry = raw.strip()
         if not entry:
@@ -152,8 +145,92 @@ def check_effective(service, data_dir, config_dir, uid, image=None):
             key, value = key.strip(), value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                 value = value[1:-1]
-            if key in expected and (not sep or value != expected[key]):
-                raise SetupError("An EnvironmentFile overrides the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
+            entries.append((key, sep, value))
+    return entries
+
+
+def resolve_launch(service):
+    working = run(["systemctl", "show", service, "--property=WorkingDirectory", "--value"])
+    start = run(["systemctl", "show", service, "--property=ExecStart", "--value"])
+    blocks = re.findall(r"\{([^}]*)\}", start)
+    if len(blocks) != 1:
+        raise SetupError("The service must start a single stock BOINC client command; wrapper/custom services need manual configuration.")
+    fields = dict(part.strip().split("=", 1) for part in blocks[0].split(";") if "=" in part)
+    binary = fields.get("path", "")
+    argv = shlex.split(fields.get("argv[]", ""))
+    if not binary or Path(binary).name not in ["boinc", "boinc_client"] or not argv or Path(argv[0]).name not in ["boinc", "boinc_client"]:
+        raise SetupError("The service must start a stock BOINC client directly; wrapper/custom services need manual configuration.")
+    env_vars = {}
+    for key, sep, value in read_environment_files(service):
+        if sep:
+            env_vars[key] = value
+    for item in shlex.split(run(["systemctl", "show", service, "--property=Environment", "--value"])):
+        if "=" in item:
+            key, value = item.split("=", 1)
+            env_vars[key] = value
+    for token in shlex.split(run(["systemctl", "show", service, "--property=UnsetEnvironment", "--value"])):
+        key, sep, value = token.partition("=")
+        if not sep or env_vars.get(key) == value:
+            env_vars.pop(key, None)
+    expanded = []
+    for arg in argv[1:]:
+        match = re.fullmatch(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})", arg)
+        if match:
+            var_name = match.group(1) or match.group(2)
+            expanded.extend(shlex.split(env_vars.get(var_name, "")))
+        elif "$" in arg:
+            raise SetupError("Unsupported variable expansion in ExecStart; configure this custom service manually.")
+        else:
+            expanded.append(arg)
+    dir_overrides = []
+    if env_vars.get("BOINC_DIR"):
+        dir_overrides.append(env_vars["BOINC_DIR"])
+    index = 0
+    while index < len(expanded):
+        arg = expanded[index]
+        if arg in ["--dir", "-dir"]:
+            if index + 1 >= len(expanded):
+                raise SetupError("ExecStart specifies --dir without a directory path.")
+            dir_overrides.append(expanded[index + 1])
+            index += 2
+        elif arg.startswith("--dir=") or arg.startswith("-dir="):
+            dir_overrides.append(arg.split("=", 1)[1])
+            index += 1
+        else:
+            index += 1
+    return binary, working, dir_overrides
+
+
+def check_effective(service, data_dir, config_dir, uid, image=None):
+    user_unit = f"user@{uid}.service"
+    requires = run(["systemctl", "show", service, "--property=Requires", "--value"]).split()
+    after = run(["systemctl", "show", service, "--property=After", "--value"]).split()
+    if user_unit not in requires or user_unit not in after:
+        raise SetupError(f"The service must require and start after {user_unit}.")
+    _, working, dir_overrides = resolve_launch(service)
+    resolved_data = data_dir.resolve()
+    if not working or Path(working).resolve() != resolved_data:
+        raise SetupError("Another service drop-in overrides WorkingDirectory. Inspect systemctl cat and resolve the conflict before starting BOINC.")
+    for override in dir_overrides:
+        candidate = Path(override) if Path(override).is_absolute() else Path(working) / override
+        if candidate.resolve() != resolved_data:
+            raise SetupError("The service overrides BOINC's data directory via --dir or BOINC_DIR; match --data-dir and WorkingDirectory before starting BOINC.")
+    environment = dict(item.split("=", 1) for item in shlex.split(run(["systemctl", "show", service, "--property=Environment", "--value"])) if "=" in item)
+    runtime = f"usnm-boinc-{uid}-{service.removesuffix('.service')}"
+    expected = {
+        "HOME": str(data_dir), "XDG_RUNTIME_DIR": f"/run/{runtime}",
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
+        "CONTAINERS_CONF": str(config_dir / "containers.conf"),
+        "CONTAINERS_STORAGE_CONF": str(config_dir / "storage.conf"),
+    }
+    if any(environment.get(key) != value for key, value in expected.items()):
+        raise SetupError("Another service drop-in overrides the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
+    unset = shlex.split(run(["systemctl", "show", service, "--property=UnsetEnvironment", "--value"]))
+    if any(token.split("=", 1)[0] in expected for token in unset):
+        raise SetupError("Another service drop-in unsets the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
+    for key, sep, value in read_environment_files(service):
+        if key in expected and (not sep or value != expected[key]):
+            raise SetupError("An EnvironmentFile overrides the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
     if run(["systemctl", "show", service, "--property=ProtectControlGroups", "--value"]) not in ["no", "false"]:
         raise SetupError("Another service drop-in makes cgroups read-only. Resolve that conflict before starting BOINC.")
     if run(["systemctl", "show", service, "--property=RuntimeDirectoryPreserve", "--value"]) != "yes":
@@ -212,7 +289,7 @@ def backup(path, directory):
 def setup(service, data_dir, image, apply=False):
     if not SERVICE.fullmatch(service) or (data_dir is not None and not SAFE_PATH.fullmatch(str(data_dir))) or not IMAGE.fullmatch(image):
         raise SetupError("Use a plain systemd service name, an absolute path without spaces/special characters, and a registry image pinned by full sha256 digest.")
-    working = run(["systemctl", "show", service, "--property=WorkingDirectory", "--value"])
+    binary, working, dir_overrides = resolve_launch(service)
     if data_dir is None:
         data_dir = Path(working)
         if not SAFE_PATH.fullmatch(str(data_dir)):
@@ -226,15 +303,15 @@ def setup(service, data_dir, image, apply=False):
     account = pwd.getpwnam(user)
     if account.pw_uid == 0:
         raise SetupError("BOINC must already run as an unprivileged service user.")
-    start = run(["systemctl", "show", service, "--property=ExecStart", "--value"])
-    binary = re.search(r"path=([^ ;]+)", start)
-    if binary is None or Path(binary.group(1)).name not in ["boinc", "boinc_client"]:
-        raise SetupError("The service must start a stock BOINC client directly; wrapper/custom services need manual configuration.")
-    version = re.match(r"(\d+)\.(\d+)\.(\d+)", run([binary.group(1), "--version"]))
+    version = re.match(r"(\d+)\.(\d+)\.(\d+)", run([binary, "--version"]))
     if version is None or tuple(map(int, version.groups())) < (8, 2, 13):
         raise SetupError("Install stock BOINC 8.2.13 or later before configuring this profile.")
     if Path(working).resolve() != data_dir or data_dir.stat().st_uid != account.pw_uid:
         raise SetupError("--data-dir must be the existing BOINC service working directory, owned by its user. This helper does not move account/task data.")
+    for override in dir_overrides:
+        candidate = Path(override) if Path(override).is_absolute() else Path(working) / override
+        if not candidate.exists() or candidate.resolve() != data_dir:
+            raise SetupError("The service overrides BOINC's data directory via --dir or BOINC_DIR; match --data-dir and WorkingDirectory before configuring this profile.")
     if not Path("/sys/fs/cgroup/cgroup.controllers").exists():
         raise SetupError("This rootless profile requires cgroup v2.")
     for command in ["podman", "loginctl", "systemctl", "newuidmap", "newgidmap"]:
@@ -273,10 +350,18 @@ def setup(service, data_dir, image, apply=False):
         raise SetupError("Installation needs root; preview does not change the system.")
     was_active = run(["systemctl", "show", service, "--property=ActiveState", "--value"]) == "active"
     run(["systemctl", "stop", service])
-    if active_work(data_dir):
+    try:
+        if active_work(data_dir):
+            raise SetupError("Work arrived before the service stopped; left its configuration unchanged. Drain it and retry.")
+        for path in [data_dir / "cc_config.xml", data_dir / "global_prefs_override.xml"]:
+            if path.is_symlink():
+                raise SetupError(f"{path} is a symlink. Configure its owner-managed target manually; this helper will not replace it.")
+        cc = merge_xml(data_dir / "cc_config.xml", "cc_config", {"ncpus": "1", "no_gpus": "1"}, "options")
+        prefs = merge_xml(data_dir / "global_prefs_override.xml", "global_preferences", PREFS)
+    except Exception:
         if was_active:
             run(["systemctl", "start", service], timeout=START_TIMEOUT)
-        raise SetupError("Work arrived before the service stopped; left its configuration unchanged. Drain it and retry.")
+        raise
     config_dir.mkdir(parents=True, exist_ok=True)
     backups = config_dir / "backups"
     backups.mkdir(mode=0o700, exist_ok=True)

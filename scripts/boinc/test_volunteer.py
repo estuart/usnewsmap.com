@@ -187,6 +187,8 @@ class SetupTest(unittest.TestCase):
 
     def test_managed_dropin_preflights_inside_service_and_preserves_runtime(self):
         _, dropin, config, _ = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
+        self.assertIn("Requires=user@999.service", dropin)
+        self.assertIn("After=user@999.service", dropin)
         self.assertIn("ExecStartPre=/usr/bin/python3 /usr/local/lib/usnm-boinc-volunteer/preflight.py --data-dir=/var/lib/boinc --image=" + IMAGE + " --service=boinc-client.service", dropin)
         self.assertIn("RuntimeDirectoryPreserve=yes", dropin)
         self.assertIn("ProtectControlGroups=false", dropin)
@@ -204,6 +206,7 @@ class SetupTest(unittest.TestCase):
             "CONTAINERS_CONF": str(config / "containers.conf"),
             "CONTAINERS_STORAGE_CONF": str(config / "storage.conf"),
         }
+        valid_start = "{ path=/usr/bin/boinc ; argv[]=/usr/bin/boinc $BOINC_OPTS ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
         optional_pre = "{ path=/bin/chown ; argv[]=/bin/chown boinc:boinc /var/lib/boinc ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
         valid_pre = (
             "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 /usr/local/lib/usnm-boinc-volunteer/preflight.py "
@@ -213,12 +216,20 @@ class SetupTest(unittest.TestCase):
             env_dir = Path(tmp)
             harmless_env = env_dir / "harmless.env"
             harmless_env.write_text("# comment\nBOINC_OPTS=\"--dir /var/lib/boinc\"\n")
+            override_dir_env = env_dir / "override-dir.env"
+            override_dir_env.write_text("BOINC_OPTS=\"--dir /var/lib/other-boinc\"\n")
+            override_boinc_dir = env_dir / "override-boinc-dir.env"
+            override_boinc_dir.write_text("BOINC_DIR=/var/lib/other-boinc\n")
             override_runtime = env_dir / "override-runtime.env"
             override_runtime.write_text("XDG_RUNTIME_DIR=/run/unmanaged\n")
             override_storage = env_dir / "override-storage.env"
             override_storage.write_text("export CONTAINERS_STORAGE_CONF=\"/etc/containers/storage.conf\"\n")
             missing_env = env_dir / "missing.env"
             properties = {
+                "Requires": "basic.target user@999.service",
+                "After": "network.target user@999.service",
+                "WorkingDirectory": str(data),
+                "ExecStart": valid_start,
                 "Environment": " ".join(f"{k}={v}" for k, v in environment.items()),
                 "UnsetEnvironment": "UNRELATED_VAR",
                 "EnvironmentFiles": f"{harmless_env} (ignore_errors=no)\n{missing_env} (ignore_errors=yes)",
@@ -232,6 +243,14 @@ class SetupTest(unittest.TestCase):
             with patch.object(setup, "run", side_effect=command):
                 setup.check_effective(service, data, config, 999, IMAGE)
                 bad_cases = [
+                    ("Requires", "basic.target"),
+                    ("After", "network.target"),
+                    ("WorkingDirectory", "/var/lib/other-boinc"),
+                    ("ExecStart", valid_start.replace("$BOINC_OPTS", "--dir /var/lib/other-boinc")),
+                    ("ExecStart", valid_start.replace("$BOINC_OPTS", "--dir=/var/lib/other-boinc")),
+                    ("ExecStart", valid_start.replace("$BOINC_OPTS", "--dir")),
+                    ("EnvironmentFiles", f"{override_dir_env} (ignore_errors=no)"),
+                    ("EnvironmentFiles", f"{override_boinc_dir} (ignore_errors=no)"),
                     ("Environment", "HOME=/old"),
                     ("UnsetEnvironment", "XDG_RUNTIME_DIR"),
                     ("UnsetEnvironment", f"CONTAINERS_STORAGE_CONF={config / 'storage.conf'}"),
@@ -298,6 +317,12 @@ class SetupTest(unittest.TestCase):
                 with self.assertRaises(setup.SetupError):
                     setup.merge_xml(path, "global_preferences", setup.PREFS)
                 self.assertEqual(path.read_text(), xml)
+            cc = Path(tmp) / "cc_config.xml"
+            dup_sections = "<cc_config><options><ncpus>1</ncpus></options><options><ncpus>8</ncpus></options></cc_config>"
+            cc.write_text(dup_sections)
+            with self.assertRaises(setup.SetupError):
+                setup.merge_xml(cc, "cc_config", {"ncpus": "1", "no_gpus": "1"}, "options")
+            self.assertEqual(cc.read_text(), dup_sections)
 
 
 if __name__ == "__main__":
