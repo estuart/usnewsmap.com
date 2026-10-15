@@ -372,6 +372,13 @@ class DevStatus(Stubbed):
         r = self.status(STUB_GROUPS="ME_cae-usnm-dev_rg-usnm-dev_eastus2")
         self.assertEqual(r.returncode, 1)
 
+    def test_retired_spot_group_is_still_detected_without_a_stack(self):
+        r = self.status(STUB_GROUPS="rg-usnm-dev-spot")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("group rg-usnm-dev-spot: 1 resources", r.stdout)
+        self.assertIn("no experiment tag", r.stderr)
+        self.assertNotIn("dev holds nothing", r.stdout)
+
     def test_an_experiment(self):
         r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev",
                         STUB_TAGS="275\\t2026-10-01T12:00:00Z")

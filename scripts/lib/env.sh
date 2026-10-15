@@ -500,11 +500,12 @@ committed_clean() {
 }
 
 # The environment's resource groups by name (ADR-0017; infra/naming.bicep's
-# rg, containerEnvInfraRg and spotRg), in both forms: dev and experiments
+# rg and containerEnvInfraRg), in both forms: dev and experiments
 # use ADR-0017's, and the current prod keeps its legacy names until its
 # rebuild. The project group, which carries the experiment tag, comes first
 # in each form. A legacy Container Apps environment's own group is Azure's
 # ME_<environment>_<group>_<region>, which starts with LEGACY_INFRA_GROUP.
+# Keep the retired Spot group discoverable until operators remove it (#309).
 PROJECT_GROUPS="usnm-core-rg-$ENV_NAME rg-usnm-$ENV_NAME"
 # shellcheck disable=SC2034 # used by scripts/dev-status.sh
 ENV_GROUPS="$PROJECT_GROUPS usnm-core-infra-rg-$ENV_NAME rg-usnm-$ENV_NAME-spot"

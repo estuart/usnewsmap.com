@@ -2,8 +2,8 @@
 //
 // Deployed as the deployment stack usnm-{env} by scripts/bootstrap.sh, with
 // parameters from infra/main.bicepparam. Creates the project
-// resource group and the empty Spot resource group the backfill launcher
-// will use, then the platform inside the project group.
+// resource group and, optionally, the BOINC group, then the platform inside
+// the project group. The ACI Spot alternative is not deployed.
 
 targetScope = 'subscription'
 
@@ -313,12 +313,6 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: n.rg
   location: location
   tags: empty(experiment) ? tags : union(tags, { experiment: experiment, started: experimentStarted })
-}
-
-resource spotRg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-  name: n.spotRg
-  location: location
-  tags: tags
 }
 
 resource boincRg 'Microsoft.Resources/resourceGroups@2024-03-01' = if (deployBoincGroup) {
@@ -1054,18 +1048,6 @@ module boincExemptions 'modules/boinc-exemptions.bicep' = if (deployPolicies && 
     )
   }
   dependsOn: [boincPolicies]
-}
-
-module spotPolicies 'modules/policy-assignments.bicep' = if (deployPolicies) {
-  scope: spotRg
-  name: 'policy-assignments-spot'
-  params: {
-    definitionIds: guardrailPolicyIds
-    // No public accounts live here.
-    definitionParameters: {
-      '${guardrailPolicyNames.auditPublicAccess}': { effect: { value: 'deny' } }
-    }
-  }
 }
 
 module dns 'modules/dns.bicep' = if (!empty(dnsZoneName)) {

@@ -2,8 +2,8 @@
 # Is dev up, and for which experiment (#275; docs/operations.md, "Dev
 # environment lifecycle")? Lists its deployment stack and what's in its
 # groups (usnm-core-rg-dev, the Container Apps environment's
-# usnm-core-infra-rg-dev and rg-usnm-dev-spot; the legacy rg-usnm-dev and
-# ME_cae-usnm-dev_* too, ADR-0017), the experiment tag on the project group
+# usnm-core-infra-rg-dev; the retired rg-usnm-dev-spot and legacy rg-usnm-dev
+# and ME_cae-usnm-dev_* too, ADR-0017), the experiment tag on the project group
 # and its age, and what those groups have cost so far (Cost Management,
 # actual): since the experiment started, or this month when there's no tag.
 #

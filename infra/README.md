@@ -6,9 +6,9 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 
 Resource names follow [ADR-0017](../docs/design/adr/0017-resource-naming.md) (proposed). The names below are the current ones; prod keeps some of them until a rebuild, and the ADR maps each to its target.
 
-Every resource name comes from `names()` in [`naming.bicep`](naming.bicep); modules take names as parameters and never build one. Each name that doesn't follow the ADR yet is pinned there and listed in [`names/exceptions.json`](names/exceptions.json) with the phase that renames it, and [`names/prod.json`](names/prod.json) lists prod's names, so a prod rename is a reviewed change to that file. `scripts/ci/check-names.py` checks all three in CI, offline. Only the current prod (its suffix, `legacyProdSuffix`) keeps its legacy names; dev, experiments and a prod rebuilt in another subscription use ADR-0017's form, so dev's groups are `usnm-core-rg-dev`, `usnm-core-infra-rg-dev` and `rg-usnm-dev-spot` (#309).
+Every resource name comes from `names()` in [`naming.bicep`](naming.bicep); modules take names as parameters and never build one. Each name that doesn't follow the ADR yet is pinned there and listed in [`names/exceptions.json`](names/exceptions.json) with the phase that renames it, and [`names/prod.json`](names/prod.json) lists prod's names, so a prod rename is a reviewed change to that file. `scripts/ci/check-names.py` checks all three in CI, offline. Only the current prod (its suffix, `legacyProdSuffix`) keeps its legacy names; dev, experiments and a prod rebuilt in another subscription use ADR-0017's form, so dev's groups are `usnm-core-rg-dev` and `usnm-core-infra-rg-dev` (#309). The retired Spot group is no longer declared; see [its cleanup](#retired-spot-resource-group).
 
-`main.bicep` runs at subscription scope. It creates two resource groups: `rg-usnm-{env}` for the platform and an empty `rg-usnm-{env}-spot` for the backfill launcher's ACI Spot groups. Inside `rg-usnm-{env}` it creates:
+`main.bicep` runs at subscription scope. It creates the platform resource group (`rg-usnm-{env}` in the current prod, `usnm-core-rg-{env}` otherwise) and, with `deployBoincGroup`, the separate `usnm-boinc-rg-{env}`. The ACI Spot launcher is not planned, and no Spot group is created. Inside the platform group it creates:
 
 | Module                                                                              | Resources                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -49,6 +49,45 @@ With `USNM_SEARCH_BACKEND=fixtures` (the default for a new environment) the API 
 Switch only after the ingest jobs have published indexes and a `current.json`. Until then the API has nothing to serve and keeps retrying its first load. On the first deployment with `quickwit`, the identity's role assignment is created after the app, so the sidecar and API may restart a few times until the assignment propagates (a few minutes). This deployment is also where Quickwit's managed-identity auth is first confirmed against a real account (spike S-2). If it fails, the fallback is a user-delegation SAS minted by the API (08 §8.2).
 
 Prod runs `USNM_SEARCH_BACKEND=quickwit`. The ingest job's `run` command calls `titles-sync` before each release to build the catalog it needs ([operations](../docs/operations.md)), and `bootstrap.sh --domain` binds the custom domains (`usnewsmap.com`, `www.usnewsmap.com`, `api.usnewsmap.com`) with managed certificates once the DNS records are in place (§8.8).
+
+## Retired Spot resource group
+
+ADR-0017 Phase 1 (#309) removes `rg-usnm-{env}-spot` and its
+`policy-assignments-spot` module from the template. It removes only that
+group's seven policy assignments, not the shared policy definitions or the
+assignments on the platform and BOINC groups. New environments never create
+the Spot group. Existing environments need an **operator provision and
+cleanup after merge**; merging code alone does not change Azure.
+
+1. Select the environment's subscription and inspect the old group before
+   provisioning. For prod:
+
+   ```sh
+   az group show -n rg-usnm-prod-spot
+   az resource list -g rg-usnm-prod-spot -o table
+   az policy assignment list --scope /subscriptions/<subscription-id>/resourceGroups/rg-usnm-prod-spot -o table
+   ```
+
+   Expect no workloads and only the seven project guardrail assignments.
+   Stop if it holds anything else; do not delete another workload. A group
+   that is already absent needs no cleanup.
+
+2. From merged main, run `scripts/provision.sh --env prod` (substitute the
+   environment for dev or an experiment). The stack's
+   `--action-on-unmanage deleteResources` deletes the old assignments and
+   detaches, rather than deletes, the resource group. A deployment what-if
+   alone does not enumerate these stack-unmanage deletions.
+3. Check that `az stack sub show -n usnm-prod --query 'resources[].id' -o tsv`
+   contains neither the Spot group nor its assignments. Repeat the resource
+   and policy-assignment lists above; both must be empty. Then, and only
+   then, run `az group delete -n rg-usnm-prod-spot` and confirm
+   `az group exists -n rg-usnm-prod-spot` returns `false`.
+
+Repeat for any previously deployed dev or experiment Spot group.
+`dev-status.sh` and the dev budget deliberately still discover and cost
+these legacy groups until cleanup is complete; a detached Spot group must
+not make an environment appear empty. The ACI Spot alternative remains
+documented in design doc 08 §8.4, but is not deployed.
 
 ## Deploy
 

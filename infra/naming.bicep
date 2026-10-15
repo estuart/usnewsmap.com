@@ -204,7 +204,6 @@ var nameTypes = {
   serialSetWriterRole: 'role'
   siteUnavailableAlert: 'alert'
   siteWebtest: 'webtest'
-  spotRg: 'rg'
   stateEndpoint: 'pep'
   stateEndpointNic: 'nic'
   vnet: 'vnet'
@@ -305,7 +304,6 @@ type Names = {
   serialSetWriterRole: string
   siteUnavailableAlert: string
   siteWebtest: string
-  spotRg: string
   stateEndpoint: string
   stateEndpointNic: string
   vnet: string
@@ -401,8 +399,6 @@ func names(env string, sfx string, pinned bool) Names => {
   serialSetWriterRole: usnmName('sset-writer', 'role', env)
   siteUnavailableAlert: pinned ? 'alert-usnm-site-unavailable-${env}' : usnmName('site-unavailable', 'alert', env)
   siteWebtest: pinned ? 'webtest-usnm-site-${env}' : usnmName('site', 'webtest', env)
-  // Removed in Phase 1 (ADR-0017): legacy everywhere until then.
-  spotRg: 'rg-usnm-${env}-spot'
   stateEndpoint: pinned ? 'pe-usnm-cosmos' : usnmName('state-sql', 'pep', env)
   stateEndpointNic: pinned ? '' : usnmName('state-sql', 'nic', env)
   // Removed in Phase 1 (ADR-0017): legacy everywhere until then.

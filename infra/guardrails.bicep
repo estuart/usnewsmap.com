@@ -283,8 +283,8 @@ resource devBudget 'Microsoft.Consumption/budgets@2023-11-01' = if (!empty(devEm
         name: 'ResourceGroupName'
         operator: 'In'
         // dev's groups in ADR-0017's form (infra/naming.bicep: rg,
-        // containerEnvInfraRg, spotRg), then the legacy ones, which an
-        // older checkout's dev would still use.
+        // containerEnvInfraRg), then the retired Spot group and legacy
+        // ones, which may remain after a provision from an older checkout.
         values: [
           'usnm-core-rg-dev'
           'usnm-core-infra-rg-dev'

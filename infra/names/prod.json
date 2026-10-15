@@ -85,7 +85,6 @@
   "serialSetJob": "usnm-sset-caj-prod",
   "siteUnavailableAlert": "alert-usnm-site-unavailable-prod",
   "siteWebtest": "webtest-usnm-site-prod",
-  "spotRg": "rg-usnm-prod-spot",
   "stateEndpoint": "pe-usnm-cosmos",
   "stateEndpointNic": "",
   "vnet": "vnet-usnm-prod",
