@@ -116,20 +116,29 @@ ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image} 
     return config_dir, dropin, containers, storage
 
 
+EXEC_BLOCK = re.compile(r"\{((?:[^{}]|\$\{[A-Za-z_][A-Za-z0-9_]*\})*)\}")
+ENV_FILE_PAIR = re.compile(r"\s*([^\s()]+)\s+\(ignore_errors=(yes|no)\)\s*")
+
+
 def read_environment_files(service):
+    raw = run(["systemctl", "show", service, "--property=EnvironmentFiles", "--value"]).strip()
+    if not raw:
+        return []
+    pairs = []
+    pos = 0
+    while pos < len(raw):
+        match = ENV_FILE_PAIR.match(raw, pos)
+        if not match:
+            raise SetupError("Unsupported EnvironmentFiles syntax in service configuration; configure this custom service manually.")
+        pairs.append((match.group(1), match.group(2) == "yes"))
+        pos = match.end()
     entries = []
-    for raw in run(["systemctl", "show", service, "--property=EnvironmentFiles", "--value"]).splitlines():
-        entry = raw.strip()
-        if not entry:
-            continue
-        ignore_errors = entry.endswith(" (ignore_errors=yes)")
-        for suffix in [" (ignore_errors=yes)", " (ignore_errors=no)"]:
-            if entry.endswith(suffix):
-                entry = entry[:-len(suffix)].strip()
-                break
+    for entry, ignore_errors in pairs:
         if entry.startswith("-"):
             ignore_errors = True
             entry = entry[1:].strip()
+        if not SAFE_PATH.fullmatch(entry):
+            raise SetupError("Unsupported EnvironmentFile path in service configuration; configure this custom service manually.")
         env_path = Path(entry)
         if not env_path.is_file():
             if not ignore_errors:
@@ -152,8 +161,8 @@ def read_environment_files(service):
 def resolve_launch(service):
     working = run(["systemctl", "show", service, "--property=WorkingDirectory", "--value"])
     start = run(["systemctl", "show", service, "--property=ExecStart", "--value"])
-    blocks = re.findall(r"\{([^}]*)\}", start)
-    if len(blocks) != 1:
+    blocks = EXEC_BLOCK.findall(start)
+    if len(blocks) != 1 or EXEC_BLOCK.sub("", start).strip():
         raise SetupError("The service must start a single stock BOINC client command; wrapper/custom services need manual configuration.")
     fields = dict(part.strip().split("=", 1) for part in blocks[0].split(";") if "=" in part)
     binary = fields.get("path", "")
@@ -161,12 +170,12 @@ def resolve_launch(service):
     if not binary or Path(binary).name not in ["boinc", "boinc_client"] or not argv or Path(argv[0]).name not in ["boinc", "boinc_client"]:
         raise SetupError("The service must start a stock BOINC client directly; wrapper/custom services need manual configuration.")
     env_vars = {}
-    for key, sep, value in read_environment_files(service):
-        if sep:
-            env_vars[key] = value
     for item in shlex.split(run(["systemctl", "show", service, "--property=Environment", "--value"])):
         if "=" in item:
             key, value = item.split("=", 1)
+            env_vars[key] = value
+    for key, sep, value in read_environment_files(service):
+        if sep:
             env_vars[key] = value
     for token in shlex.split(run(["systemctl", "show", service, "--property=UnsetEnvironment", "--value"])):
         key, sep, value = token.partition("=")
@@ -237,7 +246,7 @@ def check_effective(service, data_dir, config_dir, uid, image=None):
         raise SetupError("The service must preserve Podman runtime files across a restart.")
     commands = run(["systemctl", "show", service, "--property=ExecStartPre", "--value"])
     preflight_path = "/usr/local/lib/usnm-boinc-volunteer/preflight.py"
-    blocks = re.findall(r"\{([^}]*)\}", commands)
+    blocks = EXEC_BLOCK.findall(commands)
     matched = 0
     for block in blocks:
         fields = dict(part.strip().split("=", 1) for part in block.split(";") if "=" in part)
