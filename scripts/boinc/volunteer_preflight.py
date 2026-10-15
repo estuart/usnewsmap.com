@@ -105,7 +105,17 @@ def preflight(data_dir, image, runner=None, service=None):
         raise PreflightError("The BOINC slots directory must exist and be writable by the service user.")
     # Work under the real slots parent; no :z/:Z shortcut that hides a broken host setup.
     # The official client also runs an unqualified hello-world during runtime detection.
-    runner(["podman", "run", "--rm", "docker.io/library/hello-world"], timeout=180)
+    hello_name = "usnm-preflight-hello-" + uuid.uuid4().hex
+    try:
+        runner(["podman", "run", "--rm", "--name", hello_name, "docker.io/library/hello-world"], timeout=180)
+    finally:
+        cleanup_error = None
+        try:
+            runner(["podman", "rm", "--force", "--ignore", hello_name])
+        except PreflightError as error:
+            cleanup_error = error
+        if cleanup_error is not None:
+            raise PreflightError(f"Preflight cleanup failed; BOINC remains stopped: {cleanup_error}")
     try:
         runner(["podman", "image", "inspect", image])
     except PreflightError:

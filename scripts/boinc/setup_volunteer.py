@@ -29,8 +29,8 @@ class SetupError(RuntimeError):
     pass
 
 
-def run(args, timeout=180):
-    result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+def run(args, timeout=180, user=None, group=None):
+    result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, user=user, group=group)
     if result.returncode:
         raise SetupError(f"{args[0]} failed: {(result.stderr or result.stdout).strip()[-2000:]}")
     return result.stdout.strip()
@@ -43,6 +43,17 @@ def active_work(data_dir):
     root = ET.parse(path).getroot()
     # Include downloaded and queued tasks, not just a currently running application.
     return bool(root.findall("result") or root.findall(".//active_task"))
+
+
+def check_activity_mode(data_dir):
+    path = data_dir / "client_state.xml"
+    if not path.exists():
+        return
+    root = ET.parse(path).getroot()
+    for tag in ["user_run_request", "user_gpu_request"]:
+        value = (root.findtext(tag) or "").strip()
+        if value and value != "2":
+            raise SetupError(f"BOINC {tag} is not set to 'Run based on preferences' (2). Select 'Run based on preferences' in BOINC Manager before setup.")
 
 
 def check_subids(text, user, uid):
@@ -295,6 +306,36 @@ def backup(path, directory):
         write_file(absent, "", mode=0o600)
 
 
+def prepare_slots(data_dir, uid, gid, trust=None):
+    parent_fd = os.open(data_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if os.fstat(parent_fd).st_uid != uid:
+            raise SetupError("--data-dir must be owned by the BOINC service user.")
+        if trust is not None:
+            try:
+                os.symlink(trust, "ca-bundle.crt", dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+        try:
+            os.mkdir("slots", 0o771, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        try:
+            slots_fd = os.open("slots", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        except OSError as error:
+            raise SetupError("The BOINC slots path must be a real directory owned by the service user.") from error
+        try:
+            st = os.fstat(slots_fd)
+            if st.st_uid not in (0, uid):
+                raise SetupError("The BOINC slots path must be a real directory owned by the service user.")
+            os.fchown(slots_fd, uid, gid)
+            os.fchmod(slots_fd, 0o771)
+        finally:
+            os.close(slots_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def setup(service, data_dir, image, apply=False):
     if not SERVICE.fullmatch(service) or (data_dir is not None and not SAFE_PATH.fullmatch(str(data_dir))) or not IMAGE.fullmatch(image):
         raise SetupError("Use a plain systemd service name, an absolute path without spaces/special characters, and a registry image pinned by full sha256 digest.")
@@ -330,6 +371,7 @@ def setup(service, data_dir, image, apply=False):
         check_subids(Path(file).read_text(), user, account.pw_uid)
     if active_work(data_dir):
         raise SetupError("BOINC has queued/running work. Select No new tasks and finish/report it before setup; no work will be reset.")
+    check_activity_mode(data_dir)
     slots = data_dir / "slots"
     if slots.is_symlink() or (slots.exists() and (not slots.is_dir() or slots.stat().st_uid != account.pw_uid)):
         raise SetupError("The BOINC slots path must be a real directory owned by the service user.")
@@ -362,6 +404,7 @@ def setup(service, data_dir, image, apply=False):
     try:
         if active_work(data_dir):
             raise SetupError("Work arrived before the service stopped; left its configuration unchanged. Drain it and retry.")
+        check_activity_mode(data_dir)
         for path in [data_dir / "cc_config.xml", data_dir / "global_prefs_override.xml"]:
             if path.is_symlink():
                 raise SetupError(f"{path} is a symlink. Configure its owner-managed target manually; this helper will not replace it.")
@@ -388,20 +431,14 @@ def setup(service, data_dir, image, apply=False):
     write_file(preflight_dir / "preflight.py", Path(__file__).with_name("volunteer_preflight.py").read_text(), mode=0o755)
     write_file(data_dir / "cc_config.xml", cc, uid=account.pw_uid, gid=account.pw_gid)
     write_file(data_dir / "global_prefs_override.xml", prefs, uid=account.pw_uid, gid=account.pw_gid)
-    ca_bundle = data_dir / "ca-bundle.crt"
-    if not ca_bundle.exists() and not ca_bundle.is_symlink():
-        ca_bundle.symlink_to(trust)
-    slots = data_dir / "slots"
-    if not slots.exists():
-        slots.mkdir(mode=0o771)
-        os.chown(slots, account.pw_uid, account.pw_gid)
+    prepare_slots(data_dir, account.pw_uid, account.pw_gid, trust)
     if selinux:
         pattern = re.escape(str(slots)) + "(/.*)?"
         # Only replace a rule for this exact managed path; keep all other host policy.
         local = run(["semanage", "fcontext", "--list", "--locallist"])
         operation = "--modify" if any(line.split() and line.split()[0] == pattern for line in local.splitlines()) else "--add"
         run(["semanage", "fcontext", operation, "--type", "container_file_t", pattern])
-        run(["restorecon", "-RF", str(slots)])
+        run(["restorecon", "-RF", str(slots)], user=account.pw_uid, group=account.pw_gid)
     run(["loginctl", "enable-linger", user])
     run(["systemctl", "start", f"user@{account.pw_uid}.service"])
     write_file(target, dropin, mode=0o644)

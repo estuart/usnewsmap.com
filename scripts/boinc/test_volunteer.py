@@ -25,11 +25,12 @@ INFO = {"host": {"security": {"rootless": True}, "cgroupVersion": "v2", "cgroupM
 
 
 class Runtime:
-    def __init__(self, values=None, slot_error=False, pause_error=False, cleanup_error=False):
+    def __init__(self, values=None, slot_error=False, pause_error=False, cleanup_error=False, hello_error=False):
         self.values = values if values is not None else LIMITS
         self.slot_error = slot_error
         self.pause_error = pause_error
         self.cleanup_error = cleanup_error
+        self.hello_error = hello_error
         self.calls = []
         self.status = "running"
 
@@ -37,6 +38,8 @@ class Runtime:
         self.calls.append(args)
         if args[1] == "info":
             return json.dumps(INFO)
+        if args[1] == "run" and self.hello_error:
+            raise pre.PreflightError("Cannot run podman: timed out")
         if args[1] == "create":
             self.scratch = Path(args[args.index("--volume") + 1].removesuffix(":/work"))
             if not self.slot_error:
@@ -84,7 +87,15 @@ class PreflightTest(unittest.TestCase):
         self.assertNotIn(":z", " ".join(create))
         self.assertIn("--network=none", create)
         self.assertIn("--read-only", create)
-        self.assertEqual([call[1] for call in runtime.calls if call[1] in ["pause", "unpause", "rm"]], ["pause", "unpause", "rm"])
+        self.assertEqual([call[1] for call in runtime.calls if call[1] in ["pause", "unpause", "rm"]], ["rm", "pause", "unpause", "rm"])
+
+    def test_hello_world_timeout_cleans_up_named_probe(self):
+        runtime = Runtime(hello_error=True)
+        with self.assertRaisesRegex(pre.PreflightError, "timed out"):
+            pre.preflight(self.data, IMAGE, runtime)
+        run_call = next(call for call in runtime.calls if call[1] == "run")
+        hello_name = run_call[run_call.index("--name") + 1]
+        self.assertIn(["podman", "rm", "--force", "--ignore", hello_name], runtime.calls)
 
     def test_probe_keeps_the_released_wrapper_runtime_policy(self):
         runtime = Runtime()
@@ -174,6 +185,40 @@ class SetupTest(unittest.TestCase):
             for xml in ["<client_state><result><state>1</state></result></client_state>", "<client_state><result><ready_to_report/></result></client_state>", "<client_state><active_task_set><active_task/></active_task_set></client_state>"]:
                 (path / "client_state.xml").write_text(xml)
                 self.assertTrue(setup.active_work(path))
+
+    def test_always_run_activity_mode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            setup.check_activity_mode(path)
+            (path / "client_state.xml").write_text("<client_state><user_run_request>2</user_run_request><user_gpu_request>2</user_gpu_request></client_state>")
+            setup.check_activity_mode(path)
+            for xml in [
+                "<client_state><user_run_request>1</user_run_request></client_state>",
+                "<client_state><user_run_request>3</user_run_request></client_state>",
+                "<client_state><user_run_request>2</user_run_request><user_gpu_request>1</user_gpu_request></client_state>",
+            ]:
+                (path / "client_state.xml").write_text(xml)
+                with self.assertRaises(setup.SetupError):
+                    setup.check_activity_mode(path)
+
+    def test_prepare_slots_rejects_symlink_and_pins_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "boinc"
+            data.mkdir()
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            uid = setup.os.getuid()
+            gid = setup.os.getgid()
+            with patch.object(setup.os, "fchown") as fchown:
+                setup.prepare_slots(data, uid, gid, trust=outside / "ca.crt")
+                self.assertTrue((data / "slots").is_dir())
+                self.assertFalse((data / "slots").is_symlink())
+                self.assertTrue((data / "ca-bundle.crt").is_symlink())
+                fchown.assert_called_once()
+            (data / "slots").rmdir()
+            (data / "slots").symlink_to(outside)
+            with self.assertRaises(setup.SetupError):
+                setup.prepare_slots(data, uid, gid)
 
     def test_preferences_keep_unrelated_settings_and_do_not_touch_account(self):
         with tempfile.TemporaryDirectory() as tmp:
