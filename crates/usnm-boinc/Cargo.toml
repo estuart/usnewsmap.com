@@ -30,6 +30,8 @@ tokio = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 async-trait.workspace = true
+axum.workspace = true
+usnm-ocr-worker = { path = "../usnm-ocr-worker", features = ["standin"] }
 
 [lints]
 workspace = true

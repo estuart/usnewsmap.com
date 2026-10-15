@@ -19,6 +19,10 @@ param name string
 param nodeIps array = []
 @description('The Container Apps subnet, allowed through its service endpoint.')
 param subnetId string
+@description('The BOINC stack\'s Container Apps subnet (usnm-boinc-vnet-<env>/aca), allowed through its Microsoft.Storage.Global endpoint so the bridge\'s staging steps can read the archive (#516). Empty: none.')
+param boincSubnetId string = ''
+@description('Principals given Storage Blob Data Reader on `scans`: the BOINC bridge\'s identity (usnm-boinc-id-<env>), which stages pages from the archive before going to LoC (ADR-0018, decision 7).')
+param readerIds array = []
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-<env>). It gets the writer role; empty grants none.')
 param nodeGroupId string = ''
 @description('The scan writer role\'s name, before its scope (infra/naming.bicep).')
@@ -50,7 +54,10 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
           action: 'Allow'
         }
       ]
-      virtualNetworkRules: [{ id: subnetId, action: 'Allow' }]
+      virtualNetworkRules: concat(
+        [{ id: subnetId, action: 'Allow' }],
+        empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow' }]
+      )
     }
   }
 }
@@ -129,6 +136,21 @@ resource nodeWrite 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!e
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writer.name)
   }
 }
+
+// Storage Blob Data Reader, built in.
+var blobReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
+
+resource read 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for p in readerIds: {
+    scope: scans
+    name: guid(scans.id, p, 'usnm-scans-reader')
+    properties: {
+      principalId: p
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
+    }
+  }
+]
 
 output id string = account.id
 output name string = account.name

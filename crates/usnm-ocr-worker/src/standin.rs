@@ -20,6 +20,9 @@ pub enum Scripted {
     RetryAfter(u16, u32),
     /// A status after a pause.
     Slow(u16, Duration),
+    /// A bot challenge page, as Cloudflare sends one: HTML with
+    /// `cf-mitigated: challenge`, with this status.
+    Challenge(u16),
 }
 
 #[derive(Default)]
@@ -66,6 +69,18 @@ async fn answer(State(s): State<StandIn>, uri: Uri) -> Response {
         Some(Scripted::Slow(c, d)) => {
             tokio::time::sleep(d).await;
             return status(c).into_response();
+        }
+        Some(Scripted::Challenge(c)) => {
+            return (
+                status(c),
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=UTF-8"),
+                    (header::SERVER, "cloudflare"),
+                    (header::HeaderName::from_static("cf-mitigated"), "challenge"),
+                ],
+                "<!DOCTYPE html><html><head><title>Just a moment...</title></head></html>",
+            )
+                .into_response()
         }
         None => {}
     }

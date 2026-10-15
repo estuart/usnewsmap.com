@@ -401,12 +401,14 @@ The role assignments:
 | Hand-off job                                 | exchange `ocr-out`                | OCR node writer                                            |
 | Hand-off job                                 | the shared registry               | AcrPull                                                    |
 | BOINC bridge (`usnm-boinc-id-<env>`)         | container `boinc-handoff`         | OCR node writer                                            |
+| BOINC bridge                                 | scan archive `scans`              | Storage Blob Data Reader (staging reads it first)          |
 | Scan fetcher (`usnm-ocr-node5-arcs-<env>`)   | container `boinc-handoff`         | OCR node writer                                            |
 
 The main stack makes all of them, the bridge's included (it reads the BOINC identity as an
 existing resource), so the BOINC stack only adds the service endpoint. The Cosmos, ledger,
 reference and `ocr-out` grants are `infra/modules/boinc-handoff-runner.bicep`'s; the
-container grants are `ocr-exchange.bicep`'s.
+container grants are `ocr-exchange.bicep`'s, and the `scans` grant (with the BOINC subnet on the
+archive's firewall) `scan-archive.bicep`'s.
 
 ### Runbook
 

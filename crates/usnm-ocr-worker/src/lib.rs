@@ -34,6 +34,7 @@ pub mod worker;
 
 pub mod testimg;
 
-/// A stand-in LoC for tests.
-#[cfg(test)]
-pub(crate) mod standin;
+/// A stand-in LoC for tests (and, with the `standin` feature, other
+/// crates' tests).
+#[cfg(any(test, feature = "standin"))]
+pub mod standin;

@@ -6,7 +6,7 @@ Status: a probe of a few pages, to find out whether volunteers' container runtim
 
 ## What a unit is
 
-One page per workunit: LoC's full-size IIIF JPEG (`page.jpg`) and the job (`surya.json`). The host reads the page in up to three input modes:
+One page per workunit: the page's full-size IIIF JPEG from LoC (`page.jpg`) and the job (`surya.json`). The host reads the page in up to three input modes:
 
 | Mode     | Input                                                                                                                                      |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -87,16 +87,34 @@ scripts/boinc-app-release.sh --env prod --app usnm_surya --version 1.1 --plan-cl
 Then, under `<share>/surya/<campaign>/`:
 
 ```sh
-# Fetches each page's JPEG from LoC: two requests per page, one at a time, at least 5 s apart; a
-# 403, 429 or 5xx writes HOLD and stops (as for the assessment).
+# Gets each page's JPEG from the scan archive, else from tile.loc.gov through its batch (see
+# below); a 403, 429 or 5xx, or an HTML challenge page, writes HOLD and stops.
 scripts/start-boinc-bridge.sh --env prod --step surya-stage --var SURYA_CAMPAIGN=probe1 \
-  --var SURYA_PAGES=serbian:srp:sn85055101_1917-04-03_ed-1_seq-3,... \
+  --var SURYA_PAGES=serbian:srp:sn85055101_1917-04-03_ed-1_seq-3:dlc_arlington_ver01,... \
   --var SURYA_ENGINE_IMAGE=sha256:... --var SURYA_ENGINE_LLAMA=sha256:... --var SURYA_ENGINE_WEIGHTS=sha256:... \
   --var SURYA_MAX=8 --wait-mins 15
 scripts/start-boinc-bridge.sh --env prod --step surya-submit --var SURYA_CAMPAIGN=probe1 --var SURYA_MAX=8 --wait-mins 15
 # As results come in:
 scripts/start-boinc-bridge.sh --env prod --step surya-summary --var SURYA_CAMPAIGN=probe1 --wait-mins 15
 ```
+
+Each page is `group:lang:doc_id:batch[+batch...]`. Staging never asks www.loc.gov where a page is (its item API answers Azure with a Cloudflare challenge), so the page names the batches that may hold it, as `<name>_ver<NN>`. Take them from the published set's `batches.json` in the lake's `reference` container (the version `current.json` names): every batch whose `lccns` include the page's LCCN and whose `first` to `last` dates include its date. For example, with the file downloaded:
+
+```sh
+jq -r --arg l sn82015743 --arg d 1931-04-10 '.[] | select((.curated.lccns | index($l)) and .curated.first <= $d and $d <= .curated.last)
+  | "\(.batch)_ver\(.curated.version | tostring | if length < 2 then "0" + . else . end)"' batches.json | paste -sd+ -
+```
+
+For each page, staging (`crates/usnm-boinc/src/scans.rs`, shared with the assessment) takes the first of:
+
+1. the scan archive's full-size JPEG of the page in one of its batches (`keep/<batch>/<lccn>/<date>/<edition>/<seq>.jpg`), checked against its stored sha256, when the bridge job has `SCAN_ARCHIVE_URL`;
+2. the archive's JP2 of the page: its stored IIIF base, then the JPEG from tile.loc.gov (one request; the JP2 itself is not read);
+3. each batch in turn on tile.loc.gov's storage service: the bag manifest and the issue's METS (kept in `<campaign>/batch-cache`) give the IIIF base, then the JPEG;
+4. none: the page is marked `missing`.
+
+Requests to LoC go one at a time, at least 5 s apart, with no retries, as for the assessment (docs/boinc-assessment.md, "Where the inputs come from"). The job's `input.url` is always the page's tile.loc.gov JPEG URL, wherever the bytes came from.
+
+To clear a hold, read `<campaign>/HOLD`, deal with the cause, and delete it (on the share, for example with `az storage file delete`).
 
 `surya-summary` prints a table of every kept result (page, client, plan class, runtime, GPU, and per mode the outcome, device, time, memory) and every compared pair, and writes it to `<campaign>/summary.md`. A unit left at `submitting` is resolved as for the assessment.
 

@@ -1,9 +1,14 @@
-//! Fetch each sampled page's inputs from LoC and write its unit directory.
+//! Get each sampled page's inputs and write its unit directory.
+//!
+//! Scans come from [`crate::scans`]: the scan archive first, then LoC's
+//! storage service and image server through the page's batch. Nothing goes
+//! to www.loc.gov's item API. LoC's ALTO is only on the storage service.
 //!
 //! Politeness, as for the #435 report's `fetch.py`: one request at a time
 //! (every await finishes before the next request), at least `gap` apart on
 //! the storage service and the image server, which share one pacer here,
-//! and no retries. A 403, 429 or 5xx, or a network failure, writes a hold
+//! and no retries. A 403, 429 or 5xx, a network failure, or an HTML page in
+//! place of a file (a bot challenge) writes a hold
 //! and stops the run; a later run refuses to start until a person removes
 //! it. A 404 marks the page missing and moves on.
 //!
@@ -11,7 +16,7 @@
 //! `page.jpg` (OCR units), `loc.xml` (LoC's ALTO, kept on the server for
 //! scoring; never sent to hosts) and `assess.json`, written last.
 use super::{check_doc_id, check_no_hold, hold_path, units, SampleRow, JOB_FILE};
-use crate::atomic;
+use crate::{atomic, scans};
 use anyhow::{ensure, Context};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,12 +28,9 @@ use usnm_ocr_contract::{
     assess::{Format, Input, Job, Mode, Stratum, MAX_SCAN, VERSION},
     boinc::{self, sha256},
 };
-use usnm_ocr_worker::{
-    engine,
-    loc::{FetchError, ImageSize, LocClient, LocConfig},
-};
+use usnm_ocr_worker::{engine, loc::FetchError};
 
-pub const MIN_GAP: Duration = Duration::from_secs(5);
+pub const MIN_GAP: Duration = scans::MIN_GAP;
 const MAX_ALTO: usize = 64 << 20;
 
 #[derive(Debug, Clone)]
@@ -43,6 +45,8 @@ pub struct Options {
     pub gap: Duration,
     pub max_pages: usize,
     pub batch_cache: Option<PathBuf>,
+    /// The scan archive's container URL; None: LoC only.
+    pub scan_archive: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -80,15 +84,11 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         .filter_map(|s| s.strip_prefix("tessdata/")?.strip_suffix(".traineddata"))
         .map(str::to_owned)
         .collect();
-    let loc = LocClient::new(LocConfig {
-        api_gap: opts.gap,
-        tile_gap: opts.gap,
-        storage_gap: opts.gap,
-        storage_own_budget: false,
-        attempts: 1,
-        batch_cache: opts.batch_cache.clone(),
-        ..LocConfig::default()
-    })?;
+    let src = scans::Sources::new(
+        scans::loc_client(opts.gap, opts.batch_cache.clone())?,
+        scans::archive(opts.scan_archive.as_deref())?,
+        MAX_SCAN,
+    );
     let mut summary = Summary::default();
     for row in rows {
         if summary.staged + summary.missing >= opts.max_pages {
@@ -101,7 +101,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             continue;
         }
         std::fs::create_dir_all(&unit)?;
-        match page(&loc, &row, &unit, opts, &installed).await {
+        match page(&src, &row, &unit, opts, &installed).await {
             Ok(true) => summary.staged += 1,
             Ok(false) => summary.missing += 1,
             Err(e) => {
@@ -122,7 +122,7 @@ fn missing(unit: &std::path::Path, why: &str) -> anyhow::Result<bool> {
 }
 
 async fn page(
-    loc: &LocClient,
+    src: &scans::Sources,
     row: &SampleRow,
     unit: &std::path::Path,
     opts: &Options,
@@ -132,19 +132,18 @@ async fn page(
     atomic(&unit.join("sample.json"), &serde_json::to_vec(row)?)?;
     let key = PageKey::from_doc_id(&row.doc_id)?;
     let profile = engine::route(&row.lang, installed).context("no locked model for language")?;
-    let resolved = match loc.resolve(&key, &row.batch, row.batch_version).await {
+    let (resolved, jp2) = match src.jp2(&key, &row.batch, row.batch_version).await {
         Ok(Some(p)) => p,
-        Ok(None) => return missing(unit, "the batch does not place this page"),
+        Ok(None) => {
+            return missing(
+                unit,
+                "the batch does not place this page, or LoC has no JP2",
+            )
+        }
         Err(FetchError::Permanent(m)) => return missing(unit, &m),
         Err(e) => return Err(stop(e)),
     };
     let mut inputs = BTreeMap::new();
-    let jp2 = match loc.scan_resolved(&key, &resolved, ImageSize::Full).await {
-        Ok(Some(s)) => s,
-        Ok(None) => return missing(unit, "the bag lists the JP2 but LoC has none"),
-        Err(FetchError::Permanent(m)) => return missing(unit, &m),
-        Err(e) => return Err(stop(e)),
-    };
     ensure!(jp2.bytes.len() <= MAX_SCAN, "JP2 over size limit");
     atomic(&unit.join(Format::Jp2.input()), &jp2.bytes)?;
     inputs.insert(
@@ -156,11 +155,9 @@ async fn page(
         },
     );
     if opts.mode == Mode::Ocr {
-        let jpg = match loc
-            .iiif_scan(resolved.iiif_base.clone(), ImageSize::Full)
-            .await
-        {
-            Ok(s) => s,
+        let jpg = match src.jpeg_of(&key, &row.batch, &resolved.iiif_base).await {
+            Ok(Some(s)) => s,
+            Ok(None) => return missing(unit, "LoC has no IIIF JPEG for this page"),
             Err(FetchError::Permanent(m)) => return missing(unit, &m),
             Err(e) => return Err(stop(e)),
         };
@@ -179,7 +176,7 @@ async fn page(
             .strip_suffix(".jp2")
             .map(|s| format!("{s}.xml"))
             .context("JP2 URL does not end in .jp2")?;
-        match loc.storage_file(&alto_url, &key.lccn, MAX_ALTO).await {
+        match src.loc.storage_file(&alto_url, &key.lccn, MAX_ALTO).await {
             Ok(Some(b)) => atomic(&unit.join("loc.xml"), &b)?,
             // Scored pages need it; the unit still runs for crash and speed.
             Ok(None) | Err(FetchError::Permanent(_)) => {

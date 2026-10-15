@@ -337,6 +337,12 @@ pub struct LocConfig {
     /// On a fast, bare 503, ask another item to tell an item error from a
     /// server problem. Off for callers that must send nothing after a 5xx.
     pub item_probes: bool,
+    /// Treat an answer that is not the file asked for as a block: a 2xx
+    /// HTML page (a bot challenge such as Cloudflare's "Just a moment...")
+    /// or a body that can't be read holds the server and fails at once,
+    /// with no retry. Off for the worker, whose behaviour is unchanged;
+    /// on for the BOINC staging steps.
+    pub html_is_block: bool,
 }
 
 impl Default for LocConfig {
@@ -354,6 +360,7 @@ impl Default for LocConfig {
             batches_root: "https://chroniclingamerica.loc.gov/data/batches/".into(),
             batch_cache: None,
             item_probes: true,
+            html_is_block: false,
         }
     }
 }
@@ -745,18 +752,40 @@ impl LocClient {
             let wait = self.cfg.backoff * attempt;
             let sent = Instant::now();
             match self.http.get(url).send().await {
-                Ok(resp) if resp.status().is_success() => match read_limited(resp, max).await {
-                    Ok(b) => {
-                        if title.is_some() {
-                            self.answered(server, url, b.len());
+                Ok(resp) if resp.status().is_success() => {
+                    if self.cfg.html_is_block {
+                        if let Some(why) = html_page(&resp) {
+                            pacer.hold(self.cfg.backoff);
+                            tracing::warn!(
+                                url,
+                                server = server.name(),
+                                "an HTML page instead of the file: holding"
+                            );
+                            return Err(FetchError::Transient(format!(
+                                "{url} answered HTTP {} with {why} instead of the file: a bot challenge or block page; holding",
+                                resp.status().as_u16()
+                            )));
                         }
-                        return Ok(Some(Got {
-                            body: b,
-                            took: sent.elapsed(),
-                        }));
                     }
-                    Err(e) => last = e,
-                },
+                    match read_limited(resp, max).await {
+                        Ok(b) => {
+                            if title.is_some() {
+                                self.answered(server, url, b.len());
+                            }
+                            return Ok(Some(Got {
+                                body: b,
+                                took: sent.elapsed(),
+                            }));
+                        }
+                        Err(e) if self.cfg.html_is_block => {
+                            pacer.hold(self.cfg.backoff);
+                            return Err(FetchError::Transient(format!(
+                            "{url}: the answer's body could not be read ({e}), which is how a block or challenge page can look; holding"
+                        )));
+                        }
+                        Err(e) => last = e,
+                    }
+                }
                 Ok(resp) => {
                     let status = resp.status();
                     if missing_ok && matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE) {
@@ -825,6 +854,11 @@ impl LocClient {
                             "loc.gov asked us to slow down"
                         );
                         last = format!("HTTP {}", status.as_u16());
+                        if self.cfg.html_is_block {
+                            if let Some(why) = challenge(&resp) {
+                                last = format!("{last} ({why}): blocked");
+                            }
+                        }
                         continue;
                     }
                     // 408 is a timeout, worth retrying like a 5xx.
@@ -997,6 +1031,26 @@ impl LocClient {
                     "loc.gov asked us to slow down"
                 );
                 continue;
+            }
+            if self.cfg.html_is_block {
+                // Staging: only a 404 or 410 is an absent batch; a challenge
+                // page or a server error is a block, never "not there".
+                if status.is_success() {
+                    if let Some(why) = html_page(&resp) {
+                        self.storage.hold(self.cfg.backoff);
+                        return Err(FetchError::Transient(format!(
+                            "{url} answered HTTP {} with {why} instead of a redirect: a bot challenge or block page; holding",
+                            status.as_u16()
+                        )));
+                    }
+                }
+                if status.is_server_error() {
+                    self.storage.hold(self.cfg.backoff);
+                    return Err(FetchError::Transient(format!(
+                        "{url} returned HTTP {}; holding",
+                        status.as_u16()
+                    )));
+                }
             }
             return Ok(None);
         }
@@ -1282,6 +1336,40 @@ impl LocClient {
             evict: None,
         }))
     }
+}
+
+/// Why a 2xx answer is a web page rather than a file: an HTML content
+/// type. None for anything else (images, JSON, XML, text manifests).
+fn html_page(resp: &reqwest::Response) -> Option<String> {
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)?
+        .to_str()
+        .ok()?
+        .to_ascii_lowercase();
+    (ct.starts_with("text/html") || ct.starts_with("application/xhtml")).then(|| {
+        format!(
+            "an HTML page ({})",
+            challenge(resp).unwrap_or_else(|| ct.clone())
+        )
+    })
+}
+
+/// Whether a refusal is a bot challenge, by the headers Cloudflare sends
+/// with one (`cf-mitigated: challenge`) or an HTML body from Cloudflare.
+fn challenge(resp: &reqwest::Response) -> Option<String> {
+    let h = resp.headers();
+    let get = |k: &str| {
+        h.get(k)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_ascii_lowercase)
+    };
+    if get("cf-mitigated").is_some_and(|v| v.contains("challenge")) {
+        return Some("a Cloudflare challenge".into());
+    }
+    let html = get("content-type").is_some_and(|c| c.starts_with("text/html"));
+    (html && get("server").is_some_and(|s| s.contains("cloudflare")))
+        .then(|| "an HTML page from Cloudflare".into())
 }
 
 /// `<lccn>/<date>/ed-<n>`, an issue as loc.gov's item URLs name it.
@@ -1865,8 +1953,70 @@ mod tests {
             batches_root: s.batches_root(),
             batch_cache: cache,
             item_probes: true,
+            html_is_block: false,
         })
         .unwrap()
+    }
+
+    /// An HTML page in place of a file: unchanged for the worker (the flag
+    /// is off), a hold at once for the staging steps (on).
+    #[tokio::test]
+    async fn an_html_answer_is_a_hold_only_when_asked() {
+        let s = StandIn::start().await;
+        let path = format!("{BATCH}data/sn1/0001A/1890050301/0001.xml");
+        let url = format!("{}{path}", s.root);
+        s.put(&path, b"<alto/>".to_vec());
+        s.script(&path, Scripted::Challenge(200));
+        let worker = batch_client(&s, Duration::from_millis(10), None, false);
+        let body = worker
+            .storage_file(&url, "sn1", 1 << 20)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Just a moment"));
+        s.script(&path, Scripted::Challenge(200));
+        let staging = LocClient::new(LocConfig {
+            html_is_block: true,
+            attempts: 1,
+            ..worker.cfg.clone()
+        })
+        .unwrap();
+        let e = staging
+            .storage_file(&url, "sn1", 1 << 20)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(e.to_string().contains("Cloudflare challenge"), "{e}");
+        assert!(staging.held_until().is_some());
+    }
+
+    /// The batch lookup through Chronicling America: for staging, a
+    /// challenge page or a 5xx is a hold, not an absent batch.
+    #[tokio::test]
+    async fn the_batch_lookup_holds_on_a_challenge_or_server_error_when_asked() {
+        let s = StandIn::start().await;
+        let via = "/data/batches/zz_none_ver01/manifest-md5.txt";
+        let worker = batch_client(&s, Duration::from_millis(10), None, false);
+        let staging = |s: &StandIn| {
+            LocClient::new(LocConfig {
+                html_is_block: true,
+                attempts: 1,
+                ..batch_client(s, Duration::from_millis(10), None, false)
+                    .cfg
+                    .clone()
+            })
+            .unwrap()
+        };
+        s.script(via, Scripted::Status(500));
+        assert!(worker.bag("zz_none", 1).await.unwrap().is_none());
+        s.script(via, Scripted::Status(500));
+        let e = staging(&s).bag("zz_none", 1).await.unwrap_err();
+        assert!(e.to_string().contains("HTTP 500"), "{e}");
+        s.script(via, Scripted::Challenge(200));
+        let e = staging(&s).bag("zz_none", 1).await.unwrap_err();
+        assert!(e.to_string().contains("Cloudflare challenge"), "{e}");
+        // A plain 404 is still an absent batch.
+        assert!(staging(&s).bag("zz_none", 1).await.unwrap().is_none());
     }
 
     /// One issue of sn1 (1890-05-03, ed. 1) in batch `xx_test_ver01`,

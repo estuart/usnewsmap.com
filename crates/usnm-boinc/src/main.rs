@@ -241,6 +241,10 @@ enum Assess {
         max_pages: usize,
         #[arg(long)]
         batch_cache: Option<PathBuf>,
+        /// The scan archive's container URL (https://<account>.blob.core.windows.net/scans),
+        /// read first with the job's identity; omit for LoC only.
+        #[arg(long)]
+        scan_archive: Option<String>,
     },
     /// Submit staged units with stock create_work, two results each.
     Submit {
@@ -342,9 +346,11 @@ enum Gold {
 }
 #[derive(Subcommand)]
 enum Surya {
-    /// Fetch each page's full-size IIIF JPEG from LoC, one request at a time, and write its unit.
+    /// Get each page's full-size IIIF JPEG (the scan archive, then tile.loc.gov one request at a
+    /// time) and write its unit.
     Stage {
-        /// group:lang:doc_id, e.g. serbian:srp:sn85055101_1917-04-03_ed-1_seq-3; repeat.
+        /// group:lang:doc_id:batch[+batch...], e.g.
+        /// serbian:srp:sn85055101_1917-04-03_ed-1_seq-3:dlc_arlington_ver01; repeat.
         #[arg(long = "page", required = true)]
         pages: Vec<usnm_boinc::surya::Page>,
         #[arg(long)]
@@ -372,6 +378,11 @@ enum Surya {
         gap_secs: u64,
         #[arg(long, default_value_t = 20)]
         max_pages: usize,
+        #[arg(long)]
+        batch_cache: Option<PathBuf>,
+        /// The scan archive's container URL, read first; omit for LoC only.
+        #[arg(long)]
+        scan_archive: Option<String>,
     },
     /// Hand staged units to create_work, two results each.
     Submit {
@@ -755,6 +766,8 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
             cpu_timeout_secs,
             gap_secs,
             max_pages,
+            batch_cache,
+            scan_archive,
         } => {
             let s = x::stage::run(&x::stage::Options {
                 pages,
@@ -771,6 +784,8 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
                 cpu_timeout_secs,
                 gap: std::time::Duration::from_secs(gap_secs),
                 max_pages,
+                batch_cache,
+                scan_archive,
             })
             .await?;
             eprintln!("{s:?}");
@@ -862,6 +877,7 @@ async fn assess(a: Assess) -> anyhow::Result<()> {
             gap_secs,
             max_pages,
             batch_cache,
+            scan_archive,
         } => {
             let mode = mode.into();
             let s = x::stage::run(&x::stage::Options {
@@ -878,6 +894,7 @@ async fn assess(a: Assess) -> anyhow::Result<()> {
                 gap: std::time::Duration::from_secs(gap_secs),
                 max_pages,
                 batch_cache,
+                scan_archive,
             })
             .await?;
             eprintln!("{s:?}");

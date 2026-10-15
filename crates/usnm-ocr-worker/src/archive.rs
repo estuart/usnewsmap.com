@@ -222,6 +222,42 @@ impl Archive {
             ))
     }
 
+    /// A blob's stored metadata (the sidecar's fields), from its
+    /// properties only, so nothing is billed as a Cold read. `None` when
+    /// there is no such blob.
+    pub async fn metadata_of(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<BTreeMap<String, String>>> {
+        let resp = self.request(Method::HEAD, name).await?.send().await?;
+        match resp.status() {
+            StatusCode::NOT_FOUND => Ok(None),
+            StatusCode::OK => Ok(Some(stored_metadata(resp.headers()))),
+            s => bail!("head returned {s}"),
+        }
+    }
+
+    /// A blob's bytes (at most `max`) and its stored metadata. `None` when
+    /// there is no such blob.
+    pub async fn read(
+        &self,
+        name: &str,
+        max: usize,
+    ) -> anyhow::Result<Option<(bytes::Bytes, BTreeMap<String, String>)>> {
+        let resp = self.request(Method::GET, name).await?.send().await?;
+        match resp.status() {
+            StatusCode::NOT_FOUND => Ok(None),
+            StatusCode::OK => {
+                let meta = stored_metadata(resp.headers());
+                let body = crate::loc::read_limited(resp, max)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("reading {name}: {e}"))?;
+                Ok(Some((body, meta)))
+            }
+            s => bail!("get returned {s}"),
+        }
+    }
+
     async fn head(&self, name: &str) -> anyhow::Result<Option<Props>> {
         let resp = self.request(Method::HEAD, name).await?.send().await?;
         match resp.status() {
@@ -375,6 +411,16 @@ fn compare(p: &Props, size: u64, local_md5: &str, local_sha256: &str, mode: Mode
         }
     }
     Outcome::Present
+}
+
+/// The `x-ms-meta-*` headers of a blob, by name without the prefix.
+fn stored_metadata(h: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
+    h.iter()
+        .filter_map(|(k, v)| {
+            let name = k.as_str().strip_prefix("x-ms-meta-")?;
+            Some((name.to_owned(), v.to_str().ok()?.to_owned()))
+        })
+        .collect()
 }
 
 /// The sidecar's fields as blob metadata: names are identifiers, values

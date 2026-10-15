@@ -522,6 +522,11 @@ module scanArchive 'modules/scan-archive.bicep' = if (ocrNodes) {
     name: n.scansAccount
     nodeIps: nodeIpList(ocrNodeIps)
     subnetId: network.outputs.caeSubnetId
+    // With the hand-off job, as for the exchange account: the BOINC subnet's endpoint exists by then.
+    boincSubnetId: boincHandoff
+      ? resourceId(subscription().subscriptionId, n.boincRg, 'Microsoft.Network/virtualNetworks/subnets', n.boincVnet, 'aca')
+      : ''
+    readerIds: boincHandoff ? [boincBridgeIdentity!.properties.principalId] : []
     nodeGroupId: trim(ocrNodeGroupId)
     writerRoleLabel: n.scansWriterRole
   }

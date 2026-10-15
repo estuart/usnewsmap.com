@@ -35,6 +35,10 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "sync", "time"] }
 tracing.workspace = true
 
+[features]
+# The stand-in LoC (src/standin.rs) for other crates' tests.
+standin = []
+
 [dev-dependencies]
 tower.workspace = true
 usnm-ingest = { path = "../usnm-ingest" }

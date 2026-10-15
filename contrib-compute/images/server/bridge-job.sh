@@ -33,12 +33,17 @@
 #
 # The Surya 2 test (#516, docs/boinc-surya.md), under $SHARE_DIR/surya/<SURYA_CAMPAIGN> (same
 # name rule as ASSESS_CAMPAIGN):
-#   BRIDGE_STEP=surya-stage     SURYA_PAGES=group:lang:doc_id,... (at most SURYA_MAX, default 20)
+#   BRIDGE_STEP=surya-stage     SURYA_PAGES=group:lang:doc_id:batch[+batch...],... (at most
+#                               SURYA_MAX, default 20; batches as <name>_ver<NN>)
 #                               SURYA_ENGINE_IMAGE=sha256:... (the usnm_surya worker image)
 #                               SURYA_ENGINE_LLAMA=sha256:... SURYA_ENGINE_WEIGHTS=sha256:...
 #                               (its USNM_SURYA_LLAMA_IMAGE and USNM_SURYA_WEIGHTS)
-#                               fetches each page's IIIF JPEG from LoC, one request at a time,
-#                               5 s apart
+#                               gets each page's IIIF JPEG from the scan archive, else from
+#                               tile.loc.gov through its batch, one request at a time, 5 s apart
+#
+# assess-stage and surya-stage read the scan archive first when SCAN_ARCHIVE_URL is set
+# (https://<scansAccount>.blob.core.windows.net/scans, with the job's identity); neither
+# asks www.loc.gov's item API.
 #   BRIDGE_STEP=surya-submit    [SURYA_MAX=20]
 #   BRIDGE_STEP=surya-summary   prints the kept results and compared pairs (<project>/surya) as
 #                               a Markdown table, and writes it to <campaign>/summary.md
@@ -91,13 +96,14 @@ assess_mode() {
 }
 case "$step" in
   assess-stage)
-    # No database or secrets: this step only talks to LoC and writes the share.
+    # No database or secrets: this step only reads the scan archive and LoC and writes the share.
     assess_mode
     exec usnm-boinc assess stage --sample "$ASSESS/sample-$ASSESS_MODE.jsonl" --root "$ASSESS" \
       --mode "$ASSESS_MODE" --engine-image "${ASSESS_ENGINE_IMAGE:?set ASSESS_ENGINE_IMAGE}" \
       --engine-base "${ASSESS_ENGINE_BASE:?set ASSESS_ENGINE_BASE}" \
       --engine-version "${ASSESS_ENGINE_VERSION:-5.5.0}" \
-      --max-pages "${ASSESS_MAX:-100}" --batch-cache "$ASSESS/batch-cache" ;;
+      --max-pages "${ASSESS_MAX:-100}" --batch-cache "$ASSESS/batch-cache" \
+      ${SCAN_ARCHIVE_URL:+--scan-archive "$SCAN_ARCHIVE_URL"} ;;
   assess-collect)
     usnm-boinc assess collect --root "$ASSESS" --spool "${ASSESS_SPOOL:?set ASSESS_SPOOL}" --out "$ASSESS/out"
     python3 /usr/local/lib/usnm-boinc/assess/score.py --sample "$ASSESS/out/sample.jsonl" \
@@ -106,8 +112,8 @@ case "$step" in
       --results "$ASSESS/out/results.jsonl" --crash "$ASSESS/out/crash.jsonl" > "$ASSESS/out/tables.md"
     exit 0 ;;
   surya-stage)
-    # No database or secrets: this step only talks to LoC and writes the share.
-    [[ "${SURYA_PAGES:-}" =~ ^[a-z0-9:_,-]+$ ]] || fail "SURYA_PAGES must be group:lang:doc_id,..."
+    # No database or secrets: this step only reads the scan archive and LoC and writes the share.
+    [[ "${SURYA_PAGES:-}" =~ ^[a-z0-9:_,+-]+$ ]] || fail "SURYA_PAGES must be group:lang:doc_id:batch[+batch...],..."
     page_args=()
     IFS=, read -r -a pages <<< "$SURYA_PAGES"
     for p in "${pages[@]}"; do page_args+=(--page "$p"); done
@@ -115,7 +121,8 @@ case "$step" in
       --engine-image "${SURYA_ENGINE_IMAGE:?set SURYA_ENGINE_IMAGE}" \
       --engine-llama "${SURYA_ENGINE_LLAMA:?set SURYA_ENGINE_LLAMA}" \
       --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" \
-      --max-pages "${SURYA_MAX:-20}" ;;
+      --max-pages "${SURYA_MAX:-20}" --batch-cache "$SURYA/batch-cache" \
+      ${SCAN_ARCHIVE_URL:+--scan-archive "$SCAN_ARCHIVE_URL"} ;;
   surya-summary)
     # No database or secrets: reads what the validator kept and writes the campaign's summary.
     usnm-boinc surya summary --root "$SURYA" --seen "$PROJ/surya/seen" --pairs "$PROJ/surya/pairs.jsonl" \

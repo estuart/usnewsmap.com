@@ -40,15 +40,22 @@ The usual prefetch manifest holds only pages above a damage rate of 0.25, which 
 
 Pages without a detected language use the title's first language if `--title-languages` (a JSON object, LCCN to MARC codes) is given; otherwise they are left out. Pages whose language has no locked model are left out too, as production leaves them. The counts go to stderr.
 
-## Fetching from LoC
+## Where the inputs come from
 
-`usnm-boinc assess stage` fetches the inputs on the server side, never on hosts, with the rules of the #435 report's `fetch.py`:
+`usnm-boinc assess stage` gets the inputs on the server side, never on hosts. Each scan comes from the first of these that has it (`crates/usnm-boinc/src/scans.rs`, shared with `surya stage`):
+
+1. The scan archive (ADR-0018), when the bridge job has `SCAN_ARCHIVE_URL` (`--scan-archive`): the blob `keep/<batch>/<lccn>/<date>/<edition>/<seq>.jp2` (or `.jpg`), read with the job's identity and checked against the sha256 and md5 stored with it. A blob that is absent, unreadable or fails the check is logged and skipped.
+2. LoC's `tile.loc.gov`, through the page's batch: the bag manifest and the issue's METS on the storage service (kept in `<campaign>/batch-cache`), then the JP2 and, for OCR units, the IIIF JPEG.
+
+Staging never asks www.loc.gov's item API. Requests to LoC follow the #435 report's `fetch.py`:
 
 - one request at a time, at least 5 s apart (`--gap-secs`, which cannot go lower), on the storage service and the image server, which share one pacer;
-- no retries; a 403, 429 or 5xx, or a network failure, stops the run and writes `HOLD` under the staging root, and no later run starts until a person has looked and removed it;
+- no retries; a 403, 429 or 5xx, a network failure, or an HTML page where a file was expected (a bot challenge such as Cloudflare's "Just a moment...") stops the run and writes `HOLD` under the staging root, saying which; no later run starts until a person has looked and removed it;
 - a 404 marks the page `missing` and moves on.
 
-It resolves the JP2 through the batch's bag manifest and checks its md5, then (OCR units) fetches the full-size IIIF JPEG and LoC's ALTO next to the JP2. The ALTO stays on the server for scoring and is never sent to hosts. Each run stages at most `--max-pages` (default 100) and resumes where the last stopped. At about four requests per OCR page, that is about 20 s per page: 3000 OCR pages take about 17 hours of fetching, and 20000 crash pages (one or two requests each, plus batch manifests and METS once per issue) about 1 to 2 days.
+The archive is ours and is not paced. The bridge reads it through the BOINC subnet's storage endpoint, with Storage Blob Data Reader on `scans` (`infra/modules/scan-archive.bicep`, deployed by `scripts/provision.sh` once the hand-off job is set).
+
+It places the JP2 through the batch's bag manifest and checks its md5, then (OCR units) gets the full-size IIIF JPEG and LoC's ALTO next to the JP2. The ALTO is only on the storage service. The ALTO stays on the server for scoring and is never sent to hosts. Each run stages at most `--max-pages` (default 100) and resumes where the last stopped. At about four requests per OCR page, that is about 20 s per page: 3000 OCR pages take about 17 hours of fetching, and 20000 crash pages (one or two requests each, plus batch manifests and METS once per issue) about 1 to 2 days.
 
 ## Redundancy and validation
 
